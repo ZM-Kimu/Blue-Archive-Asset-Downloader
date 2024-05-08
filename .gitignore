@@ -103,3 +103,8 @@ venv.bak/
 # mypy
 .mypy_cache/
 assets/asset_list.txt
+
+# Project file
+Extracted/
+RawData/
+Temp/

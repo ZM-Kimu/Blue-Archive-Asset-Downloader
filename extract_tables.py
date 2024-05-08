@@ -2,7 +2,7 @@ from lib.TableService import TableZipFile
 import os
 import json
 from lib.StringCipher import Decrypt
-from download_assets import EXT
+from AssetsDownloader import EXT
 from lib.TableEncryptionService import XOR
 import FlatData as FlatData
 

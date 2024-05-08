@@ -1,30 +1,55 @@
-# Blue Archive asset downloader
+# 碧蓝档案素材下载器/Blue Archive Asset Downloader/ブルアカアッセトダウンローダー
 
-A small project that downloads all assets of the global version of Blue Archive and extracts them while it's at it.
+本项目可以从不同服务器下载并读取《碧蓝档案》的相关素材，现支援中国版、国际版、日本版。
 
-The script updates the assets and even its own parameters on its own,
-so all you have to do is execute the download_assets.py script after every update to get the latest files.
+## 主要功能
 
-## Requirements
+- **多服务器支持**：可从中国、国际、日本三个版本的服务器下载素材。
+- **多线程下载**：支持多线程快速下载。
+- **自动解包**：可选项，下载完成后自动解压文件。
 
-- Python 3.6+
-- UnityPy 1.7.21
-- requests
-- xxhash
-- pycryptodome
-- flatbuffers
+## 素材内容
 
-# Scripts
+下载的文件类型包括但不限于：
 
-- ``download_assets.py``
-  - 下载素材
-- ``extract_tables.py``
-  - Extracts and decrypts the tables from the zip files in ``Preload\TableBundles``
-  - due to the way it works, this script can take ages, around 15 minutes
-- ``flatbuf_schema_generator.py``
-  - Generates the flatbuf schemas and python dump wrapper for ``extract_tables.py``
+- Bundles
+- Media
+- Tables
 
-## TODO
+## 环境要求
 
-- 支持国服/国际服/日服下载
-- 支持下载时解包
+- Python 3.6 或更高版本
+
+## 先决条件
+
+请确保已安装 Python，并在命令行中执行以下命令以安装必要的库：
+
+  ```shell
+  pip install -r requirements.txt
+  ```
+## 使用说明
+使用下列命令行参数运行 `AssetsDownloader.py` 脚本（示例）：
+
+```shell
+python AssetsDownloader.py --threads 30 --version 1.8.1 --region cn --downloading-extract True --proxy http://0.0.0.0:0000 --max-retries 10
+```
+### 参数说明
+
+- `--threads`, `-t` 同时下载的线程数。
+- `--version`, `-v` 游戏版本号，不填则自动获取。
+- `--region`, `-g` 服务器区域：`cn` (中国), `gl` (国际), `jp` (日本)。
+- `--raw`, `-r` 指定原始文件输出位置。
+- `--extract`, `-e` 指定解压文件输出位置。
+- `--temporary`, `-m` 指定临时文件输出位置。
+- `--downloading-extract`, `-d` 是否在下载时解压文件。
+- `--proxy`, `-p` 设置HTTP代理。
+- `--max-retries`, `-x` 下载时的最大重试次数。
+
+## 开发计划 (TODO)
+
+- 增强解包。
+
+
+## 
+本项目采用 [MIT 许可证](LICENSE)。
+继承至[Blue-Archive---Asset-Downloader](https://github.com/K0lb3/Blue-Archive---Asset-Downloader)。

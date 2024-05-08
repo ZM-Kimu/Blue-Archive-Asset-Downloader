@@ -1,5 +1,5 @@
 import os
-from download_assets import ROOT, RAW, EXT
+from AssetsDownloader import ROOT, RAW, EXT
 import AssetBatchConverter
 
 AssetBatchConverter.DST = EXT
