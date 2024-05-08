@@ -6,7 +6,6 @@
 
 - **多服务器支持**：可从中国、国际、日本三个版本的服务器下载素材。
 - **多线程下载**：支持多线程快速下载。
-- **自动解包**：可选项，下载完成后自动解压文件。
 
 ## 素材内容
 
@@ -47,9 +46,9 @@ python AssetsDownloader.py --threads 30 --version 1.8.1 --region cn --downloadin
 
 ## 开发计划 (TODO)
 
-- 增强解包。
+- **自动解包**：可选项，下载中自动解压文件。
 
 
 ## 
 本项目采用 [MIT 许可证](LICENSE)。
-继承至[Blue-Archive---Asset-Downloader](https://github.com/K0lb3/Blue-Archive---Asset-Downloader)。
+继承自[Blue-Archive---Asset-Downloader](https://github.com/K0lb3/Blue-Archive---Asset-Downloader)。
