@@ -108,3 +108,10 @@ assets/asset_list.txt
 Extracted/
 RawData/
 Temp/
+BlueArchive.fbs
+FlatData/ 
+lib/ 
+flatbuf_schema_generator.py 
+extract_tables.py 
+reaxtract_assets.py 
+AssetBatchConverter.py 
