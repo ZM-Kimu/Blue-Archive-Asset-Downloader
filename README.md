@@ -1,13 +1,5 @@
-<div style="text-align: center;">
-
 # 碧蓝档案素材下载器/Blue Archive Asset Downloader/ブルアカアッセトダウンローダー
 
-  <button onclick="showLanguage('cn')">中文</button>
-  <button onclick="showLanguage('en')">English</button>
-</div>
-
-
-<div id="cn" style="display: block;">
 <div style="text-align: center;">
 本项目可以从不同服务器下载并读取碧蓝档案的素材，现支援中国版、国际版、日本版。
 </div>
@@ -67,55 +59,3 @@ python AssetsDownloader.py --threads 30 --version 1.8.1 --region cn --downloadin
 本项目采用 [MIT 许可证](LICENSE)。
 参照自[Blue-Archive---Asset-Downloader](https://github.com/K0lb3/Blue-Archive---Asset-Downloader)。
 
-</div>
-
-<div id="en" style="display: none;">
-  <div style="text-align: center;">
-  This script is used to download assets from all servers of Blue Archive, supporting CN, Global, and JP versions.
-  </div>
-
-## Features
-- Multi-server support: CN, Global, JP.
-- Multi-thread download support.
-- Automatic unpacking option.
-
-## Installation
-Ensure Python is installed and run the following command to install necessary libraries:
-```bash
-pip install -r requirements.txt
-```
-
-## Usage
-Run the `AssetsDownloader.py` script with the following parameters:
-```bash
-python AssetsDownloader.py --threads 30 --version 1.8.1 --region cn --downloading-extract True --proxy http://0.0.0.0:0000 --max-retries 10
-```
-
-## Parameters
-- `--threads`, `-t`: Number of threads for simultaneous downloads.
-- `--version`, `-v`: Game version, automatically fetched if not provided.
-- `--region`, `-g`: Server region: `cn` (China), `gl` (Global), `jp` (Japan).
-- `--raw`, `-r`: Output location for raw files.
-- `--extract`, `-e`: Output location for extracted files.
-- `--temporary`, `-m`: Location for temporary files.
-- `--downloading-extract`, `-d`: Unpack files when downloading.
-- `--proxy`, `-p`: Set HTTP proxy for download.
-- `--max-retries`, `-x`: Maximum retries for download.
-
-## TODO
-- Full support for all servers.
-- Improved unpacking efficiency.
-
-
-## About
-This project is licensed under the [MIT License](LICENSE).
-Referrence from [Blue-Archive---Asset-Downloader](https://github.com/K0lb3/Blue-Archive---Asset-Downloader)。
-</div>
-
-
-<script>
-function showLanguage(lang) {
-  document.getElementById('en').style.display = lang === 'en' ? 'block' : 'none';
-  document.getElementById('cn').style.display = lang === 'cn' ? 'block' : 'none';
-}
-</script>
