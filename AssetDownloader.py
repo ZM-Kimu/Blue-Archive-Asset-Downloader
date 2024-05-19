@@ -87,6 +87,87 @@ class Downloader(Configuration):
             "jpReserve": "https://prod-clientpatch.bluearchiveyostar.com/r62_18adige2364es3ybluha_2",
         }
 
+    def __create_threads(self, target_func, thread_pool: list, *args: tuple) -> None:
+        thread = Thread(target=target_func, args=args)
+        thread.start()
+        thread_pool.append(thread)
+
+    def __download_decompress_file(
+        self, apk_url: str, target_path: str, header_part: bytes, start_offset: int
+    ) -> bool:
+        """Request compressed data of file and extract it."""
+        try:
+            header = struct.unpack("<IHHHHHIIIHH", header_part[:30])
+            _, _, _, compression, _, _, _, comp_size, _, file_name_len, extra_len = (
+                header
+            )
+            data_start = start_offset + 30 + file_name_len + extra_len
+            data_end = data_start + comp_size
+            compressed_data = self.file_downloader(
+                apk_url,
+                True,
+                {"Range": f"bytes={data_start}-{data_end - 1}"},
+            )
+            return self.extractor.decompressFilePart(
+                compressed_data, target_path, compression
+            )
+        except:
+            return False
+
+    def __full_text_filter(self, contents) -> list:
+        keywords = self.search.split(",").copy()
+        print(f'Searching mapping data for {self.charactersMapping["version"]}...')
+        new_contents = []
+        key_mapping = self.charactersMapping["keyword_mapping"]
+        for keyword in keywords.copy():
+            for key in key_mapping:
+                if keyword.lower() in key_mapping[key].lower():
+                    keywords.append(key.lower())
+        file_mapping = self.charactersMapping["source_file_mapping"]
+        for keyword in keywords.copy():
+            for file in file_mapping:
+                if keyword.lower() in file_mapping[file].lower():
+                    keywords.append(file.lower())
+        for content in contents:
+            for keyword in keywords:
+                if keyword.lower() in content["path"].lower():
+                    new_contents.append(content)
+        return new_contents
+
+    def __parse_apk_eocd(self, data):
+        eocd_signature = b"\x50\x4b\x05\x06"
+        eocd_offset = data.rfind(eocd_signature)
+        if eocd_offset == -1:
+            raise EOFError("Cannot read the eocd of Apk file.")
+        eocd = data[eocd_offset : eocd_offset + 22]
+        _, _, _, _, _, cd_size, cd_offset, _ = struct.unpack("<IHHHHIIH", eocd)
+        return cd_offset, cd_size
+
+    def __parse_apk_central_directory(self, data):
+        file_headers = []
+        offset = 0
+        while offset < len(data):
+            if data[offset : offset + 4] != b"\x50\x4b\x01\x02":
+                raise EOFError("Cannot parse the central directory of Apk.")
+            pack = struct.unpack("<IHHHHHHIIIHHHHHII", data[offset : offset + 46])
+            uncomp_size = pack[9]
+            file_name_length = pack[10]
+            extra_field_length = pack[11]
+            file_comment_length = pack[12]
+            local_header_offset = pack[16]
+            file_name = data[offset + 46 : offset + 46 + file_name_length].decode(
+                "utf8"
+            )
+            file_headers.append(
+                {"path": file_name, "offset": local_header_offset, "size": uncomp_size}
+            )
+            offset += 46 + file_name_length + extra_field_length + file_comment_length
+        return file_headers
+
+    def __seperate_list_as_blocks(self, assets: list, block_num: int):
+        for i in range(0, len(assets), math.ceil(len(assets) / block_num)):
+            yield assets[i : i + math.ceil(len(assets) / block_num)]
+
     def main(self) -> None:
         print("Fetching version info...")
         if not self.version:
@@ -99,20 +180,16 @@ class Downloader(Configuration):
         print("Updating resources...")
         self.updateResources(asset_files, apk_url)
         print("\nResources have been downloaded to your computer.")
+        self.shared_interrupter = True
 
     def updateResources(self, assets: list, apk_url: str = "") -> None:
         assets_size = 0
         apk_size = 0
         assets_to_update = []
         if self.search:
-            assets=self.full_text_filter(assets)
+            assets = self.__full_text_filter(assets)
             print(f'Found {len(assets)} files match to "{self.search}" from manifest.')
-        Thread(
-            target=self.progressBar,
-            args=(len(assets), "Checking integrity...", "items"),
-        ).start()
-        for index, asset in enumerate(assets):
-            self.shared_counter = index + 1
+        for asset in assets:
             asset_path = os.path.join(self.raw_dir, asset["path"])
             if (
                 os.path.exists(asset_path)
@@ -121,9 +198,8 @@ class Downloader(Configuration):
                 continue
             assets_to_update.append(asset)
             assets_size += asset["size"]
-        self.shared_interrupter = True
-        sleep(0.2)
-        print(f"\n{len(assets_to_update)} files needs to download.")
+        sleep(0.5)
+        print(f"{len(assets_to_update)} files need to download.")
         if apk_url:
             apk_path = os.path.join(self.temp_dir, apk_url.rsplit("/", 1)[-1])
             apk_size = int(
@@ -133,36 +209,14 @@ class Downloader(Configuration):
             )
             if os.path.exists(apk_path) and os.path.getsize(apk_path) == apk_size:
                 apk_url = None
-            # self.downloadResources(assets_to_update, assets_size)
-        if self.search:
-            self.downloadFromRemoteApk(apk_url, apk_size, self.search)
-        else:
-            self.downloadApk(apk_url, apk_size)
-            self.extractor.extractApkFile(apk_path)
-
-    def __seperate_list_as_blocks(self, assets: list, block_num: int):
-        for i in range(0, len(assets), math.ceil(len(assets) / block_num)):
-            yield assets[i : i + math.ceil(len(assets) / block_num)]
-
-    def full_text_filter(self, contents) -> list:
-        keywords = self.search.split(",").copy()
-        print(f"Searching mapping data for {self.charactersMapping["version"]}...")
-        new_contents = []
-        key_mapping=self.charactersMapping["keyword_mapping"]
-        for keyword in keywords.copy():
-            for key in key_mapping:
-                if keyword.lower() in key_mapping[key].lower():
-                    keywords.append(key.lower())
-        file_mapping=self.charactersMapping["source_file_mapping"]
-        for keyword in keywords.copy():
-            for file in file_mapping:
-                if keyword.lower() in file_mapping[file].lower():
-                    keywords.append(file.lower())
-        for content in contents:
-            for keyword in keywords:
-                if keyword.lower() in content["path"].lower():
-                    new_contents.append(content)
-        return new_contents
+        self.downloadResources(assets_to_update, assets_size)
+        print()
+        if self.region == "cn":
+            if self.search:
+                self.downloadFromRemoteApk(apk_url, apk_size, self.search)
+            else:
+                self.downloadApk(apk_url, apk_size)
+                self.extractor.extractApkFile(apk_path)
 
     def downloadResources(
         self, assets: list, assets_size: int, retries: int = 0
@@ -173,10 +227,14 @@ class Downloader(Configuration):
         failed_files = []
         if assets:
             threads = []
-            Thread(
-                target=self.progressBar,
-                args=(assets_size, "Downloading Assets...", "MB", 1048576),
-            ).start()
+            self.__create_threads(
+                self.progressBar,
+                [],
+                assets_size,
+                "Downloading Assets...",
+                "MB",
+                1048576,
+            )
 
             def downloadAsset(part: list):
                 for asset in part:
@@ -185,7 +243,7 @@ class Downloader(Configuration):
                         exist_ok=True,
                     )
                     self.shared_message = asset["path"].rsplit("/", 1)[-1]
-                    if not self.fileDownloader(
+                    if not self.file_downloader(
                         asset["baseUrl"] + "/" + asset["path"],
                         os.path.join(self.raw_dir, asset["path"]),
                         self.headers,
@@ -194,9 +252,7 @@ class Downloader(Configuration):
 
             asset_blocks = list(self.__seperate_list_as_blocks(assets, self.threads))
             for block in asset_blocks:
-                thread = Thread(target=downloadAsset, args=(block,))
-                thread.start()
-                threads.append(thread)
+                self.__create_threads(downloadAsset, threads, block)
             [thread.join() for thread in threads]
             self.shared_interrupter = True
             sleep(0.2)
@@ -224,24 +280,20 @@ class Downloader(Configuration):
                 end = start + chunk_size - 1 if i != self.threads - 1 else apk_size
                 output = os.path.join(self.temp_dir, f"chunk_{i}.dat")
                 header = {"Range": f"bytes={start}-{end}"}
-                thread = Thread(
-                    target=self.fileDownloader, args=(apk_url, output, header)
+                self.__create_threads(
+                    self.file_downloader, threads, apk_url, output, header
                 )
-                thread.start()
-                threads.append(thread)
             self.shared_message = apk_url.rsplit("/", 1)[-1]
-            Thread(
-                target=self.progressBar,
-                args=(apk_size, "Downloading APK...", "MB", 1048576),
-            ).start()
+            self.__create_threads(
+                self.progressBar, apk_size, "Downloading APK...", "MB", 1048576
+            )
             [thread.join() for thread in threads]
             self.shared_interrupter = True
             sleep(0.2)
             with open(apk_path, "wb") as file:
-                Thread(
-                    target=self.progressBar,
-                    args=(self.threads, "Combinating to APK...", "items"),
-                ).start()
+                self.__create_threads(
+                    self.progressBar, self.threads, "Combinating to APK...", "items"
+                )
                 for i in range(self.threads):
                     self.shared_message = f"chunk_{i}.dat"
                     self.shared_counter += 1
@@ -250,72 +302,6 @@ class Downloader(Configuration):
                         file.write(chunk.read())
                     os.remove(chunk_path)
             self.shared_interrupter = True
-
-    def __create_threads(self, target_func, thread_pool: list, *args: tuple) -> None:
-        thread = Thread(target=target_func, args=args)
-        thread.start()
-        thread_pool.append(thread)
-
-    def __parse_apk_eocd(self, data):
-        eocd_signature = b"\x50\x4b\x05\x06"
-        eocd_offset = data.rfind(eocd_signature)
-        if eocd_offset == -1:
-            raise EOFError("Cannot read the eocd of Apk file.")
-        eocd = data[eocd_offset : eocd_offset + 22]
-        _, _, _, _, _, cd_size, cd_offset, _ = struct.unpack("<IHHHHIIH", eocd)
-        return cd_offset, cd_size
-
-    def __parse_apk_central_directory(self, data):
-        file_headers = []
-        offset = 0
-        while offset < len(data):
-            if data[offset : offset + 4] != b"\x50\x4b\x01\x02":
-                print(f"Invalid signature at offset {offset}")
-                break
-            pack = struct.unpack("<IHHHHHHIIIHHHHHII", data[offset : offset + 46])
-            uncomp_size = pack[9]
-            file_name_length = pack[10]
-            extra_field_length = pack[11]
-            file_comment_length = pack[12]
-            local_header_offset = pack[16]
-            file_name = data[offset + 46 : offset + 46 + file_name_length].decode(
-                "utf8"
-            )
-            file_headers.append(
-                {
-                    "path": file_name,
-                    "offset": local_header_offset,
-                    "size": uncomp_size,
-                    "extraSize": file_name_length
-                    + file_comment_length
-                    + extra_field_length
-                    + 30,
-                }
-            )
-            offset += 46 + file_name_length + extra_field_length + file_comment_length
-        return file_headers
-
-    def __download_decompress_file(
-        self, apk_url: str, target_path: str, header_part: bytes, start_offset: int
-    ) -> bool:
-        """Request compressed data of file and extract it."""
-        try:
-            header = struct.unpack("<IHHHHHIIIHH", header_part[:30])
-            _, _, _, compression, _, _, _, comp_size, _, file_name_len, extra_len = (
-                header
-            )
-            data_start = start_offset + 30 + file_name_len + extra_len
-            data_end = data_start + comp_size
-            compressed_data = self.fileDownloader(
-                apk_url,
-                True,
-                {"Range": f"bytes={data_start}-{data_end - 1}"},
-            )
-            return self.extractor.decompressFilePart(
-                compressed_data, target_path, compression
-            )
-        except:
-            return False
 
     def downloadFromRemoteApk(
         self,
@@ -328,48 +314,50 @@ class Downloader(Configuration):
         failed_files = []
         threads = []
         target_header = []
-        eocd_part = self.fileDownloader(
+        eocd_part = self.file_downloader(
             apk_url,
             True,
             {"Range": f"bytes={apk_size - min(4096, apk_size)}-{apk_size - 1}"},
         )
         cd_offset, cd_size = self.__parse_apk_eocd(eocd_part)
         if cd_offset is not None and cd_size is not None:
-            central_directory = self.fileDownloader(
+            central_directory = self.file_downloader(
                 apk_url, True, {"Range": f"bytes={cd_offset}-{cd_offset + cd_size - 1}"}
             )
             if central_directory:
                 file_headers = self.__parse_apk_central_directory(central_directory)
-                target_header = self.full_text_filter(file_headers)
+                target_header = self.__full_text_filter(file_headers)
                 print(
                     f'Found {len(target_header)} files match to "{target_keyword}" from Apk.'
                 )
         target_header += retrying_files
+
+        for header in target_header.copy():
+            file_path = os.path.join(self.raw_dir, header["path"])
+            if (
+                os.path.exists(file_path)
+                and os.path.getsize(file_path) == header["size"]
+            ):
+                target_header.remove(header)
+        print(f"{len(target_header)} files need to download.")
         if target_header:
-            Thread(
-                target=self.progressBar,
-                args=(
-                    len(target_header),
-                    "Downloading specified assets...",
-                    "items",
-                ),
-            ).start()
+            self.__create_threads(
+                self.progressBar,
+                [],
+                len(target_header),
+                "Downloading specified assets...",
+                "items",
+            )
 
             def downloadAsset(part) -> None:
-                for asset in part[0]:
+                for asset in part:
                     self.shared_message = asset["path"]
                     file_path = os.path.join(self.raw_dir, asset["path"])
                     os.makedirs(
                         file_path.rsplit("/", 1)[0],
                         exist_ok=True,
                     )
-                    if (
-                        os.path.exists(file_path)
-                        and os.path.getsize(file_path)
-                        == asset["size"] - asset["extraSize"]
-                    ):
-                        continue
-                    header_part = self.fileDownloader(
+                    header_part = self.file_downloader(
                         apk_url,
                         True,
                         {"Range": f'bytes={asset["offset"]}-{asset["offset"] + 350}'},
@@ -388,23 +376,23 @@ class Downloader(Configuration):
                 self.__seperate_list_as_blocks(target_header, self.threads)
             )
 
-        for block in asset_blocks:
-            self.__create_threads(downloadAsset, threads, (block,))
-        [thread.join() for thread in threads]
-        self.shared_interrupter = True
-        sleep(0.2)
-        if failed_files:
-            if retries > self.retries:
-                print(
-                    f"\nMax retries exceeded for {self.retries} times with retring failed files."
+            for block in asset_blocks:
+                self.__create_threads(downloadAsset, threads, block)
+            [thread.join() for thread in threads]
+            self.shared_interrupter = True
+            sleep(0.2)
+            if failed_files:
+                if retries > self.retries:
+                    print(
+                        f"\nMax retries exceeded for {self.retries} times with retring failed files."
+                    )
+                    return
+                print("Retry for failed files.")
+                self.downloadFromRemoteApk(
+                    apk_url, apk_size, target_keyword, retries + 1, failed_files
                 )
-                return
-            print("Retry for failed files.")
-            self.downloadFromRemoteApk(
-                apk_url, apk_size, target_keyword, retries + 1, failed_files
-            )
 
-    def fileDownloader(
+    def file_downloader(
         self, url: str, target: str | bool, headers: dict, retried: int = 0
     ):
         """
@@ -439,13 +427,13 @@ class Downloader(Configuration):
                         self.shared_counter += len(chunk)
                         counter += len(chunk)
                         if counter < 4096 * (time() - start_time):
-                            raise ConnectionError("Too slow to download. Reset...")
+                            raise ConnectionError("Downloading too slow. Reset...")
                 return True
             if target is True:
                 return response.content
         except:
             self.shared_counter -= counter
-            return self.fileDownloader(url, target, headers, retried + 1)
+            return self.file_downloader(url, target, headers, retried + 1)
 
     def progressBar(
         self, total: int, note: str = "", unit: str = "MB", unit_size: int = 1
