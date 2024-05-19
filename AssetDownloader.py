@@ -16,37 +16,63 @@ from AssetExtractor import Extractor
 
 # Commandline Arguments
 parser = argparse.ArgumentParser(description="碧蓝档案素材下载器")
-parser.add_argument("--threads", "-t", type=int, help="同时下载的线程数", default=20)
+parser.add_argument_group("Required Arguments").add_argument(
+    "--region", "-g", type=str, help="Server region: cn/gl/jp", required=True
+)
+# Optional
 parser.add_argument(
-    "--version", "-v", type=str, help="游戏版本号，不填则自动获取", default=None
+    "--threads", "-t", type=int, help="Number of download threads", default=20
 )
 parser.add_argument(
-    "--region", "-g", type=str, help="服务器区域 cn/gl/jp", required=False, default="cn"
+    "--version",
+    "-v",
+    type=str,
+    help="Game version, automatically retrieved if not specified",
+    default=None,
 )
 parser.add_argument(
-    "--raw", "-r", type=str, help="指定原始文件输出位置", default="RawData"
+    "--raw", "-r", type=str, help="Output location for raw files", default="RawData"
 )
 parser.add_argument(
-    "--extract", "-e", type=str, help="指定解压文件输出位置", default="Extracted"
+    "--extract",
+    "-e",
+    type=str,
+    help="Output location for extracted files",
+    default="Extracted",
 )
 parser.add_argument(
-    "--temporary", "-m", type=str, help="指定临时文件输出位置", default="Temp"
+    "--temporary",
+    "-m",
+    type=str,
+    help="Output location for temporary files",
+    default="Temp",
 )
 parser.add_argument(
-    "--downloading-extract", "-d", type=bool, help="是否在下载时解开文件", default=False
+    "--downloading-extract",
+    "-d",
+    action="store_true",
+    help="Extract files while downloading",
 )
 parser.add_argument(
     "--proxy",
     "-p",
     type=str,
-    help="为下载设置HTTP代理",
-    default="http://10.1.49.50:10111",
+    help="Set HTTP proxy for downloading",
+    default=None,
 )
 parser.add_argument(
-    "--max-retries", "-x", type=int, help="下载时的最大重试次数", default=5
+    "--max-retries",
+    "-x",
+    type=int,
+    help="Maximum number of retries during download",
+    default=5,
 )
 parser.add_argument(
-    "--search", "-s", type=str, help="搜索含有指定关键词的文件", default=None
+    "--search",
+    "-s",
+    type=str,
+    help="Search files containing specified keywords",
+    default=None,
 )
 
 args = parser.parse_args()

@@ -1,8 +1,6 @@
-# 碧蓝档案素材下载器/Blue Archive Asset Downloader/ブルアカアッセトダウンローダー
+# 碧蓝档案素材下载器 / Blue Archive Asset Downloader / ブルアカアッセトダウンローダー
 
-<div style="text-align: center;">
-本项目可以从不同服务器下载并读取碧蓝档案的素材，现支援中国版、国际版、日本版。
-</div>
+<div align="center">本项目可以从不同服务器下载并读取碧蓝档案的素材，现支援中国版、国际版、日本版。</div>
 
 ## 主要功能
 
@@ -39,7 +37,7 @@ python AssetsDownloader.py --threads 30 --version 1.8.1 --region cn --downloadin
 
 - `--threads`, `-t` 同时下载的线程数。
 - `--version`, `-v` 游戏版本号，不填则自动获取。
-- `--region`, `-g` 服务器区域：`cn` (中国), `gl` (国际), `jp` (日本)。
+- `--region`, `-g` **`*`**服务器区域：`cn` (中国), `gl` (国际), `jp` (日本)。
 - `--raw`, `-r` 指定原始文件输出位置。
 - `--extract`, `-e` 指定解压文件输出位置。
 - `--temporary`, `-m` 指定临时文件输出位置。
@@ -47,8 +45,8 @@ python AssetsDownloader.py --threads 30 --version 1.8.1 --region cn --downloadin
 - `--proxy`, `-p` 设置HTTP代理。
 - `--max-retries`, `-x` 下载时的最大重试次数。
 - `--search`, `-s` 指定需要检索并下载的文件的关键词，使用半角英文逗号`,`分隔。
-
-## 开发计划 (TODO)
+> **`*`** :必选的选项
+## TODO
 
 - **流式解包**：下载时解开Bundle文件。
 - **在线预览数据**：WebUI。
