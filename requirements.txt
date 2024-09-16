@@ -1,2 +1,5 @@
 requests
 UnityPy
+cloudscraper
+xxhash
+pycryptodome
