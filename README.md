@@ -31,8 +31,9 @@ pip install -r requirements.txt
 使用下列命令行参数运行 `asset_downloader.py` 脚本（示例）：
 
 ```shell
-python resource_downloader.py --threads 30 --version 1.8.1 --region cn --downloading-extract True --proxy http://0.0.0.0:0000 --max-retries 10 --search azusa,ハナコ,下江小春,아지타니히후미,聖園彌香
+python resource_downloader.py --threads 30 --region cn --proxy http://0.0.0.0:0000 --max-retries 10 
 ```
+<!-- --search azusa,ハナコ,下江小春,아지타니히후미,聖園彌香 -->
 ## 参数说明
 
 - `--threads`, `-t` 同时下载的线程数。
