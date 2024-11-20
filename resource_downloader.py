@@ -1,11 +1,16 @@
 import argparse
+import concurrent
+import concurrent.futures
 import json
 import os
 import re
 import struct
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from os import path
-from threading import Thread
-from time import time
+from queue import Empty, Queue
+from threading import Lock, Thread
+from time import sleep, time
 from typing import Literal
 from urllib.parse import urljoin
 
@@ -84,32 +89,36 @@ args = parser.parse_args()
 # Basic configuration for next steps.
 class Configuration:
     def __init__(self, config) -> None:
-        self.threads = config.threads
-        self.version = config.version
-        self.region = config.region.lower()
-        self.raw_dir = config.raw
-        self.extract_dir = config.extract
-        self.temp_dir = config.temporary
-        self.download_and_extract = config.downloading_extract
+        self.threads: int = config.threads
+        self.version: str = config.version
+        self.region: str = config.region.lower()
+        self.raw_dir: str = config.raw
+        self.extract_dir: str = config.extract
+        self.temp_dir: str = config.temporary
+        self.download_and_extract: bool = config.downloading_extract
         self.search = config.search
-        self.proxy = (
+        self.proxy: dict | None = (
             {"http": config.proxy, "https": config.proxy} if config.proxy else None
         )
-        self.retries = config.max_retries
-        self.work_dir = os.getcwd()
+        self.retries: int = config.max_retries
+        self.work_dir: str = os.getcwd()
+        self.max_threads: int = self.threads * 7
         with open("CharactersMapping.json", "r", encoding="utf8") as f:
-            self.character_mapping = json.load(f)
+            self.character_mapping: dict = json.load(f)
 
 
-# Main download class.
 class Downloader(Configuration):
+    """Main downloader class."""
+
     def __init__(self, config) -> None:
         super().__init__(config)
         self.app = "com.nexon.bluearchive"
         self.headers = {"User-Agent": "Mozilla/5.0"}
         self.extractor = Extractor(self)
+        self.stop_task = False
 
-    def init(self):
+    def init(self) -> None:
+        """Create directories for different files."""
         os.makedirs(self.temp_dir, exist_ok=True)
         os.makedirs(self.raw_dir, exist_ok=True)
         os.makedirs(self.extract_dir, exist_ok=True)
@@ -138,6 +147,7 @@ class Downloader(Configuration):
             return False
 
     def main(self) -> None:
+        """Main entry."""
         region: CNServer | GLServer | JPServer
 
         self.init()
@@ -154,11 +164,11 @@ class Downloader(Configuration):
 
         resource = region.main()
         resource_to_download = self.get_changed_file(resource)
-        self.start_download_resource_task(resource_to_download)
-        notice("All files have been download to your computer.")
+        # self.start_download_resource_task(resource_to_download)
+        self.start_resource_download_task(resource_to_download)
 
-    # Verify files that already exist and have not been modified.
     def get_changed_file(self, resource: Resource) -> Resource:
+        """Verify files that already exist and have not been modified."""
         res_to_download = Resource()
 
         with ProgressBar(len(resource), "Verify exsist files...", "item") as bar:
@@ -181,8 +191,8 @@ class Downloader(Configuration):
         notice(f"{len(res_to_download)} files need to download.")
         return res_to_download
 
-    # Download and collect files failed to download.
-    def download_resource_thread(self, part: list, failed_res: Resource):
+    def download_resource_thread(self, part: list, failed_res: Resource) -> None:
+        """Download and collect files failed to download."""
         for res in part:
             dir_path, file_name = path.split(res["path"])
             os.makedirs(path.join(self.raw_dir, dir_path), exist_ok=True)
@@ -195,10 +205,10 @@ class Downloader(Configuration):
             else:
                 bar_increase()
 
-    # Distribute resource to different threads and support re-downloading of failed files.
     def start_download_resource_task(
         self, resource: Resource, __retries: int = 0
     ) -> None:
+        """Distribute resource to different threads and support re-downloading of failed files."""
         failed_res = Resource()
         threads: list[Thread] = []
 
@@ -223,6 +233,86 @@ class Downloader(Configuration):
         if failed_res:
             notice(f"Retry for {len(failed_res)} failed files.")
             self.start_download_resource_task(failed_res, __retries + 1)
+
+    def download_worker(
+        self, resource_queue: Queue, failed_res: Resource, lock: Lock
+    ) -> None:
+        """Worker thread that continuously takes tasks from the queue and downloads."""
+        while not self.stop_task:
+            # Break when queue is empty.
+            try:
+                res: dict = resource_queue.get(block=True, timeout=0.5)
+            except Empty:
+                break
+
+            dir_path, file_name = path.split(res["path"])
+            os.makedirs(path.join(self.raw_dir, dir_path), exist_ok=True)
+            bar_text(file_name)
+
+            if not self.file_downloader(
+                res["url"], path.join(self.raw_dir, res["path"]), self.headers
+            ):
+                with lock:
+                    failed_res.add_resource_item(res)
+            else:
+                bar_increase()
+
+            resource_queue.task_done()
+
+    def start_resource_download_task(
+        self, resource: Resource, __retries: int = 0
+    ) -> None:
+        """Distribute resource to different threads dynamically and support re-downloading of failed files."""
+        failed_res = Resource()
+        task_queue: Queue[dict] = Queue()
+
+        if not resource:
+            return
+        resource.sorted_by_size()
+
+        for res in resource:
+            task_queue.put(res)
+
+        executor = ThreadPoolExecutor(max_workers=self.max_threads)
+
+        with ProgressBar(len(resource), "Downloading resource...", "items"):
+            futures: list[concurrent.futures.Future] = []
+            lock = Lock()
+
+            try:
+                while not (task_queue.empty() and all(f.done() for f in futures)):
+                    queue_snapshot = list(task_queue.queue)
+                    running_threads = self.threads
+
+                    if queue_snapshot and queue_snapshot[0]["size"] <= 1024**2:
+                        running_threads = self.threads + (
+                            (8**7) // queue_snapshot[0]["size"] + 1e-3
+                        )
+
+                    while len(futures) < running_threads and not task_queue.empty():
+                        futures.append(
+                            executor.submit(
+                                self.download_worker, task_queue, failed_res, lock
+                            )
+                        )
+
+                    sleep(0.1)
+
+            except KeyboardInterrupt:
+                notice("Download has been canceled.", "error")
+                self.stop_task = True
+                executor.shutdown(cancel_futures=True)
+            finally:
+                for future in futures:
+                    future.result()
+
+        executor.shutdown(wait=True)
+
+        if failed_res:
+            notice(f"Retry for {len(failed_res)} failed files.")
+            self.start_download_resource_task(failed_res, __retries + 1)
+
+        notice("All files have been download to your computer.")
 
     # Multi-mode downloader supporting error retries.
     def file_downloader(
@@ -286,6 +376,7 @@ class Downloader(Configuration):
                 return response
             if target is False:
                 return response.content
+            raise ValueError(f"Parameter target does not match type of {target}.")
         except:
             bar_increase(-counter if enable_progress else 0)
             return self.file_downloader(
@@ -303,11 +394,13 @@ class CNServer:
         self.d = downloader
         self.urls = {
             "home": "https://bluearchive-cn.com/",
+            "version": "https://bluearchive-cn.com/api/meta/setup",
             "info": "https://gs-api.bluearchive-cn.com/api/state",
             "bili": "https://line1-h5-pc-api.biligame.com/game/detail/gameinfo?game_base_id=109864",
         }
 
     def main(self) -> Resource:
+        """Main entry for CNServer"""
         version = self.d.version
         if not version:
             notice("Version not specified. Automatically fetching latest...")
@@ -321,8 +414,8 @@ class CNServer:
         print(f"Manifest: {resources}.")
         return resources
 
-    # The CN APK file contains both media and table files.
     def download_extract_apk_file(self, apk_url: str) -> None:
+        """The CN APK might include special files."""
         print("Download APK to get table and media files...")
         apk_size = int(
             create_scraper()
@@ -377,6 +470,7 @@ class CNServer:
         )
 
     def get_resource_manifest(self, server_info: dict) -> Resource:
+        """Get CN manifest."""
         resources = CNResource()
         base_url = server_info["AddressablesCatalogUrlRoots"][0] + "/"
 
@@ -388,9 +482,9 @@ class CNServer:
 
         resources.set_url_link(
             base_url,
-            f"AssetBundles/Android/",
-            f"pool/MediaResources/",
-            f"pool/TableBundles/",
+            "AssetBundles/Android/",
+            "pool/MediaResources/",
+            "pool/TableBundles/",
         )
         try:
 
@@ -434,29 +528,32 @@ class CNServer:
         except Exception as e:
             raise LookupError(
                 f"Encountered the following error while attempting to fetch manifest: {e}."
-            )
+            ) from e
+
         return resources.to_resource()
 
-    # CN server using permenant server url.
     def get_server_info(self) -> dict:
+        """Get CN server info. CN server using permenant server url."""
         if (
-            server_url := self.d.file_downloader(
+            server_info := self.d.file_downloader(
                 self.urls["info"],
                 True,
                 {"APP-VER": self.d.version, "PLATFORM-ID": "1", "CHANNEL-ID": "2"},
             )
         ) == False:
             raise LookupError("Cannot get server url from info api.")
+        server_url: requests.Response = server_info
         return server_url.json()
 
-    # CN server have official server and bilibili server. Bili is reserved.
     def get_apk_url(self, server: Literal["official", "bili"] = "official") -> str:
+        """CN server have official server and bilibili server. Bili is reserved."""
         apk_url = ""
         if server == "bili":
-            return self.d.file_downloader(
+            bili_link: requests.Response = self.d.file_downloader(
                 self.urls["bili"], True, self.d.headers
-            ).json()["android_download_link"]
-        response = self.d.file_downloader(
+            )
+            return bili_link.json()["android_download_link"]
+        response: requests.Response = self.d.file_downloader(
             self.urls["home"],
             True,
             self.d.headers,
@@ -469,7 +566,9 @@ class CNServer:
             raise LookupError(
                 "Could not find the version file in the HTML response. Retrying may resolve the issue."
             )
-        js_response = self.d.file_downloader(js_match.group(1), True, self.d.headers)
+        js_response: requests.Response = self.d.file_downloader(
+            js_match.group(1), True, self.d.headers
+        )
         apk_match = re.search(r'http[s]?://[^\s"<>]+?\.apk', js_response.text)
         apk_url = apk_match.group() if apk_match else ""
         if not js_match:
@@ -478,22 +577,15 @@ class CNServer:
             )
         return apk_url
 
-    # Get the latest version number from the official website.
     def get_latest_version(self) -> str:
+        """Get the latest version number from the official website."""
         version = ""
         version_match: re.Match | None = None
-        response = self.d.file_downloader(self.urls["home"], True, self.d.headers)
-        js_match = re.search(
-            r'<script.*?crossorigin src="(.*?)"></script>', response.text
+        response: requests.Response = self.d.file_downloader(
+            self.urls["version"], True, self.d.headers
         )
-        if not js_match:
-            raise LookupError(
-                "Could not find the version file in the HTML response. Retrying may resolve the issue."
-            )
-        js_url = js_match.group(1)
 
-        js_response = self.d.file_downloader(js_url, True, self.d.headers)
-        version_match = re.search(r"/(\d+\.\d+\.\d+)/", js_response.text)
+        version_match = re.search(r"(\d+\.\d+\.\d+)", response.text)
         if version_match:
             version = version_match.group(1)
         elif not version:
@@ -512,7 +604,7 @@ class GLServer:
         }
 
     def get_latest_version(self) -> str:
-        # Fetch the latest version from Uptodown.
+        """Fetch the latest version from Uptodown."""
         version = ""
         version_match: re.Match | None = None
 
@@ -542,6 +634,7 @@ class JPServer:
         }
 
     def main(self) -> Resource:
+        """Main entry of JPServer."""
         version = self.d.version
         if not version:
             notice("Version not specified. Automatically fetching latest...")
@@ -555,8 +648,8 @@ class JPServer:
         print(f"Manifest: {resources}.")
         return resources
 
-    # Download and extract the APK file.
     def download_extract_apk_file(self, apk_url: str):
+        """Download and extract the APK file."""
         print("Download APK to retrieve server URL...")
         data = create_scraper().get(apk_url, stream=True, proxies=self.d.proxy)
         apk_path = path.join(
@@ -587,12 +680,12 @@ class JPServer:
             zip_dir=self.d.temp_dir,
         )
 
-    # Retrieve the link to download the APK.
     def get_apk_url(self, version: str) -> str:
+        """Retrieve the link to download the APK."""
         return self.urls["apkpure"] + f"&versionCode={version.split('.')[-1]}"
 
-    # Obtain the version number from the notification link.
     def get_latest_version(self) -> str:
+        """Obtain the version number from the notification link."""
         response: requests.Response = self.d.file_downloader(
             self.urls["jp_info"], True, self.d.headers
         )
@@ -603,8 +696,8 @@ class JPServer:
             )
         return version
 
-    # JP server use different API for each version, and media and table files are encrypted.
     def get_resource_manifest(self, server_url: str) -> Resource:
+        """JP server use different API for each version, and media and table files are encrypted."""
         resources = JPResource()
         try:
             api: requests.Response = self.d.file_downloader(
@@ -652,7 +745,7 @@ class JPServer:
                 )
             else:
                 notice(
-                    "Failed to fetch table or media catalog. Retry may solve the issue.",
+                    f"Failed to fetch table or media catalog because table is {table_data.reason} and media is {media_data.reason}. Retry may solve the issue.",
                     "error",
                 )
 
@@ -668,7 +761,7 @@ class JPServer:
                     )
             else:
                 notice(
-                    "Failed to fetch bundle catalog. Retry may solve the issue.",
+                    f"Failed to fetch bundle catalog because {bundle_data.reason}. Retry may solve the issue.",
                     "error",
                 )
 
@@ -677,11 +770,11 @@ class JPServer:
         except Exception as e:
             raise LookupError(
                 f"Encountered the following error while attempting to fetch manifest: {e}."
-            )
+            ) from e
         return resources.to_resource()
 
-    # Decrypt the server version from the game's binary files.
     def get_server_url(self) -> str:
+        """Decrypt the server version from the game's binary files."""
         print("Retrieving game info...")
         url = version = ""
         for dir, _, files in os.walk(
@@ -715,6 +808,10 @@ class JPServer:
 
 
 if __name__ == "__main__":
-    config = args
-    downloader = Downloader(config)
+    user_config = args
+    if user_config.region == "gl":
+        raise NotImplementedError(
+            "Global server is not support in this time. Add soon."
+        )
+    downloader = Downloader(user_config)
     downloader.main()

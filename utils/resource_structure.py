@@ -25,7 +25,7 @@ class Resource:
         data["url"] = url
         self.resources.append(data)
 
-    def add_resource_item(self, item: dict):
+    def add_resource_item(self, item: dict) -> None:
         for key in ["url", "path", "size", "checksum", "check_type", "addition"]:
             if key not in item.keys():
                 return
@@ -50,6 +50,13 @@ class Resource:
                 "addition": addition,
             }
         )
+
+    def sorted_by_size(self, descending: bool = True) -> None:
+        """Sort by file size.
+        Args:
+            descending (bool, optional): Sort with descending order. Defaults to True.
+        """
+        self.resources.sort(key=lambda x: x["size"], reverse=descending)
 
 
 class CNResource:
