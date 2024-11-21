@@ -86,10 +86,44 @@ def seperate_list_as_blocks(
 
 
 def calculate_crc(path: str) -> int:
+    """Calculate the crc checksum value of a file.
+    Args:
+        path (str): File path.
+    Returns:
+        int: Crc checksum.
+    """
     with open(path, "rb") as f:
         return crc32(f.read()) & 0xFFFFFFFF
 
 
 def calculate_md5(path: str) -> str:
+    """Calculate the md5 checksum value of a file.
+    Args:
+        path (str): File path.
+    Returns:
+        str: MD5 checksum.
+    """
     with open(path, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
+
+
+# The private function is used to download file from a compressed file within a specified range and decompress it.
+def __download_and_decompress_file(
+    self, apk_url: str, target_path: str, header_part: bytes, start_offset: int
+) -> bool:
+    """Request partial data from an online compressed file and then decompress it."""
+    try:
+        header = struct.unpack("<IHHHHHIIIHH", header_part[:30])
+        _, _, _, compression, _, _, _, comp_size, _, file_name_len, extra_len = header
+        data_start = start_offset + 30 + file_name_len + extra_len
+        data_end = data_start + comp_size
+        compressed_data = self.file_downloader(
+            apk_url,
+            False,
+            {"Range": f"bytes={data_start}-{data_end - 1}"},
+        )
+        return self.extractor.decompress_file_part(
+            compressed_data, target_path, compression
+        )
+    except:
+        return False

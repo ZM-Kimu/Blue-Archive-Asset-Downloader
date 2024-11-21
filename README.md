@@ -2,9 +2,6 @@
 
 <div align="center">本项目可以从不同服务器下载<!--并读取-->碧蓝档案的素材，现支援中国版、国际版、日本版。</div>
 
----
-
-### **国际版将会在不久后支持**
 
 ## 主要功能
 
@@ -21,7 +18,7 @@
 
 ## 环境要求
 
-- 基于x64架构的Windows系统
+<!-- - 基于x64架构的Windows系统 -->
 - Python 3.10 或更高版本
 
 ## 先决条件
@@ -41,8 +38,8 @@ python resource_downloader.py --threads 30 --region cn --proxy http://0.0.0.0:00
 ## 参数说明
 
 - `--threads`, `-t` 同时下载的线程数。
-<!--- `--version`, `-v` 游戏版本号，不填则自动获取。-->
-- `--region`, `-g` `*`服务器区域：`cn` (中国), `jp` (日本)。
+- `--version`, `-v` 游戏版本号，不填则自动获取。
+- `--region`, `-g` `*`服务器区域：`cn` (中国), `gl` (国际), `jp` (日本)。
 - `--raw`, `-r` 指定原始文件位置。
 - `--extract`, `-e` 指定解压文件位置。
 - `--temporary`, `-m` 指定临时文件位置。
@@ -50,7 +47,7 @@ python resource_downloader.py --threads 30 --region cn --proxy http://0.0.0.0:00
 - `--proxy`, `-p` 设置HTTP代理。
 - `--max-retries`, `-x` 下载时的最大重试次数。
 <!-- - `--search`, `-s` 指定需要检索并下载的文件的关键词，使用半角英文逗号`,`分隔。 -->
-<!-- `gl` (国际), -->
+
 > **`*`** :必选的选项
 ## TODO
 
@@ -61,9 +58,8 @@ python resource_downloader.py --threads 30 --region cn --proxy http://0.0.0.0:00
 <!-- - **在线预览数据**：WebUI。 -->
 
 ## 使用须知
-- JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本，APK将暂时不可用。
+- JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
-- GL的下载暂时不可用。
 
 ## 关于项目
 本项目采用 [MIT 许可证](LICENSE)。

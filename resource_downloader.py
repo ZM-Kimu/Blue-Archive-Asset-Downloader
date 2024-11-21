@@ -4,8 +4,6 @@ import concurrent.futures
 import json
 import os
 import re
-import struct
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from os import path
 from queue import Empty, Queue
@@ -20,7 +18,7 @@ from cloudscraper import create_scraper
 from resource_extractor import CNCatalogDecoder, Extractor, JPCatalogDecoder
 from utils import utils
 from utils.console import ProgressBar, bar_increase, bar_text, notice, print
-from utils.resource_structure import CNResource, JPResource, Resource
+from utils.resource_structure import CNResource, GLResource, JPResource, Resource
 
 # Commandline Arguments
 parser = argparse.ArgumentParser(description="碧蓝档案素材下载器")
@@ -123,29 +121,6 @@ class Downloader(Configuration):
         os.makedirs(self.raw_dir, exist_ok=True)
         os.makedirs(self.extract_dir, exist_ok=True)
 
-    # The private function is used to download file from a compressed file within a specified range and decompress it.
-    def __download_and_decompress_file(
-        self, apk_url: str, target_path: str, header_part: bytes, start_offset: int
-    ) -> bool:
-        """Request partial data from an online compressed file and then decompress it."""
-        try:
-            header = struct.unpack("<IHHHHHIIIHH", header_part[:30])
-            _, _, _, compression, _, _, _, comp_size, _, file_name_len, extra_len = (
-                header
-            )
-            data_start = start_offset + 30 + file_name_len + extra_len
-            data_end = data_start + comp_size
-            compressed_data = self.file_downloader(
-                apk_url,
-                False,
-                {"Range": f"bytes={data_start}-{data_end - 1}"},
-            )
-            return self.extractor.decompress_file_part(
-                compressed_data, target_path, compression
-            )
-        except:
-            return False
-
     def main(self) -> None:
         """Main entry."""
         region: CNServer | GLServer | JPServer
@@ -165,7 +140,7 @@ class Downloader(Configuration):
         resource = region.main()
         resource_to_download = self.get_changed_file(resource)
         # self.start_download_resource_task(resource_to_download)
-        self.start_resource_download_task(resource_to_download)
+        self.start_download_resource_task(resource_to_download)
 
     def get_changed_file(self, resource: Resource) -> Resource:
         """Verify files that already exist and have not been modified."""
@@ -182,57 +157,12 @@ class Downloader(Configuration):
                         verified = utils.calculate_crc(asset_path) == res["checksum"]
                     elif res["check_type"] == "md5":
                         verified = utils.calculate_md5(asset_path) == res["checksum"]
-                    elif res["check_type"] == "hash":
-                        verified = a(asset_path) == res["checksum"]
                     if verified:
                         continue
                 res_to_download.add_resource_item(res)
 
         notice(f"{len(res_to_download)} files need to download.")
         return res_to_download
-
-    def download_resource_thread(self, part: list, failed_res: Resource) -> None:
-        """Download and collect files failed to download."""
-        for res in part:
-            dir_path, file_name = path.split(res["path"])
-            os.makedirs(path.join(self.raw_dir, dir_path), exist_ok=True)
-            bar_text(file_name)
-
-            if not self.file_downloader(
-                res["url"], path.join(self.raw_dir, res["path"]), self.headers
-            ):
-                failed_res.add_resource_item(res)
-            else:
-                bar_increase()
-
-    def start_download_resource_task(
-        self, resource: Resource, __retries: int = 0
-    ) -> None:
-        """Distribute resource to different threads and support re-downloading of failed files."""
-        failed_res = Resource()
-        threads: list[Thread] = []
-
-        if not resource:
-            return
-
-        with ProgressBar(len(resource), "Downloading resource...", "items"):
-            res_blocks = list(utils.seperate_list_as_blocks(resource, self.threads))
-            for block in res_blocks:
-                utils.create_thread(
-                    self.download_resource_thread, threads, block, failed_res
-                )
-            for thread in threads:
-                thread.join()
-
-        if __retries > self.retries:
-            print(
-                f"Max retries exceeded for {self.retries} times with retring failed files."
-            )
-            return
-
-        if failed_res:
-            notice(f"Retry for {len(failed_res)} failed files.")
-            self.start_download_resource_task(failed_res, __retries + 1)
 
     def download_worker(
         self, resource_queue: Queue, failed_res: Resource, lock: Lock
@@ -259,7 +189,7 @@ class Downloader(Configuration):
 
             resource_queue.task_done()
 
-    def start_resource_download_task(
+    def start_download_resource_task(
         self, resource: Resource, __retries: int = 0
     ) -> None:
         """Distribute resource to different threads dynamically and support re-downloading of failed files."""
@@ -299,7 +229,9 @@ class Downloader(Configuration):
                     sleep(0.1)
 
             except KeyboardInterrupt:
-                notice("Download has been canceled.", "error")
+                notice(
+                    "Download has been canceled. Waiting for thread complete.", "error"
+                )
                 self.stop_task = True
                 executor.shutdown(cancel_futures=True)
             finally:
@@ -312,7 +244,8 @@ class Downloader(Configuration):
             notice(f"Retry for {len(failed_res)} failed files.")
             self.start_download_resource_task(failed_res, __retries + 1)
 
-        notice("All files have been download to your computer.")
+        if not (self.stop_task or failed_res):
+            notice("All files have been download to your computer.")
 
     # Multi-mode downloader supporting error retries.
     def file_downloader(
@@ -324,6 +257,8 @@ class Downloader(Configuration):
         *,
         use_stream_in_response: bool = False,
         enable_progress: bool = False,
+        method: Literal["post", "get"] = "get",
+        **kwargs,
     ) -> bytes | requests.Response | bool:
         """Download the file resource.
 
@@ -335,8 +270,10 @@ class Downloader(Configuration):
                 True: Return the request instance.
             headers (dict): Headers for request url.
             __retried (int, optional): Internal recursive retry. Defaults to 0.
-            use_stream_in_response (bool, optional): When target is response, set response type as stream. Defaults to False.
+            use_stream_in_response (bool, optional): Set response type as stream, only when target is response. Defaults to False.
             enable_progress (bool, optional): True for enable progress bar increment, depend on target model. Defaults to False.
+            method: Support to post and get. Default is get.
+            **kwargs: Extract option for request.
 
         Raises:
             ConnectionError: Retry when too slow.
@@ -354,12 +291,13 @@ class Downloader(Configuration):
             )
             return False
         try:
-            response = requests.get(
+            response = getattr(requests, method)(
                 url,
                 headers=headers,
                 stream=isinstance(target, str) or use_stream_in_response,
                 proxies=self.proxy,
                 timeout=10,
+                **kwargs,
             )
             if isinstance(target, str):
                 with open(target, "wb") as file:
@@ -401,17 +339,20 @@ class CNServer:
 
     def main(self) -> Resource:
         """Main entry for CNServer"""
-        version = self.d.version
-        if not version:
-            notice("Version not specified. Automatically fetching latest...")
-            version = self.d.version = self.get_latest_version()
+        if self.d.version:
+            notice("Specifying a version is not allowed with CNServer.")
+
+        notice("Automatically fetching latest version...")
+        version = self.d.version = self.get_latest_version()
         notice(f"Current resource version: {version}")
-        apk_url = self.get_apk_url(version)
+
+        apk_url = self.get_apk_url()
         self.download_extract_apk_file(apk_url)
         server_info = self.get_server_info()
+
         print("Pulling manifest...")
         resources = self.get_resource_manifest(server_info)
-        print(f"Manifest: {resources}.")
+        notice(f"Manifest: {resources}.")
         return resources
 
     def download_extract_apk_file(self, apk_url: str) -> None:
@@ -424,7 +365,8 @@ class CNServer:
         )
         if apk_size == 0:
             notice("Unable to retrieve package size. Using bilibili.", "error")
-            return self.download_extract_apk_file(self.get_apk_url("bili"))
+            self.download_extract_apk_file(self.get_apk_url("bili"))
+            return
 
         threads: list[Thread] = []
         os.makedirs(self.d.temp_dir, exist_ok=True)
@@ -468,6 +410,53 @@ class CNServer:
         Extractor.zip_extractor(
             apk_path, path.join(self.d.temp_dir, "data"), keywords=["bin/Data"]
         )
+
+    def get_apk_url(self, server: Literal["official", "bili"] = "official") -> str:
+        """CN server have official server and bilibili server. Bili is reserved."""
+        apk_url = ""
+        if server == "bili":
+            bili_link: requests.Response = self.d.file_downloader(
+                self.urls["bili"], True, self.d.headers
+            )
+            return bili_link.json()["android_download_link"]
+        response: requests.Response = self.d.file_downloader(
+            self.urls["home"], True, self.d.headers
+        )
+        js_match = re.search(
+            r'<script[^>]+type="module"[^>]+crossorigin[^>]+src="([^"]+)"[^>]*>',
+            response.text,
+        )
+        if not js_match:
+            raise LookupError(
+                "Could not find the version file in the HTML response. Retrying may resolve the issue."
+            )
+        js_response: requests.Response = self.d.file_downloader(
+            js_match.group(1), True, self.d.headers
+        )
+        apk_match = re.search(r'http[s]?://[^\s"<>]+?\.apk', js_response.text)
+        apk_url = apk_match.group() if apk_match else ""
+        if not js_match:
+            raise LookupError(
+                "Could not find the version file in the HTML response. Retrying may resolve the issue."
+            )
+        return apk_url
+
+    def get_latest_version(self) -> str:
+        """Get the latest version number from the official website."""
+        version = ""
+        version_match: re.Match | None = None
+        response: requests.Response = self.d.file_downloader(
+            self.urls["version"], True, self.d.headers
+        )
+
+        version_match = re.search(r"(\d+\.\d+\.\d+)", response.text)
+        if version_match:
+            version = version_match.group(1)
+        elif not version:
+            raise LookupError(
+                "Unable to retrieve the version. Configure it manually if possible."
+            )
+        return version
 
     def get_resource_manifest(self, server_info: dict) -> Resource:
         """Get CN manifest."""
@@ -545,91 +534,101 @@ class CNServer:
         server_url: requests.Response = server_info
         return server_url.json()
 
-    def get_apk_url(self, server: Literal["official", "bili"] = "official") -> str:
-        """CN server have official server and bilibili server. Bili is reserved."""
-        apk_url = ""
-        if server == "bili":
-            bili_link: requests.Response = self.d.file_downloader(
-                self.urls["bili"], True, self.d.headers
-            )
-            return bili_link.json()["android_download_link"]
-        response: requests.Response = self.d.file_downloader(
-            self.urls["home"],
-            True,
-            self.d.headers,
-        )
-        js_match = re.search(
-            r'<script[^>]+type="module"[^>]+crossorigin[^>]+src="([^"]+)"[^>]*>',
-            response.text,
-        )
-        if not js_match:
-            raise LookupError(
-                "Could not find the version file in the HTML response. Retrying may resolve the issue."
-            )
-        js_response: requests.Response = self.d.file_downloader(
-            js_match.group(1), True, self.d.headers
-        )
-        apk_match = re.search(r'http[s]?://[^\s"<>]+?\.apk', js_response.text)
-        apk_url = apk_match.group() if apk_match else ""
-        if not js_match:
-            raise LookupError(
-                "Could not find the version file in the HTML response. Retrying may resolve the issue."
-            )
-        return apk_url
-
-    def get_latest_version(self) -> str:
-        """Get the latest version number from the official website."""
-        version = ""
-        version_match: re.Match | None = None
-        response: requests.Response = self.d.file_downloader(
-            self.urls["version"], True, self.d.headers
-        )
-
-        version_match = re.search(r"(\d+\.\d+\.\d+)", response.text)
-        if version_match:
-            version = version_match.group(1)
-        elif not version:
-            raise LookupError(
-                "Unable to retrieve the version. Configure it manually if possible."
-            )
-        return version
-
 
 class GLServer:
     def __init__(self, downloader: Downloader) -> None:
         self.d = downloader
         self.urls = {
-            "gl_uptodown": "https://blue-archive-global.en.uptodown.com/android",
-            "gl": "https://api-pub.nexon.com/patch/v1.1/version-check",
+            "uptodown": "https://blue-archive-global.en.uptodown.com/android",
+            "manifest": "https://api-pub.nexon.com/patch/v1.1/version-check",
         }
+
+    def main(self) -> Resource:
+        """Main entry of GLServer."""
+        version = self.d.version
+        if not version:
+            notice("Version not specified. Automatically fetching latest...")
+            version = self.d.version = self.get_latest_version()
+        notice(f"Current resource version: {version}")
+        server_url = self.get_server_url(version)
+        print("Pulling manifest...")
+        resources = self.get_resource_manifest(server_url)
+        notice(f"Manifest: {resources}.")
+        return resources
 
     def get_latest_version(self) -> str:
         """Fetch the latest version from Uptodown."""
-        version = ""
         version_match: re.Match | None = None
-
-        response = requests.get(
-            self.urls["gl_uptodown"],
-            headers=self.d.headers,
-            proxies=self.d.proxy,
-            timeout=10,
+        response: requests.Response = self.d.file_downloader(
+            self.urls["uptodown"], True, self.d.headers
         )
-        version_match = re.search(r"(\d+\.\d+\.\d+)", response.text)
 
-        if version_match:
-            version = version_match.group(1)
-        elif not version:
+        if version_match := re.search(r"(\d+\.\d+\.\d+)", response.text):
+            return version_match.group(1)
+
+        if not version_match:
             raise LookupError(
                 "Unable to retrieve the version. Configure it manually if possible."
             )
-        return version
+        return ""
+
+    def get_resource_manifest(self, server_url: str) -> Resource:
+        """GLServer uses persistent API and allows specifying the version."""
+        resources = GLResource()
+        try:
+            resource_data: requests.Response = self.d.file_downloader(
+                server_url, True, self.d.headers
+            )
+
+            resources.set_url_link(server_url.rsplit("/", 1)[0] + "/")
+
+            if not (resource := resource_data.json()):
+                notice(
+                    f"Failed to fetch resource because {resource_data.reason}. Retry may solve the issue.",
+                    "error",
+                )
+
+            for res in resource.get("resources", []):
+                resources.add_resource(
+                    res["group"],
+                    res["resource_path"],
+                    res["resource_size"],
+                    res["resource_hash"],
+                )
+
+            if not resources:
+                raise FileNotFoundError("Cannot pull the manifest.")
+        except Exception as e:
+            raise LookupError(
+                f"Encountered the following error while attempting to fetch manifest: {e}."
+            ) from e
+        return resources.to_resource()
+
+    def get_server_url(self, version: str) -> str:
+        request_body = {
+            "market_game_id": "com.nexon.bluearchive",
+            "market_code": "playstore",
+            "curr_build_version": version,
+            "curr_build_number": version.split(".")[-1],
+        }
+
+        server_url: requests.Response = self.d.file_downloader(
+            self.urls["manifest"],
+            True,
+            self.d.headers,
+            method="post",
+            json=request_body,
+        )
+
+        return server_url.json().get("patch", {}).get("resource_path", "")
 
 
 class JPServer:
     def __init__(self, downloader: Downloader) -> None:
         self.d = downloader
         self.urls = {
-            "jp_info": "https://prod-noticeindex.bluearchiveyostar.com/prod/index.json",
+            "info": "https://prod-noticeindex.bluearchiveyostar.com/prod/index.json",
+            "uptodown_info": "https://blue-archive.jp.uptodown.com/android",
             "apkpure": "https://d.apkpure.com/b/XAPK/com.YostarJP.BlueArchive?nc=arm64-v8a&sv=24",
         }
 
@@ -645,7 +644,7 @@ class JPServer:
         server_url = self.get_server_url()
         print("Pulling manifest...")
         resources = self.get_resource_manifest(server_url)
-        print(f"Manifest: {resources}.")
+        notice(f"Manifest: {resources}.")
         return resources
 
     def download_extract_apk_file(self, apk_url: str):
@@ -686,15 +685,38 @@ class JPServer:
 
     def get_latest_version(self) -> str:
         """Obtain the version number from the notification link."""
-        response: requests.Response = self.d.file_downloader(
-            self.urls["jp_info"], True, self.d.headers
+        uptodown_version = ""
+
+        info_official: requests.Response = self.d.file_downloader(
+            self.urls["info"], True, self.d.headers
         )
-        version: str = response.json().get("LatestClientVersion", "")
-        if not version:
+
+        official_version: str = info_official.json().get("LatestClientVersion", "")
+
+        info_uptodown: requests.Response = self.d.file_downloader(
+            self.urls["uptodown_info"], True, self.d.headers
+        )
+
+        uptodown_match = re.search(r"(\d+\.\d+\.\d+)", info_uptodown.text)
+
+        if uptodown_match:
+            uptodown_version = uptodown_match.group(1)
+
+        if not (official_version or uptodown_version):
             raise LookupError(
                 "Unable to retrieve the version. Configure it manually if possible."
             )
-        return version
+
+        if (
+            official_version
+            and uptodown_version
+            and official_version != uptodown_version
+            and int(uptodown_version.rsplit(".", 1)[-1])
+            > int(official_version.rsplit(".", 1)[-1])
+        ):
+            return uptodown_version
+
+        return official_version
 
     def get_resource_manifest(self, server_url: str) -> Resource:
         """JP server use different API for each version, and media and table files are encrypted."""
@@ -809,9 +831,9 @@ class JPServer:
 
 if __name__ == "__main__":
     user_config = args
-    if user_config.region == "gl":
-        raise NotImplementedError(
-            "Global server is not support in this time. Add soon."
-        )
+    # if user_config.region == "gl":
+    #    raise NotImplementedError(
+    #        "Global server is not support in this time. Add soon."
+    #    )
     downloader = Downloader(user_config)
     downloader.main()
