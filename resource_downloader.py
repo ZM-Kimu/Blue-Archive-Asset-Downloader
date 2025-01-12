@@ -19,6 +19,8 @@ from utils.console import ProgressBar, bar_increase, bar_text, notice, print
 from utils.downloader import FileDownloader
 from utils.resource_structure import CNResource, GLResource, JPResource, Resource
 
+# TODO:When CN&JP both in Temp will cuz URL extraction conflict.
+
 
 class Downloader:
     """Main downloader class."""

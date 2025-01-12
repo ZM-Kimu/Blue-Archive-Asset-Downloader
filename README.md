@@ -1,6 +1,6 @@
 # Blue Archive Asset Downloader
 
-<div align="center">本项目可以从不同服务器下载<!--并读取-->碧蓝档案的素材，现支援中国服、国际服、日本服。</div>
+<div align="center">本项目可以从不同服务器下载<!--并解开-->碧蓝档案的素材，现支援中国服、国际服、日本服。</div>
 
 
 ## 主要功能
@@ -53,13 +53,14 @@ python resource_downloader.py --threads 30 --region cn --proxy http://0.0.0.0:00
 
 - **流式解包**：下载时解开文件。
 <!-- - **flatbuf** -->
-- **TableFile**：TableFile解开。
+- **GameData**：游戏数据解开。
+- **角色检索**：基于任何名称的检索。
 <!-- - **获取指定版本的资源** -->
-<!-- - **在线预览数据**：WebUI。 -->
 
 ## 使用须知
 - JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
+- 在某些地区可能需要使用代理服务器以下载特定区域的游戏资源。
 
 ## 关于项目
 本项目采用 [MIT 许可证](LICENSE)。
