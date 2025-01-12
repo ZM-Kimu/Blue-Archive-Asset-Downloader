@@ -5,7 +5,7 @@ from binascii import crc32
 from threading import Thread
 from typing import Any, Generator
 
-from utils.console import print
+from .console import print
 
 
 # Used to create threads.

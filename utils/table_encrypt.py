@@ -5,7 +5,7 @@ from typing import TypeVar, Union
 from Crypto.Util.strxor import strxor
 from xxhash import xxh32_intdigest
 
-from utils.mersenne_twister import MersenneTwister
+from .mersenne_twister import MersenneTwister
 
 T = TypeVar("T", int, float)
 

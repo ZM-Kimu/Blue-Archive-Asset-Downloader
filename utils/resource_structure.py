@@ -92,11 +92,17 @@ class CNResource:
         self.table_url = urljoin(self.base_url, table)
 
     def add_bundle_resource(
-        self, name: str, size: int, md5: str, is_inbuild: bool
+        self, name: str, size: int, md5: str, is_prologue: bool, is_split_download: bool
     ) -> None:
         """Add bundle resource."""
         self.bundle_file.append(
-            {"name": name, "size": size, "crc": md5, "is_inbuild": is_inbuild}
+            {
+                "name": name,
+                "size": size,
+                "crc": md5,
+                "is_prologue": is_prologue,
+                "is_split_download": is_split_download,
+            }
         )
 
     def add_media_resource(

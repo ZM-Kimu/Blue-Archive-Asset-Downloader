@@ -1,6 +1,6 @@
 # Blue Archive Asset Downloader
 
-<div align="center">本项目可以从不同服务器下载<!--并读取-->碧蓝档案的素材，现支援中国版、国际版、日本版。</div>
+<div align="center">本项目可以从不同服务器下载<!--并读取-->碧蓝档案的素材，现支援中国服、国际服、日本服。</div>
 
 
 ## 主要功能

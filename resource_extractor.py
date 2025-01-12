@@ -24,10 +24,6 @@ BOOL: str = "?"
 
 
 class Extractor:
-    # from asset_downloader import Downloader  # for code hint
-
-    def __init__(self, dl) -> None:
-        self.downloader = dl
 
     @staticmethod
     def zip_extractor(
@@ -50,14 +46,9 @@ class Extractor:
             with ZipFile(file, "r") as z:
                 for item in z.namelist():
                     if keywords:
-                        [
-                            (
+                        for k in keywords:
+                            if path.normpath(k) in path.normpath(item):
                                 extract_list.append(item)
-                                if path.normpath(k) in path.normpath(item)
-                                else None
-                            )
-                            for k in keywords
-                        ]
                     else:
                         extract_list.append(item)
 
@@ -270,24 +261,29 @@ class CNCatalogDecoder:
         cls, data: dict, container: CNResource
     ) -> tuple[str, dict[str, object]]:
         container.add_bundle_resource(
-            data["Name"], data["Size"], data["Crc"], data["IsInbuild"]
+            data["Name"],
+            data["Size"],
+            data["Crc"],
+            data["IsPrologue"],
+            data["IsSplitDownload"],
         )
 
         return data["Name"], {
             "name": data["Name"],
             "size": data["Size"],
             "md5": data["Crc"],
-            "is_inbuild": data["IsInbuild"],
+            "is_prologue": data["IsPrologue"],
+            "is_split_download": data["IsSplitDownload"],
         }
 
     @classmethod
     def __decode_media_manifest(
         cls, data: bytes, container: CNResource
     ) -> tuple[str, dict[str, object]]:
-        path, md5, media_type, size, _ = data.decode().split(",")
+        path, md5, media_type_str, size_str, _ = data.decode().split(",")
 
-        media_type = int(media_type)
-        size = int(size)
+        media_type = int(media_type_str)
+        size = int(size_str)
 
         if media_type in cls.media_types.keys():
             path += f".{cls.media_types[media_type]}"
@@ -379,7 +375,7 @@ class JPCatalogDecoder:
         for _ in range(item_num):
             if type == "media":
                 key, obj = JPCatalogDecoder.__decode_media_manifest(data, container)
-            elif type == "table":
+            else:
                 key, obj = JPCatalogDecoder.__decode_table_manifest(data, container)
             manifest[key] = obj
         return manifest
