@@ -1,0 +1,5 @@
+requests
+UnityPy==1.10.18
+cloudscraper
+xxhash
+pycryptodome
