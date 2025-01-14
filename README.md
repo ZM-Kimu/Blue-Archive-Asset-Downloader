@@ -20,6 +20,7 @@
 
 <!-- - 基于x64架构的Windows系统 -->
 - Python 3.10 或更高版本
+- [.NET8](https://dotnet.microsoft.com/download)
 
 ## 先决条件
 

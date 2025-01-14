@@ -6,7 +6,12 @@ import os
 # Commandline Arguments
 parser = argparse.ArgumentParser(description="碧蓝档案素材下载器")
 parser.add_argument_group("Required Arguments").add_argument(
-    "--region", "-g", type=str, help="Server region: cn/gl/jp", required=True
+    "--region",
+    "-g",
+    type=str,
+    choices=["cn", "gl", "jp"],
+    help="Server region: cn/gl/jp",
+    required=True,
 )
 # Optional
 parser.add_argument(
@@ -60,8 +65,9 @@ parser.add_argument(
     "--search",
     "-s",
     type=str,
-    help="Search files containing specified keywords",
-    default="",
+    help="Search files containing specified keywords NOT IMPLEMENTATION.",
+    nargs="*",
+    default=[],
 )
 
 args = parser.parse_args()
@@ -76,12 +82,29 @@ class Config:
     extract_dir: str = args.extract
     temp_dir: str = args.temporary
     download_and_extract: bool = args.downloading_extract
-    search = args.search
+    search: list[str] = args.search
     proxy: dict | None = (
         {"http": args.proxy, "https": args.proxy} if args.proxy else None
     )
     retries: int = args.max_retries
     work_dir: str = os.getcwd()
     max_threads: int = threads * 7
+
+    temp_dir = (
+        temp_dir
+        if temp_dir != parser.get_default("temporary")
+        else f"{region.upper()}{temp_dir}"
+    )
+    raw_dir = (
+        raw_dir
+        if raw_dir != parser.get_default("raw")
+        else f"{region.upper()}{raw_dir}"
+    )
+    extract_dir = (
+        extract_dir
+        if extract_dir != parser.get_default("extract")
+        else f"{region.upper()}{extract_dir}"
+    )
+
     # with open("CharactersMapping.json", "r", encoding="utf8") as f:
     #     self.character_mapping = json.load(f)

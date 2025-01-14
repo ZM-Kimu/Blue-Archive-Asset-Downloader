@@ -3,9 +3,8 @@ from time import time
 from typing import Literal
 
 import requests  # type: ignore
-
-from .config import Config
-from .console import bar_increase, print
+from config import Config
+from console import bar_increase, print
 
 
 class FileDownloader:

@@ -1,11 +1,14 @@
 import hashlib
 import math
+import os
 import struct
+import subprocess
 from binascii import crc32
 from threading import Thread
 from typing import Any, Generator
+from zipfile import ZipFile
 
-from .console import print
+from console import ProgressBar, notice, print
 
 
 # Used to create threads.
@@ -13,6 +16,115 @@ def create_thread(target_func: Any, thread_pool: list[Thread], *args, **kwargs) 
     thread = Thread(target=target_func, args=args, kwargs=kwargs)
     thread.start()
     thread_pool.append(thread)
+
+
+def extract_zip(
+    zip_path: str | list[str],
+    dest_dir: str,
+    *,
+    keywords: list[str] | None = None,
+    zip_dir: str = "",
+) -> list[str]:
+    """Extracts specific files from a zip archive(s) to a destination directory.
+
+    Args:
+        zip_path (str | list[str]): Path(s) to the zip file(s).
+        dest_dir (str): Directory where files will be extracted.
+        keywords (list[str], optional): List of keywords to filter files for extraction. Defaults to None.
+        zip_dir (str, optional): Base directory for relative paths. Defaults to "".
+
+    Returns:
+        list[str]: List of extracted file paths.
+    """
+
+    print(f"Extracting files from {zip_path} to {dest_dir}...")
+    extract_list = []
+    zip_files = []
+
+    if isinstance(zip_path, str):
+        zip_files = [zip_path]
+    elif isinstance(zip_path, list):
+        zip_files = [os.path.join(zip_dir, p) for p in zip_path]
+
+    os.makedirs(dest_dir, exist_ok=True)
+
+    for zip_file in zip_files:
+        try:
+            with ZipFile(zip_file, "r") as z:
+                if keywords:
+                    extract_list = [
+                        item for k in keywords for item in z.namelist() if k in item
+                    ]
+                else:
+                    extract_list = z.namelist()
+
+                with ProgressBar(len(extract_list), "Extract...", "items") as bar:
+                    for item in extract_list:
+                        try:
+                            z.extract(item, dest_dir)
+                        except Exception as e:
+                            notice(e)
+                        bar.increase()
+        except Exception as e:
+            notice(f"Error processing file '{zip_file}': {e}")
+
+    return extract_list
+
+
+def find_files(
+    directory: str, keywords: list[str], absolute_match: bool = False
+) -> list[str]:
+    """Retrieve files from a given directory based on specified keywords of file name.
+
+    Args:
+        directory (str): The directory to search for files.
+        keywords (list[str]): A list of keywords to match file names.
+        absolute_match (bool, optional): If True, matches file names exactly with the keywords. If False, performs a partial match (i.e., checks if any keyword is a substring of the file name). Defaults to False.
+
+    Returns:
+        list[str]: A list of file paths that match the specified criteria.
+    """
+    paths = []
+    for dir_path, _, files in os.walk(directory):
+        for file in files:
+            if absolute_match and file in keywords:
+                paths.append(os.path.join(dir_path, file))
+            elif not absolute_match and any(keyword in file for keyword in keywords):
+                paths.append(os.path.join(dir_path, file))
+
+    return paths
+
+
+def run_command(
+    *commands: str,
+    cwd: str | None = None,
+) -> bool:
+    """
+    Executes a shell command and returns whether it succeeded.
+
+    Args:
+        *commands (str): Command and its arguments as separate strings.
+
+    Returns:
+        bool: True if the command succeeded, False otherwise.
+    """
+    try:
+        subprocess.run(
+            list(commands),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            text=True,
+            cwd=cwd,
+            encoding="utf8",
+        )
+        return True
+    except Exception as e:
+        notice(
+            f"Command failed while excute command '{' '.join(list(commands))}' with error: {e}.",
+            "error",
+        )
+        return False
 
 
 # Used to search for specific keywords in the characters mapping and associate additional keywords with the searched keyword.
