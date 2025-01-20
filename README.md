@@ -5,8 +5,10 @@
 
 ## 主要功能
 
-- **多服务器支持**：可从中国、国际、日本三个版本的服务器下载素材。
+- **多服务器支持**：可从中国(蔚蓝档案)、国际(Blue Archive)、日本(ブルーアーカイブ)三个服务器下载素材。
 - **多线程下载**：支持多线程快速下载。
+- **Table**：Table数据解开。（实验性，仅在日本服务器可用）
+
 
 ## 资源类型
 
@@ -20,7 +22,7 @@
 
 <!-- - 基于x64架构的Windows系统 -->
 - Python 3.10 或更高版本
-- [.NET8](https://dotnet.microsoft.com/download)
+- [.NET8](https://dotnet.microsoft.com/download)(解开数据库或使用高级检索时必须启用)（实验性）
 
 ## 先决条件
 
@@ -30,11 +32,12 @@
 pip install -r requirements.txt
 ```
 ## 使用说明
-使用下列命令行参数运行 `asset_downloader.py` 脚本（示例）：
+使用下列命令行参数运行 `resource_downloader.py` 脚本（示例）：
 
 ```shell
 python resource_downloader.py --threads 30 --region cn --proxy http://0.0.0.0:0000 --max-retries 10 
 ```
+现在可以使用 `main.py` 以进行数据提取。（实验性）
 <!-- --search azusa,ハナコ,下江小春,아지타니히후미,聖園彌香 -->
 ## 参数说明
 
@@ -52,10 +55,10 @@ python resource_downloader.py --threads 30 --region cn --proxy http://0.0.0.0:00
 > **`*`** :必选的选项
 ## TODO
 
-- **流式解包**：下载时解开文件。
+- **流式解包**：下载时解开文件。- 45%
 <!-- - **flatbuf** -->
-- **GameData**：游戏数据解开。
-- **角色检索**：基于任何名称的检索。
+- **GameData**：游戏数据解开。- 74%
+- **角色检索**：包名检索或基于任何名称的检索。- 36%
 <!-- - **获取指定版本的资源** -->
 
 ## 使用须知
@@ -75,3 +78,7 @@ python resource_downloader.py --threads 30 --region cn --proxy http://0.0.0.0:00
 ## 免责声明 / Disclaimer
 该仓库仅供学习和展示用途，不托管任何实际资源。请注意，所有通过本项目下载的内容均应仅用于合法和正当的目的。开发者不对任何人因使用本项目而可能引发的直接或间接的损失、损害、法律责任或其他后果承担任何责任。用户在使用本项目时需自行承担风险，并确保遵守所有相关法律法规。如果有人使用本项目从事任何未经授权或非法的活动，开发者对此不承担任何责任。用户应对自身的行为负责，并了解使用本项目可能带来的任何风险。
 This project is intended solely for educational and demonstrative purposes and does not provide any actual resources. Please note that all content downloaded through this project should only be used for legal and legitimate purposes. The developers are not liable for any direct or indirect loss, damage, legal liability, or other consequences that may arise from the use of this project. Users assume all risks associated with the use of this project and must ensure compliance with all relevant laws and regulations. If anyone uses this project for any unauthorized or illegal activities, the developers bear no responsibility. Users are responsible for their own actions and should understand the risks involved in using this project.
+
+“蔚蓝档案”是上海星啸网络科技有限公司的注册商标，版权所有。
+「ブルーアーカイブ」は株式会社Yostarの登録商標です。著作権はすべて保有されています。
+"Blue Archive" is a registered trademark of NEXON Korea Corp. & NEXON GAMES Co., Ltd. All rights reserved.

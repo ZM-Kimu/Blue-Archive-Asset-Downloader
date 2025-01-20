@@ -13,9 +13,9 @@ from zipfile import ZipFile
 
 import UnityPy
 
-from utils.console import ProgressBar, notice, print
+from lib.console import ProgressBar, notice, print
+from lib.encryption import convert_string, create_key
 from utils.resource_structure import CNResource, JPResource
-from utils.table_encrypt import convert_string, create_key
 
 I8: str = "b"
 I32: str = "i"
@@ -133,7 +133,7 @@ class Extractor:
         Returns:
             str: Decoded server URL.
         """
-        decrypt = {
+        decryptions = {
             "ServerInfoDataUrl": "X04YXBFqd3ZpTg9cKmpvdmpOElwnamB2eE4cXDZqc3ZgTg==",
             "DefaultConnectionGroup": "tSrfb7xhQRKEKtZvrmFjEp4q1G+0YUUSkirOb7NhTxKfKv1vqGFPEoQqym8=",
             "SkipTutorial": "8AOaQvLC5wj3A4RC78L4CNEDmEL6wvsI",
@@ -142,7 +142,7 @@ class Extractor:
         b64_data = base64.b64encode(data).decode()
         json_str = convert_string(b64_data, create_key("GameMainConfig"))
         obj = json.loads(json_str)
-        encrypted_url = obj[decrypt["ServerInfoDataUrl"]]
+        encrypted_url = obj[decryptions["ServerInfoDataUrl"]]
         url = convert_string(encrypted_url, create_key("ServerInfoDataUrl"))
         return url
 

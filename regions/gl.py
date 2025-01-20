@@ -1,8 +1,8 @@
 import re
 
+from lib.console import notice, print
+from lib.downloader import FileDownloader
 from utils.config import Config
-from utils.console import notice, print
-from utils.downloader import FileDownloader
 from utils.resource_structure import GLResource, Resource
 
 

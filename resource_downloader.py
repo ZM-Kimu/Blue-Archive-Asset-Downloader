@@ -7,16 +7,14 @@ from queue import Empty, Queue
 from threading import Lock
 from time import sleep
 
+from lib.console import ProgressBar, bar_increase, bar_text, notice
+from lib.downloader import FileDownloader
+from lib.encryption import calculate_crc, calculate_md5
 from regions.cn import CNServer
 from regions.gl import GLServer
 from regions.jp import JPServer
-from utils import util
 from utils.config import Config
-from utils.console import ProgressBar, bar_increase, bar_text, notice
-from utils.downloader import FileDownloader
 from utils.resource_structure import Resource
-
-# TODO:When CN&JP both in Temp will cuz URL extraction conflict.
 
 
 class Downloader:
@@ -60,9 +58,9 @@ class Downloader:
                 if path.exists(asset_path) and path.getsize(asset_path) == res["size"]:
                     verified = False
                     if res["check_type"] == "crc":
-                        verified = util.calculate_crc(asset_path) == res["checksum"]
+                        verified = calculate_crc(asset_path) == res["checksum"]
                     elif res["check_type"] == "md5":
-                        verified = util.calculate_md5(asset_path) == res["checksum"]
+                        verified = calculate_md5(asset_path) == res["checksum"]
                     if verified:
                         continue
                 res_to_download.add_resource_item(res)
@@ -96,7 +94,7 @@ class Downloader:
             resource_queue.task_done()
 
     def start_download_resource_task(
-        self, resource: Resource, __retries: int = 0
+        self, resource: Resource, retries: int = 0
     ) -> None:
         """Distribute resource to different threads dynamically and support re-downloading of failed files."""
         failed_res = Resource()
@@ -148,7 +146,7 @@ class Downloader:
 
         if failed_res:
             notice(f"Retry for {len(failed_res)} failed files.")
-            self.start_download_resource_task(failed_res, __retries + 1)
+            self.start_download_resource_task(failed_res, retries=retries + 1)
 
         if not (self.stop_task or failed_res):
             notice("All files have been download to your computer.")

@@ -1,6 +1,6 @@
 import subprocess
 
-from console import notice
+from lib.console import notice
 
 
 def is_dotnet_sdk_version_equal(target_version: int) -> bool:

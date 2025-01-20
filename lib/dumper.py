@@ -1,14 +1,16 @@
 import json
 import os
+import re
 from os import path
 
-from config import Config
-from console import notice, print
-from diagnosis import is_dotnet_sdk_version_equal
-from downloader import FileDownloader
-from util import extract_zip, find_files, run_command
+from lib.console import notice, print
+from lib.diagnosis import is_dotnet_sdk_version_equal
+from lib.downloader import FileDownloader
+from utils.config import Config
+from utils.util import extract_zip, find_files, run_command
 
 IL2CPP_ZIP = "https://github.com/Perfare/Il2CppDumper/archive/refs/heads/master.zip"
+DUMP_PATH = "Dumps"
 
 
 class FlatBufferDumper:
@@ -26,10 +28,7 @@ class FlatBufferDumper:
         notice("Download il2cpp-dumper...")
         zip_name = "il2cpp-dumper.zip"
         FileDownloader(IL2CPP_ZIP).save_file(path.join(Config.temp_dir, zip_name))
-        extract_zip(
-            path.join(Config.temp_dir, zip_name),
-            path.join(Config.temp_dir, zip_name.rstrip(".zip")),
-        )
+        extract_zip(path.join(Config.temp_dir, zip_name), Config.temp_dir)
 
         if config_path := find_files(
             path.join(Config.temp_dir, zip_name.rstrip(".zip")), ["config.json"], True
@@ -53,6 +52,7 @@ class FlatBufferDumper:
         )
 
     def dump_il2cpp(self, project_work_directory: str) -> None:
+        notice("Try to dump il2cpp...")
         libil2cpp_binary_path = find_files(Config.temp_dir, ["libil2cpp.so"], True)
         global_metadata_path = find_files(
             Config.temp_dir, ["global-metadata.dat"], True
@@ -65,7 +65,7 @@ class FlatBufferDumper:
         abs_il2cpp_bin_path = path.abspath(libil2cpp_binary_path[0])
         abs_global_meta_path = path.abspath(global_metadata_path[0])
 
-        extract_path = path.abspath(path.join(Config.extract_dir, "Dumped"))
+        extract_path = path.abspath(path.join(Config.extract_dir, DUMP_PATH))
 
         os.makedirs(extract_path, exist_ok=True)
 
@@ -79,15 +79,25 @@ class FlatBufferDumper:
             extract_path,
             cwd=project_work_directory,
         ):
-            raise RuntimeError("Error occurred during dump the lib2cpp file.")
+            raise RuntimeError(
+                "Error occurred during dump the lib2cpp file. Retry might solve this issue."
+            )
 
         notice("Dump il2cpp binary file successfully.")
 
 
-class FlatBufferSchema:
-    pass
+class FlatBufferConvertion:
+    re_struct = re.compile(
+        r"""struct (\w+) \{
+(.+?)
+\}
+""",
+        re.M | re.S,
+    )
+    re_field = re.compile(r"public (.+?) (.+?) = (-?\d+);")
 
-
-a = FlatBufferDumper()
-b = a.get_il2cpp_dumper()
-a.dump_il2cpp(b)
+    reEnum = re.compile(
+        r"""
+                        public enum (\w+) \{(.+?)\}""",
+        re.S,
+    )

@@ -5,10 +5,10 @@ from urllib.parse import urljoin
 
 from cloudscraper import create_scraper
 
+from lib.console import ProgressBar, notice, print
+from lib.downloader import FileDownloader
 from resource_extractor import Extractor, JPCatalogDecoder
 from utils.config import Config
-from utils.console import ProgressBar, notice, print
-from utils.downloader import FileDownloader
 from utils.resource_structure import JPResource, Resource
 
 
@@ -67,7 +67,7 @@ class JPServer:
         Extractor.extract_zip(
             apk_files,
             path.join(Config.temp_dir, "data"),
-            keywords=["bin/Data"],
+            # keywords=["bin/Data"],
             zip_dir=Config.temp_dir,
         )
 

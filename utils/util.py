@@ -1,14 +1,15 @@
-import hashlib
 import math
 import os
 import struct
 import subprocess
-from binascii import crc32
+from concurrent.futures import ThreadPoolExecutor
+from keyword import kwlist
+from queue import Empty, Queue
 from threading import Thread
-from typing import Any, Generator
+from typing import Any, Callable, Generator
 from zipfile import ZipFile
 
-from console import ProgressBar, notice, print
+from lib.console import ProgressBar, notice, print
 
 
 # Used to create threads.
@@ -63,7 +64,7 @@ def extract_zip(
                         try:
                             z.extract(item, dest_dir)
                         except Exception as e:
-                            notice(e)
+                            notice(str(e))
                         bar.increase()
         except Exception as e:
             notice(f"Error processing file '{zip_file}': {e}")
@@ -197,26 +198,22 @@ def seperate_list_as_blocks(
         yield content[i : i + math.ceil(len(content) / block_num)]
 
 
-def calculate_crc(path: str) -> int:
-    """Calculate the crc checksum value of a file.
-    Args:
-        path (str): File path.
-    Returns:
-        int: Crc checksum.
-    """
-    with open(path, "rb") as f:
-        return crc32(f.read()) & 0xFFFFFFFF
+def convert_name_to_available(variable_name: str) -> str:
+    """Convert varaible name to suitable with python.
 
-
-def calculate_md5(path: str) -> str:
-    """Calculate the md5 checksum value of a file.
     Args:
-        path (str): File path.
+        variable_name (str): Name.
+
     Returns:
-        str: MD5 checksum.
+        str: Available string in python.
     """
-    with open(path, "rb") as f:
-        return hashlib.md5(f.read()).hexdigest()
+    if not variable_name:
+        return "_"
+    if variable_name[0].isdigit():
+        variable_name = "_" + variable_name
+    if variable_name in kwlist:
+        variable_name = f"{variable_name}_"
+    return variable_name
 
 
 # The private function is used to download file from a compressed file within a specified range and decompress it.
@@ -239,3 +236,64 @@ def __download_and_decompress_file(
         )
     except:
         return False
+
+
+class TemplateString:
+    """
+    Template string generator.
+
+    :Example:
+    .. code-block:: python
+        CONSTANT = TemplateString("What%s a %s %s.")
+        CONSTANT("", "fast", "fox")
+        "What a fast fox."
+    """
+
+    def __init__(self, template: str) -> None:
+        self.template = template
+
+    def __call__(self, *args: Any) -> str:
+        return self.template % args
+
+
+class ThreadWorker:
+    def __init__(self, max_workers: int, worker: Callable[..., None]) -> None:
+        """A simplified thread pool manager.
+
+        Args:
+            max_workers (int): Maximum number of threads to use.
+            worker (Callable[..., None]): The worker function executed by each thread.
+        """
+        self.max_workers = max_workers
+        self.worker = worker
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.tasks = Queue()
+        self.futures = []
+
+    def add_task(self, *args: Any) -> None:
+        """Add a task to the worker queue."""
+        self.tasks.put(args)
+
+    def __enter__(self) -> "ThreadWorker":
+        """Start the worker pool."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Shutdown the worker pool."""
+        self.executor.shutdown(wait=True)
+
+    def run(self) -> None:
+        """Start processing tasks from the queue."""
+        while not self.tasks.empty():
+            if len(self.futures) < self.max_workers:
+                try:
+                    task_args = self.tasks.get_nowait()
+                except Empty:
+                    break
+
+                # Submit the worker function with task arguments
+                future = self.executor.submit(self.worker, *task_args)
+                self.futures.append(future)
+
+            # Clean up completed futures
+            self.futures = [f for f in self.futures if not f.done()]

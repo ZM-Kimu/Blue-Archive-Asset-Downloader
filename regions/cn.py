@@ -7,11 +7,11 @@ from urllib.parse import urljoin
 
 from cloudscraper import create_scraper
 
+from lib.console import ProgressBar, notice, print
+from lib.downloader import FileDownloader
 from resource_extractor import CNCatalogDecoder, Extractor
 from utils import util
 from utils.config import Config
-from utils.console import ProgressBar, notice, print
-from utils.downloader import FileDownloader
 from utils.resource_structure import CNResource, Resource
 
 
