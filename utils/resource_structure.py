@@ -223,9 +223,7 @@ class JPResource:
         self.table_file: list[dict] = []
 
     def __bool__(self) -> bool:
-        return (
-            bool(self.bundle_file) and bool(self.media_file) and bool(self.table_file)
-        )
+        return bool(self.bundle_file) or bool(self.media_file) or bool(self.table_file)
 
     def __len__(self) -> int:
         return len(self.bundle_file) + len(self.media_file) + len(self.table_file)

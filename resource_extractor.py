@@ -422,6 +422,7 @@ class JPCatalogDecoder:
         is_split_download = data.read(BOOL)
         media_type = data.read(I32)
 
+        path = path.replace("\\", "/")
         container.add_media_resource(
             key, path, file_name, media_type, bytes, crc, is_prologue, is_split_download
         )

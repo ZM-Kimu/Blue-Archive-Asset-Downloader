@@ -128,24 +128,23 @@ class JPServer:
             ).get_response()
 
             media_data = FileDownloader(
-                urljoin(resources.media_url, "MediaCatalog.bytes")
+                urljoin(resources.media_url, "Catalog/MediaCatalog.bytes")
             ).get_response()
 
             bundle_data = FileDownloader(
                 urljoin(resources.bundle_url, "bundleDownloadInfo.json")
             ).get_response()
 
-            if (
-                table_data.headers.get("Content-Type") == "binary/octet-stream"
-                and media_data.headers.get("Content-Type") == "binary/octet-stream"
-            ):
+            if table_data.headers.get("Content-Type") == "binary/octet-stream":
                 JPCatalogDecoder.decode_to_manifest(
                     table_data.content, resources, "table"
                 )
+
+            if media_data.headers.get("Content-Type") == "binary/octet-stream":
                 JPCatalogDecoder.decode_to_manifest(
                     media_data.content, resources, "media"
                 )
-            else:
+            if not (media_data.ok or media_data.ok):
                 notice(
                     f"Failed to fetch table or media catalog because table is {table_data.reason} and media is {media_data.reason}. Retry may solve the issue.",
                     "error",

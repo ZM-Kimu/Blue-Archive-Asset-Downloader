@@ -273,7 +273,7 @@ class ExtractTable:
                                         ensure_ascii=False,
                                     ).encode("utf8")
                                 )
-
+                    continue
                 if not table_file.endswith(".zip"):
                     notice(
                         f"The file {table_file} is not supported in current implementation."

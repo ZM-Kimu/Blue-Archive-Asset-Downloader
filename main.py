@@ -6,8 +6,7 @@ downloader = Downloader()
 downloader.main()
 
 fb_dumper = FlatBufferDumper()
-b = fb_dumper.get_il2cpp_dumper()
-fb_dumper.dump_il2cpp(b)
+fb_dumper.main()
 
 dumper = Dumper()
 dumper.dump()

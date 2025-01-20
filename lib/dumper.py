@@ -11,6 +11,7 @@ from utils.util import extract_zip, find_files, run_command
 
 IL2CPP_ZIP = "https://github.com/Perfare/Il2CppDumper/archive/refs/heads/master.zip"
 DUMP_PATH = "Dumps"
+IL2CPP_FOLDER = "Il2CppDumper-master"
 
 
 class FlatBufferDumper:
@@ -23,6 +24,8 @@ class FlatBufferDumper:
             raise FileNotFoundError(
                 "Error: .NET8 SDK is not installed or 'dotnet' is not in the PATH or .NET major version is not 8. Download it from: https://dotnet.microsoft.com/download",
             )
+        il2cpp_path = self.get_il2cpp_dumper()
+        self.dump_il2cpp(il2cpp_path)
 
     def get_il2cpp_dumper(self) -> str:
         notice("Download il2cpp-dumper...")
@@ -31,7 +34,7 @@ class FlatBufferDumper:
         extract_zip(path.join(Config.temp_dir, zip_name), Config.temp_dir)
 
         if config_path := find_files(
-            path.join(Config.temp_dir, zip_name.rstrip(".zip")), ["config.json"], True
+            path.join(Config.temp_dir, IL2CPP_FOLDER), ["config.json"], True
         ):
             with open(
                 config_path[0],
