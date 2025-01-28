@@ -1,10 +1,12 @@
+"""Compiler will parse CSharp dump file to convert to python callable code."""
+
 import os
 import re
 from enum import Enum
 
 from lib.console import notice
-from utils.resource_structure import EnumMember, EnumType, Property, StructTable
-from utils.util import TemplateString, convert_name_to_available
+from lib.structure import EnumMember, EnumType, Property, StructTable
+from utils.util import TemplateString, Utils
 
 
 class DataSize(Enum):
@@ -321,12 +323,12 @@ public enum (.{1,128}?) // TypeDefIndex: \d+?
     table_data_type = re.compile(r"public Nullable<(.+?)> DataList\(int j\) { }")
 
 
-class ParseFromCS:
+class CSParser:
     def __init__(self, file_path: str) -> None:
         with open(file_path, "rt", encoding="utf8") as file:
             self.data = file.read()
 
-    def extract_enum_from_dump(self) -> list[EnumType]:
+    def parse_enum(self) -> list[EnumType]:
         """Extract enum from cs."""
         enums = []
         for enum_name, enum_type, content in Re.enum.findall(self.data):
@@ -341,7 +343,7 @@ class ParseFromCS:
 
         return enums
 
-    def __extract_struct_property(
+    def __parse_struct_property(
         self, prop_type: str, prop_name: str, prop_data: str
     ) -> Property:
         """Extract struct from cs."""
@@ -366,7 +368,7 @@ class ParseFromCS:
 
         return Property(prop_type, prop_name, prop_is_list)
 
-    def extract_struct_from_dump(self) -> list[StructTable]:
+    def parse_struct(self) -> list[StructTable]:
         """从数据中提取结构体"""
         structs = []
         # struct name, field
@@ -379,7 +381,7 @@ class ParseFromCS:
                 if "ByteBuffer" in prop_name:
                     continue
 
-                if extracted_property := self.__extract_struct_property(
+                if extracted_property := self.__parse_struct_property(
                     prop_type, prop_name, struct_data
                 ):
                     struct_properties.append(extracted_property)
@@ -390,7 +392,7 @@ class ParseFromCS:
         return structs
 
 
-class DumpToPython:
+class CompileToPython:
     DUMP_WRAPPER_NAME = "dump_wrapper"
 
     def __init__(
@@ -543,11 +545,11 @@ class DumpToPython:
             func,
         )
 
-    def convert_enum(self) -> None:
+    def create_enum_files(self) -> None:
         """Convert enum to python."""
         os.makedirs(self.extract_dir, exist_ok=True)
         for enum in self.enums:
-            enum_name = convert_name_to_available(enum.name)
+            enum_name = Utils.convert_name_to_available(enum.name)
             with open(
                 f"{os.path.join(self.extract_dir, enum_name)}.py", "wt", encoding="utf8"
             ) as file:
@@ -562,16 +564,16 @@ class DumpToPython:
                     file.write(String.INDENT)
                     file.write(
                         String.VARIABLE_ASSIGNMENT(
-                            convert_name_to_available(member.name), value
+                            Utils.convert_name_to_available(member.name), value
                         )
                     )
                     file.write(String.NEWLINE)
 
-    def convert_struct(self) -> None:
+    def create_struct_files(self) -> None:
         """Convert struct to python."""
         os.makedirs(self.extract_dir, exist_ok=True)
         for struct in self.structs:
-            struct_name = convert_name_to_available(struct.name)
+            struct_name = Utils.convert_name_to_available(struct.name)
             function_string = String.FB_START_AND_END_FUNCTION(len(struct.properties))
             file = open(
                 f"{os.path.join(self.extract_dir, struct_name)}.py",
@@ -588,7 +590,7 @@ class DumpToPython:
                     if prop.data_type in DataSize.__members__
                     else DataSize.struct.value
                 )
-                prop_name = convert_name_to_available(prop.name)
+                prop_name = Utils.convert_name_to_available(prop.name)
 
                 # Prop is scalar type.
                 if prop.data_type in DataFlag.__members__:
@@ -637,11 +639,11 @@ class DumpToPython:
             encoding="utf8",
         ) as file:
             for enum in self.enums:
-                enum_name = convert_name_to_available(enum.name)
+                enum_name = Utils.convert_name_to_available(enum.name)
                 file.write(String.LOCAL_IMPORT(enum_name, enum_name) + String.NEWLINE)
 
             for struct in self.structs:
-                struct_name = convert_name_to_available(struct.name)
+                struct_name = Utils.convert_name_to_available(struct.name)
                 file.write(
                     String.LOCAL_IMPORT(struct_name, struct_name) + String.NEWLINE
                 )
@@ -655,10 +657,10 @@ class DumpToPython:
         elif prop_data := self.__type_in_struct_or_num(
             prop.data_type, self.structs, self.enums
         ):
-            data_name = convert_name_to_available(prop_data.name)
+            data_name = Utils.convert_name_to_available(prop_data.name)
             if isinstance(prop_data, StructTable):
                 convertion = String.WRAPPER_PASSWD_CONVERTION(
-                    f"dump_{convert_name_to_available(data_name)}",
+                    f"dump_{Utils.convert_name_to_available(data_name)}",
                     String.WRAPPER_LIST_GETTER(p_name),
                 )
 
@@ -692,10 +694,10 @@ class DumpToPython:
         elif prop_data := self.__type_in_struct_or_num(
             prop.data_type, self.structs, self.enums
         ):
-            data_name = convert_name_to_available(prop_data.name)
+            data_name = Utils.convert_name_to_available(prop_data.name)
             if isinstance(prop_data, StructTable):
                 func = String.WRAPPER_PASSWD_CONVERTION(
-                    f"dump_{convert_name_to_available(data_name)}",
+                    f"dump_{Utils.convert_name_to_available(data_name)}",
                     String.WRAPPER_GETTER(p_name),
                 )
 
@@ -726,7 +728,7 @@ class DumpToPython:
 
         for enum in self.enums:
             file.write(
-                String.WRAPPER_INT_ENUM(convert_name_to_available(enum.name))
+                String.WRAPPER_INT_ENUM(Utils.convert_name_to_available(enum.name))
                 + String.NEWLINE
             )
             if enum.underlying_type != "int":
@@ -735,7 +737,7 @@ class DumpToPython:
                 file.write(
                     String.INDENT
                     + String.VARIABLE_ASSIGNMENT(
-                        convert_name_to_available(kv.name), kv.value
+                        Utils.convert_name_to_available(kv.name), kv.value
                     )
                     + String.NEWLINE
                 )
@@ -744,10 +746,10 @@ class DumpToPython:
         for struct in self.structs:
             # if struct.name.endswith("Table"):
             # continue
-            struct_name = convert_name_to_available(struct.name)
+            struct_name = Utils.convert_name_to_available(struct.name)
             items = ""
             for prop in struct.properties:
-                prop_name = convert_name_to_available(prop.name)
+                prop_name = Utils.convert_name_to_available(prop.name)
                 func = ""
 
                 if prop.is_list:

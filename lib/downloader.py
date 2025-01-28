@@ -3,6 +3,7 @@ from time import time
 from typing import Literal
 
 import requests  # type: ignore
+from cloudscraper import create_scraper
 
 from lib.console import bar_increase, print
 from utils.config import Config
@@ -16,9 +17,9 @@ class FileDownloader:
         url: str,
         *,
         headers: dict | None = None,
-        use_stream_in_response: bool = False,
         enable_progress: bool = False,
-        request_method: Literal["get", "post"] = "get",
+        request_method: Literal["get", "post", "head"] = "get",
+        use_cloud_scraper: bool = False,
         **kwargs,
     ) -> None:
         """Initializes the FileDownloader instance with the provided parameters.
@@ -26,7 +27,6 @@ class FileDownloader:
         Args:
             url (str): The URL of the remote file to download.
             headers (dict | None, optional): HTTP headers for the request. Defaults to a generic User-Agent {"User-Agent": "Mozilla/5.0"}.
-            use_stream_in_response (bool, optional): Enables streaming mode for HTTP responses. Defaults to False.
             enable_progress (bool, optional): Enables progress bar updates during file download. Defaults to False.
             request_method (Literal[&quot;get&quot;, &quot;post&quot;], optional): Support to post and get. Defaults to "get".
             kwargs: Allow to config the request configurations.
@@ -38,10 +38,12 @@ class FileDownloader:
         self.__kwargs: dict = kwargs
 
         self.url = url
-        self.headers = headers or {"User-Agent": "Mozilla/5.0"}
-        self.use_stream_in_response = use_stream_in_response
+        self.headers = headers or {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.95 Safari/537.36"
+        }
         self.enable_progress = enable_progress
         self.request_method = request_method
+        self.use_cloud_scraper = use_cloud_scraper
 
     def __download(
         self,
@@ -69,7 +71,10 @@ class FileDownloader:
             )
             return False
         try:
-            response: requests.Response = getattr(requests, self.request_method)(
+            response: requests.Response = getattr(
+                create_scraper() if self.use_cloud_scraper else requests,
+                self.request_method,
+            )(
                 self.url,
                 headers=self.headers,
                 stream=is_save or use_stream,
@@ -111,14 +116,21 @@ class FileDownloader:
         """
         return self.__download("save", True, path)
 
-    def get_response(self) -> requests.Response | Literal[False]:
+    def get_response(
+        self, use_stream: bool = False
+    ) -> requests.Response | Literal[False]:
         """Retrieves the HTTP response object of the download request.
+
+        Args:
+            use_stream_in_response (bool, optional): Enables streaming mode for HTTP responses. Defaults to False.
 
         Returns:
             requests.Response: The response object if the request is successful.
             False: If the request fails.
         """
-        if self.__download("instance") and isinstance(self.__result, requests.Response):
+        if self.__download("instance", use_stream) and isinstance(
+            self.__result, requests.Response
+        ):
             return self.__result
         return False
 

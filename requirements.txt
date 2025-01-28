@@ -1,5 +1,5 @@
 requests
-UnityPy==1.10.18
+UnityPy==1.20.18
 cloudscraper
 xxhash
 pycryptodome

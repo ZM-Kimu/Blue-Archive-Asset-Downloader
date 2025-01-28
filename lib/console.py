@@ -1,3 +1,5 @@
+"""Core lib to print on console as singleton."""
+
 import sys
 import threading
 import time
@@ -102,7 +104,6 @@ class Console:
         sys.stdout.flush()
 
 
-# Basic progress bar.
 class ProgressBar:
     _instance = None
     _lock = threading.Lock()
@@ -130,10 +131,12 @@ class ProgressBar:
         while not self._interrupter:
             now = time.time()
             if now - last_update_time > 0.5:
-                percent = self._progress_counter / self.total * 100
+                percent = self._progress_counter / (self.total + 1e-3) * 100
                 bar_length = 20
                 filled_length = int(
-                    round(bar_length * self._progress_counter / float(self.total))
+                    round(
+                        bar_length * self._progress_counter / float(self.total + 1e-3)
+                    )
                 )
                 bar = "=" * filled_length + ">" + " " * (bar_length - filled_length)
                 remaining_time = timedelta(

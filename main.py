@@ -1,13 +1,23 @@
-from convert_dumps import Dumper, ExtractTable
-from lib.dumper import FlatBufferDumper
-from resource_downloader import Downloader
+from os import path
+
+from downloader import Downloader
+from extractor import FlatbufferExtractor
+from lib.console import notice
+from utils.config import Config
+from xtractor.table import TableExtractor
 
 downloader = Downloader()
 downloader.main()
 
-fb_dumper = FlatBufferDumper()
-fb_dumper.main()
+if Config.region == "jp":
+    fb_extractor = FlatbufferExtractor()
+    fb_extractor.dump()
+    fb_extractor.compile()
 
-dumper = Dumper()
-dumper.dump()
-ExtractTable().extract_tables()
+    table_extractor = TableExtractor(
+        path.join(Config.raw_dir, "Table"),
+        path.join(Config.extract_dir, "Table"),
+        f"{Config.extract_dir}.FlatData",
+    )
+    table_extractor.extract_tables()
+    notice("Extract completed.")

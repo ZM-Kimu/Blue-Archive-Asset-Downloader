@@ -1,6 +1,6 @@
-import subprocess
+"""Diagnose the environment is available in different conditions."""
 
-from lib.console import notice
+import subprocess
 
 
 def is_dotnet_sdk_version_equal(target_version: int) -> bool:
@@ -27,8 +27,4 @@ def is_dotnet_sdk_version_equal(target_version: int) -> bool:
                 return int(major_version) == target_version
         return False
     except:
-        notice(
-            "Error: .NET SDK is not installed or 'dotnet' is not in the PATH. Download from: https://dotnet.microsoft.com/download",
-            "error",
-        )
         return False

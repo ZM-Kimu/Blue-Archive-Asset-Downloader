@@ -1,6 +1,134 @@
+"""Store some structures."""
+
 from dataclasses import dataclass
+from enum import Enum
 from typing import Iterator, Literal
 from urllib.parse import urljoin
+
+
+# Database
+@dataclass
+class DBColumn:
+    name: str
+    data_type: str
+
+
+@dataclass
+class DBTable:
+    name: str
+    columns: list[DBColumn]
+    data: list[list]
+
+
+class SQLiteDataType(Enum):
+    INTEGER = int
+    REAL = float
+    NUMERIC = float
+    TEXT = str
+    BLOB = bytes
+    BOOLEAN = bool
+    NULL = None
+
+
+# Compiler
+@dataclass
+class Property:
+    data_type: str
+    name: str
+    is_list: bool
+
+
+@dataclass
+class StructTable:
+    name: str
+    properties: list[Property]
+
+
+@dataclass
+class EnumMember:
+    name: str
+    value: str
+
+
+@dataclass
+class EnumType:
+    name: str
+    underlying_type: str
+    members: list[EnumMember]
+
+
+@dataclass
+class ResourceItem:
+    url: str
+    path: str
+    size: int
+    checksum: str
+    check_type: Literal["crc", "md5"]
+    addition: dict
+
+
+class Resource_New:
+    def __init__(self) -> None:
+        # There are 6 basic generic types in Resource: url, path, size, checksum, check_type, and addition.
+        self.resources: list[ResourceItem] = []
+
+    def __bool__(self) -> bool:
+        return bool(self.resources)
+
+    def __getitem__(self, index: slice | int) -> list[ResourceItem] | ResourceItem:
+        if isinstance(index, slice):
+            return self.resources[index.start : index.stop : index.step]
+        return self.resources[index]
+
+    def __len__(self) -> int:
+        return len(self.resources)
+
+    def __iter__(self) -> Iterator[ResourceItem]:
+        return iter(self.resources)
+
+    def __repr__(self) -> str:
+        size = sum(item.size for item in self.resources)
+        return f"{len(self)} items in the manifest, totaling {round(size / (1024**3), 2)}GB"
+
+    def add_resource(self, url: str, data: dict) -> None:
+        """Add a dictionary object that conforms to the basic resource structure and modify its URL."""
+        data["url"] = url
+        self.resources.append(data)
+
+    def add_resource_item(self, item: dict) -> None:
+        """Add a dictionary object that conforms to the basic resource structure."""
+        for key in ["url", "path", "size", "checksum", "check_type", "addition"]:
+            if key not in item.keys():
+                return
+        self.resources.append(item)
+
+    def add(
+        self,
+        url: str,
+        path: str,
+        size: int,
+        checksum: str,
+        check_type: Literal["crc", "md5"],
+        addition: dict | None = None,
+    ) -> None:
+        """Add resource."""
+        self.resources.append(
+            {
+                "url": url,
+                "path": path,
+                "size": size,
+                "checksum": checksum,
+                "check_type": check_type,
+                "addition": {} if not addition else addition,
+            }
+        )
+
+    def sorted_by_size(self, descending: bool = True) -> None:
+        """Sort by file size.
+        Args:
+            descending (bool, optional): Sort with descending order. Defaults to True.
+        """
+        self.resources.sort(key=lambda x: x["size"], reverse=descending)
 
 
 class Resource:
@@ -340,29 +468,3 @@ class JPResource:
             )
 
         return resource
-
-
-@dataclass
-class Property:
-    data_type: str
-    name: str
-    is_list: bool
-
-
-@dataclass
-class StructTable:
-    name: str
-    properties: list[Property]
-
-
-@dataclass
-class EnumMember:
-    name: str
-    value: str
-
-
-@dataclass
-class EnumType:
-    name: str
-    underlying_type: str
-    members: list[EnumMember]
