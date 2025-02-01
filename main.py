@@ -1,23 +1,27 @@
-from os import path
-
 from downloader import Downloader
-from extractor import FlatbufferExtractor
+from extractor import (
+    BundlesExtractor,
+    FlatbufferExtractor,
+    MediasExtractor,
+    TablesExtractor,
+)
 from lib.console import notice
 from utils.config import Config
-from xtractor.table import TableExtractor
 
-downloader = Downloader()
-downloader.main()
+if __name__ == "__main__":
 
-if Config.region == "jp":
-    fb_extractor = FlatbufferExtractor()
-    fb_extractor.dump()
-    fb_extractor.compile()
+    downloader = Downloader()
+    downloader.main()
 
-    table_extractor = TableExtractor(
-        path.join(Config.raw_dir, "Table"),
-        path.join(Config.extract_dir, "Table"),
-        f"{Config.extract_dir}.FlatData",
-    )
-    table_extractor.extract_tables()
-    notice("Extract completed.")
+    if Config.region == "jp":
+        fb_extractor = FlatbufferExtractor()
+        fb_extractor.dump()
+        fb_extractor.compile()
+
+        TablesExtractor().extract_tables()
+
+        BundlesExtractor.extract()
+
+        MediasExtractor().extract_zips()
+
+        notice("Extract task done.")

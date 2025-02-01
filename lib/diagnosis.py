@@ -3,7 +3,7 @@
 import subprocess
 
 
-def is_dotnet_sdk_version_equal(target_version: int) -> bool:
+def is_dotnet_sdk_version_equal(*target_versions: int) -> bool:
     """Checks if the installed .NET SDK major version matches the specified target version.
 
     Args:
@@ -14,17 +14,20 @@ def is_dotnet_sdk_version_equal(target_version: int) -> bool:
     """
     try:
         result = subprocess.run(
-            ["dotnet", "--version"],
+            ["dotnet", "--list-sdks"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             check=True,
         )
-        stdout = result.stdout.strip()
+        stdout = result.stdout.split("\n")
         if stdout:
-            major_version = stdout.split(".")[0]
-            if major_version.isdigit():
-                return int(major_version) == target_version
+            major_versions = [
+                ver[0]
+                for ver in stdout
+                if ver and ver[0].isdigit() and int(ver[0]) in target_versions
+            ]
+            return bool(major_versions)
         return False
     except:
         return False

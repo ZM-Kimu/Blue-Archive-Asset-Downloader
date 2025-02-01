@@ -1,114 +1,136 @@
-import base64
 import json
+import multiprocessing
+import multiprocessing.queues
+import multiprocessing.synchronize
 import os
-import struct
-import zlib
-from io import BytesIO
-from json import dump
 from os import path
-from threading import Thread
-from time import sleep, time
 from typing import Any, Literal
-from zipfile import ZipFile
 
 import UnityPy
 
-from lib.compiler import CompileToPython, CSParser
-from lib.console import ProgressBar, notice, print
-from lib.dumper import IL2CppDumper
-from lib.encryption import convert_string, create_key
-from lib.structure import CNResource, JPResource
+from lib.console import ProgressBar
 from utils.config import Config
-from utils.util import FileUtils
 
 
 class BundleExtractor:
-    @staticmethod
-    def extract_resource(resource_path: str | list, dest_dir: str):
-        resources = []
-        res_type = [
-            "Texture2D",
-            "Sprite",
-            "AudioClip",
-            "TextAsset",
-            "MonoBehaviour",
-            "Shader",
-            "Mesh",
-            "Font",
-        ]
+    BUNDLE_FOLDER = path.join(Config.raw_dir, "Bundle")
+    BUNDLE_EXTRACT_FOLDER = path.join(Config.extract_dir, "Bundle")
+    MAIN_EXTRACT_TYPES = [
+        "Texture2D",
+        "Sprite",
+        "AudioClip",
+        "Font",
+        "TextAsset",
+        "MonoBehaviour",
+        "Mesh",
+    ]
 
-        for type in res_type:
-            os.makedirs(os.path.join(dest_dir, type), exist_ok=True)
+    def __save(
+        self, type: Literal["json", "binary", "mesh"], path: str, data: Any
+    ) -> None:
+        if type == "json":
+            with open(path, "wt", encoding="utf8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        elif type == "binary":
+            with open(path, "wb") as f:
+                f.write(data)
+        elif type == "mesh":
+            with open(path, "wt", encoding="utf8", newline="") as f:
+                f.write(data)
 
-        if isinstance(resource_path, str):
-            resources.append(resource_path)
-        else:
-            resources = resource_path
-        with ProgressBar(len(resources), "Extract bundle...", "items") as bar:
-            for res in resources:
-                try:
-                    bar.increase()
-                    env = UnityPy.load(res)
+    def multiprocess_extract_worker(
+        self,
+        tasks: multiprocessing.Queue,
+        extract_types: list[str] | None,
+    ) -> None:
+        """Multi-thread is not allowed in UnityPy. Use multi-process."""
+        while not tasks.empty():
 
-                    for obj in env.objects:
-                        if (obj_type := obj.type.name) in res_type:
-                            data = obj.read()
+            bundle_path = tasks.get()
+            ProgressBar.item_text(path.basename(bundle_path))
+            BundleExtractor().extract_bundle(bundle_path, extract_types)
 
-                            bar.item_text(path.split(res)[-1])
+    def extract_bundle(
+        self,
+        res_path: str,
+        extract_types: list[str] | None = None,
+    ) -> None:
+        """Extract bundle use bundle path."""
+        counter: dict[str, int] = {}
+        env = UnityPy.load(res_path)
+        conditional = (
+            (lambda x: x in extract_types) if extract_types else lambda _: True
+        )
+        for obj in env.objects:
+            try:
+                if (obj_type := obj.type.name) and conditional(obj_type):
+                    data = obj.read()
+                    extract_folder = path.join(self.BUNDLE_EXTRACT_FOLDER, obj_type)
+                    os.makedirs(extract_folder, exist_ok=True)
+                    counter[obj_type] = counter.get(obj_type, 0)
+                    match obj_type:
+                        case "Texture2D" | "Sprite":
+                            image = data.image
+                            image.save(path.join(extract_folder, f"{data.m_Name}.png"))
 
-                            match obj_type:
-                                case "Texture2D":
-                                    image = data.image
-                                    image.save(
-                                        os.path.join(
-                                            dest_dir, "Texture2D", f"{data.name}.png"
-                                        )
-                                    )
+                        case "AudioClip":
+                            for name, data in data.samples.items():
+                                file_path = path.join(extract_folder, name)
+                                self.__save("binary", file_path, data)
 
-                                case "AudioClip":
-                                    for name, data in data.samples.items():
-                                        with open(
-                                            os.path.join(
-                                                dest_dir, "AudioClip", f"{name}.wav"
-                                            ),
-                                            "wb",
-                                        ) as f:
-                                            f.write(data)
-                                case "TextAsset":
-                                    text = data.text
-                                    with open(
-                                        os.path.join(
-                                            dest_dir, "TextAsset", f"{data.name}.wav"
-                                        ),
-                                        "wb",
-                                    ) as f:
-                                        f.write(text)
-                                case "MonoBehaviour":
-                                    if obj.serialized_type.nodes:
-                                        tree = obj.read_typetree()
-                                        with open(
-                                            os.path.join(
-                                                dest_dir,
-                                                "MonoBehaviour",
-                                                f'{tree["m_Name"]}.json',
-                                            ),
-                                            "wt",
-                                            encoding="utf8",
-                                        ) as f:
-                                            dump(tree, f, ensure_ascii=False, indent=4)
-                                    else:
-                                        data = obj.read()
-                                        with open(
-                                            os.path.join(
-                                                dest_dir, data.name, data.name
-                                            ),
-                                            "wb",
-                                        ) as f:
-                                            f.write(data.raw_data)
-                            # elif obj.type.name in asset_type["audio"]:
-                            #     for name, data in obj.read().samples.items():
-                            #         path = os.path.join(prefix, obj.type.name, name)
-                            #         with open(path, "wb") as file:
-                            #             file.write(data)
-                except:
-                    continue
+                        case "Font":
+                            if data.m_FontData:
+                                file_name = data.m_Name + (
+                                    ".otf"
+                                    if data.m_FontData[0:4] == b"OTTO"
+                                    else ".ttf"
+                                )
+                                file_path = path.join(extract_folder, file_name)
+                                self.__save("binary", file_path, data.m_FontData)
+
+                        case "TextAsset":
+                            file_path = path.join(extract_folder, f"{data.m_Name}")
+                            self.__save(
+                                "binary",
+                                file_path,
+                                data.m_Script.encode("utf-8", "surrogateescape"),
+                            )
+
+                        case "MonoBehaviour":
+                            type_tree = obj.read_typetree()
+                            source_file = obj.assets_file.name
+                            name = type_tree.get("m_Name", None)
+                            if not name:
+                                name = str(counter[obj_type])
+                                counter[obj_type] += 1
+                            name = name.replace("/", "-")
+                            file_path = path.join(
+                                extract_folder,
+                                f"{source_file}_{name}.json",
+                            )
+                            file_path = file_path.replace(" ", "")
+                            self.__save("json", file_path, type_tree)
+
+                        case "Mesh":
+                            file_path = path.join(extract_folder, f"{data.m_Name}.obj")
+                            try:
+                                mesh_data = data.export()
+                                self.__save("mesh", file_path, mesh_data)
+                            except Exception as e:
+                                raise RuntimeError(
+                                    f"Cannot export mesh {data.m_Name}: {e}"
+                                ) from e
+
+                        case _:
+                            parsed = obj.parse_as_dict()
+                            name = (
+                                parsed.get("m_Name", None)
+                                or obj.container
+                                or obj.assets_file.name
+                            )
+                            name = f"{obj_type}_{path.basename(name)}_{counter[obj_type]}.json"
+                            counter[obj_type] += 1
+                            file_path = path.join(extract_folder, name)
+                            self.__save("json", file_path, parsed)
+            except Exception as e:
+                print(f"Error: {e}")

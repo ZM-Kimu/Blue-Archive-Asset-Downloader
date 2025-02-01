@@ -1,37 +1,15 @@
 import importlib
 import json
 import os
-from io import BytesIO
 from os import path
 from types import ModuleType
-from typing import IO, Any, Literal
-from zipfile import ZipFile, ZipInfo
+from typing import Any
+from zipfile import ZipFile
 
-from lib.console import ProgressBar, notice, print
-from lib.encryption import aes_decrypt, table_zip_password, xor_with_key
+from lib.console import notice, print
+from lib.encryption import aes_decrypt, xor_with_key, zip_password
 from lib.structure import DBTable, SQLiteDataType
-from utils.config import Config
 from utils.database import TableDatabase
-from utils.util import TaskManager
-
-
-class TableZipFile(ZipFile):
-    """Override ZipFile lib."""
-
-    def __init__(self, file: str | BytesIO, file_name: str = "") -> None:
-        super().__init__(file)
-        file_name = file_name if not isinstance(file, str) else path.basename(file)
-        self.password = table_zip_password(file_name)
-
-    def open(
-        self,
-        name: str | ZipInfo,
-        mode: Literal["r", "w"] = "r",
-        pwd: bytes | None = None,
-        *,
-        force_zip64: bool = False,
-    ) -> IO[bytes]:
-        return super().open(name, mode, pwd=self.password, force_zip64=force_zip64)
 
 
 class TableExtractor:
@@ -70,7 +48,7 @@ class TableExtractor:
             for t_name, t_class in flat_data_lib.__dict__.items()
         }
 
-    def process_bytes_file(
+    def __process_bytes_file(
         self, file_name: str, data: bytes
     ) -> tuple[dict[str, Any], str]:
         """Extract flatbuffer bytes file to dict
@@ -102,7 +80,7 @@ class TableExtractor:
         except:
             return {}, ""
 
-    def process_json_file(self, file_name: str, data: bytes) -> bytes:
+    def __process_json_file(self, file_name: str, data: bytes) -> bytes:
         """Extract json file in zip.
 
         Args:
@@ -123,7 +101,7 @@ class TableExtractor:
             pass
         return bytes()
 
-    def process_db_file(self, file_path: str) -> list[DBTable]:
+    def __process_db_file(self, file_path: str) -> list[DBTable]:
         """Extract sqlite database file.
 
         Args:
@@ -144,7 +122,7 @@ class TableExtractor:
                     for col, value in zip(columns, row):
                         col_type = SQLiteDataType[col.data_type].value
                         if col_type == bytes:
-                            data, _ = self.process_bytes_file(
+                            data, _ = self.__process_bytes_file(
                                 table.replace("DBSchema", "Excel"), value
                             )
                             row_data.append(data)
@@ -157,88 +135,82 @@ class TableExtractor:
                 tables.append(DBTable(table, columns, table_data))
             return tables
 
-    def __extract_worker(self, task_manager: TaskManager) -> None:
-        while not (task_manager.stop_task or task_manager.tasks.empty()):
-            table_file = task_manager.tasks.get()
-            ProgressBar.item_text(table_file)
-            try:
-                if not table_file.endswith((".zip", ".db")):
-                    notice(
-                        f"The file {table_file} is not supported in current implementation."
-                    )
-                    return
+    def extract_db_file(self, file_path: str) -> bool:
+        """Extract db file."""
+        try:
+            if db_tables := self.__process_db_file(
+                path.join(self.table_file_folder, file_path)
+            ):
+                db_name = file_path.removesuffix(".db")
+                for table in db_tables:
+                    db_extract_folder = path.join(self.extract_folder, db_name)
+                    os.makedirs(db_extract_folder, exist_ok=True)
+                    with open(
+                        path.join(db_extract_folder, f"{table.name}.json"),
+                        "wt",
+                        encoding="utf8",
+                    ) as f:
+                        json.dump(
+                            TableDatabase.convert_to_list_dict(table),
+                            f,
+                            indent=4,
+                            ensure_ascii=False,
+                        )
+                return True
+            return False
+        except Exception as e:
+            print(f"Error when process {file_path}: {e}")
+            return False
 
-                if table_file.endswith(".db") and (
-                    db_tables := self.process_db_file(
-                        path.join(self.table_file_folder, table_file)
-                    )
-                ):
-                    db_name = table_file.removesuffix(".db")
-                    for table in db_tables:
-                        db_extract_folder = path.join(self.extract_folder, db_name)
-                        os.makedirs(db_extract_folder, exist_ok=True)
-                        with open(
-                            path.join(db_extract_folder, f"{table.name}.json"),
-                            "wt",
-                            encoding="utf8",
-                        ) as f:
-                            json.dump(
-                                TableDatabase.convert_to_list_dict(table),
-                                f,
-                                indent=4,
-                                ensure_ascii=False,
-                            )
-                    return
+    def extract_zip_file(self, file_path: str) -> bool:
+        """Extract zip file."""
+        try:
+            zip_extract_folder = path.join(
+                self.extract_folder, file_path.removesuffix(".zip")
+            )
+            os.makedirs(zip_extract_folder, exist_ok=True)
 
-                zip_extract_folder = path.join(
-                    self.extract_folder, table_file.removesuffix(".zip")
-                )
-                os.makedirs(zip_extract_folder, exist_ok=True)
+            password = zip_password(path.basename(file_path))
+            with ZipFile(path.join(self.table_file_folder, file_path), "r") as zip:
+                zip.setpassword(password)
+                for file in zip.namelist():
+                    file_data = zip.read(file)
 
-                with TableZipFile(
-                    path.join(self.table_file_folder, table_file), "r"
-                ) as zip_file:
-                    for file_name in zip_file.namelist():
-                        file_data = zip_file.read(file_name)
+                    if file.endswith(".json") and not (
+                        file_data := self.__process_json_file(file, file_data)
+                    ):
+                        notice(
+                            f"The json file: {file} in {file_path} is not implementate for process."
+                        )
 
-                        if file_name.endswith(".json") and not (
-                            file_data := self.process_json_file(file_name, file_data)
-                        ):
-                            notice(
-                                f"The json file: {file_name} in {table_file} is not implementate for process."
-                            )
+                    if file.endswith(".bytes"):
+                        file_dict, file = self.__process_bytes_file(
+                            file_path, file_data
+                        )
+                        if not file_data:
+                            print(f"Cannot process file {file} in {file_path}.")
+                            continue
 
-                        if file_name.endswith("bytes"):
-                            file_dict, file_name = self.process_bytes_file(
-                                file_name, file_data
-                            )
-                            if not file_data:
-                                print(
-                                    f"Cannot process file {file_name} in {table_file}."
-                                )
-                                continue
+                        file_data = json.dumps(
+                            file_dict, indent=4, ensure_ascii=False
+                        ).encode("utf8")
 
-                            file_data = json.dumps(
-                                file_dict, indent=4, ensure_ascii=False
-                            ).encode("utf8")
+                    if file_data:
+                        with open(path.join(zip_extract_folder, file), "wb") as f:
+                            f.write(file_data)
+                        return True
+            return False
+        except Exception as e:
+            print(f"Error when process {file_path}: {e}")
+            return False
 
-                        if file_data:
-                            with open(
-                                path.join(zip_extract_folder, file_name), "wb"
-                            ) as file:
-                                file.write(file_data)
-            except Exception as e:
-                print(f"Error while extract table {table_file}: {e}")
-            table_file = task_manager.tasks.task_done()
-            ProgressBar.increase()
+    def extract_table(self, file_path: str) -> None:
+        """Extract a table by file path."""
+        if not file_path.endswith((".zip", ".db")):
+            notice(f"The file {file_path} is not supported in current implementation.")
 
-    def extract_tables(self) -> None:
-        """Extract table with multi-thread"""
-        os.makedirs(self.extract_folder, exist_ok=True)
-        table_files = os.listdir(self.table_file_folder)
-        with ProgressBar(len(table_files), "Extracting Table file...", "items"):
-            with TaskManager(
-                Config.threads, Config.max_threads, self.__extract_worker
-            ) as manager:
-                manager.import_tasks(table_files)
-                manager.run(manager)
+        if file_path.endswith(".db"):
+            self.extract_db_file(file_path)
+
+        if file_path.endswith(".zip"):
+            self.extract_zip_file(file_path)

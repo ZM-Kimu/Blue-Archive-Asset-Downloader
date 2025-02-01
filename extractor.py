@@ -1,10 +1,20 @@
+import multiprocessing
+import multiprocessing.context
+import multiprocessing.queues
+import multiprocessing.synchronize
+import os
+import time
+from multiprocessing import Queue, freeze_support
 from os import path
 
 from lib.compiler import CompileToPython, CSParser
-from lib.console import notice, print
+from lib.console import ProgressBar, bar_increase, bar_text, notice, print
 from lib.dumper import IL2CppDumper
 from utils.config import Config
-from utils.util import FileUtils
+from utils.util import FileUtils, TaskManager
+from xtractor.bundle import BundleExtractor
+from xtractor.media import MediaExtractor
+from xtractor.table import TableExtractor
 
 
 class FlatbufferExtractor:
@@ -53,3 +63,96 @@ class FlatbufferExtractor:
         compiler.create_struct_files()
         compiler.create_module_file()
         compiler.create_dump_dict_file()
+
+
+class BundlesExtractor:
+    @staticmethod
+    def extract() -> None:
+        """Extract bundles."""
+        freeze_support()
+        extractor = BundleExtractor()
+        queue: multiprocessing.queues.Queue = Queue()
+        bundles = os.listdir(extractor.BUNDLE_FOLDER)
+        for bundle in bundles:
+            queue.put(path.join(extractor.BUNDLE_FOLDER, bundle))
+        with ProgressBar(len(bundles), "Extracting bundle...", "items") as bar:
+            processes = [
+                multiprocessing.Process(
+                    target=extractor.multiprocess_extract_worker,
+                    args=(queue, extractor.MAIN_EXTRACT_TYPES),
+                )
+                for _ in range(5)
+            ]
+            for p in processes:
+                p.start()
+            try:
+                while not queue.empty():
+                    bar.set_progress_value(bar.total - queue.qsize())
+                    time.sleep(0.1)
+                notice("Extract bundles successfully.")
+            except KeyboardInterrupt:
+                notice("Bundle extract task has been canceled.", "error")
+                for p in processes:
+                    p.kill()
+
+
+class MediasExtractor:
+    def __init__(self) -> None:
+        self.extractor = MediaExtractor()
+
+    def __extract_worker(self, task_manager: TaskManager) -> None:
+        while not (task_manager.tasks.empty() or task_manager.stop_task):
+            zip_path = task_manager.tasks.get()
+            zip_name = path.basename(zip_path)
+            bar_text(zip_name)
+            self.extractor.extract_zip(
+                MediaExtractor.MEDIA_EXTRACT_FOLDER, zip_path, zip_name
+            )
+            task_manager.tasks.task_done()
+            bar_increase()
+
+    def extract_zips(self) -> None:
+        """Extract all media zips from media folder."""
+        extractor = MediaExtractor()
+        files = FileUtils.find_files(extractor.MEDIA_FOLDER, [".zip"])
+        with ProgressBar(len(files), "Extracting media...", "items"):
+            with TaskManager(8, Config.max_threads, self.__extract_worker) as e_zips:
+                e_zips.set_cancel_callback(
+                    notice, "Media extract task has been canceled.", "error"
+                )
+                e_zips.import_tasks(files)
+                e_zips.run(e_zips)
+
+
+class TablesExtractor:
+    TABLE_FOLDER = path.join(Config.raw_dir, "Table")
+    TABLE_EXTRACT_FOLDER = path.join(Config.extract_dir, "Table")
+
+    def __init__(self) -> None:
+        self.extractor = TableExtractor(
+            self.TABLE_FOLDER,
+            self.TABLE_EXTRACT_FOLDER,
+            f"{Config.extract_dir}.FlatData",
+        )
+
+    def __extract_worker(self, task_manager: TaskManager) -> None:
+        while not (task_manager.stop_task or task_manager.tasks.empty()):
+            table_file = task_manager.tasks.get()
+            ProgressBar.item_text(table_file)
+            self.extractor.extract_table(table_file)
+            table_file = task_manager.tasks.task_done()
+            ProgressBar.increase()
+
+    def extract_tables(self) -> None:
+        """Extract table with multi-thread"""
+        os.makedirs(self.TABLE_EXTRACT_FOLDER, exist_ok=True)
+        table_files = os.listdir(self.TABLE_FOLDER)
+        with ProgressBar(len(table_files), "Extracting Table file...", "items"):
+            with TaskManager(
+                Config.threads, Config.max_threads, self.__extract_worker
+            ) as e_task:
+                e_task.set_cancel_callback(
+                    notice, "Table extract task has been canceled.", "error"
+                )
+                e_task.import_tasks(table_files)
+                e_task.run(e_task)
