@@ -7,7 +7,7 @@ from typing import Any
 from zipfile import ZipFile
 
 from lib.console import notice, print
-from lib.encryption import aes_decrypt, xor_with_key, zip_password
+from lib.encryption import xor_with_key, zip_password
 from lib.structure import DBTable, SQLiteDataType
 from utils.database import TableDatabase
 
@@ -21,7 +21,7 @@ class TableExtractor:
         Args:
             table_file_folder (str): Folder own table files.
             extract_folder (str): Folder to store the extracted data.
-            flat_data_module_name (str): Name to import flat data module.
+            flat_data_module_name (str): Name path to import flat data module. Most like "Extracted.FlatData".
         """
         self.table_file_folder = table_file_folder
         self.extract_folder = extract_folder
@@ -48,7 +48,7 @@ class TableExtractor:
             for t_name, t_class in flat_data_lib.__dict__.items()
         }
 
-    def __process_bytes_file(
+    def _process_bytes_file(
         self, file_name: str, data: bytes
     ) -> tuple[dict[str, Any], str]:
         """Extract flatbuffer bytes file to dict
@@ -58,29 +58,37 @@ class TableExtractor:
             data (bytes): Flatbuffer data to extract.
 
         Returns:
-            tuple[dict[str, Any], str]: Tuple with extracted dict and file name.
+            tuple[dict[str, Any], str]: Tuple with extracted dict and file name. Always have file name if success extract.
         """
         if not (
             flatbuffer_class := self.lower_fb_name_modules.get(
-                file_name.removesuffix(".bytes").removesuffix("").lower(), None
+                file_name.removesuffix(".bytes").lower(), None
             )
         ):
             return {}, ""
+
+        obj = None
         try:
-            if flatbuffer_class.__name__.endswith("Table"):  # TODO: ??
-                data = xor_with_key(flatbuffer_class.__name__, data)
+            if flatbuffer_class.__name__.endswith("Table"):
+                try:
+                    data = xor_with_key(flatbuffer_class.__name__, data)
+                    flat_buffer = getattr(flatbuffer_class, "GetRootAs")(data)
+                    obj = getattr(self.dump_wrapper_lib, "dump_table")(flat_buffer)
+                except:
+                    pass
+
+            if not obj:
                 flat_buffer = getattr(flatbuffer_class, "GetRootAs")(data)
-                excel = getattr(self.dump_wrapper_lib, "dump_table")(flat_buffer)
-            else:
-                flat_buffer = getattr(flatbuffer_class, "GetRootAs")(data)
-                excel = getattr(
+                obj = getattr(
                     self.dump_wrapper_lib, f"dump_{flatbuffer_class.__name__}"
                 )(flat_buffer)
-            return (excel, f"{flatbuffer_class.__name__}.json")
+            return (obj, f"{flatbuffer_class.__name__}.json")
         except:
+            # if json_data := self.__process_json_file(file_name, data):
+            #     return json.loads(json_data), f"{file_name}.json"
             return {}, ""
 
-    def __process_json_file(self, file_name: str, data: bytes) -> bytes:
+    def _process_json_file(self, data: bytes) -> bytes:
         """Extract json file in zip.
 
         Args:
@@ -90,22 +98,18 @@ class TableExtractor:
         Returns:
             bytes: Bytes of json data.
         """
-        if file_name == "logiceffectdata.json":
-            return aes_decrypt(data, "LogicEffectData").encode("utf8")
-        if file_name == "newskilldata.json":
-            return aes_decrypt(data, "NewSkillData").encode("utf8")
         try:
             data.decode("utf8")
             return data
         except:
-            pass
-        return bytes()
+            return bytes()
 
-    def __process_db_file(self, file_path: str) -> list[DBTable]:
+    def _process_db_file(self, file_path: str, table_name: str = "") -> list[DBTable]:
         """Extract sqlite database file.
 
         Args:
             file_path (str): Database path.
+            table_name (str): Specify table to extract.
 
         Returns:
             list[DBTable]: A list of DBTables.
@@ -113,7 +117,9 @@ class TableExtractor:
         with TableDatabase(file_path) as db:
             tables = []
 
-            for table in db.get_table_list():
+            table_list = [table_name] if table_name else db.get_table_list()
+
+            for table in table_list:
                 columns = db.get_table_column_structure(table)
                 rows: list[tuple] = db.get_table_data(table)[1]
                 table_data = []
@@ -122,7 +128,7 @@ class TableExtractor:
                     for col, value in zip(columns, row):
                         col_type = SQLiteDataType[col.data_type].value
                         if col_type == bytes:
-                            data, _ = self.__process_bytes_file(
+                            data, _ = self._process_bytes_file(
                                 table.replace("DBSchema", "Excel"), value
                             )
                             row_data.append(data)
@@ -135,10 +141,34 @@ class TableExtractor:
                 tables.append(DBTable(table, columns, table_data))
             return tables
 
+    def _process_zip_file(
+        self,
+        file_name: str,
+        file_data: bytes,
+        detect_type: bool = False,
+    ) -> tuple[bytes, str, bool]:
+        data = bytes()
+        if (detect_type or file_name.endswith(".json")) and (
+            data := self._process_json_file(file_data)
+        ):
+            return data, "", True
+
+        if detect_type or file_name.endswith(".bytes"):
+            b_data = self._process_bytes_file(file_name, file_data)
+            file_dict, file_name = b_data
+            if file_name:
+                return (
+                    json.dumps(file_dict, indent=4, ensure_ascii=False).encode("utf8"),
+                    file_name,
+                    True,
+                )
+
+        return data, "", False
+
     def extract_db_file(self, file_path: str) -> bool:
         """Extract db file."""
         try:
-            if db_tables := self.__process_db_file(
+            if db_tables := self._process_db_file(
                 path.join(self.table_file_folder, file_path)
             ):
                 db_name = file_path.removesuffix(".db")
@@ -162,47 +192,49 @@ class TableExtractor:
             print(f"Error when process {file_path}: {e}")
             return False
 
-    def extract_zip_file(self, file_path: str) -> bool:
+    def extract_zip_file(self, file_name: str) -> None:
         """Extract zip file."""
         try:
             zip_extract_folder = path.join(
-                self.extract_folder, file_path.removesuffix(".zip")
+                self.extract_folder, file_name.removesuffix(".zip")
             )
             os.makedirs(zip_extract_folder, exist_ok=True)
 
-            password = zip_password(path.basename(file_path))
-            with ZipFile(path.join(self.table_file_folder, file_path), "r") as zip:
+            password = zip_password(path.basename(file_name))
+            with ZipFile(path.join(self.table_file_folder, file_name), "r") as zip:
                 zip.setpassword(password)
-                for file in zip.namelist():
-                    file_data = zip.read(file)
+                for item_name in zip.namelist():
+                    item_data = zip.read(item_name)
 
-                    if file.endswith(".json") and not (
-                        file_data := self.__process_json_file(file, file_data)
-                    ):
+                    data, name, success = bytes(), "", False
+                    if item_name.endswith((".json", ".bytes")):
+                        if "RootMotion" in file_name:
+                            data, name, success = self._process_zip_file(
+                                f"{file_name.removesuffix('.zip')}Flat", item_data, True
+                            )
+                            name = item_name
+                        else:
+                            data, name, success = self._process_zip_file(
+                                item_name, item_data
+                            )
+
+                    if not success:
+                        data, name, success = self._process_zip_file(
+                            item_name, item_data, True
+                        )
+                    if success:
+                        item_name = name if name else item_name
+                        item_data = data
+                    else:
                         notice(
-                            f"The json file: {file} in {file_path} is not implementate for process."
+                            f"The file {item_name} in {file_name} is not be implementate or cannot process."
                         )
+                        continue
 
-                    if file.endswith(".bytes"):
-                        file_dict, file = self.__process_bytes_file(
-                            file_path, file_data
-                        )
-                        if not file_data:
-                            print(f"Cannot process file {file} in {file_path}.")
-                            continue
-
-                        file_data = json.dumps(
-                            file_dict, indent=4, ensure_ascii=False
-                        ).encode("utf8")
-
-                    if file_data:
-                        with open(path.join(zip_extract_folder, file), "wb") as f:
-                            f.write(file_data)
-                        return True
-            return False
+                    with open(path.join(zip_extract_folder, item_name), "wb") as f:
+                        f.write(item_data)
         except Exception as e:
-            print(f"Error when process {file_path}: {e}")
-            return False
+            print(f"Error when process {file_name}: {e}")
 
     def extract_table(self, file_path: str) -> None:
         """Extract a table by file path."""

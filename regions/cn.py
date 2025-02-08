@@ -37,9 +37,9 @@ class CNServer:
         self.extract_apk_file(apk_path)
         server_info = self.get_server_info()
 
-        print("Pulling manifest...")
+        print("Pulling catalog...")
         resources = self.get_resource_manifest(server_info)
-        notice(f"Manifest: {resources}.")
+        notice(f"Catalog: {resources}.")
         return resources
 
     def download_apk_worker(self, task_manager: TaskManager, url: str) -> None:

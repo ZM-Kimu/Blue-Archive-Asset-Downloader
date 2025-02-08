@@ -18,9 +18,9 @@ class GLServer:
             version = Config.version = self.get_latest_version()
         notice(f"Current resource version: {version}")
         server_url = self.get_server_url(version)
-        print("Pulling manifest...")
+        print("Pulling catalog...")
         resources = self.get_resource_manifest(server_url)
-        notice(f"Manifest: {resources}.")
+        notice(f"Catalog: {resources}.")
         return resources
 
     def get_latest_version(self) -> str:
@@ -56,7 +56,10 @@ class GLServer:
                 )
 
             if not resources:
-                raise FileNotFoundError("Cannot pull the manifest.")
+                notice(
+                    "The catalog is incomplete, and some resource types may fail to be retrieved.",
+                    "warn",
+                )
         except Exception as e:
             raise LookupError(
                 f"Encountered the following error while attempting to fetch manifest: {e}."

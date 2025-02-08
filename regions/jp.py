@@ -40,9 +40,9 @@ class JPServer:
         self.extract_apk_file(apk_path)
         server_url = self.get_server_url()
 
-        print("Pulling manifest...")
+        print("Pulling catalog...")
         resources = self.get_resource_manifest(server_url)
-        notice(f"Manifest: {resources}.")
+        notice(f"Catalog: {resources}.")
         return resources
 
     def download_apk_file(self, apk_url: str) -> str:

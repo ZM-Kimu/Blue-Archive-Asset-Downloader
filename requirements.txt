@@ -4,3 +4,4 @@ cloudscraper
 xxhash
 pycryptodome
 flatbuffers
+pykakasi

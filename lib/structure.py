@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterator, Literal
+from typing import Any, Iterator, Literal, overload
 from urllib.parse import urljoin
 
 
@@ -57,6 +57,12 @@ class EnumType:
     members: list[EnumMember]
 
 
+class ResourceType(Enum):
+    table = 0
+    media = 1
+    bundle = 2
+
+
 @dataclass
 class ResourceItem:
     url: str
@@ -64,16 +70,22 @@ class ResourceItem:
     size: int
     checksum: str
     check_type: Literal["crc", "md5"]
+    resource_type: ResourceType
     addition: dict
 
 
-class Resource_New:
+class Resource:
     def __init__(self) -> None:
-        # There are 6 basic generic types in Resource: url, path, size, checksum, check_type, and addition.
         self.resources: list[ResourceItem] = []
 
     def __bool__(self) -> bool:
         return bool(self.resources)
+
+    @overload
+    def __getitem__(self, index: slice) -> list[ResourceItem]: ...
+
+    @overload
+    def __getitem__(self, index: int) -> ResourceItem: ...
 
     def __getitem__(self, index: slice | int) -> list[ResourceItem] | ResourceItem:
         if isinstance(index, slice):
@@ -88,19 +100,9 @@ class Resource_New:
 
     def __repr__(self) -> str:
         size = sum(item.size for item in self.resources)
-        return f"{len(self)} items in the manifest, totaling {round(size / (1024**3), 2)}GB"
-
-    def add_resource(self, url: str, data: dict) -> None:
-        """Add a dictionary object that conforms to the basic resource structure and modify its URL."""
-        data["url"] = url
-        self.resources.append(data)
-
-    def add_resource_item(self, item: dict) -> None:
-        """Add a dictionary object that conforms to the basic resource structure."""
-        for key in ["url", "path", "size", "checksum", "check_type", "addition"]:
-            if key not in item.keys():
-                return
-        self.resources.append(item)
+        return (
+            f"{len(self)} items in the catalog, totaling {round(size / (1024**3), 2)}GB"
+        )
 
     def add(
         self,
@@ -109,90 +111,50 @@ class Resource_New:
         size: int,
         checksum: str,
         check_type: Literal["crc", "md5"],
+        resource_type: ResourceType,
         addition: dict | None = None,
     ) -> None:
         """Add resource."""
         self.resources.append(
-            {
-                "url": url,
-                "path": path,
-                "size": size,
-                "checksum": checksum,
-                "check_type": check_type,
-                "addition": {} if not addition else addition,
-            }
+            ResourceItem(
+                url,
+                path,
+                size,
+                checksum,
+                check_type,
+                resource_type,
+                addition if addition else {},
+            )
         )
 
-    def sorted_by_size(self, descending: bool = True) -> None:
-        """Sort by file size.
-        Args:
-            descending (bool, optional): Sort with descending order. Defaults to True.
-        """
-        self.resources.sort(key=lambda x: x["size"], reverse=descending)
-
-
-class Resource:
-    def __init__(self) -> None:
-        # There are 6 basic generic types in Resource: url, path, size, checksum, check_type, and addition.
-        self.resources: list[dict] = []
-
-    def __bool__(self) -> bool:
-        return bool(self.resources)
-
-    def __getitem__(self, index: slice | int) -> list[dict] | dict:
-        if isinstance(index, slice):
-            return self.resources[index.start : index.stop : index.step]
-        return self.resources[index]
-
-    def __len__(self) -> int:
-        return len(self.resources)
-
-    def __iter__(self) -> Iterator:
-        return iter(self.resources)
-
-    def __repr__(self) -> str:
-        size = sum(item["size"] for item in self.resources)
-        return f"{len(self)} items in the manifest, totaling {round(size / (1024**3), 2)}GB"
-
-    def add_resource(self, url: str, data: dict) -> None:
-        """Add a dictionary object that conforms to the basic resource structure and modify its URL."""
-        data["url"] = url
-        self.resources.append(data)
-
-    def add_resource_item(self, item: dict) -> None:
-        """Add a dictionary object that conforms to the basic resource structure."""
-        for key in ["url", "path", "size", "checksum", "check_type", "addition"]:
-            if key not in item.keys():
-                return
+    def add_item(self, item: ResourceItem) -> None:
+        """Add a ResourceItem instance with data."""
         self.resources.append(item)
 
-    def add(
-        self,
-        url: str,
-        path: str,
-        size: int,
-        checksum: str,
-        check_type: Literal["crc", "md5"],
-        addition: dict | None = None,
-    ) -> None:
-        """Add resource."""
-        self.resources.append(
-            {
-                "url": url,
-                "path": path,
-                "size": size,
-                "checksum": checksum,
-                "check_type": check_type,
-                "addition": {} if not addition else addition,
-            }
-        )
+    def search_resource(
+        self, attr: str, value: Any, exact_match: bool = False
+    ) -> "Resource":
+        """Retrieve items that contain or match the specified value based on the given key and return the Resource."""
+        filtered_res = Resource()
+        conditional = lambda x, y: str(x).lower() in str(y).lower()
+        if exact_match:
+            conditional = lambda x, y: x == y
+
+        _ = [
+            filtered_res.add_item(res)  # type: ignore
+            for res in self.resources
+            if conditional(value, getattr(res, attr))
+        ]
+
+        return filtered_res
 
     def sorted_by_size(self, descending: bool = True) -> None:
         """Sort by file size.
+
         Args:
             descending (bool, optional): Sort with descending order. Defaults to True.
         """
-        self.resources.sort(key=lambda x: x["size"], reverse=descending)
+        self.resources.sort(key=lambda x: x.size, reverse=descending)
 
 
 class CNResource:
@@ -201,17 +163,19 @@ class CNResource:
         self.bundle_url = ""
         self.media_url = ""
         self.table_url = ""
-        self.bundle_file: list[dict] = []
-        self.media_file: list[dict] = []
-        self.table_file: list[dict] = []
+        self.bundle_files: list[dict] = []
+        self.media_files: list[dict] = []
+        self.table_files: list[dict] = []
 
     def __bool__(self) -> bool:
         return (
-            bool(self.bundle_file) and bool(self.media_file) and bool(self.table_file)
+            bool(self.bundle_files)
+            and bool(self.media_files)
+            and bool(self.table_files)
         )
 
     def __len__(self) -> int:
-        return len(self.bundle_file) + len(self.media_file) + len(self.table_file)
+        return len(self.bundle_files) + len(self.media_files) + len(self.table_files)
 
     def set_url_link(self, base_url: str, bundle: str, media: str, table: str) -> None:
         """Set the URL link, and the base URL must end with a '/'."""
@@ -224,7 +188,7 @@ class CNResource:
         self, name: str, size: int, md5: str, is_prologue: bool, is_split_download: bool
     ) -> None:
         """Add bundle resource."""
-        self.bundle_file.append(
+        self.bundle_files.append(
             {
                 "name": name,
                 "size": size,
@@ -238,7 +202,7 @@ class CNResource:
         self, url: str, file_path: str, media_type: str, bytes: int, md5: str
     ) -> None:
         """Add media resource."""
-        self.media_file.append(
+        self.media_files.append(
             {
                 "url": url,
                 "path": file_path,
@@ -252,7 +216,7 @@ class CNResource:
         self, url: str, name: str, size: int, md5: str, includes: list
     ) -> None:
         """Add table resource."""
-        self.table_file.append(
+        self.table_files.append(
             {"url": url, "name": name, "size": size, "crc": md5, "includes": includes}
         )
 
@@ -260,32 +224,35 @@ class CNResource:
         """Convert custom structures to generic structures."""
         resource = Resource()
 
-        for bundle in self.bundle_file:
+        for bundle in self.bundle_files:
             resource.add(
                 urljoin(self.bundle_url, bundle["name"]),
                 urljoin("Bundle/", bundle["name"]),
                 bundle["size"],
                 bundle["crc"],
                 "md5",
+                ResourceType.bundle,
             )
 
-        for media in self.media_file:
+        for media in self.media_files:
             resource.add(
                 urljoin(self.media_url, media["url"]),
                 urljoin("Media/", media["path"]),
                 media["bytes"],
                 media["crc"],
                 "md5",
+                ResourceType.media,
                 {"media_type": media["media_type"]},
             )
 
-        for table in self.table_file:
+        for table in self.table_files:
             resource.add(
                 urljoin(self.table_url, table["url"]),
                 urljoin("Table/", table["name"]),
                 table["size"],
                 table["crc"],
                 "md5",
+                ResourceType.table,
                 {"includes": table["includes"]},
             )
 
@@ -295,13 +262,19 @@ class CNResource:
 class GLResource:
     def __init__(self) -> None:
         self.base_url = ""
-        self.resource_file: list[dict] = []
+        self.bundle_files: list[dict] = []
+        self.media_files: list[dict] = []
+        self.table_files: list[dict] = []
 
     def __bool__(self) -> bool:
-        return bool(self.resource_file)
+        return (
+            bool(self.bundle_files)
+            and bool(self.media_files)
+            and bool(self.table_files)
+        )
 
     def __len__(self) -> int:
-        return len(self.resource_file)
+        return len(self.bundle_files) + len(self.media_files) + len(self.table_files)
 
     def set_url_link(self, base_url: str) -> None:
         """Set the URL link, and the base URL must end with a '/'."""
@@ -315,26 +288,71 @@ class GLResource:
         resource_hash: str,
     ) -> None:
         """Add resource."""
-        self.resource_file.append(
-            {
-                "group": group,
-                "resource_path": resource_path,
-                "resource_size": resource_size,
-                "resource_hash": resource_hash,
-            }
-        )
+        if "TableBundles" in resource_path:
+            pure_path = "Table" + resource_path.split("TableBundles", 1)[-1]
+            self.table_files.append(
+                {
+                    "url": urljoin(self.base_url, resource_path),
+                    "path": pure_path,
+                    "size": resource_size,
+                    "checksum": resource_hash,
+                    "group": group,
+                }
+            )
+
+        elif "MediaResources" in resource_path:
+            pure_path = "Media" + resource_path.split("MediaResources", 1)[-1]
+            self.table_files.append(
+                {
+                    "url": urljoin(self.base_url, resource_path),
+                    "path": pure_path,
+                    "size": resource_size,
+                    "checksum": resource_hash,
+                    "group": group,
+                }
+            )
+        elif resource_path.endswith(".bundle"):
+            pure_path = "Bundle/" + resource_path.split("/")[-1]
+            self.table_files.append(
+                {
+                    "url": urljoin(self.base_url, resource_path),
+                    "path": pure_path,
+                    "size": resource_size,
+                    "checksum": resource_hash,
+                    "group": group,
+                }
+            )
 
     def to_resource(self) -> Resource:
         """Convert custom structures to generic structures."""
         resource = Resource()
 
-        for res in self.resource_file:
+        for table in self.table_files:
             resource.add(
-                urljoin(self.base_url, res["resource_path"]),
-                res["resource_path"],
-                res["resource_size"],
-                res["resource_hash"],
+                table["url"],
+                table["path"],
+                table["size"],
+                table["checksum"],
                 "md5",
+                ResourceType.table,
+            )
+        for media in self.media_files:
+            resource.add(
+                media["url"],
+                media["path"],
+                media["size"],
+                media["checksum"],
+                "md5",
+                ResourceType.media,
+            )
+        for bundle in self.bundle_files:
+            resource.add(
+                bundle["url"],
+                bundle["path"],
+                bundle["size"],
+                bundle["checksum"],
+                "md5",
+                ResourceType.bundle,
             )
 
         return resource
@@ -346,15 +364,17 @@ class JPResource:
         self.bundle_url = ""
         self.media_url = ""
         self.table_url = ""
-        self.bundle_file: list[dict] = []
-        self.media_file: list[dict] = []
-        self.table_file: list[dict] = []
+        self.bundle_files: list[dict] = []
+        self.media_files: list[dict] = []
+        self.table_files: list[dict] = []
 
     def __bool__(self) -> bool:
-        return bool(self.bundle_file) or bool(self.media_file) or bool(self.table_file)
+        return (
+            bool(self.bundle_files) or bool(self.media_files) or bool(self.table_files)
+        )
 
     def __len__(self) -> int:
-        return len(self.bundle_file) + len(self.media_file) + len(self.table_file)
+        return len(self.bundle_files) + len(self.media_files) + len(self.table_files)
 
     def set_url_link(self, base_url: str, bundle: str, media: str, table: str) -> None:
         """Set the URL link, and the base URL must end with a '/'."""
@@ -372,7 +392,7 @@ class JPResource:
         is_split_download: bool,
     ) -> None:
         """Add bundle resource."""
-        self.bundle_file.append(
+        self.bundle_files.append(
             {
                 "name": name,
                 "size": size,
@@ -394,7 +414,7 @@ class JPResource:
         is_split_download: bool,
     ) -> None:
         """Add media resource."""
-        self.media_file.append(
+        self.media_files.append(
             {
                 "key": key,
                 "path": path,
@@ -420,7 +440,7 @@ class JPResource:
         includes: list,
     ) -> None:
         """Add table resource."""
-        self.table_file.append(
+        self.table_files.append(
             {
                 "key": key,
                 "name": name,
@@ -438,32 +458,35 @@ class JPResource:
         """Convert custom structures to generic structures."""
         resource = Resource()
 
-        for bundle in self.bundle_file:
+        for bundle in self.bundle_files:
             resource.add(
                 urljoin(self.bundle_url, bundle["name"]),
                 urljoin("Bundle/", bundle["name"]),
                 bundle["size"],
                 bundle["crc"],
                 "crc",
+                ResourceType.bundle,
             )
 
-        for media in self.media_file:
+        for media in self.media_files:
             resource.add(
                 urljoin(self.media_url, media["path"]),
                 urljoin("Media/", media["path"]),
                 media["bytes"],
                 media["crc"],
                 "crc",
+                ResourceType.media,
                 {"media_type": media["media_type"]},
             )
 
-        for table in self.table_file:
+        for table in self.table_files:
             resource.add(
                 urljoin(self.table_url, table["name"]),
                 urljoin("Table/", table["name"]),
                 table["size"],
                 table["crc"],
                 "crc",
+                ResourceType.table,
                 {"includes": table["includes"]},
             )
 

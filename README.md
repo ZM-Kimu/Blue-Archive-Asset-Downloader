@@ -1,6 +1,7 @@
-# Blue Archive Asset Downloader
+# Blue Archive Asset Downloader 
 
-<div align="center">本项目可以从不同服务器下载并解开碧蓝档案的素材，现支援中国服、国际服、日本服。</div>
+<div align="center">
+本项目可以从不同服务器下载并提取碧蓝档案的素材，现支援中国服、国际服、日本服。</div>
 
 
 ## 主要功能
@@ -17,7 +18,7 @@
 - Media
 - Table
 
-解开的文件类型包括：
+提取的文件类型包括：
 
 - Bundle(仅JP)
 - Media
@@ -26,12 +27,11 @@
 ## 环境要求
 
 - Python 3.10 或更高版本
-- [.NET8](https://dotnet.microsoft.com/download)(解开table或使用高级检索时必须启用)
-
+- [.NET8](https://dotnet.microsoft.com/download)(提取table时必须启用)
+<!-- 或使用高级检索 -->
 ## 先决条件
 
 请确保已安装 Python，并安装必要的库：
-- 在安装UnityPy时，需要安装C++构建库，如您不希望安装，亦可使用[其他工具](#使用须知)。下载时解开的功能依赖该库。
 ```shell
 pip install -r requirements.txt
 ```
@@ -39,45 +39,69 @@ pip install -r requirements.txt
 使用下列命令行参数运行 `main.py` 脚本（示例）：
 
 ```shell
-python main.py --threads 30 --region jp --proxy http://0.0.0.0:0000
+python main.py --region jp --proxy http://0.0.0.0:0000
 ```
 <!-- -as azusa,ハナコ,下江小春,아지타니히후미,聖園彌香 -->
-## 参数说明
 
-- `--region`, `-g` `*`服务器区域：`cn` (中国), `gl` (国际), `jp` (日本)。
-- `--threads`, `-t` 同时下载的线程数。
-- `--version`, `-v` 游戏版本号（仅支持国际服务器）。
-- `--raw`, `-r` 指定原始文件位置。
-- `--extract`, `-e` 指定解压文件位置。
-- `--temporary`, `-m` 指定临时文件位置。
-<!-- - `--downloading-extract`, `-de` 是否在下载时解开文件。 -->
-- `--proxy`, `-p` 设置HTTP代理。
-- `--max-retries`, `-x` 下载时的最大重试次数。
-<!-- - `--search`, `-s` 普通检索，指定需要检索并下载的文件的关键词，使用半角英文逗号`,`分隔。 -->
-<!-- - `--advance-search`, `-as` 高级检索，指定需要检索并下载的角色关键字，使用半角英文逗号`,`分隔。 -->
+## **基本参数**
+**`*`** :**必选的选项**
+| 参数               | 缩写  | 说明                                                                            |
+| ------------------ | ----- | ------------------------------------------------------------------------------- |
+| **`--region`**`*`  | `-g`  | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                        |
+| `--threads`        | `-t`  | **同时下载或解压的线程数**                                                      |
+| `--version`        | `-v`  | **需要下载的资源的版本号**（仅支持国际服务器）                                  |
+| `--raw`            | `-r`  | **指定未处理文件的位置**                                                        |
+| `--extract`        | `-e`  | **指定已提取文件的位置**                                                        |
+| `--temporary`      | `-m`  | **指定临时文件的位置**                                                          |
+| `--resource-type`  | `-rt` | **资源类型**：`table`、`media`、`bundle`、`all`                                 |
+| `--proxy`          | `-p`  | **设置 HTTP 代理**                                                              |
+| `--max-retries`    | `-x`  | **下载失败时的最大重试次数**                                                    |
+| `--search`         | `-s`  | **普通检索**，指定需要检索并下载的文件的关键词，使用空格分隔。                  |
+| `--advance-search` | `-as` | **高级检索**，指定所有需要检索并下载的角色关键字，使用空格分隔，需要.NET8环境。 |
+<!-- - `--downloading-extract`, `-de` 是否在下载中提取文件。是则在单个文件下载完毕后解开，否则所有文件下载后统一解开。 -->
 
-> **`*`** :必选的选项
+**高级检索支持的检索条件(仅JP)：**
+- `[*]` **名称**
+- `cv` **声优**
+- `age` **年龄**
+- `height` **身高**
+- `birthday` **生日**
+- `illustrator` **作画者**
+- `school` **所属学园**（包括但不限于）：
+  - `RedWinter`、`Trinity`、`Gehenna`、`Abydos`、`Millennium`、`Arius`
+  - `Shanhaijing`、`Valkyrie`、`WildHunt`、`SRT`、`SCHALE`、`ETC`
+  - `Tokiwadai`、`Sakugawa`
+- `club` **所属社团**（包括但不限于）：
+  - `Engineer`、`CleanNClearing`、`KnightsHospitaller`、`IndeGEHENNA`
+  - `IndeMILLENNIUM`、`IndeHyakkiyako`、`IndeShanhaijing`、`IndeTrinity`
+  - `FoodService`、`Countermeasure`、`BookClub`、`MatsuriOffice` ...
+
+---
+
+-  示例 
+```sh
+  -as yume 百合園セイア 호시노 cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
+```
+
 
 ## 输出
 - `Temp`: 存储临时文件或非主要文件。如：Apk文件等。
-- `RawData`: 存储经由目录下载的文件。如：Bundle、Media、Table等。
-- `Extract`: 存储已解开的文件。如：Bundle、Media、Table与Dumps等。
-
-## TODO
-
-- **流式解包**：下载时解开文件。- 75%
-- **角色检索**：包名检索或基于任何名称的检索。- 36%
-- **Memory Pack** - 30%
-- **完善CN/GL**
-- **一些bug**
+- `RawData`: 存储经由Catalog下载的文件。如：Bundle、Media、Table等。
+- `Extracted`: 存储已提取的文件。如：Bundle、Media、Table与Dumps等。
 
 
 ## 使用须知
 - JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
-- 在某些地区可能需要使用代理服务器以下载特定区域的游戏资源。
-- Bundle文件的解开基于UnityPy，如希望更加详细的内容请使用[AssetRipper](https://github.com/AssetRipper/AssetRipper)或[AssetStudio](https://github.com/Perfare/AssetStudio)
+- 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
+- Bundle文件的提取基于UnityPy，如希望更加详细的内容请使用[AssetRipper](https://github.com/AssetRipper/AssetRipper)或[AssetStudio](https://github.com/Perfare/AssetStudio)
 
+## TODO
+
+- **流式解包**：下载时提取文件。- 65%
+- **Memory Pack** - 30%
+- **完善CN/GL**
+- **一些bug**
 
 ## 关于项目
 本项目采用 [MIT 许可证](LICENSE)。

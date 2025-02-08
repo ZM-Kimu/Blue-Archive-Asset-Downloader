@@ -100,6 +100,8 @@ class FileDownloader:
                 return True
 
             return False
+        except KeyboardInterrupt as e:
+            raise KeyboardInterrupt("Download task has been interrupted.") from e
         except:
             self.__retried += 1
             bar_increase(-counter if self.enable_progress else 0)

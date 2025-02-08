@@ -7,6 +7,14 @@ from os import path
 from typing import Any, Literal
 
 import UnityPy
+import UnityPy.enums
+import UnityPy.lib
+import UnityPy.lib.FMOD
+import UnityPy.lib.FMOD.Windows
+import UnityPy.lib.FMOD.Windows.x64
+import UnityPy.lib.FMOD.Windows.x86
+import UnityPy.tools
+import UnityPy.tools.extractor
 
 from lib.console import ProgressBar
 from utils.config import Config
@@ -21,7 +29,6 @@ class BundleExtractor:
         "AudioClip",
         "Font",
         "TextAsset",
-        "MonoBehaviour",
         "Mesh",
     ]
 
