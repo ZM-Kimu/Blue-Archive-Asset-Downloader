@@ -51,7 +51,9 @@ class JPServer:
         if not (
             (
                 apk_req := FileDownloader(
-                    apk_url, request_method="get", enable_progress=True
+                    apk_url,
+                    request_method="get",
+                    use_cloud_scraper=True,
                 )
             )
             and (apk_data := apk_req.get_response(True))
@@ -73,7 +75,10 @@ class JPServer:
         with ProgressBar(apk_size, "Downloading APK...", "B") as bar:
             bar.item_text(apk_path.split("/")[-1])
             FileDownloader(
-                apk_url, request_method="get", enable_progress=True
+                apk_url,
+                request_method="get",
+                enable_progress=True,
+                use_cloud_scraper=True,
             ).save_file(apk_path)
 
         return apk_path

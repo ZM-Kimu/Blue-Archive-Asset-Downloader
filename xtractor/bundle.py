@@ -1,22 +1,12 @@
 import json
-import multiprocessing
-import multiprocessing.queues
 import multiprocessing.synchronize
 import os
 from os import path
 from typing import Any, Literal
 
 import UnityPy
-import UnityPy.enums
-import UnityPy.lib
-import UnityPy.lib.FMOD
-import UnityPy.lib.FMOD.Windows
-import UnityPy.lib.FMOD.Windows.x64
-import UnityPy.lib.FMOD.Windows.x86
-import UnityPy.tools
-import UnityPy.tools.extractor
 
-from lib.console import ProgressBar
+from lib.console import ProgressBar, notice
 from utils.config import Config
 
 
@@ -52,10 +42,12 @@ class BundleExtractor:
     ) -> None:
         """Multi-thread is not allowed in UnityPy. Use multi-process."""
         while not tasks.empty():
-
-            bundle_path = tasks.get()
-            ProgressBar.item_text(path.basename(bundle_path))
-            BundleExtractor().extract_bundle(bundle_path, extract_types)
+            try:
+                bundle_path = tasks.get()
+                ProgressBar.item_text(path.basename(bundle_path))
+                BundleExtractor().extract_bundle(bundle_path, extract_types)
+            except Exception as e:
+                notice(f"Unexpect error occurred: {e}")
 
     def extract_bundle(
         self,

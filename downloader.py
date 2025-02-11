@@ -1,16 +1,20 @@
 import os
 from os import path
 from queue import Empty, Queue
+from threading import Event
 
 from lib.console import ProgressBar, bar_increase, bar_text, notice
 from lib.downloader import FileDownloader
 from lib.encryption import calculate_crc, calculate_md5
-from lib.structure import Resource, ResourceItem
+from lib.structure import Resource, ResourceItem, ResourceType
 from regions.cn import CNServer
 from regions.gl import GLServer
 from regions.jp import JPServer
 from utils.config import Config
 from utils.util import TaskManager
+from xtractor.bundle import BundleExtractor
+from xtractor.media import MediaExtractor
+from xtractor.table import TableExtractor
 
 
 class Downloader:
@@ -63,7 +67,9 @@ class Downloader:
 
             task_manager.tasks.task_done()
 
-    def download_worker(self, task_manager: TaskManager, failed_res: Resource) -> None:
+    def download_worker(
+        self, task_manager: TaskManager, completed_res: Queue, failed_res: Resource
+    ) -> None:
         """Worker thread that continuously takes tasks from the queue and downloads."""
         while not (task_manager.stop_task or task_manager.tasks.empty()):
             # Break when queue is empty.
@@ -89,40 +95,82 @@ class Downloader:
                     failed_res.add_item(res)
             else:
                 bar_increase()
+                completed_res.put(res)
+
+            task_manager.tasks.task_done()
+
+    def extract_worker(self, task_manager: TaskManager, bundle_working: Event) -> None:
+        """Extract a file after a file downloaded."""
+        while not (task_manager.stop_task or task_manager.tasks.empty()):
+            res: ResourceItem = task_manager.tasks.get()
+            res_path = path.join(Config.raw_dir, res.path)
+
+            if res.resource_type == ResourceType.bundle:
+                if not bundle_working.is_set():
+                    bundle_working.set()
+                    BundleExtractor().extract_bundle(
+                        res_path, BundleExtractor.MAIN_EXTRACT_TYPES
+                    )
+                    bundle_working.clear()
+                else:
+                    task_manager.tasks.put(res)
+            if res.resource_type == ResourceType.media and res.path.endswith(".zip"):
+                MediaExtractor().extract_zip(res_path)
+            if res.resource_type == ResourceType.table:
+                TableExtractor(
+                    path.join(Config.raw_dir, "Table"),
+                    path.join(Config.extract_dir, "Table"),
+                    f"{Config.extract_dir}.FlatData",
+                ).extract_table(res_path)
 
             task_manager.tasks.task_done()
 
     def verify_and_download(self, resource: Resource, retries: int = 0) -> None:
         """To verify and download file with thread pools."""
         res_to_download: Queue[ResourceItem] = Queue()
+        res_to_extract: Queue[ResourceItem] = Queue()
         failed_res = Resource()
-
-        resource.sorted_by_size()  # Necessary for auto thread increment.
 
         if not resource:
             return
 
+        resource.sorted_by_size()  # Necessary for auto thread increment.
+
+        # In this implementation, download will wait for verify to provide data, and extract will wait for download to provide data.
         with ProgressBar(len(resource), "Verify and download files...", "item") as bar:
             verify_task = TaskManager(
                 Config.threads, Config.threads, self.verify_worker
             )
             verify_task.import_tasks(resource)
-            verify_task.run_without_block(verify_task, res_to_download, bar)
 
-            with TaskManager(
+            down_task = TaskManager(
                 Config.threads,
                 Config.max_threads,
                 self.download_worker,
                 res_to_download,
-            ) as down_task:
-                down_task.set_cancel_callback(
-                    notice,
-                    "Download has been canceled. Waiting for threads complete.",
-                    "error",
-                )
-                down_task.set_relate("event", verify_task)
-                down_task.run(down_task, failed_res)
+            )
+            down_task.set_cancel_callback(
+                notice,
+                "Download has been canceled. Waiting for threads complete.",
+                "error",
+            )
+            down_task.set_relation("shut", verify_task)
 
+            bundle_working = Event()
+            extract_task = TaskManager(
+                Config.threads, Config.max_threads, self.extract_worker, res_to_extract
+            )
+            extract_task.set_relation("shut", down_task)
+
+            verify_task.run_without_block(res_to_download, bar)
+            if Config.downloading_extract:
+                down_task.run_without_block(res_to_extract, failed_res)
+                extract_task.run(bundle_working)
+            else:
+                down_task.run(res_to_extract, failed_res)
+
+            extract_task.done()
+            down_task.done()
             verify_task.done()
 
         if verify_task.stop_task or down_task.stop_task:

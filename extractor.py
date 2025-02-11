@@ -47,7 +47,9 @@ class FlatbufferExtractor:
         extract_path = path.abspath(path.join(Config.extract_dir, self.DUMP_PATH))
 
         print("Try to dump il2cpp...")
-        dumper.dump_il2cpp(extract_path, abs_il2cpp_path, abs_metadata_path)
+        dumper.dump_il2cpp(
+            extract_path, abs_il2cpp_path, abs_metadata_path, Config.retries
+        )
         notice("Dump il2cpp binary file successfully.")
 
     def compile(self) -> None:
@@ -105,11 +107,8 @@ class MediasExtractor:
     def __extract_worker(self, task_manager: TaskManager) -> None:
         while not (task_manager.tasks.empty() or task_manager.stop_task):
             zip_path = task_manager.tasks.get()
-            zip_name = path.basename(zip_path)
-            bar_text(zip_name)
-            self.extractor.extract_zip(
-                MediaExtractor.MEDIA_EXTRACT_FOLDER, zip_path, zip_name
-            )
+            bar_text(path.basename(zip_path))
+            self.extractor.extract_zip(zip_path)
             task_manager.tasks.task_done()
             bar_increase()
 
@@ -125,7 +124,7 @@ class MediasExtractor:
                     notice, "Media extract task has been canceled.", "error"
                 )
                 e_zips.import_tasks(files)
-                e_zips.run(e_zips)
+                e_zips.run()
 
 
 class TablesExtractor(TableExtractor):
@@ -161,4 +160,16 @@ class TablesExtractor(TableExtractor):
                     notice, "Table extract task has been canceled.", "error"
                 )
                 e_task.import_tasks(table_files)
-                e_task.run(e_task)
+                e_task.run()
+
+
+if __name__ == "__main__":
+    if Config.region == "cn":
+        BundlesExtractor().extract()
+    if Config.region == "jp":
+        if "table" in Config.resource_type:
+            TablesExtractor().extract_tables()
+        if "bundle" in Config.resource_type:
+            BundlesExtractor.extract()
+        if "media" in Config.resource_type:
+            MediasExtractor().extract_zips()
