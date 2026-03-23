@@ -2,16 +2,13 @@ import re
 
 from lib.console import notice, print
 from lib.downloader import FileDownloader
+from lib.structure import GLResource, Resource
 from utils.config import Config
-from utils.resource_structure import GLResource, Resource
 
 
 class GLServer:
-    def __init__(self) -> None:
-        self.urls = {
-            "uptodown": "https://blue-archive-global.en.uptodown.com/android",
-            "manifest": "https://api-pub.nexon.com/patch/v1.1/version-check",
-        }
+    UPTODOWN_URL = "https://blue-archive-global.en.uptodown.com/android"
+    MANIFEST_URL = "https://api-pub.nexon.com/patch/v1.1/version-check"
 
     def main(self) -> Resource:
         """Main entry of GLServer."""
@@ -28,30 +25,26 @@ class GLServer:
 
     def get_latest_version(self) -> str:
         """Fetch the latest version from Uptodown."""
-        version_match: re.Match | None = None
-        response = FileDownloader(self.urls["uptodown"]).get_response()
+        if not (response := FileDownloader(self.UPTODOWN_URL).get_response()):
+            raise LookupError("Cannot fetch resource catalog.")
 
         if version_match := re.search(r"(\d+\.\d+\.\d+)", response.text):
             return version_match.group(1)
 
-        if not version_match:
-            raise LookupError(
-                "Unable to retrieve the version. Configure it manually if possible."
-            )
-        return ""
+        raise LookupError("Unable to retrieve the version.")
 
     def get_resource_manifest(self, server_url: str) -> Resource:
         """GLServer uses persistent API and allows specifying the version."""
         resources = GLResource()
         try:
-            resource_data = FileDownloader(server_url).get_response()
-
             resources.set_url_link(server_url.rsplit("/", 1)[0] + "/")
 
-            if not (resource := resource_data.json()):
-                notice(
-                    f"Failed to fetch resource because {resource_data.reason}. Retry may solve the issue.",
-                    "error",
+            if not (
+                (resource_data := FileDownloader(server_url).get_response())
+                and (resource := resource_data.json())
+            ):
+                raise LookupError(
+                    "Failed to fetch resource catalog. Retry may solve the issue."
                 )
 
             for res in resource.get("resources", []):
@@ -79,8 +72,11 @@ class GLServer:
             "curr_build_number": version.split(".")[-1],
         }
 
-        server_url = FileDownloader(
-            self.urls["manifest"], request_method="post", json=request_body
-        ).get_response()
+        if (
+            server_resp := FileDownloader(
+                self.MANIFEST_URL, request_method="post", json=request_body
+            ).get_response()
+        ) and (server_url := server_resp.json()):
+            return server_url.get("patch", {}).get("resource_path", "")
 
-        return server_url.json().get("patch", {}).get("resource_path", "")
+        return ""

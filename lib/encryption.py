@@ -1,3 +1,5 @@
+"""Main encryption lib for encrypt."""
+
 import hashlib
 import math
 import time
@@ -11,7 +13,7 @@ from Crypto.Protocol.KDF import PBKDF2
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
 from Crypto.Util.strxor import strxor
-from xxhash import xxh32_intdigest
+from xxhash import xxh32_intdigest, xxh64_intdigest
 
 T = TypeVar("T", int, float)
 
@@ -30,10 +32,17 @@ PBKDF2_DERIVATION_ITERATIONS = 1000
 
 
 def calculate_hash(name: bytes | str) -> int:
-    """Calculate a hash using xxhash with UTF-8 encoding if needed."""
+    """Calculate a 32-bit hash using xxhash with UTF-8 encoding if needed."""
     if isinstance(name, str):
         name = name.encode("utf8")
     return xxh32_intdigest(name)
+
+
+def calculate_hash64(name: bytes | str) -> int:
+    """Calculate a 64-bit hash using xxhash with UTF-8 encoding if needed."""
+    if isinstance(name, str):
+        name = name.encode("utf8")
+    return xxh64_intdigest(name)
 
 
 def calculate_crc(path: str) -> int:

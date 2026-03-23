@@ -1,5 +1,6 @@
 import argparse
 import os
+from typing import Literal
 
 # import json
 
@@ -77,7 +78,7 @@ args = parser.parse_args()
 class Config:
     threads: int = args.threads
     version: str = args.version
-    region: str = args.region.lower()
+    region: Literal["cn", "gl", "jp"] = args.region.lower()
     raw_dir: str = args.raw
     extract_dir: str = args.extract
     temp_dir: str = args.temporary
