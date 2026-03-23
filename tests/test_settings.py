@@ -1,5 +1,5 @@
+from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.settings import AppSettings
-from ba_downloader.utils.config import Config, apply_settings
 
 
 def test_settings_normalization_defaults() -> None:
@@ -11,8 +11,8 @@ def test_settings_normalization_defaults() -> None:
     assert settings.resource_type == ("table", "media", "bundle")
 
 
-def test_apply_settings_updates_runtime_config() -> None:
-    normalized = apply_settings(
+def test_runtime_context_copies_normalized_settings() -> None:
+    runtime_context = RuntimeContext.from_settings(
         AppSettings(
             region="gl",
             threads=8,
@@ -21,11 +21,10 @@ def test_apply_settings_updates_runtime_config() -> None:
             temp_dir="Temp",
             resource_type=("media",),
             max_retries=2,
-        )
+        ),
     )
 
-    assert normalized.region == "gl"
-    assert Config.region == "gl"
-    assert Config.threads == 8
-    assert Config.resource_type == ["media"]
-    assert Config.max_threads == 56
+    assert runtime_context.region == "gl"
+    assert runtime_context.threads == 8
+    assert runtime_context.resource_type == ("media",)
+    assert runtime_context.max_threads == 56

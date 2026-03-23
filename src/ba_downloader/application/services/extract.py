@@ -1,21 +1,24 @@
-from ba_downloader.infrastructure.services.extractor_engine import BundlesExtractor, MediasExtractor, TablesExtractor
-from ba_downloader.utils.config import Config
+from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.extract import AssetExtractionPort
 
 
 class ExtractService:
-    def run(self) -> None:
-        if Config.region == "cn":
-            BundlesExtractor().extract()
+    def __init__(self, extraction_workflow: AssetExtractionPort) -> None:
+        self.extraction_workflow = extraction_workflow
+
+    def run(self, context: RuntimeContext) -> None:
+        if context.region == "cn":
+            self.extraction_workflow.extract_bundles(context)
             return
 
-        if "table" in Config.resource_type:
-            TablesExtractor().extract_tables()
-        if "bundle" in Config.resource_type:
-            BundlesExtractor.extract()
-        if "media" in Config.resource_type:
-            MediasExtractor().extract_zips()
+        if "table" in context.resource_type:
+            self.extraction_workflow.extract_tables(context)
+        if "bundle" in context.resource_type:
+            self.extraction_workflow.extract_bundles(context)
+        if "media" in context.resource_type:
+            self.extraction_workflow.extract_media(context)
 
-    def run_post_download(self) -> None:
-        if Config.downloading_extract:
+    def run_post_download(self, context: RuntimeContext) -> None:
+        if context.extract_while_download:
             return
-        self.run()
+        self.run(context)

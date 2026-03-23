@@ -1,13 +1,23 @@
-from ba_downloader.infrastructure.services.downloader_engine import DownloaderEngine
-from ba_downloader.shared.resources.resource_filters import ResourceUtils
-from ba_downloader.utils.config import Config
+from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.download import ResourceDownloaderPort
+from ba_downloader.domain.ports.region import RegionProvider
+from ba_downloader.domain.services.resource_query import ResourceQueryService
 
 
 class DownloadService:
-    def __init__(self) -> None:
-        self.downloader = DownloaderEngine()
+    def __init__(
+        self,
+        provider: RegionProvider,
+        downloader: ResourceDownloaderPort,
+    ) -> None:
+        self.provider = provider
+        self.downloader = downloader
 
-    def run(self) -> None:
-        resources = self.downloader.main()
-        filtered = ResourceUtils.filter_type(resources, Config.resource_type)
-        self.downloader.verify_and_download(filtered)
+    def run(self, context: RuntimeContext) -> RuntimeContext:
+        catalog = self.provider.load_catalog(context)
+        filtered = ResourceQueryService.filter_type(
+            catalog.resources,
+            catalog.context.resource_type,
+        )
+        self.downloader.verify_and_download(filtered, catalog.context)
+        return catalog.context

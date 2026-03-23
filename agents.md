@@ -21,13 +21,8 @@ The project uses a package layout under `src/ba_downloader`:
 - `cli/`: argument parsing and command dispatch
 - `application/`: use-case orchestration services
 - `domain/`: settings, interfaces, exceptions
-- `infrastructure/`: concrete providers/extractors/loggers
+- `infrastructure/`: concrete providers, extractors, loggers, tools, storage
 - `shared/`: utility modules split by responsibility
-- Legacy implementation modules retained under:
-  - `lib/`
-  - `regions/`
-  - `extractors/`
-  - `utils/`
 
 Top-level support folders:
 

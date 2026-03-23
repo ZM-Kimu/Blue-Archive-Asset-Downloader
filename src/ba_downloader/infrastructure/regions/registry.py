@@ -1,22 +1,24 @@
 from typing import Callable
 
 from ba_downloader.domain.ports.region import Region, RegionProvider
-from ba_downloader.regions.cn import CNServer
-from ba_downloader.regions.gl import GLServer
-from ba_downloader.regions.jp import JPServer
+from ba_downloader.infrastructure.regions.providers import CNServer, GLServer, JPServer
 
 
 class RegionRegistry:
     def __init__(self) -> None:
-        self._providers: dict[Region, Callable[[], RegionProvider]] = {}
+        self._providers: dict[Region, Callable[..., RegionProvider]] = {}
 
-    def register(self, region: Region, provider_factory: Callable[[], RegionProvider]) -> None:
+    def register(
+        self,
+        region: Region,
+        provider_factory: Callable[..., RegionProvider],
+    ) -> None:
         self._providers[region] = provider_factory
 
-    def resolve(self, region: Region) -> RegionProvider:
+    def resolve(self, region: Region) -> Callable[..., RegionProvider]:
         if region not in self._providers:
             raise KeyError(f"Region '{region}' is not registered.")
-        return self._providers[region]()
+        return self._providers[region]
 
 
 DEFAULT_REGION_REGISTRY = RegionRegistry()

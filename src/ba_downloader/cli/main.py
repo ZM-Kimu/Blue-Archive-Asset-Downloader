@@ -1,8 +1,19 @@
 import argparse
-from dataclasses import asdict
 
+from ba_downloader.application.services.download import DownloadService
+from ba_downloader.application.services.extract import ExtractService
+from ba_downloader.application.services.relation import RelationService
+from ba_downloader.application.services.sync import SyncService
+from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.settings import AppSettings
-from ba_downloader.utils.config import apply_settings
+from ba_downloader.infrastructure.download import ResourceDownloader
+from ba_downloader.infrastructure.extract import AssetExtractionWorkflow
+from ba_downloader.infrastructure.extractors.character import CharacterNameRelation
+from ba_downloader.infrastructure.http import ResilientHttpClient
+from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
+from ba_downloader.infrastructure.logging.runtime import configure_logging
+from ba_downloader.infrastructure.regions.registry import DEFAULT_REGION_REGISTRY
+from ba_downloader.infrastructure.tools.flatbuffer_workflow import FlatbufferWorkflow
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -47,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def settings_from_namespace(args: argparse.Namespace) -> AppSettings:
+def runtime_context_from_namespace(args: argparse.Namespace) -> RuntimeContext:
     settings = AppSettings(
         region=args.region,
         threads=args.threads,
@@ -62,36 +73,60 @@ def settings_from_namespace(args: argparse.Namespace) -> AppSettings:
         search=tuple(getattr(args, "search", [])),
         advanced_search=tuple(getattr(args, "advanced_search", [])),
     )
-    return apply_settings(settings)
+    return RuntimeContext.from_settings(settings)
+
+
+def _build_provider(context: RuntimeContext, logger: ConsoleLogger, http_client: ResilientHttpClient):
+    provider_factory = DEFAULT_REGION_REGISTRY.resolve(context.region)
+    return provider_factory(http_client=http_client, logger=logger)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    settings_from_namespace(args)
+    configure_logging()
+    context = runtime_context_from_namespace(args)
+    logger = ConsoleLogger()
+    http_client = ResilientHttpClient(
+        proxy_url=context.proxy_url or None,
+        max_retries=context.max_retries,
+    )
+    provider = _build_provider(context, logger, http_client)
+    downloader = ResourceDownloader(http_client, logger)
+    extraction_workflow = AssetExtractionWorkflow(logger)
+    extract_service = ExtractService(extraction_workflow)
+    flatbuffer_workflow = FlatbufferWorkflow(http_client, logger)
+    relation_builder_factory = lambda active_context: CharacterNameRelation(
+        active_context,
+        logger,
+    )
 
     if args.command == "sync":
-        from ba_downloader.application.services.sync import SyncService
-
-        SyncService().run()
+        SyncService(
+            provider,
+            downloader,
+            extract_service,
+            flatbuffer_workflow,
+            relation_builder_factory,
+            logger,
+        ).run(context)
         return 0
 
     if args.command == "download":
-        from ba_downloader.application.services.download import DownloadService
-
-        DownloadService().run()
+        DownloadService(provider, downloader).run(context)
         return 0
 
     if args.command == "extract":
-        from ba_downloader.application.services.extract import ExtractService
-
-        ExtractService().run()
+        extract_service.run(context)
         return 0
 
     if args.command == "relation" and args.relation_command == "build":
-        from ba_downloader.application.services.relation import RelationService
-
-        RelationService().build()
+        RelationService(
+            provider,
+            downloader,
+            flatbuffer_workflow,
+            relation_builder_factory,
+        ).build(context)
         return 0
 
     parser.print_help()
