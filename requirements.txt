@@ -1,6 +1,6 @@
 requests
+cloudscraper
 UnityPy==1.24.2
-FlareSolverr
 xxhash
 pycryptodome
 flatbuffers

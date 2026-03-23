@@ -1,0 +1,12 @@
+from typing import Protocol
+
+
+class LoggerPort(Protocol):
+    def info(self, message: str) -> None:
+        ...
+
+    def warn(self, message: str) -> None:
+        ...
+
+    def error(self, message: str) -> None:
+        ...

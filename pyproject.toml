@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ba-downloader"
+version = "2.0.0"
+description = "Blue Archive multi-region asset downloader and extractor"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Blue Archive Asset Downloader Contributors" }]
+dependencies = [
+    "requests",
+    "cloudscraper",
+    "UnityPy==1.24.2",
+    "xxhash",
+    "pycryptodome",
+    "flatbuffers",
+    "pykakasi",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+]
+
+[project.scripts]
+ba-downloader = "ba_downloader.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ba_downloader"]
+
+[tool.uv]
+default-groups = ["dev"]

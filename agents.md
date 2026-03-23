@@ -1,246 +1,98 @@
 ---
-描述: 面向本仓库中各类 AI 编码代理的行为约定
-标签: [agents, python, downloader, cli, i18n]
+description: Agent conventions for this repository
+tags: [agents, python, downloader, cli, architecture]
 ---
 
-## 0. 角色
-
-1. **你是一个 Python / CLI 工程师**，负责维护一个基于 Python 的多区服资源下载与提取工具。  
-2. **不要改坏 CLI 行为**：`main.py` / `downloader.py` 的参数名与语义视为「公共 API」。  
-3. **所有代码必须使用英文**（包括函数名、变量名、注释、日志、报错信息等）。  
-4. **文档可以使用中文**，但示例代码与命令必须是英文。  
-5. 每次改动前后都要：
-   - 阅读 `README.md` 与本 `agents.md`
-   - 给出一个简短的「修改计划」
-   - 完成修改后总结变化，并给出如何运行的命令
-
----
-
-## 1. 你的角色与职责
-
-在本仓库工作时，你应当把自己视为：
-
-- 一名熟悉以下内容的工程师：
-  - Python（3.10+）、CLI 工具、并发下载、HTTP 请求、文件系统
-  - 跨平台开发（Windows / Linux）
-  - 与 `.NET 8` 工具协作（高级检索、table 提取）
-- 面向的项目是一个「**国际化游戏资源下载器**」，围绕 Blue Archive 多区服资源：
-  - 多区服：`cn` / `gl` / `jp`
-  - 多资源类型：`bundle` / `media` / `table`
-
-你的主要目标：
-
-1. 让下载器在各区服保持 **稳定、可靠、可维护**。  
-2. 尽量保证 CLI 行为对使用者来说是 **可预期且向后兼容** 的。  
-
----
-
-## 2. 项目结构速览
-
-- 入口脚本
-  - `main.py`: 下载 +（可选）提取 + 搜索/高级检索
-  - `downloader.py`: 仅下载
-  - `extractor.py`: 提取流程与 Flatbuffer dump/compile
-- 区服与提取
-  - `regions/`: `cn.py` / `gl.py` / `jp.py`，以及 `helper.py`
-  - `xtractor/`: `bundle.py` / `media.py` / `table.py` / `character.py`
-- 通用能力
-  - `lib/`: console、HTTP 下载、加密、结构体、dumper/compiler 等
-  - `utils/`: 配置解析、任务/线程工具、数据库访问等
-
----
-
-## 3. 项目关键事实（只列对代理重要的）
-
-你在推理和修改代码时，应默认以下前提成立：
-
-- **运行环境**
-  - Python 版本：`>= 3.10`
-  - `.NET 8 SDK`：用于 table 提取与高级检索相关流程
-- **默认输出目录（可通过参数覆盖）**
-  - `Temp/`、`RawData/`、`Extracted/` 为逻辑目录名
-  - 未显式指定时会自动加区服前缀：例如 `JPTemp`、`CNRawData`、`GLExtracted`
-  - `Extracted/FlatData` 与 `Extracted/Dumps` 为 Flatbuffer dump/compile 的产物
-  - 角色关系文件为 `{REGION}CharacterRelation.json`，默认输出在工作目录
-- **生成数据目录**
-  - `CNTemp` / `GLTemp` / `JPTemp`、`*RawData`、`*Extracted` 均为运行产物
-  - 通常不纳入改动范围，避免全量递归扫描这些目录
-- **核心 CLI 参数（视为稳定接口）**
-  - `--region`
-  - `--threads`
-  - `--version`
-  - `--raw`
-  - `--extract`
-  - `--temporary`
-  - `--downloading-extract`
-  - `--resource-type`
-  - `--proxy`
-  - `--max-retries`
-  - `--search`
-  - `--advance-search`
-
-> 对这些名称和整体语义，要**极度谨慎地改动**，除非有明确指示，并做好兼容层或迁移说明。
-
----
-
-## 4. 语言与风格要求
-
-### 4.1 代码必须使用英文
-
-在任何代码文件（包含 Python / C# / Shell 脚本等）中，以下内容必须全部使用英文：
-
-- 变量名、函数名、类名、模块名
-- 注释（行内、块注释）
-- 日志内容（`logging` / `print`）
-- 异常信息与错误提示
-- 命令行帮助文本与参数说明
-
-**不允许：**
-
-* 在代码中出现任何中文文本
-* 使用中文命名的变量 / 函数 / 类
-* 输出中文日志
-
-### 4.2 文档可以使用中文
-
-* `README.md`、`agents.md`、其他说明文档可以使用中文叙述。
-* 但文档中的 **代码块** 仍须保持英文（包括注释和命令）。
-* 如需解释特定英文名词，可在文档正文中用中文说明。
-
----
-
-## 5. 代理工作流（每次被调用时要遵守）
-
-当你收到在本仓库中的任务请求时，请按照以下顺序工作：
-
-1. **获取上下文**
-
-   * 至少阅读：
-
-     * 本 `agents.md`
-     * `README.md`
-   * 若任务提到 `docs/` 或其他文档，优先打开对应文件；当前文档以 `README.md` 为主。
-   * 如果任务提到具体文件（例如 `main.py`、某模块），先快速浏览这些文件的结构。
-
-2. **给出「简短计划」**
-
-   * 用 3～6 条中文要点描述你准备做什么：
-
-     * 会修改哪些文件
-     * 预期新增 / 调整的功能点
-     * 是否会引入新的依赖或 CLI 参数
-
-3. **实施修改**
-
-   * 代码实现时保持英文风格与项目现有风格一致。
-   * 若涉及 CLI：
-
-     * 保留已有参数与行为
-     * 需要新增参数时，优先考虑是否可以复用现有参数语义
-
-4. **验证**
-
-   * 给出可以在本地运行的命令示例（全部英文）：
-
-     * 基本用例
-     * 与本次改动直接相关的测试用例
-   * 如果仓库中有自动化测试（例如 `pytest`），给出运行命令：
-
-     ```bash
-     pytest
-     ```
-
-5. **总结**
-
-   * 用中文总结本次修改的效果：
-
-     * 改了什么
-     * 会影响哪些用户场景
-     * 有无潜在的行为改变或兼容性风险
-
----
-
-## 6. 关于 CLI 与行为兼容性
-
-你在处理 CLI 相关需求时，要遵守：
-
-1. **参数名视为 API**
-
-   * 不要随意重命名、删除已有参数：
-
-     * 例如 `--region` 不应改成 `--server`
-     * 若必须更名，需至少提供旧名别名，并在文档中说明弃用情况
-2. **行为兼容优先**
-
-   * 例如：
-
-     * 现有 `--region jp` 的效果不能在无提示的情况下改变语义
-   * 对某一区服暂不支持的特性，应维持明确限制，而不是静默失败
-3. **帮助与文档同步**
-
-   * 当你修改参数行为或新增选项时，记得同步更新：
-
-     * 脚本中的 `--help` 输出
-     * `README.md` 中的参数说明 / 使用示例
-     * 必要时更新 `agents.md` 中的相关约束
-
----
-
-## 7. 修改代码时的具体技术规范
-
-### 7.1 Python 代码
-
-* 遵循 **PEP 8** 基本规范。
-* 新增或改动的代码使用类型标注（type hints）。
-* 避免将「区服差异」写成到处都是的 `if region == "jp"`：
-
-  * 更推荐使用配置表 / 映射来集中管理差异。
-
-### 7.2 依赖与结构
-
-* 如需新增第三方依赖：
-  * 确认没有更轻量的替代方案
-  * 必须更新 `requirements.txt`
-* 不要在代码里写死：
-
-  * 用户本地路径
-  * 私人账号信息
-  * 特定代理地址
-
----
-
-## 8. 测试与验证要求
-
-在你完成较大改动（尤其是下载逻辑、多线程、区服相关逻辑）后，应至少提供以下验证流程示例：
+## 0. Role
+
+1. You are a Python/CLI engineer maintaining a multi-region Blue Archive asset tool.
+2. V2 CLI (`ba-downloader`) is the public API; keep command names and semantics stable unless explicitly requested.
+3. All source code must be in English (identifiers, comments, logs, errors, help text).
+4. Documentation may be Chinese, but code blocks and commands must stay in English.
+5. Before and after each change:
+   - Read `README.md` and this file.
+   - Provide a short change plan.
+   - Summarize what changed and how to run/verify.
+
+## 1. Architecture
+
+The project uses a package layout under `src/ba_downloader`:
+
+- `cli/`: argument parsing and command dispatch
+- `application/`: use-case orchestration services
+- `domain/`: settings, interfaces, exceptions
+- `infrastructure/`: concrete providers/extractors/loggers
+- `shared/`: utility modules split by responsibility
+- Legacy implementation modules retained under:
+  - `lib/`
+  - `regions/`
+  - `extractors/`
+  - `utils/`
+
+Top-level support folders:
+
+- `tests/`
+- `scripts/`
+
+## 2. Runtime Facts
+
+- Python: `>=3.10`
+- `.NET 8 SDK`: required for flatbuffer dump/compile and advanced relation flow
+- Default logical outputs:
+  - `Temp`, `RawData`, `Extracted`
+  - Region-prefixed by default when not explicitly overridden
+
+## 3. CLI Contract (v2)
+
+Primary entry:
 
 ```bash
-# Example 1: JP, small media set
-python main.py --region jp --resource-type media --threads 4 --max-retries 1
-
-# Example 2: GL, with version
-python main.py --region gl --version 1.2.3 --resource-type table --threads 4
-
-# Example 3: CN, basic download only
-python downloader.py --region cn --threads 4
+ba-downloader <command> [options]
 ```
 
----
+Commands:
 
-## 9. 当你不确定时
+- `sync`
+- `download`
+- `extract`
+- `relation build`
 
-如果你（作为 Agent）遇到以下情形：
+Core options:
 
-* 对行为是否会破坏兼容性拿不准
-* 不确定某个参数在特定区服是否应该生效
-* 不清楚是否会触及法律 / 协议边界
+- `--region`
+- `--threads`
+- `--version`
+- `--raw-dir`
+- `--extract-dir`
+- `--temp-dir`
+- `--resource-type`
+- `--proxy`
+- `--max-retries`
+- `--search` (sync)
+- `--advanced-search` (sync)
+- `--extract-while-download` (sync)
 
-请遵循以下优先级：
+## 4. Coding Rules
 
-1. **倾向于不改变现有行为**，避免 silent breaking change。
-2. 尽量通过保守方式实现（例如新增可选参数，而不是修改默认行为）。
-3. 在提交说明 / 总结中，指出存在的潜在不确定性，并给出你做的保守选择。
+- Keep changes typed and PEP 8 compliant.
+- Prefer dependency injection in `application/` and `domain/ports` abstractions.
+- Avoid global side effects at import time.
+- Do not put Chinese text in source code files.
+- Prefer maps/registries for region differences over repeated `if region == ...` logic.
 
----
+## 5. Validation
 
-本 `agents.md` 会视实际开发情况不定期更新。
-无论是人类还是 AI，每次在本仓库开始大量改动之前，都应先快速浏览一遍本文件。
+For substantial changes, provide runnable commands, for example:
+
+```bash
+ba-downloader sync --region jp --resource-type media --threads 4 --max-retries 1
+ba-downloader download --region cn --threads 4
+ba-downloader relation build --region gl
+pytest
+```
+
+## 6. Safety
+
+- Prefer conservative behavior changes unless explicit breaking changes are requested.
+- If uncertain about compatibility or unsupported region behavior, fail explicitly with clear errors.
+- Keep docs and CLI help synchronized with behavior changes.

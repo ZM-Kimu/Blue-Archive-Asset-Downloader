@@ -35,39 +35,53 @@
 ## 先决条件
 
 请确保已安装 Python，并安装必要的库：
+
 ```shell
-pip install -r requirements.txt
+uv sync
+```
+
+或者：
+
+```shell
+pip install -e .
 ```
 
 ## 使用说明
-使用下列命令行参数运行 `main.py` 脚本以进行下载与提取（示例）：
+使用下列命令运行完整下载与提取流程（示例）：
 
 ```shell
-python main.py --region jp 
+ba-downloader sync --region jp
 ```
-或者，使用以下命令以仅下载所有资源而不进行提取，搜索与资源类型过滤功能将不可用（示例）：
+
+或者，使用以下命令仅下载资源而不进行提取（示例）：
 
 ```shell
-python downloader.py --region jp
+ba-downloader download --region jp
+```
+
+也可以使用模块入口：
+
+```shell
+python -m ba_downloader sync --region jp
 ```
 
 
 ## **基本参数**
 **`*`** :**必选的选项**
-| 参数                    | 缩&nbsp;写 | 说明                                                                            | 默认值             | 示例                            |
-| ----------------------- | ---------- | ------------------------------------------------------------------------------- | ------------------ | ------------------------------- |
-| **`--region`**`*`       | `-g`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                        | 无                 | `-g jp`                         |
-| `--threads`             | `-t`       | **同时下载或解压的线程数**                                                      | `20`               | `-t 50`                         |
-| `--version`             | `-v`       | **需要下载的资源的版本号**（仅支持国际服务器）                                  | 无                 | `--version 1.2.3`               |
-| `--raw`                 | `-r`       | **指定未处理文件的位置**                                                        | `"RawData"`        | `--raw raw_folder`              |
-| `--extract`             | `-e`       | **指定已提取文件的位置**                                                        | `"Extracted"`      | `--extract output_folder`       |
-| `--temporary`           | `-m`       | **指定临时文件的位置**                                                          | `"Temp"`           | `--temporary temp_dir`          |
-| `--downloading-extract` | `-de`      | **是否在下载时便提取文件**（⚠较慢，在资源数量多于500时请勿使用）                | `False`            | `--downloading-extract`         |
-| `--resource-type`       | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                                 | `all`              | `--resource-type media table`   |
-| `--proxy`               | `-p`       | **设置 HTTP 代理**                                                              | 无（使用系统代理） | `--proxy http://127.0.0.1:8080` |
-| `--max-retries`         | `-mr`      | **下载失败时的最大重试次数**                                                    | `5`                | `--max-retries 3`               |
-| `--search`              | `-s`       | **普通检索**，指定需要检索并下载的文件的关键词，使用空格分隔。                  |
-| `--advance-search`      | `-as`      | **高级检索**，指定所有需要检索并下载的角色关键字，使用空格分隔，需要.NET8环境。 |
+| 参数                      | 缩&nbsp;写 | 说明                                                                            | 默认值             | 示例                            |
+| ------------------------- | ---------- | ------------------------------------------------------------------------------- | ------------------ | ------------------------------- |
+| **`--region`**`*`         | `-g`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                        | 无                 | `-g jp`                         |
+| `--threads`               | `-t`       | **同时下载或解压的线程数**                                                      | `20`               | `-t 50`                         |
+| `--version`               | `-v`       | **需要下载的资源的版本号**（主要用于国际服务器）                                | 无                 | `--version 1.2.3`               |
+| `--raw-dir`               | `-r`       | **指定未处理文件的位置**                                                        | `"RawData"`       | `--raw-dir raw_folder`          |
+| `--extract-dir`           | `-e`       | **指定已提取文件的位置**                                                        | `"Extracted"`     | `--extract-dir output_folder`   |
+| `--temp-dir`              | `-m`       | **指定临时文件的位置**                                                          | `"Temp"`          | `--temp-dir temp_dir`           |
+| `--extract-while-download`| `-ewd`     | **是否在下载时便提取文件**（⚠较慢，在资源数量多于500时请勿使用）                | `False`            | `--extract-while-download`      |
+| `--resource-type`         | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                                 | `all`              | `--resource-type media table`   |
+| `--proxy`                 | `-p`       | **设置 HTTP 代理**                                                              | 无（使用系统代理） | `--proxy http://127.0.0.1:8080` |
+| `--max-retries`           | `-mr`      | **下载失败时的最大重试次数**                                                    | `5`                | `--max-retries 3`               |
+| `--search`                | `-s`       | **普通检索**，指定需要检索并下载的文件关键词（仅 `sync` 命令可用）              |
+| `--advanced-search`       | `-as`      | **高级检索**，指定角色关键词（仅 `sync` 命令可用，需要.NET8环境）               |
 
 **(CN服务器目前不支持高级检索)高级检索支持的检索条件：**
 - `[*]` **角色名称**
@@ -88,19 +102,19 @@ python downloader.py --region jp
 ---
 #### 并且，在不同的服务器中亦支持不同的名称检索方式，具体内容请参照`CharacterRelation.json`。
 - 示例：
-  > global
+  > sync
   >```sh
-  >-as 貝雅特里榭 ยูเมะ ibuki 
+  >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ ibuki
   >```
 
   > japan
   >```sh
-  >-as yume 百合園セイア 호시노 cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev # 属性检索
+  >ba-downloader sync --region jp -as yume 百合園セイア 호시노 cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
   >```
 
   > package name only
   >```sh
-  >-s aris ch0070 shiroko # 仅包名检索
+  >ba-downloader sync --region jp -s aris ch0070 shiroko
   >```
 
 
@@ -108,7 +122,7 @@ python downloader.py --region jp
 - `Temp`: 存储临时文件或非主要文件。如：Apk文件等。
 - `RawData`: 存储经由Catalog下载的文件。如：Bundle、Media、Table等。
 - `Extracted`: 存储已提取的文件。如：Bundle、Media、Table与Dumps等。
-- `CharacterRelation.json`: 角色信息，仅在包含`--downloading-extract`参数时生成该文件。
+- `CharacterRelation.json`: 角色信息，可通过 `ba-downloader relation build --region <region>` 生成。
 
 
 ## 使用须知
@@ -117,6 +131,13 @@ python downloader.py --region jp
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
 - Bundle文件的提取基于UnityPy，如希望更加详细的内容请使用[AssetRipper](https://github.com/AssetRipper/AssetRipper)或[AssetStudio](https://github.com/Perfare/AssetStudio)
 
+## Breaking Changes (v2)
+- 旧入口脚本 `main.py` / `downloader.py` / `extractor.py` 已移除。
+- 参数已重命名：
+  - `--advance-search` -> `--advanced-search`
+  - `--downloading-extract` -> `--extract-while-download`
+  - `--raw` / `--extract` / `--temporary` -> `--raw-dir` / `--extract-dir` / `--temp-dir`
+
 ## TODO
 - `v1.0`
   - **完善CN/GL** - 43%
@@ -124,7 +145,7 @@ python downloader.py --region jp
 - **Memory Pack** - 30%
 
 ## 关于项目
-Blue Archive Asset Downloader v0.83.
+Blue Archive Asset Downloader v2.0.0.
 
 本项目采用 [MIT 许可证](LICENSE)。
 
