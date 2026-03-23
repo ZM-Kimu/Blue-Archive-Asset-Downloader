@@ -3,6 +3,7 @@ import json
 import os
 import re
 import struct
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from os import path
@@ -49,6 +50,7 @@ class JPServer:
         rb")",
         re.S,
     )
+
     def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
         self.http_client = http_client
         self.logger = logger
@@ -137,16 +139,13 @@ class JPServer:
         resources = JPResource()
         try:
             api = self.http_client.request("GET", server_url)
-
-            base_url = (
-                api.json()["ConnectionGroups"][0]["OverrideConnectionGroups"][-1][
-                    "AddressablesCatalogUrlRoot"
-                ]
-                + "/"
-            )
+            base_url = self._resolve_catalog_root(api.json())
 
             resources.set_url_link(
-                base_url, "Android/", "MediaResources/", "TableBundles/"
+                base_url,
+                "Android_PatchPack/",
+                "MediaResources/",
+                "TableBundles/",
             )
 
             if table_data := self.http_client.request(
@@ -171,19 +170,11 @@ class JPServer:
 
             bundle_data = self.http_client.request(
                 "GET",
-                urljoin(resources.bundle_url, "bundleDownloadInfo.json"),
+                urljoin(resources.bundle_url, "BundlePackingInfo.json"),
             )
-            if bundle_data.headers.get("Content-Type") == "application/json":
-                bundle_catalog = bundle_data.json()["BundleFiles"]
-                for bundle in bundle_catalog:
-                    resources.add_bundle_resource(
-                        bundle["Name"],
-                        bundle["Size"],
-                        bundle["Crc"],
-                        bundle["IsPrologue"],
-                        bundle["IsSplitDownload"],
-                    )
-            else:
+            try:
+                self._load_bundle_catalog(bundle_data.json(), resources)
+            except Exception:
                 self.logger.error(
                     "Failed to fetch bundle catalog. Retry may solve this issue.",
                 )
@@ -197,6 +188,58 @@ class JPServer:
             raise LookupError(
                 f"Encountered the following error while attempting to fetch manifest: {e}."
             ) from e
+
+    @staticmethod
+    def _resolve_catalog_root(addressable_payload: Mapping[str, Any]) -> str:
+        connection_groups = addressable_payload.get("ConnectionGroups", [])
+        if not connection_groups:
+            raise LookupError("ConnectionGroups not found in JP addressables response.")
+
+        override_groups = connection_groups[0].get("OverrideConnectionGroups", [])
+        roots = [
+            str(group.get("AddressablesCatalogUrlRoot", "")).rstrip("/")
+            for group in override_groups
+            if group.get("AddressablesCatalogUrlRoot")
+        ]
+
+        if len(roots) >= 2:
+            return roots[1] + "/"
+        if roots:
+            return roots[-1] + "/"
+
+        raise LookupError("AddressablesCatalogUrlRoot not found in JP addressables response.")
+
+    @staticmethod
+    def _load_bundle_catalog(
+        payload: Mapping[str, Any],
+        resources: JPResource,
+    ) -> None:
+        for section_name in ("FullPatchPacks", "UpdatePacks"):
+            packs = payload.get(section_name, [])
+            if not isinstance(packs, list):
+                continue
+
+            for pack in packs:
+                if not isinstance(pack, Mapping):
+                    continue
+
+                pack_name = str(pack.get("PackName", "")).strip()
+                if not pack_name:
+                    continue
+
+                bundle_files = [
+                    str(bundle.get("Name", "")).strip()
+                    for bundle in pack.get("BundleFiles", [])
+                    if isinstance(bundle, Mapping) and bundle.get("Name")
+                ]
+                resources.add_bundle_resource(
+                    pack_name,
+                    int(pack.get("PackSize", 0) or 0),
+                    int(pack.get("Crc", 0) or 0),
+                    bool(pack.get("IsPrologue", False)),
+                    bool(pack.get("IsSplitDownload", False)),
+                    bundle_files,
+                )
 
     def __decode_server_url(self, data: bytes) -> str:
         """
@@ -255,40 +298,83 @@ class JPServer:
         return url
 
 
-I8: str = "b"
-I32: str = "i"
-I64: str = "q"
-BOOL: str = "?"
+NULL_OBJECT_HEADER = 255
+NULL_COLLECTION_HEADER = -1
 
 
 class JPCatalogDecoder:
 
     class Reader:
-        def __init__(self, initial_bytes) -> None:
+        def __init__(self, initial_bytes: bytes) -> None:
             self.io = BytesIO(initial_bytes)
 
-        def read(self, fmt: str) -> Any:
-            """Use struct read bytes by giving a format char."""
-            return struct.unpack(fmt, self.io.read(struct.calcsize(fmt)))[0]
+        def _read_exact(self, size: int) -> bytes:
+            data = self.io.read(size)
+            if len(data) != size:
+                raise EOFError("Unexpected end of MemoryPack stream.")
+            return data
 
-        def read_string(self) -> str:
-            """Read string."""
-            return self.io.read(self.read(I32)).decode(
-                encoding="utf-8", errors="replace"
-            )
+        def read_int32(self) -> int:
+            return struct.unpack("<i", self._read_exact(4))[0]
 
-        def read_table_includes(self) -> list[str]:
-            """Read talbe inculdes."""
-            size = self.read(I32)
-            if size == -1:
+        def read_int64(self) -> int:
+            return struct.unpack("<q", self._read_exact(8))[0]
+
+        def read_uint8(self) -> int:
+            return struct.unpack("<B", self._read_exact(1))[0]
+
+        def read_bool(self) -> bool:
+            return struct.unpack("<?", self._read_exact(1))[0]
+
+        def read_object_header(self) -> int | None:
+            header = self.read_uint8()
+            if header == NULL_OBJECT_HEADER:
+                return None
+            return header
+
+        def read_collection_header(self) -> int | None:
+            length = self.read_int32()
+            if length == NULL_COLLECTION_HEADER:
+                return None
+            return length
+
+        def read_string(self) -> str | None:
+            length = self.read_collection_header()
+            if length is None:
+                return None
+            if length == 0:
+                return ""
+            if length > 0:
+                return self._read_exact(length * 2).decode("utf-16-le")
+
+            utf8_length = ~length
+            self.read_int32()
+            return self._read_exact(utf8_length).decode("utf-8")
+
+        def read_array(
+            self,
+            item_reader: Callable[["JPCatalogDecoder.Reader"], Any],
+        ) -> list[Any]:
+            length = self.read_collection_header()
+            if length is None:
                 return []
-            self.read(I32)
-            includes = []
-            for i in range(size):
-                includes.append(self.read_string())
-                if i != size - 1:
-                    self.read(I32)
-            return includes
+            return [item_reader(self) for _ in range(length)]
+
+        def read_string_map(
+            self,
+            value_reader: Callable[["JPCatalogDecoder.Reader"], dict[str, object]],
+        ) -> dict[str, dict[str, object]]:
+            length = self.read_collection_header()
+            if length is None:
+                return {}
+
+            result: dict[str, dict[str, object]] = {}
+            for _ in range(length):
+                key = self.read_string()
+                if key is None:
+                    raise ValueError("Encountered null key in MemoryPack map.")
+                result[key] = value_reader(self)
+            return result
 
     @staticmethod
     def decode_to_manifest(
@@ -305,47 +391,87 @@ class JPCatalogDecoder:
             dict([str, object]): Manifest list.
         """
         data = JPCatalogDecoder.Reader(raw_data)
+        if type == "media":
+            return JPCatalogDecoder.__decode_media_catalog(data, container)
+        return JPCatalogDecoder.__decode_table_catalog(data, container)
 
-        manifest: dict[str, object] = {}
+    @classmethod
+    def __decode_media_catalog(
+        cls,
+        data: Reader,
+        container: JPResource,
+    ) -> dict[str, object]:
+        member_count = data.read_object_header()
+        if member_count is None or member_count < 1:
+            return {}
 
-        data.read(I8)
-        item_num = data.read(I32)
+        manifest = data.read_string_map(cls.__decode_media_manifest)
+        for key, obj in manifest.items():
+            path = str(obj["path"]).replace("\\", "/")
+            container.add_media_resource(
+                key,
+                path,
+                str(obj["file_name"]),
+                int(obj["type"]),
+                int(obj["bytes"]),
+                int(obj["crc"]),
+                bool(obj["is_prologue"]),
+                bool(obj["is_split_download"]),
+            )
+            obj["path"] = path
+        return manifest
 
-        for _ in range(item_num):
-            if type == "media":
-                key, obj = JPCatalogDecoder.__decode_media_manifest(data, container)
-            else:
-                key, obj = JPCatalogDecoder.__decode_table_manifest(data, container)
-            manifest[key] = obj
+    @classmethod
+    def __decode_table_catalog(
+        cls,
+        data: Reader,
+        container: JPResource,
+    ) -> dict[str, object]:
+        member_count = data.read_object_header()
+        if member_count is None or member_count < 1:
+            return {}
+
+        manifest = data.read_string_map(cls.__decode_table_manifest)
+        if member_count >= 2:
+            for key, obj in data.read_string_map(cls.__decode_table_pack_manifest).items():
+                manifest[key] = obj
+
+        for key, obj in manifest.items():
+            container.add_table_resource(
+                key,
+                str(obj["name"]),
+                int(obj["size"]),
+                int(obj["crc"]),
+                bool(obj.get("is_in_build", False)),
+                bool(obj.get("is_changed", False)),
+                bool(obj.get("is_prologue", False)),
+                bool(obj.get("is_split_download", False)),
+                list(obj.get("includes", [])),
+            )
         return manifest
 
     @classmethod
     def __decode_media_manifest(
-        cls, data: Reader, container: JPResource
-    ) -> tuple[str, dict[str, object]]:
-        data.read(I32)
-        key = data.read_string()
-        data.read(I8)
-        data.read(I32)
-        path = data.read_string()
-        data.read(I32)
-        file_name = data.read_string()
-        bytes = data.read(I64)
-        crc = data.read(I64)
-        is_prologue = data.read(BOOL)
-        is_split_download = data.read(BOOL)
-        media_type = data.read(I32)
+        cls,
+        data: Reader,
+    ) -> dict[str, object]:
+        member_count = data.read_object_header()
+        if member_count is None or member_count < 7:
+            raise ValueError("Malformed JP media catalog entry.")
 
-        path = path.replace("\\", "/")
-        container.add_media_resource(
-            key, path, file_name, media_type, bytes, crc, is_prologue, is_split_download
-        )
+        path = data.read_string() or ""
+        file_name = data.read_string() or ""
+        size = data.read_int64()
+        crc = data.read_int64()
+        is_prologue = data.read_bool()
+        is_split_download = data.read_bool()
+        media_type = data.read_int32()
 
-        return key, {
+        return {
             "path": path,
             "file_name": file_name,
             "type": media_type,
-            "bytes": bytes,
+            "bytes": size,
             "crc": crc,
             "is_prologue": is_prologue,
             "is_split_download": is_split_download,
@@ -353,34 +479,23 @@ class JPCatalogDecoder:
 
     @classmethod
     def __decode_table_manifest(
-        cls, data: Reader, container: JPResource
-    ) -> tuple[str, dict[str, object]]:
-        data.read(I32)
-        key = data.read_string()
-        data.read(I8)
-        data.read(I32)
-        name = data.read_string()
-        size = data.read(I64)
-        crc = data.read(I64)
-        is_in_build = data.read(BOOL)
-        is_changed = data.read(BOOL)
-        is_prologue = data.read(BOOL)
-        is_split_download = data.read(BOOL)
-        includes = data.read_table_includes()
+        cls,
+        data: Reader,
+    ) -> dict[str, object]:
+        member_count = data.read_object_header()
+        if member_count is None or member_count < 8:
+            raise ValueError("Malformed JP table catalog entry.")
 
-        container.add_table_resource(
-            key,
-            name,
-            size,
-            crc,
-            is_in_build,
-            is_changed,
-            is_prologue,
-            is_split_download,
-            includes,
-        )
+        name = data.read_string() or ""
+        size = data.read_int64()
+        crc = data.read_int64()
+        is_in_build = data.read_bool()
+        is_changed = data.read_bool()
+        is_prologue = data.read_bool()
+        is_split_download = data.read_bool()
+        includes = [item for item in data.read_array(lambda reader: reader.read_string()) if item]
 
-        return key, {
+        return {
             "name": name,
             "size": size,
             "crc": crc,
@@ -389,4 +504,31 @@ class JPCatalogDecoder:
             "is_prologue": is_prologue,
             "is_split_download": is_split_download,
             "includes": includes,
+        }
+
+    @classmethod
+    def __decode_table_pack_manifest(
+        cls,
+        data: Reader,
+    ) -> dict[str, object]:
+        member_count = data.read_object_header()
+        if member_count is None or member_count < 5:
+            raise ValueError("Malformed JP table pack catalog entry.")
+
+        name = data.read_string() or ""
+        size = data.read_int64()
+        crc = data.read_int64()
+        is_prologue = data.read_bool()
+        bundle_files = data.read_array(cls.__decode_table_manifest)
+
+        return {
+            "name": name,
+            "size": size,
+            "crc": crc,
+            "is_in_build": False,
+            "is_changed": False,
+            "is_prologue": is_prologue,
+            "is_split_download": False,
+            "includes": [str(bundle["name"]) for bundle in bundle_files],
+            "bundle_files": bundle_files,
         }

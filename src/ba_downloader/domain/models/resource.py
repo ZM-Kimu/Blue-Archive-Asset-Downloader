@@ -82,9 +82,14 @@ class Resource:
         self, attr: str, value: Any, exact_match: bool = False
     ) -> "Resource":
         filtered_res = Resource()
-        conditional = lambda x, y: str(x).lower() in str(y).lower()
+
+        def conditional(x: Any, y: Any) -> bool:
+            return str(x).lower() in str(y).lower()
+
         if exact_match:
-            conditional = lambda x, y: x == y
+
+            def conditional(x: Any, y: Any) -> bool:
+                return x == y
 
         _ = [
             filtered_res.add_item(res)
@@ -314,6 +319,7 @@ class JPResource:
         crc: int,
         is_prologue: bool,
         is_split_download: bool,
+        bundle_files: list[str] | None = None,
     ) -> None:
         self.bundle_files.append(
             {
@@ -322,6 +328,7 @@ class JPResource:
                 "crc": crc,
                 "is_prologue": is_prologue,
                 "is_split_download": is_split_download,
+                "bundle_files": bundle_files or [],
             }
         )
 
@@ -385,6 +392,7 @@ class JPResource:
                 bundle["crc"],
                 "crc",
                 ResourceType.bundle,
+                {"bundle_files": bundle["bundle_files"]},
             )
         for media in self.media_files:
             resource.add(

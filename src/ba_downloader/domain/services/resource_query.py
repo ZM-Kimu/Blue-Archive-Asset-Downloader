@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ba_downloader.domain.models.resource import Resource
+from ba_downloader.domain.models.resource import Resource, ResourceItem
 
 
 class ResourceQueryService:
@@ -23,11 +23,24 @@ class ResourceQueryService:
 
         for keyword in keywords:
             matches.extend(resource.search_resource("path", keyword))
+            matches.extend(ResourceQueryService._search_bundle_files(resource, keyword))
 
         for item in {item.path: item for item in matches}.values():
             results.add_item(item)
 
         return results
+
+    @staticmethod
+    def _search_bundle_files(resource: Resource, keyword: str) -> list[ResourceItem]:
+        keyword_lower = keyword.lower()
+        return [
+            item
+            for item in resource
+            if any(
+                keyword_lower in str(bundle_name).lower()
+                for bundle_name in item.addition.get("bundle_files", [])
+            )
+        ]
 
 
 def full_text_filter(

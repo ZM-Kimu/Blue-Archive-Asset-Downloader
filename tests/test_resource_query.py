@@ -14,11 +14,12 @@ def _build_resource() -> Resource:
     )
     resource.add(
         "https://example.invalid/b",
-        "Bundle/character.bundle",
+        "Bundle/characters.pack",
         20,
         "b",
         "md5",
         ResourceType.bundle,
+        {"bundle_files": ["character.bundle", "shiroko.bundle"]},
     )
     resource.add(
         "https://example.invalid/c",
@@ -45,5 +46,5 @@ def test_search_name_deduplicates_results() -> None:
     results = ResourceQueryService.search_name(_build_resource(), ["character", "excel"])
 
     assert len(results) == 2
-    assert results[0].path == "Bundle/character.bundle"
+    assert results[0].path == "Bundle/characters.pack"
     assert results[1].path == "Table/CharacterExcel.bytes"
