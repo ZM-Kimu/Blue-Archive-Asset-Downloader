@@ -60,12 +60,14 @@ class IL2CppDumper:
         extract_path: str,
         il2cpp_path: str,
         global_metadata_path: str,
+        max_retries: int = 1,
     ) -> None:
         """Dump il2cpp with using il2cpp-dumper.
         Args:
             extract_path (str): Absolute path to extract dump file.
             il2cpp_path (str): Absolute path to il2cpp lib.
             global_metadata_path (str): Absolute path to global metadata.
+            max_retries (int): Max retry count for dump when dump failed.
 
 
         Raises:
@@ -85,6 +87,12 @@ class IL2CppDumper:
             cwd=self.project_dir,
         )
         if not success:
-            raise RuntimeError(
-                f"Error occurred during dump the lib2cpp file. Retry might solve this issue. Info: {err}"
+            if max_retries == 0:
+                raise RuntimeError(
+                    f"Error occurred during dump the lib2cpp file. Retry might solve this issue. Info: {err}"
+                )
+            return self.dump_il2cpp(
+                extract_path, il2cpp_path, global_metadata_path, max_retries - 1
             )
+
+        return None

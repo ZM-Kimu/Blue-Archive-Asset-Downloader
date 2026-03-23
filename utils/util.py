@@ -17,6 +17,7 @@ from UnityPy.files.File import ObjectReader
 
 from lib.console import ProgressBar, notice, print
 from lib.downloader import FileDownloader
+from lib.structure import Resource, ResourceItem
 
 
 class ZipUtils:
@@ -272,6 +273,36 @@ class CommandUtils:
             return False, err
 
 
+class ResourceUtils:
+    @staticmethod
+    def filter_type(resource: Resource, resource_type: list[str]) -> Resource:
+        """Filter the necessary item from the resource_type specified in the Config"""
+        if len(resource_type) == 3:
+            return resource
+
+        filtered_res = Resource()
+        for res in resource:
+            if res.resource_type.name in resource_type:
+                filtered_res.add_item(res)
+
+        return filtered_res
+
+    @staticmethod
+    def search_name(resource: Resource, keywords: list[str]) -> Resource:
+        """Search for the specified item in the resource by keywords."""
+        results = Resource()
+
+        searched_list: list[ResourceItem] = []
+        for keyword in keywords:
+            searched_list += resource.search_resource("path", keyword)
+
+        unique_res: dict = {res.path: res for res in searched_list}
+        for searched in unique_res.values():
+            results.add_item(searched)
+
+        return results
+
+
 # Used to search for specific keywords in the characters mapping and associate additional keywords with the searched keyword.
 def full_text_filter(keywords: str, character_map: dict, content_list: list) -> list:
     print(f'Searching for mapping data with version {character_map["version"]}...')
@@ -353,13 +384,12 @@ class TemplateString:
         return self.template % args
 
 
-class TaskManagerWorkerProtocol(Protocol):
-    def __call__(
-        self, task_manager: "TaskManager", *args: Any, **kwargs: Any
-    ) -> None: ...
-
-
 class TaskManager:
+    class TaskManagerWorkerProtocol(Protocol):
+        def __call__(
+            self, task_manager: "TaskManager", *args: Any, **kwargs: Any
+        ) -> None: ...
+
     def __init__(
         self,
         target_workers: int,
@@ -382,6 +412,7 @@ class TaskManager:
         self.futures: list[concurrent.futures.Future] = []
         self.lock = Lock()
         self.event = Event()
+        self.conditional_event = Event()
         self.__cancel_callback: tuple[Callable, tuple] | None = None
         self.__pool_condition: Callable = lambda: self.tasks.empty() or self.stop_task
         self.__force_exit = False
@@ -403,7 +434,8 @@ class TaskManager:
 
     def add_worker(self, *args: Any) -> None:
         """Add a task to the worker queue."""
-        future = self.executor.submit(self.worker, *args)
+        # Worker must have TaskManager instance at first parameter.
+        future = self.executor.submit(self.worker, self, *args)
         self.futures.append(future)
 
     def increase_worker(self, num: int = 1) -> None:
@@ -418,14 +450,21 @@ class TaskManager:
         """Set is or not shutdown without wait."""
         self.__force_exit = force
 
-    def set_relate(
-        self, mode: Literal["event"], related_manager: "TaskManager"
+    def set_relation(
+        self, mode: Literal["shut", "constraint"], master_manager: "TaskManager"
     ) -> None:
-        """Set a relation to another task by a flag."""
-        if mode == "event":
-            self.event = related_manager.event
+        """Set a relation to another task by a flag. Use to control task stop condition.
+
+        Args:
+            mode (Literal[&quot;shut&quot;, &quot;constraint&quot;]):
+                "shut": When the master manager is running, the constrained manager will wait for the master manager to declare termination, but this does not affect the task processing of the constrained manager.
+            master_manager (TaskManager): _description_
+        """
+        if mode == "shut":
+            self.conditional_event = master_manager.event
             self.__set_conditions(
-                lambda: self.stop_task or (self.tasks.empty() and self.event.is_set())
+                lambda: self.stop_task
+                or (self.tasks.empty() and self.conditional_event.is_set())
             )
 
     def import_tasks(self, tasks: Iterable[Any]) -> None:

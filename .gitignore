@@ -105,5 +105,5 @@ assets/asset_list.txt
 *RawData/
 *Temp/
 FlatData/
-JPCharacterRelation.json
+*CharacterRelation.json
 .vscode/

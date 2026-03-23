@@ -233,7 +233,6 @@ class ProgressBar:
 
     def stop(self) -> None:
         """Stop the progress bar."""
-        sys.stdout.flush()
         self._interrupter = True
         time.sleep(0.2)
 

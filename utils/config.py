@@ -44,7 +44,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--downloading-extract",
-    "-d",
+    "-de",
     action="store_true",
     help="Extract files while downloading",
 )
@@ -67,7 +67,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--max-retries",
-    "-x",
+    "-mr",
     type=int,
     help="Maximum number of retries during download",
     default=5,
@@ -101,7 +101,7 @@ class Config:
     raw_dir: str = args.raw
     extract_dir: str = args.extract
     temp_dir: str = args.temporary
-    download_and_extract: bool = args.downloading_extract
+    downloading_extract: bool = args.downloading_extract
     resource_type: list[str] = args.resource_type
     search: list[str] = args.search
     advance_search: list[str] = args.advance_search

@@ -85,7 +85,7 @@ class CNServer:
                     worker_num, worker_num, self.download_apk_worker
                 ) as download_apk:
                     download_apk.import_tasks(parts)
-                    download_apk.run(download_apk, apk_url)
+                    download_apk.run(apk_url)
 
             with open(apk_path, "wb") as apk:
                 for part in parts:

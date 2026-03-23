@@ -1,6 +1,6 @@
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from os import path
 from typing import Any
 
@@ -8,48 +8,11 @@ import pykakasi
 
 from lib.console import notice, print
 from lib.encryption import zip_password
-from lib.structure import Resource
+from lib.structure import CharacterData, CharacterRelation, Resource
 from utils.config import Config
 from utils.database import TableDatabase
 from utils.util import FileUtils, ZipUtils
 from xtractor.table import TableExtractor
-
-
-@dataclass
-class CharData:
-    character_id: int
-    dev_name: str = ""
-    full_name_kr: str = ""
-    full_name_jp: str = ""
-    family_name_jp: str = ""
-    family_name_kr: str = ""
-    family_name_ruby_jp: str = ""
-    personal_name_jp: str = ""
-    personal_name_kr: str = ""
-    personal_name_ruby_jp: str = ""
-    family_name_en: str = ""
-    personal_name_en: str = ""
-    file_name: set[str] | None = None
-    cv: str = ""
-    age: int = 0
-    height: int = 0
-    birthday: str = ""
-    illustrator: str = ""
-    school_en: str = ""
-    club_en: str = ""
-
-    @staticmethod
-    def serialize(obj: Any) -> Any:
-        """For set type to list."""
-        if isinstance(obj, set):
-            return list(obj)
-        raise TypeError(f"Type {type(obj)} not serializable")
-
-
-@dataclass
-class Relation:
-    version: str
-    relations: list[CharData]
 
 
 class CharacterNameRelation(TableExtractor):
@@ -80,6 +43,7 @@ class CharacterNameRelation(TableExtractor):
         return path.basename(file_path).split("_", max_split)[-1]
 
     def main(self) -> None:
+        """Character extract entry."""
         print("Extracting necessary data...")
         excel = self.__extract_excel()
         print("Relating character data...")
@@ -87,16 +51,10 @@ class CharacterNameRelation(TableExtractor):
         self.__create_relation_file(Config.version, Config.region, relations)
 
     def get_excel_res(self, resource: Resource) -> Resource:
+        """Get excel file item from resources."""
         searched = resource.search_resource("path", self.EXCEL_NAME)
-        if not (
-            searched := resource.search_resource(
-                "path",
-                self.EXCEL_NAME,
-            )
-        ):
-            raise LookupError(
-                "Excel.zip not found, advanced search is unavailable now."
-            )
+        if not (searched := resource.search_resource("path", "Excel")):
+            raise LookupError("Excel not found, advanced search is unavailable now.")
         return searched
 
     def __extract_excel(self) -> tuple[list, list, list]:
@@ -144,8 +102,8 @@ class CharacterNameRelation(TableExtractor):
         scenario_db: list[dict[str, Any]],
         char_profile: list[dict[str, Any]],
         char_excel: list[dict],
-    ) -> list[CharData]:
-        hash_map: dict[int, CharData] = {}
+    ) -> list[CharacterData]:
+        hash_map: dict[int, CharacterData] = {}
 
         for char_p in char_profile:
             family_name_ruby_jp = char_p.get("FamilyNameRubyJp", "")
@@ -159,13 +117,15 @@ class CharacterNameRelation(TableExtractor):
             age = self.__get_int_from_str(char_p.get("CharacterAgeJp", ""))
             height = self.__get_int_from_str(char_p.get("CharHeightJp", ""))
 
-            data = CharData(
+            data = CharacterData(
                 char_p.get("CharacterId", 0),
                 full_name_kr=char_p.get("FullNameKr", "").replace(" ", ""),
                 full_name_jp=char_p.get("FullNameJp", ""),
                 family_name_jp=char_p.get("FamilyNameJp", ""),
+                family_name_kr=char_p.get("FamilyNameKr", ""),
                 family_name_ruby_jp=family_name_ruby_jp,
                 personal_name_jp=char_p.get("PersonalNameJp", ""),
+                personal_name_kr=char_p.get("PersonalNameKr", ""),
                 personal_name_ruby_jp=char_p.get("PersonalNameRubyJp", ""),
                 family_name_en=family_name_en,
                 personal_name_en=personal_name_en,
@@ -179,7 +139,9 @@ class CharacterNameRelation(TableExtractor):
             hash_map[data.character_id] = data
 
         for char_e in char_excel:
-            data = hash_map.get(char_e.get("Id", -1), CharData(char_e.get("Id", 0)))
+            data = hash_map.get(
+                char_e.get("Id", -1), CharacterData(char_e.get("Id", 0))
+            )
             data.dev_name = char_e.get("DevName", "")
             data.school_en = char_e.get("School", "")
             data.club_en = char_e.get("Club", "")
@@ -209,7 +171,7 @@ class CharacterNameRelation(TableExtractor):
                 and (char_id := scenario_data.get("CharacterName", 0))
                 and jp_name
             ):
-                hash_map[char_id] = CharData(
+                hash_map[char_id] = CharacterData(
                     char_id,
                     dev_name=file_name,
                     personal_name_jp=jp_name,
@@ -221,43 +183,48 @@ class CharacterNameRelation(TableExtractor):
         return list(hash_map.values())
 
     def __create_relation_file(
-        self, version: str, region: str, data: list[CharData]
+        self, version: str, region: str, data: list[CharacterData]
     ) -> None:
         region = region.upper()
         with open(region + self.RELATION_NAME, "wt", encoding="utf8") as f:
             json.dump(
-                asdict(Relation(region + version, data)),
+                asdict(CharacterRelation(region + version, data)),
                 f,
                 indent=4,
                 ensure_ascii=False,
-                default=CharData.serialize,
+                default=CharacterData.serialize,
             )
 
-    def verify_relation_file(self, version: str, region: str) -> bool:
+    @staticmethod
+    def verify_relation_file(version: str, region: str) -> bool:
         """Ensure the relation file exists in the directory."""
         try:
-            with open(region + self.RELATION_NAME, "rt", encoding="utf8") as f:
+            with open(
+                region + CharacterNameRelation.RELATION_NAME, "rt", encoding="utf8"
+            ) as f:
                 return json.load(f).get("version", "") == (region.upper() + version)
         except:
             return False
 
-    def search(self, version: str, region: str, search: list[str]) -> list[str]:
+    @staticmethod
+    def search(version: str, region: str, search: list[str]) -> list[str]:
+        """Search relation from file."""
         try:
-            relation_file = region.upper() + self.RELATION_NAME
+            relation_file = region.upper() + CharacterNameRelation.RELATION_NAME
             if not path.exists(relation_file):
                 raise FileNotFoundError("Character relation file does not exist.")
 
-            if not self.verify_relation_file(version, region):
+            if not CharacterNameRelation.verify_relation_file(version, region):
                 notice(
                     "The character relation version does not match the latest game version."
                 )
 
-            relation = Relation("", [])
+            relation = CharacterRelation("", [])
             with open(relation_file, "rt", encoding="utf8") as f:
                 relation_json = json.load(f)
                 relation.version = relation_json.get("version", "")
                 for rel in relation_json.get("relations", []):
-                    relation.relations.append(CharData(**rel))
+                    relation.relations.append(CharacterData(**rel))
 
             search_keywords = []
             keywords = [s.lower() for s in search if "=" not in s]
@@ -284,6 +251,8 @@ class CharacterNameRelation(TableExtractor):
                         char.family_name_jp in keywords,
                         char.family_name_kr in keywords,
                         char.family_name_ruby_jp in keywords,
+                        char.personal_name_jp in keywords,
+                        char.personal_name_kr in keywords,
                         char.family_name_en in keywords,
                         char.personal_name_en in keywords,
                         any(
@@ -305,6 +274,7 @@ class CharacterNameRelation(TableExtractor):
                     search_keywords += file_name
                     search_keywords += [char.dev_name]
 
+            search_keywords = [k for k in search_keywords if k]
             return search_keywords
         except Exception as e:
             raise LookupError(

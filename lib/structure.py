@@ -57,6 +57,43 @@ class EnumType:
     members: list[EnumMember]
 
 
+@dataclass
+class CharacterData:
+    character_id: int
+    dev_name: str = ""
+    full_name_kr: str = ""
+    full_name_jp: str = ""
+    family_name_jp: str = ""
+    family_name_kr: str = ""
+    family_name_ruby_jp: str = ""
+    personal_name_jp: str = ""
+    personal_name_kr: str = ""
+    personal_name_ruby_jp: str = ""
+    family_name_en: str = ""
+    personal_name_en: str = ""
+    file_name: set[str] | None = None
+    cv: str = ""
+    age: int = 0
+    height: int = 0
+    birthday: str = ""
+    illustrator: str = ""
+    school_en: str = ""
+    club_en: str = ""
+
+    @staticmethod
+    def serialize(obj: Any) -> Any:
+        """For set type to list."""
+        if isinstance(obj, set):
+            return list(obj)
+        raise TypeError(f"Type {type(obj)} not serializable")
+
+
+@dataclass
+class CharacterRelation:
+    version: str
+    relations: list[CharacterData]
+
+
 class ResourceType(Enum):
     table = 0
     media = 1
