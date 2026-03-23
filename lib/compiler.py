@@ -74,7 +74,7 @@ def dump_table(table_instance) -> list:
     dump_func = next(
         f
         for n, f in inspect.getmembers(current_module, inspect.isfunction)
-        if n.endswith(excel_name)
+        if n.removeprefix("dump_") == excel_name
     )
     password = create_key(excel_name.removesuffix("Excel"))
     return [dump_func(table_instance.DataList(j), password) for j in range(table_instance.DataListLength())]\n

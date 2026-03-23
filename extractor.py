@@ -69,6 +69,8 @@ class BundlesExtractor:
     @staticmethod
     def extract() -> None:
         """Extract bundles."""
+        if not path.exists(BundleExtractor.BUNDLE_FOLDER):
+            return
         freeze_support()
         extractor = BundleExtractor()
         queue: multiprocessing.queues.Queue = Queue()
@@ -114,6 +116,8 @@ class MediasExtractor:
     def extract_zips(self) -> None:
         """Extract all media zips from media folder."""
         extractor = MediaExtractor()
+        if not path.exists(extractor.MEDIA_FOLDER):
+            return
         files = FileUtils.find_files(extractor.MEDIA_FOLDER, [".zip"])
         with ProgressBar(len(files), "Extracting media...", "items"):
             with TaskManager(8, Config.max_threads, self.__extract_worker) as e_zips:
@@ -124,12 +128,12 @@ class MediasExtractor:
                 e_zips.run(e_zips)
 
 
-class TablesExtractor:
+class TablesExtractor(TableExtractor):
     TABLE_FOLDER = path.join(Config.raw_dir, "Table")
     TABLE_EXTRACT_FOLDER = path.join(Config.extract_dir, "Table")
 
     def __init__(self) -> None:
-        self.extractor = TableExtractor(
+        super().__init__(
             self.TABLE_FOLDER,
             self.TABLE_EXTRACT_FOLDER,
             f"{Config.extract_dir}.FlatData",
@@ -139,12 +143,14 @@ class TablesExtractor:
         while not (task_manager.stop_task or task_manager.tasks.empty()):
             table_file = task_manager.tasks.get()
             ProgressBar.item_text(table_file)
-            self.extractor.extract_table(table_file)
+            self.extract_table(table_file)
             table_file = task_manager.tasks.task_done()
             ProgressBar.increase()
 
     def extract_tables(self) -> None:
         """Extract table with multi-thread"""
+        if not path.exists(self.TABLE_FOLDER):
+            return
         os.makedirs(self.TABLE_EXTRACT_FOLDER, exist_ok=True)
         table_files = os.listdir(self.TABLE_FOLDER)
         with ProgressBar(len(table_files), "Extracting Table file...", "items"):

@@ -5,7 +5,7 @@ from typing import Literal
 # import json
 
 # Commandline Arguments
-parser = argparse.ArgumentParser(description="碧蓝档案素材下载器")
+parser = argparse.ArgumentParser(description="Blue Archive Resource Donwloader")
 parser.add_argument_group("Required Arguments").add_argument(
     "--region",
     "-g",
@@ -48,6 +48,16 @@ parser.add_argument(
     action="store_true",
     help="Extract files while downloading",
 )
+
+parser.add_argument(
+    "--resource-type",
+    "-rt",
+    choices=["table", "media", "bundle", "all"],
+    nargs="*",
+    help="Specify the resource type to be processed, with options including table, media, bundle, and all.",
+    default=["all"],
+)
+
 parser.add_argument(
     "--proxy",
     "-p",
@@ -66,7 +76,16 @@ parser.add_argument(
     "--search",
     "-s",
     type=str,
-    help="Search files containing specified keywords NOT IMPLEMENTATION.",
+    help="Search for files using keywords.",
+    nargs="*",
+    default=[],
+)
+
+parser.add_argument(
+    "--advance-search",
+    "-as",
+    type=str,
+    help="Advanced search, using character keywords to specify the files to be searched and downloaded.",
     nargs="*",
     default=[],
 )
@@ -83,7 +102,9 @@ class Config:
     extract_dir: str = args.extract
     temp_dir: str = args.temporary
     download_and_extract: bool = args.downloading_extract
+    resource_type: list[str] = args.resource_type
     search: list[str] = args.search
+    advance_search: list[str] = args.advance_search
     proxy: dict | None = (
         {"http": args.proxy, "https": args.proxy} if args.proxy else None
     )
@@ -107,5 +128,5 @@ class Config:
         else f"{region.upper()}{extract_dir}"
     )
 
-    # with open("CharactersMapping.json", "r", encoding="utf8") as f:
-    #     self.character_mapping = json.load(f)
+    if "all" in resource_type:
+        resource_type = ["table", "media", "bundle"]

@@ -159,16 +159,17 @@ def encrypt_double(value: float, key: bytes = b"") -> float:
 
 def convert_string(value: bytes | str, key: bytes = b"") -> str:
     """Decrypt or decode a base64 string or raw bytes, depending on the input."""
-    if value and isinstance(value, str):
-        value = value.encode("utf8")
-        try:
-            raw = b64decode(value)
-            return xor(raw, key).decode("utf16")
-        except Exception:
-            return value.decode("utf8")
+    if not value:
+        return ""
 
-    if not key and isinstance(value, bytes):
-        return value.decode("utf8")
+    try:
+        raw = b64decode(value)
+        if decoded := xor(raw, key).decode("utf16"):
+            return decoded
+        raise UnicodeError
+    except:
+        if isinstance(value, bytes):
+            return value.decode("utf8")
 
     return ""
 
