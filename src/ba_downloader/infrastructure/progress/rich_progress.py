@@ -15,6 +15,7 @@ from rich.progress import (
 )
 
 from ba_downloader.domain.ports.progress import ProgressReporterPort
+from ba_downloader.infrastructure.logging.runtime import get_console
 
 
 class RichProgressReporter(ProgressReporterPort):
@@ -42,7 +43,7 @@ class RichProgressReporter(ProgressReporterPort):
         else:
             columns.extend([TimeElapsedColumn(), TimeRemainingColumn()])
 
-        self._progress = Progress(*columns, transient=False)
+        self._progress = Progress(*columns, console=get_console(), transient=False)
         self._task_id: Optional[int] = None
         self._total = total
         self._description = description

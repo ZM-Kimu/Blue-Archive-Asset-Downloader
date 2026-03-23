@@ -10,6 +10,15 @@ def test_sync_command_parsing() -> None:
     assert args.resource_type == ["media"]
 
 
+def test_download_command_parsing_with_search() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["download", "--region", "jp", "--search", "shiroko"])
+
+    assert args.command == "download"
+    assert args.region == "jp"
+    assert args.search == ["shiroko"]
+
+
 def test_relation_build_command_parsing() -> None:
     parser = build_parser()
     args = parser.parse_args(["relation", "build", "--region", "gl"])

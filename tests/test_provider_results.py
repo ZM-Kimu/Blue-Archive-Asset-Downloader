@@ -27,11 +27,11 @@ def test_gl_provider_returns_updated_context_when_version_is_missing(monkeypatch
     monkeypatch.setattr(provider, "get_latest_version", lambda: "1.2.3")
     monkeypatch.setattr(provider, "get_apk_url", lambda version: f"https://example.invalid/{version}.xapk")
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.providers.gl.download_package_file",
+        "ba_downloader.legacy.regions.providers.gl.download_package_file",
         lambda *args, **kwargs: "archive.xapk",
     )
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.providers.gl.extract_xapk_file",
+        "ba_downloader.legacy.regions.providers.gl.extract_xapk_file",
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(provider, "get_server_url", lambda version: "https://example.invalid/catalog.json")
@@ -42,3 +42,4 @@ def test_gl_provider_returns_updated_context_when_version_is_missing(monkeypatch
     assert isinstance(result, RegionCatalogResult)
     assert result.context.version == "1.2.3"
     assert result.resources is resources
+    assert result.capabilities.supports_sync is True

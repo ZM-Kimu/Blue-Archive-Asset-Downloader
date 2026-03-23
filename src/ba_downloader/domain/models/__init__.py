@@ -1,6 +1,16 @@
 from ba_downloader.domain.models.character import CharacterData, CharacterRelation
 from ba_downloader.domain.models.codegen import EnumMember, EnumType, Property, StructTable
 from ba_downloader.domain.models.database import DBColumn, DBTable, SQLiteDataType
+from ba_downloader.domain.models.asset import (
+    AssetCollection,
+    AssetRecord,
+    AssetType,
+    BootstrapSession,
+    CatalogSource,
+    ChecksumSpec,
+    RegionCapabilities,
+    ResolvedRelease,
+)
 from ba_downloader.domain.models.resource import (
     CNResource,
     GLResource,
@@ -22,6 +32,14 @@ __all__ = [
     "DBColumn",
     "DBTable",
     "SQLiteDataType",
+    "AssetCollection",
+    "AssetRecord",
+    "AssetType",
+    "BootstrapSession",
+    "CatalogSource",
+    "ChecksumSpec",
+    "RegionCapabilities",
+    "ResolvedRelease",
     "CNResource",
     "GLResource",
     "JPResource",

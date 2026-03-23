@@ -95,6 +95,9 @@ class RecordingHttpClient:
     def download_to_file(self, *args: Any, **kwargs: Any) -> Any:
         raise AssertionError("download_to_file should not be used in JP manifest tests.")
 
+    def close(self) -> None:
+        return None
+
 
 def _write_table_bundle(writer: MemoryPackWriter, bundle: dict[str, Any]) -> None:
     writer.write_object(
@@ -342,7 +345,7 @@ def test_get_resource_manifest_uses_second_root_and_bundle_packing_info() -> Non
         "Bundle/bundle/full.pack",
         "Bundle/bundle/update.pack",
     }
-    assert bundle_items[0].addition["bundle_files"]
+    assert bundle_items[0].metadata["bundle_files"]
 
 
 def test_search_name_matches_jp_bundle_files_from_patch_pack() -> None:

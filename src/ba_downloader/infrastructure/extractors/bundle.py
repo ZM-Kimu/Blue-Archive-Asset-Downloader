@@ -4,8 +4,6 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-import UnityPy
-
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
@@ -67,6 +65,8 @@ class BundleExtractor:
         extract_types: list[str] | None = None,
     ) -> None:
         """Extract bundle use bundle path."""
+        import UnityPy
+
         counter: dict[str, int] = {}
         env = UnityPy.load(res_path)
         conditional = (

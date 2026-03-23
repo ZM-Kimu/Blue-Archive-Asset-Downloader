@@ -3,9 +3,19 @@ import logging
 from rich.console import Console
 from rich.logging import RichHandler
 
+from ba_downloader.infrastructure.logging.highlighter import LogMessageHighlighter
+
 
 LOGGER_NAME = "ba_downloader"
 _configured = False
+_console: Console | None = None
+
+
+def get_console() -> Console:
+    global _console
+    if _console is None:
+        _console = Console(stderr=True)
+    return _console
 
 
 def configure_logging() -> None:
@@ -19,10 +29,12 @@ def configure_logging() -> None:
     logger.handlers.clear()
     logger.addHandler(
         RichHandler(
-            console=Console(stderr=True),
+            console=get_console(),
             rich_tracebacks=True,
             show_path=False,
+            highlighter=LogMessageHighlighter(),
             markup=False,
+            keywords=[],
         )
     )
     _configured = True

@@ -7,8 +7,8 @@ from zipfile import ZipFile
 
 import pykakasi
 
+from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.character import CharacterData, CharacterRelation
-from ba_downloader.domain.models.resource import Resource
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.relation import RelationBuilderPort
@@ -59,9 +59,9 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         relations = self.__create_relation_list(*excel)
         self.__create_relation_file(self.context.version, self.context.region, relations)
 
-    def get_excel_resources(self, resource: Resource) -> Resource:
+    def get_excel_resources(self, resource: AssetCollection) -> AssetCollection:
         """Get excel file item from resources."""
-        if not (searched := resource.search_resource("path", "Excel")):
+        if not (searched := resource.search("path", "Excel")):
             raise LookupError("Excel not found, advanced search is unavailable now.")
         return searched
 

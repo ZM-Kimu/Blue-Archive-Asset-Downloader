@@ -53,7 +53,11 @@ class HttpClientPort(Protocol):
         *,
         headers: Mapping[str, str] | None = None,
         transport: TransportKind = "default",
-        timeout: float = 30.0,
+        timeout: float = 300.0,
         progress_callback: Callable[[int], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> DownloadResult:
+        ...
+
+    def close(self) -> None:
         ...

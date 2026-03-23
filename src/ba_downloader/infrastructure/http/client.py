@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from time import monotonic
+from typing import Any, Callable, Iterator, Mapping
 
 import httpx
-from curl_cffi import requests as curl_requests
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.ports.http import DownloadResult, HttpClientPort, HttpResponse
+
+try:
+    from curl_cffi import requests as curl_requests
+    from curl_cffi.requests.exceptions import Timeout as CurlTimeout
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    CurlTimeout = None
+    curl_requests = None
 
 
 DEFAULT_USER_AGENT = (
@@ -21,6 +28,14 @@ CHALLENGE_MARKERS = (
     b"cf-chl",
     b"Cloudflare",
 )
+DEFAULT_DOWNLOAD_TIMEOUT = 300.0
+DOWNLOAD_READ_POLL_TIMEOUT = 1.0
+DOWNLOAD_CHUNK_SIZE = 64 * 1024
+CONNECT_TIMEOUT_CAP = 20.0
+
+
+class _CancelledDownloadError(Exception):
+    """Internal sentinel for cooperative cancellation."""
 
 
 class ResilientHttpClient(HttpClientPort):
@@ -32,12 +47,14 @@ class ResilientHttpClient(HttpClientPort):
             headers={"User-Agent": DEFAULT_USER_AGENT},
             proxy=proxy_url,
         )
-        self._browser = curl_requests.Session(
-            headers={"User-Agent": DEFAULT_USER_AGENT},
-            impersonate="chrome",
-        )
-        if proxy_url:
-            self._browser.proxies = {"http": proxy_url, "https": proxy_url}
+        self._browser = None
+        if curl_requests is not None:
+            self._browser = curl_requests.Session(
+                headers={"User-Agent": DEFAULT_USER_AGENT},
+                impersonate="chrome",
+            )
+            if proxy_url:
+                self._browser.proxies = {"http": proxy_url, "https": proxy_url}
 
     def request(
         self,
@@ -95,11 +112,15 @@ class ResilientHttpClient(HttpClientPort):
         *,
         headers: Mapping[str, str] | None = None,
         transport: str = "default",
-        timeout: float = 30.0,
+        timeout: float = DEFAULT_DOWNLOAD_TIMEOUT,
         progress_callback: Callable[[int], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> DownloadResult:
         destination_path = Path(destination)
         destination_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if should_stop is not None and should_stop():
+            raise NetworkError(f"Failed to download {url}: download cancelled by user.")
 
         if transport == "browser":
             return self._download_with_browser(
@@ -108,6 +129,7 @@ class ResilientHttpClient(HttpClientPort):
                 headers=headers,
                 timeout=timeout,
                 progress_callback=progress_callback,
+                should_stop=should_stop,
             )
 
         result = self._download_with_httpx(
@@ -116,6 +138,7 @@ class ResilientHttpClient(HttpClientPort):
             headers=headers,
             timeout=timeout,
             progress_callback=progress_callback,
+            should_stop=should_stop,
         )
         if result.status_code in {403, 429} or (
             "text/html" in result.headers.get("Content-Type", "").lower()
@@ -128,8 +151,14 @@ class ResilientHttpClient(HttpClientPort):
                 headers=headers,
                 timeout=timeout,
                 progress_callback=progress_callback,
+                should_stop=should_stop,
             )
         return result
+
+    def close(self) -> None:
+        self._httpx.close()
+        if self._browser is not None:
+            self._browser.close()
 
     def _request_with_httpx(
         self,
@@ -177,6 +206,17 @@ class ResilientHttpClient(HttpClientPort):
         params: Mapping[str, Any] | None,
         timeout: float,
     ):
+        if self._browser is None:
+            return self._request_with_httpx(
+                method,
+                url,
+                headers=headers,
+                json=json,
+                data=data,
+                params=params,
+                timeout=timeout,
+            )
+
         retrying = Retrying(
             stop=stop_after_attempt(max(1, self.max_retries + 1)),
             wait=wait_exponential(multiplier=0.2, min=0.2, max=2),
@@ -207,31 +247,48 @@ class ResilientHttpClient(HttpClientPort):
         headers: Mapping[str, str] | None,
         timeout: float,
         progress_callback: Callable[[int], None] | None,
+        should_stop: Callable[[], bool] | None,
     ) -> DownloadResult:
         try:
             with self._httpx.stream(
                 "GET",
                 url,
                 headers=headers,
-                timeout=timeout,
+                timeout=httpx.Timeout(
+                    connect=min(timeout, CONNECT_TIMEOUT_CAP),
+                    read=DOWNLOAD_READ_POLL_TIMEOUT,
+                    write=min(timeout, CONNECT_TIMEOUT_CAP),
+                    pool=min(timeout, CONNECT_TIMEOUT_CAP),
+                ),
             ) as response:
-                with destination.open("wb") as file_handle:
-                    total = 0
-                    for chunk in response.iter_bytes():
-                        if not chunk:
-                            continue
-                        file_handle.write(chunk)
-                        total += len(chunk)
-                        if progress_callback is not None:
-                            progress_callback(len(chunk))
-            return DownloadResult(
-                path=str(destination),
-                bytes_written=destination.stat().st_size if destination.exists() else 0,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                url=str(response.url),
-            )
+                bytes_written = self._stream_to_destination(
+                    destination,
+                    url=url,
+                    iterator=response.iter_bytes(chunk_size=DOWNLOAD_CHUNK_SIZE),
+                    timeout_exceptions=(httpx.ReadTimeout,),
+                    stall_timeout=timeout,
+                    progress_callback=progress_callback,
+                    should_stop=should_stop,
+                )
+                return DownloadResult(
+                    path=str(destination),
+                    bytes_written=bytes_written,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    url=str(response.url),
+                )
+        except _CancelledDownloadError as exc:
+            destination.unlink(missing_ok=True)
+            raise NetworkError(f"Failed to download {url}: download cancelled by user.") from exc
+        except KeyboardInterrupt:
+            destination.unlink(missing_ok=True)
+            raise
         except Exception as exc:
+            if should_stop is not None and should_stop():
+                destination.unlink(missing_ok=True)
+                raise NetworkError(
+                    f"Failed to download {url}: download cancelled by user."
+                ) from exc
             raise NetworkError(f"Failed to download {url}: {exc}") from exc
 
     def _download_with_browser(
@@ -242,32 +299,102 @@ class ResilientHttpClient(HttpClientPort):
         headers: Mapping[str, str] | None,
         timeout: float,
         progress_callback: Callable[[int], None] | None,
+        should_stop: Callable[[], bool] | None,
     ) -> DownloadResult:
+        if self._browser is None:
+            return self._download_with_httpx(
+                url,
+                destination,
+                headers=headers,
+                timeout=timeout,
+                progress_callback=progress_callback,
+                should_stop=should_stop,
+            )
+
         try:
             response = self._browser.get(
                 url,
                 headers=dict(headers or {}),
-                timeout=timeout,
+                timeout=(min(timeout, CONNECT_TIMEOUT_CAP), DOWNLOAD_READ_POLL_TIMEOUT),
                 stream=True,
             )
-            with destination.open("wb") as file_handle:
-                total = 0
-                for chunk in response.iter_content(chunk_size=65536):
-                    if not chunk:
-                        continue
-                    file_handle.write(chunk)
-                    total += len(chunk)
-                    if progress_callback is not None:
-                        progress_callback(len(chunk))
+            bytes_written = self._stream_to_destination(
+                destination,
+                url=url,
+                iterator=response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE),
+                timeout_exceptions=((CurlTimeout,) if CurlTimeout is not None else ()),
+                stall_timeout=timeout,
+                progress_callback=progress_callback,
+                should_stop=should_stop,
+            )
             return DownloadResult(
                 path=str(destination),
-                bytes_written=destination.stat().st_size if destination.exists() else 0,
+                bytes_written=bytes_written,
                 status_code=response.status_code,
                 headers=dict(response.headers),
                 url=response.url,
             )
+        except _CancelledDownloadError as exc:
+            destination.unlink(missing_ok=True)
+            raise NetworkError(f"Failed to download {url}: download cancelled by user.") from exc
+        except KeyboardInterrupt:
+            destination.unlink(missing_ok=True)
+            raise
         except Exception as exc:
+            if should_stop is not None and should_stop():
+                destination.unlink(missing_ok=True)
+                raise NetworkError(
+                    f"Failed to download {url}: download cancelled by user."
+                ) from exc
             raise NetworkError(f"Failed to download {url}: {exc}") from exc
+        finally:
+            try:
+                response.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+
+    def _stream_to_destination(
+        self,
+        destination: Path,
+        *,
+        url: str,
+        iterator: Iterator[bytes],
+        timeout_exceptions: tuple[type[BaseException], ...],
+        stall_timeout: float,
+        progress_callback: Callable[[int], None] | None,
+        should_stop: Callable[[], bool] | None,
+    ) -> int:
+        bytes_written = 0
+        last_chunk_at = monotonic()
+
+        with destination.open("wb") as file_handle:
+            while True:
+                if should_stop is not None and should_stop():
+                    raise _CancelledDownloadError()
+
+                try:
+                    chunk = next(iterator)
+                except StopIteration:
+                    break
+                except timeout_exceptions as exc:
+                    if should_stop is not None and should_stop():
+                        raise _CancelledDownloadError() from exc
+                    if monotonic() - last_chunk_at >= stall_timeout:
+                        raise NetworkError(
+                            f"Failed to download {url}: the read operation timed out."
+                        ) from exc
+                    continue
+
+                if not chunk:
+                    continue
+
+                file_handle.write(chunk)
+                bytes_written += len(chunk)
+                last_chunk_at = monotonic()
+                if progress_callback is not None:
+                    progress_callback(len(chunk))
+
+        return bytes_written
 
     @staticmethod
     def _should_fallback(response: HttpResponse) -> bool:

@@ -1,16 +1,16 @@
-from ba_downloader.domain.models.resource import Resource, ResourceType
+from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.domain.services.resource_query import ResourceQueryService
 
 
-def _build_resource() -> Resource:
-    resource = Resource()
+def _build_resource() -> AssetCollection:
+    resource = AssetCollection()
     resource.add(
         "https://example.invalid/a",
         "Media/Announce/title.png",
         10,
         "a",
         "md5",
-        ResourceType.media,
+        AssetType.media,
     )
     resource.add(
         "https://example.invalid/b",
@@ -18,7 +18,7 @@ def _build_resource() -> Resource:
         20,
         "b",
         "md5",
-        ResourceType.bundle,
+        AssetType.bundle,
         {"bundle_files": ["character.bundle", "shiroko.bundle"]},
     )
     resource.add(
@@ -27,7 +27,7 @@ def _build_resource() -> Resource:
         30,
         "c",
         "md5",
-        ResourceType.table,
+        AssetType.table,
     )
     return resource
 
@@ -36,9 +36,9 @@ def test_filter_type_returns_matching_resource_types() -> None:
     filtered = ResourceQueryService.filter_type(_build_resource(), ["media", "table"])
 
     assert len(filtered) == 2
-    assert [item.resource_type for item in filtered] == [
-        ResourceType.media,
-        ResourceType.table,
+    assert [item.asset_type for item in filtered] == [
+        AssetType.media,
+        AssetType.table,
     ]
 
 

@@ -1,7 +1,7 @@
 from collections.abc import Callable
 
 from ba_downloader.application.services.extract import ExtractService
-from ba_downloader.domain.models.resource import Resource
+from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.extract import FlatbufferWorkflowPort
@@ -34,10 +34,10 @@ class SyncService:
 
     def _search_resource(
         self,
-        resources: Resource,
+        resources: AssetCollection,
         context: RuntimeContext,
         dumped: bool,
-    ) -> Resource:
+    ) -> AssetCollection:
         keywords: list[str] = []
         relation_builder = self.relation_builder_factory(context)
         if context.advanced_search:
@@ -63,25 +63,28 @@ class SyncService:
 
         return resources
 
-    def _filter_and_download(self, resources: Resource, context: RuntimeContext) -> None:
+    def _filter_and_download(
+        self,
+        resources: AssetCollection,
+        context: RuntimeContext,
+    ) -> None:
         filtered = ResourceQueryService.filter_type(resources, context.resource_type)
         self.downloader.verify_and_download(filtered, context)
 
     def run(self, context: RuntimeContext) -> RuntimeContext:
+        capabilities = self.provider.get_capabilities()
+        if not capabilities.supports_sync:
+            raise LookupError(
+                "Sync is temporarily unavailable for JP while the new download pipeline is being rebuilt."
+            )
+        if context.advanced_search and not capabilities.supports_advanced_search:
+            raise LookupError(
+                f"Advanced search is not supported for region '{context.region}'."
+            )
+
         catalog = self.provider.load_catalog(context)
         active_context = catalog.context
         resources = catalog.resources
-
-        if active_context.region == "jp":
-            dumped = False
-            if "table" in active_context.resource_type:
-                self._dump_and_compile(active_context)
-                dumped = True
-            if active_context.search or active_context.advanced_search:
-                resources = self._search_resource(resources, active_context, dumped)
-            self._filter_and_download(resources, active_context)
-            self.extract_service.run_post_download(active_context)
-            return active_context
 
         if active_context.region == "gl":
             self._dump_and_compile(active_context)
@@ -91,5 +94,9 @@ class SyncService:
             self.extract_service.run(active_context)
             return active_context
 
+        if active_context.search or active_context.advanced_search:
+            resources = self._search_resource(resources, active_context, False)
+
         self._filter_and_download(resources, active_context)
+        self.extract_service.run_post_download(active_context)
         return active_context

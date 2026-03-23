@@ -7,15 +7,23 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from os import path
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urljoin
 
+from ba_downloader.application.catalog_pipeline import CatalogPipeline
+from ba_downloader.domain.models.asset import (
+    AssetCollection,
+    AssetType,
+    BootstrapSession,
+    CatalogSource,
+    RegionCapabilities,
+    ResolvedRelease,
+)
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
-from ba_downloader.infrastructure.apk import download_package_file, extract_xapk_file
-from ba_downloader.domain.models.resource import JPResource, Resource
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.infrastructure.apk import download_package_file, extract_xapk_file
 from ba_downloader.infrastructure.unity import UnityAssetReader
 from ba_downloader.shared.crypto.encryption import convert_string, create_key
 
@@ -26,7 +34,14 @@ class APKPackageInfo:
     download_url: str
 
 
-class JPServer:
+@dataclass(frozen=True, slots=True)
+class DecodedJPCatalog:
+    tables: list[dict[str, object]]
+    media: list[dict[str, object]]
+    bundles: list[dict[str, object]]
+
+
+class JPReleaseResolver:
     PUREAPK_VERSION_URL = (
         "https://api.pureapk.com/m/v3/cms/app_version"
         "?hl=en-US&package_name=com.YostarJP.BlueArchive"
@@ -51,61 +66,11 @@ class JPServer:
         re.S,
     )
 
-    def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
+    def __init__(self, http_client: HttpClientPort) -> None:
         self.http_client = http_client
-        self.logger = logger
-
-    def apk_extract_folder(self, context: RuntimeContext) -> str:
-        return path.join(context.temp_dir, "Data")
-
-    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
-        """Main entry of JPServer."""
-        if context.version:
-            self.logger.warn("Specifying a version is not allowed with JPServer.")
-
-        self.logger.warn("Automatically fetching latest package info...")
-        package_info = self.get_latest_package_info()
-        version = package_info.version
-        resolved_context = context.with_updates(version=version)
-        self.logger.warn(f"Current resource version: {version}")
-
-        apk_path = self.download_apk_file(package_info.download_url, resolved_context)
-        self.extract_apk_file(apk_path, resolved_context)
-        server_url = self.get_server_url(resolved_context)
-
-        self.logger.info("Pulling catalog...")
-        resources = self.get_resource_manifest(server_url)
-        self.logger.warn(f"Catalog: {resources}.")
-        return RegionCatalogResult(resources=resources, context=resolved_context)
-
-    def download_apk_file(self, apk_url: str, context: RuntimeContext) -> str:
-        """Download the APK file."""
-        self.logger.info("Downloading APK to retrieve server URL...")
-        return download_package_file(
-            self.http_client,
-            self.logger,
-            apk_url,
-            context.temp_dir,
-        )
-
-    def extract_apk_file(self, apk_path: str, context: RuntimeContext) -> None:
-        """Extract the XAPK file."""
-        extract_xapk_file(
-            apk_path,
-            self.apk_extract_folder(context),
-            context.temp_dir,
-        )
-
-    def deprecated_get_apk_url(self, version: str) -> str:
-        """Retrieve the link to download the APK."""
-        return (
-            "https://d.apkpure.com/b/XAPK/com.YostarJP.BlueArchive"
-            f"?versionCode={version.split('.')[-1]}&nc=arm64-v8a&sv=24"
-        )
 
     @classmethod
     def parse_package_info(cls, payload: bytes) -> APKPackageInfo:
-        """Parse the latest JP package info from the PureAPK metadata response."""
         matches = cls.PUREAPK_PACKAGE_PATTERN.findall(payload)
         if not matches:
             raise LookupError("Unable to parse latest JP package info from PureAPK.")
@@ -121,73 +86,60 @@ class JPServer:
         return max(candidates, key=lambda item: tuple(int(part) for part in item.version.split(".")))
 
     def get_latest_package_info(self) -> APKPackageInfo:
-        """Fetch the latest JP package metadata from PureAPK."""
         payload = self.http_client.request(
             "GET",
             self.PUREAPK_VERSION_URL,
             headers=self.PUREAPK_HEADERS,
         ).content
-
         return self.parse_package_info(payload)
 
-    def get_latest_version(self) -> str:
-        """Obtain the latest JP package version."""
-        return self.get_latest_package_info().version
+    def resolve(self, context: RuntimeContext) -> ResolvedRelease:
+        package_info = self.get_latest_package_info()
+        return ResolvedRelease(
+            region=context.region,
+            version=package_info.version,
+            package_url=package_info.download_url,
+        )
 
-    def get_resource_manifest(self, server_url: str) -> Resource:
-        """JP server use different API for each version, and media and table files are encrypted."""
-        resources = JPResource()
-        try:
-            api = self.http_client.request("GET", server_url)
-            base_url = self._resolve_catalog_root(api.json())
 
-            resources.set_url_link(
-                base_url,
-                "Android_PatchPack/",
-                "MediaResources/",
-                "TableBundles/",
-            )
+class JPBootstrapper:
+    def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
+        self.http_client = http_client
+        self.logger = logger
 
-            if table_data := self.http_client.request(
-                "GET",
-                urljoin(resources.table_url, "TableCatalog.bytes"),
-            ).content:
-                JPCatalogDecoder.decode_to_manifest(table_data, resources, "table")
-            else:
-                self.logger.error(
-                    "Failed to fetch table catalog. Retry may solve this issue.",
-                )
+    def apk_extract_folder(self, context: RuntimeContext) -> str:
+        return path.join(context.temp_dir, "Data")
 
-            if media_data := self.http_client.request(
-                "GET",
-                urljoin(resources.media_url, "Catalog/MediaCatalog.bytes"),
-            ).content:
-                JPCatalogDecoder.decode_to_manifest(media_data, resources, "media")
-            else:
-                self.logger.error(
-                    "Failed to fetch media catalog. Retry may solve this issue.",
-                )
+    def bootstrap(
+        self,
+        release: ResolvedRelease,
+        context: RuntimeContext,
+    ) -> BootstrapSession:
+        if not release.package_url:
+            raise LookupError("JP release does not contain a package URL.")
 
-            bundle_data = self.http_client.request(
-                "GET",
-                urljoin(resources.bundle_url, "BundlePackingInfo.json"),
-            )
-            try:
-                self._load_bundle_catalog(bundle_data.json(), resources)
-            except Exception:
-                self.logger.error(
-                    "Failed to fetch bundle catalog. Retry may solve this issue.",
-                )
-
-            if not resources:
-                raise FileNotFoundError("Cannot pull the manifest.")
-
-            return resources.to_resource()
-
-        except Exception as e:
-            raise LookupError(
-                f"Encountered the following error while attempting to fetch manifest: {e}."
-            ) from e
+        self.logger.info("Downloading APK to retrieve server URL...")
+        apk_path = download_package_file(
+            self.http_client,
+            self.logger,
+            release.package_url,
+            context.temp_dir,
+        )
+        extract_xapk_file(
+            apk_path,
+            self.apk_extract_folder(context),
+            context.temp_dir,
+        )
+        server_url = self.get_server_url(context)
+        catalog_root = self._resolve_catalog_root(
+            self.http_client.request("GET", server_url).json()
+        )
+        return BootstrapSession(
+            release=release,
+            server_url=server_url,
+            catalog_root=catalog_root,
+            metadata={"apk_path": apk_path},
+        )
 
     @staticmethod
     def _resolve_catalog_root(addressable_payload: Mapping[str, Any]) -> str:
@@ -209,48 +161,7 @@ class JPServer:
 
         raise LookupError("AddressablesCatalogUrlRoot not found in JP addressables response.")
 
-    @staticmethod
-    def _load_bundle_catalog(
-        payload: Mapping[str, Any],
-        resources: JPResource,
-    ) -> None:
-        for section_name in ("FullPatchPacks", "UpdatePacks"):
-            packs = payload.get(section_name, [])
-            if not isinstance(packs, list):
-                continue
-
-            for pack in packs:
-                if not isinstance(pack, Mapping):
-                    continue
-
-                pack_name = str(pack.get("PackName", "")).strip()
-                if not pack_name:
-                    continue
-
-                bundle_files = [
-                    str(bundle.get("Name", "")).strip()
-                    for bundle in pack.get("BundleFiles", [])
-                    if isinstance(bundle, Mapping) and bundle.get("Name")
-                ]
-                resources.add_bundle_resource(
-                    pack_name,
-                    int(pack.get("PackSize", 0) or 0),
-                    int(pack.get("Crc", 0) or 0),
-                    bool(pack.get("IsPrologue", False)),
-                    bool(pack.get("IsSplitDownload", False)),
-                    bundle_files,
-                )
-
     def __decode_server_url(self, data: bytes) -> str:
-        """
-        Decodes the server URL from the given data.
-
-        Args:
-            data (bytes): Binary data to decode.
-
-        Returns:
-            str: Decoded server URL.
-        """
         ciphers = {
             "ServerInfoDataUrl": "X04YXBFqd3ZpTg9cKmpvdmpOElwnamB2eE4cXDZqc3ZgTg==",
             "DefaultConnectionGroup": "tSrfb7xhQRKEKtZvrmFjEp4q1G+0YUUSkirOb7NhTxKfKv1vqGFPEoQqym8=",
@@ -265,7 +176,6 @@ class JPServer:
         return url
 
     def get_server_url(self, context: RuntimeContext) -> str:
-        """Decrypt the server version from the game's binary files."""
         self.logger.info("Retrieving game info...")
         url = version = ""
         for dir, _, files in os.walk(
@@ -296,6 +206,209 @@ class JPServer:
         elif not version:
             self.logger.warn("Cannot retrieve apk version data.")
         return url
+
+
+class JPCatalogSourceProvider:
+    def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
+        self.http_client = http_client
+        self.logger = logger
+
+    def fetch(
+        self,
+        session: BootstrapSession,
+        context: RuntimeContext,
+    ) -> list[CatalogSource]:
+        _ = context
+        base_url = session.catalog_root.rstrip("/") + "/"
+        sources: list[CatalogSource] = []
+
+        targets = (
+            ("table", urljoin(base_url, "TableBundles/TableCatalog.bytes")),
+            ("media", urljoin(base_url, "MediaResources/Catalog/MediaCatalog.bytes")),
+            ("bundle", urljoin(base_url, "Android_PatchPack/BundlePackingInfo.json")),
+        )
+
+        for name, url in targets:
+            response = self.http_client.request("GET", url)
+            if not response.content:
+                self.logger.error(f"Failed to fetch JP {name} catalog from {url}.")
+                continue
+            sources.append(
+                CatalogSource(
+                    name=name,
+                    url=url,
+                    content=response.content,
+                    content_type=str(response.headers.get("content-type", "")),
+                )
+            )
+
+        if len(sources) < 3:
+            raise FileNotFoundError("Cannot pull the JP manifest.")
+        return sources
+
+
+class JPAssetNormalizer:
+    @staticmethod
+    def normalize(payload: DecodedJPCatalog, session: BootstrapSession) -> AssetCollection:
+        assets = AssetCollection()
+        base_url = session.catalog_root.rstrip("/") + "/"
+
+        for table in payload.tables:
+            assets.add(
+                urljoin(base_url, f"TableBundles/{table['name']}"),
+                urljoin("Table/", str(table["name"])),
+                int(table["size"]),
+                str(table["crc"]),
+                "crc",
+                AssetType.table,
+                {"includes": list(table.get("includes", []))},
+            )
+
+        for media in payload.media:
+            assets.add(
+                urljoin(base_url, f"MediaResources/{media['path']}"),
+                urljoin("Media/", str(media["path"])),
+                int(media["bytes"]),
+                str(media["crc"]),
+                "crc",
+                AssetType.media,
+                {"media_type": media["type"]},
+            )
+
+        for bundle in payload.bundles:
+            assets.add(
+                urljoin(base_url, f"Android_PatchPack/{bundle['name']}"),
+                urljoin("Bundle/", str(bundle["name"])),
+                int(bundle["size"]),
+                str(bundle["crc"]),
+                "crc",
+                AssetType.bundle,
+                {"bundle_files": list(bundle.get("bundle_files", []))},
+            )
+
+        return assets
+
+
+class JPServer:
+    CAPABILITIES = RegionCapabilities(
+        supports_sync=False,
+        supports_advanced_search=False,
+        supports_relation_build=False,
+    )
+
+    def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
+        self.http_client = http_client
+        self.logger = logger
+        self.release_resolver = JPReleaseResolver(http_client)
+        self.bootstrapper = JPBootstrapper(http_client, logger)
+        self.catalog_source_provider = JPCatalogSourceProvider(http_client, logger)
+        self.asset_normalizer = JPAssetNormalizer()
+        self.pipeline = CatalogPipeline(
+            self.release_resolver,
+            self.bootstrapper,
+            self.catalog_source_provider,
+            JPCatalogDecoder(),
+            self.asset_normalizer,
+        )
+
+    def get_capabilities(self) -> RegionCapabilities:
+        return self.CAPABILITIES
+
+    def apk_extract_folder(self, context: RuntimeContext) -> str:
+        return self.bootstrapper.apk_extract_folder(context)
+
+    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
+        if context.version:
+            self.logger.warn("Specifying a version is not allowed with JPServer.")
+
+        self.logger.warn("Automatically fetching latest package info...")
+        assets, resolved_context = self.pipeline.load(context)
+        self.logger.warn(f"Current resource version: {resolved_context.version}")
+        self.logger.warn(f"Catalog: {assets}.")
+        return RegionCatalogResult(
+            resources=assets,
+            context=resolved_context,
+            capabilities=self.get_capabilities(),
+        )
+
+    def download_apk_file(self, apk_url: str, context: RuntimeContext) -> str:
+        self.logger.info("Downloading APK to retrieve server URL...")
+        return download_package_file(
+            self.http_client,
+            self.logger,
+            apk_url,
+            context.temp_dir,
+        )
+
+    def extract_apk_file(self, apk_path: str, context: RuntimeContext) -> None:
+        extract_xapk_file(
+            apk_path,
+            self.apk_extract_folder(context),
+            context.temp_dir,
+        )
+
+    def deprecated_get_apk_url(self, version: str) -> str:
+        return (
+            "https://d.apkpure.com/b/XAPK/com.YostarJP.BlueArchive"
+            f"?versionCode={version.split('.')[-1]}&nc=arm64-v8a&sv=24"
+        )
+
+    @classmethod
+    def parse_package_info(cls, payload: bytes) -> APKPackageInfo:
+        return JPReleaseResolver.parse_package_info(payload)
+
+    def get_latest_package_info(self) -> APKPackageInfo:
+        return self.release_resolver.get_latest_package_info()
+
+    def get_latest_version(self) -> str:
+        return self.get_latest_package_info().version
+
+    def get_resource_manifest(self, server_url: str) -> AssetCollection:
+        session = BootstrapSession(
+            release=ResolvedRelease(region="jp", version=""),
+            server_url=server_url,
+            catalog_root=self.bootstrapper._resolve_catalog_root(
+                self.http_client.request("GET", server_url).json()
+            ),
+        )
+        return self._load_asset_collection(
+            session,
+            RuntimeContext(
+                region="jp",
+                threads=1,
+                version="",
+                raw_dir="",
+                extract_dir="",
+                temp_dir="",
+                extract_while_download=False,
+                resource_type=("table", "media", "bundle"),
+                proxy_url="",
+                max_retries=0,
+                search=(),
+                advanced_search=(),
+                work_dir="",
+            ),
+        )
+
+    def get_server_url(self, context: RuntimeContext) -> str:
+        return self.bootstrapper.get_server_url(context)
+
+    def _load_asset_collection(
+        self,
+        session: BootstrapSession,
+        context: RuntimeContext,
+    ) -> AssetCollection:
+        try:
+            sources = self.catalog_source_provider.fetch(session, context)
+            decoded = JPCatalogDecoder.decode(session, sources, context)
+            assets = self.asset_normalizer.normalize(decoded, session)
+            if not assets:
+                raise FileNotFoundError("Cannot pull the JP manifest.")
+            return assets
+        except Exception as exc:
+            raise LookupError(
+                f"Encountered the following error while attempting to fetch manifest: {exc}."
+            ) from exc
 
 
 NULL_OBJECT_HEADER = 255
@@ -376,79 +489,93 @@ class JPCatalogDecoder:
                 result[key] = value_reader(self)
             return result
 
-    @staticmethod
-    def decode_to_manifest(
-        raw_data: bytes, container: JPResource, type: Literal["table", "media"]
-    ) -> dict[str, object]:
-        """Used to decode bytes file to readable data structure. Data will return decoded and add to container.
+    @classmethod
+    def decode(
+        cls,
+        session: BootstrapSession,
+        sources: list[CatalogSource],
+        context: RuntimeContext,
+    ) -> DecodedJPCatalog:
+        _ = (session, context)
+        payload = DecodedJPCatalog(tables=[], media=[], bundles=[])
 
-        Args:
-            raw_data (bytes): Binary data.
-            container (JPResource): Container to storage manifest.
-            type (Literal[&quot;table&quot;, &quot;media&quot;]): Data type.
+        for source in sources:
+            if source.name == "table":
+                payload.tables.extend(cls.__decode_table_catalog(cls.Reader(source.content)))
+            elif source.name == "media":
+                payload.media.extend(cls.__decode_media_catalog(cls.Reader(source.content)))
+            elif source.name == "bundle":
+                payload.bundles.extend(cls.__decode_bundle_catalog(source.content))
 
-        Returns:
-            dict([str, object]): Manifest list.
-        """
-        data = JPCatalogDecoder.Reader(raw_data)
-        if type == "media":
-            return JPCatalogDecoder.__decode_media_catalog(data, container)
-        return JPCatalogDecoder.__decode_table_catalog(data, container)
+        return payload
 
     @classmethod
     def __decode_media_catalog(
         cls,
         data: Reader,
-        container: JPResource,
-    ) -> dict[str, object]:
+    ) -> list[dict[str, object]]:
         member_count = data.read_object_header()
         if member_count is None or member_count < 1:
-            return {}
+            return []
 
         manifest = data.read_string_map(cls.__decode_media_manifest)
+        assets: list[dict[str, object]] = []
         for key, obj in manifest.items():
             path = str(obj["path"]).replace("\\", "/")
-            container.add_media_resource(
-                key,
-                path,
-                str(obj["file_name"]),
-                int(obj["type"]),
-                int(obj["bytes"]),
-                int(obj["crc"]),
-                bool(obj["is_prologue"]),
-                bool(obj["is_split_download"]),
-            )
+            obj["key"] = key
             obj["path"] = path
-        return manifest
+            assets.append(obj)
+        return assets
 
     @classmethod
     def __decode_table_catalog(
         cls,
         data: Reader,
-        container: JPResource,
-    ) -> dict[str, object]:
+    ) -> list[dict[str, object]]:
         member_count = data.read_object_header()
         if member_count is None or member_count < 1:
-            return {}
+            return []
 
         manifest = data.read_string_map(cls.__decode_table_manifest)
         if member_count >= 2:
             for key, obj in data.read_string_map(cls.__decode_table_pack_manifest).items():
                 manifest[key] = obj
 
+        assets: list[dict[str, object]] = []
         for key, obj in manifest.items():
-            container.add_table_resource(
-                key,
-                str(obj["name"]),
-                int(obj["size"]),
-                int(obj["crc"]),
-                bool(obj.get("is_in_build", False)),
-                bool(obj.get("is_changed", False)),
-                bool(obj.get("is_prologue", False)),
-                bool(obj.get("is_split_download", False)),
-                list(obj.get("includes", [])),
-            )
-        return manifest
+            obj["key"] = key
+            assets.append(obj)
+        return assets
+
+    @staticmethod
+    def __decode_bundle_catalog(raw_data: bytes) -> list[dict[str, object]]:
+        payload = json.loads(raw_data)
+        assets: list[dict[str, object]] = []
+        for section_name in ("FullPatchPacks", "UpdatePacks"):
+            packs = payload.get(section_name, [])
+            if not isinstance(packs, list):
+                continue
+            for pack in packs:
+                if not isinstance(pack, Mapping):
+                    continue
+                pack_name = str(pack.get("PackName", "")).strip()
+                if not pack_name:
+                    continue
+                assets.append(
+                    {
+                        "name": pack_name,
+                        "size": int(pack.get("PackSize", 0) or 0),
+                        "crc": int(pack.get("Crc", 0) or 0),
+                        "bundle_files": [
+                            str(bundle.get("Name", "")).strip()
+                            for bundle in pack.get("BundleFiles", [])
+                            if isinstance(bundle, Mapping) and bundle.get("Name")
+                        ],
+                        "is_prologue": bool(pack.get("IsPrologue", False)),
+                        "is_split_download": bool(pack.get("IsSplitDownload", False)),
+                    }
+                )
+        return assets
 
     @classmethod
     def __decode_media_manifest(

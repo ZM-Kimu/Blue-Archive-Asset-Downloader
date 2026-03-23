@@ -149,12 +149,12 @@ class TableExtractor:
                     row_data: list[Any] = []
                     for col, value in zip(columns, row):
                         col_type = SQLiteDataType[col.data_type].value
-                        if col_type == bytes:
+                        if col_type is bytes:
                             data, _ = self._process_bytes_file(
                                 table.replace("DBSchema", "Excel"), value
                             )
                             row_data.append(data)
-                        elif col_type == bool:
+                        elif col_type is bool:
                             row_data.append(bool(value))
                         else:
                             row_data.append(value)

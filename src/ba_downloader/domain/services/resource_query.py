@@ -1,28 +1,34 @@
 from __future__ import annotations
 
-from ba_downloader.domain.models.resource import Resource, ResourceItem
+from ba_downloader.domain.models.asset import AssetCollection, AssetRecord
 
 
 class ResourceQueryService:
     @staticmethod
-    def filter_type(resource: Resource, resource_type: list[str] | tuple[str, ...]) -> Resource:
+    def filter_type(
+        resource: AssetCollection,
+        resource_type: list[str] | tuple[str, ...],
+    ) -> AssetCollection:
         if len(resource_type) == 3:
             return resource
 
-        filtered = Resource()
+        filtered = AssetCollection()
         for item in resource:
-            if item.resource_type.name in resource_type:
+            if item.asset_type.value in resource_type:
                 filtered.add_item(item)
 
         return filtered
 
     @staticmethod
-    def search_name(resource: Resource, keywords: list[str] | tuple[str, ...]) -> Resource:
-        results = Resource()
+    def search_name(
+        resource: AssetCollection,
+        keywords: list[str] | tuple[str, ...],
+    ) -> AssetCollection:
+        results = AssetCollection()
         matches = []
 
         for keyword in keywords:
-            matches.extend(resource.search_resource("path", keyword))
+            matches.extend(resource.search("path", keyword))
             matches.extend(ResourceQueryService._search_bundle_files(resource, keyword))
 
         for item in {item.path: item for item in matches}.values():
@@ -31,14 +37,17 @@ class ResourceQueryService:
         return results
 
     @staticmethod
-    def _search_bundle_files(resource: Resource, keyword: str) -> list[ResourceItem]:
+    def _search_bundle_files(
+        resource: AssetCollection,
+        keyword: str,
+    ) -> list[AssetRecord]:
         keyword_lower = keyword.lower()
         return [
             item
             for item in resource
             if any(
                 keyword_lower in str(bundle_name).lower()
-                for bundle_name in item.addition.get("bundle_files", [])
+                for bundle_name in item.metadata.get("bundle_files", [])
             )
         ]
 

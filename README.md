@@ -50,7 +50,7 @@ pip install -e .
 使用下列命令运行完整下载与提取流程（示例）：
 
 ```shell
-ba-downloader sync --region jp
+ba-downloader sync --region gl
 ```
 
 或者，使用以下命令仅下载资源而不进行提取（示例）：
@@ -80,7 +80,7 @@ python -m ba_downloader sync --region jp
 | `--resource-type`         | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                                 | `all`              | `--resource-type media table`   |
 | `--proxy`                 | `-p`       | **设置 HTTP 代理**                                                              | 无（使用系统代理） | `--proxy http://127.0.0.1:8080` |
 | `--max-retries`           | `-mr`      | **下载失败时的最大重试次数**                                                    | `5`                | `--max-retries 3`               |
-| `--search`                | `-s`       | **普通检索**，指定需要检索并下载的文件关键词（仅 `sync` 命令可用）              |
+| `--search`                | `-s`       | **普通检索**，指定需要检索并下载的文件关键词（`sync` 与 `download` 可用）       |
 | `--advanced-search`       | `-as`      | **高级检索**，指定角色关键词（仅 `sync` 命令可用，需要.NET8环境）               |
 
 **(CN服务器目前不支持高级检索)高级检索支持的检索条件：**
@@ -130,6 +130,7 @@ python -m ba_downloader sync --region jp
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
 - Bundle文件的提取基于UnityPy，如希望更加详细的内容请使用[AssetRipper](https://github.com/AssetRipper/AssetRipper)或[AssetStudio](https://github.com/Perfare/AssetStudio)
+- 当前 JP 正处于下载链路重构阶段：`download --region jp` 与普通 `--search` 可用；`sync --region jp`、`relation build --region jp` 与 JP `--advanced-search` 暂时不可用。
 
 ## Breaking Changes (v2)
 - 旧入口脚本 `main.py` / `downloader.py` / `extractor.py` 已移除。

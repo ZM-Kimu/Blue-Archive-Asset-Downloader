@@ -21,6 +21,11 @@ class RelationService:
         self.relation_builder_factory = relation_builder_factory
 
     def build(self, context: RuntimeContext) -> RuntimeContext:
+        if not self.provider.get_capabilities().supports_relation_build:
+            raise LookupError(
+                f"Relation build is temporarily unavailable for region '{context.region}'."
+            )
+
         self.flatbuffer_workflow.dump(context)
         self.flatbuffer_workflow.compile(context)
 

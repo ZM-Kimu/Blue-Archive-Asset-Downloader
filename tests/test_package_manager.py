@@ -50,10 +50,11 @@ class RecordingHttpClient:
         *,
         headers: dict[str, str] | None = None,
         transport: str = "default",
-        timeout: float = 30.0,
+        timeout: float = 300.0,
         progress_callback: Any = None,
+        should_stop: Any = None,
     ) -> DownloadResult:
-        _ = (url, headers, transport, timeout, progress_callback)
+        _ = (url, headers, transport, timeout, progress_callback, should_stop)
         self.download_calls += 1
         self.destinations.append(destination)
         destination_path = Path(destination)
@@ -65,6 +66,9 @@ class RecordingHttpClient:
             headers={},
             url=self.download_url,
         )
+
+    def close(self) -> None:
+        return None
 
 
 def test_resolve_filename_prefers_pureapk_fn_query() -> None:
