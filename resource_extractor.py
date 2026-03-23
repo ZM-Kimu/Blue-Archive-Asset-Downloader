@@ -13,9 +13,9 @@ from zipfile import ZipFile
 
 import UnityPy
 
-from utils.console import ProgressBar, notice, print
+from lib.console import ProgressBar, notice, print
+from lib.encryption import convert_string, create_key
 from utils.resource_structure import CNResource, JPResource
-from utils.table_encrypt import convert_string, create_key
 
 I8: str = "b"
 I32: str = "i"
@@ -26,39 +26,55 @@ BOOL: str = "?"
 class Extractor:
 
     @staticmethod
-    def zip_extractor(
-        zip_path: str | list,
+    def extract_zip(
+        zip_path: str | list[str],
         dest_dir: str,
         *,
-        keywords: list | None = None,
+        keywords: list[str] | None = None,
         zip_dir: str = "",
-    ) -> list:
-        print(f"From {zip_path} extract files to {dest_dir}.")
+    ) -> list[str]:
+        """Extracts specific files from a zip archive(s) to a destination directory.
+
+        Args:
+            zip_path (str | list[str]): Path(s) to the zip file(s).
+            dest_dir (str): Directory where files will be extracted.
+            keywords (list[str], optional): List of keywords to filter files for extraction. Defaults to None.
+            zip_dir (str, optional): Base directory for relative paths. Defaults to "".
+
+        Returns:
+            list[str]: List of extracted file paths.
+        """
+
+        print(f"Extracting files from {zip_path} to {dest_dir}...")
         extract_list = []
         zip_files = []
 
         if isinstance(zip_path, str):
-            zip_files.append(zip_path)
+            zip_files = [zip_path]
         elif isinstance(zip_path, list):
             zip_files = [path.join(zip_dir, p) for p in zip_path]
 
-        for file in zip_files:
-            with ZipFile(file, "r") as z:
-                for item in z.namelist():
-                    if keywords:
-                        for k in keywords:
-                            if path.normpath(k) in path.normpath(item):
-                                extract_list.append(item)
-                    else:
-                        extract_list.append(item)
+        os.makedirs(dest_dir, exist_ok=True)
 
-                with ProgressBar(len(extract_list), "Extract...", "items") as bar:
-                    for extract_item in extract_list:
-                        try:
-                            z.extract(extract_item, dest_dir)
-                        except Exception as e:
-                            notice(e)
-                        bar.increase()
+        for zip_file in zip_files:
+            try:
+                with ZipFile(zip_file, "r") as z:
+                    if keywords:
+                        extract_list = [
+                            item for k in keywords for item in z.namelist() if k in item
+                        ]
+                    else:
+                        extract_list = z.namelist()
+
+                    with ProgressBar(len(extract_list), "Extract...", "items") as bar:
+                        for item in extract_list:
+                            try:
+                                z.extract(item, dest_dir)
+                            except Exception as e:
+                                notice(e)
+                            bar.increase()
+            except Exception as e:
+                notice(f"Error processing file '{zip_file}': {e}")
 
         return extract_list
 
@@ -108,7 +124,16 @@ class Extractor:
 
     @staticmethod
     def decode_server_url(data: bytes) -> str:
-        decrypt = {
+        """
+        Decodes the server URL from the given data.
+
+        Args:
+            data (bytes): Binary data to decode.
+
+        Returns:
+            str: Decoded server URL.
+        """
+        decryptions = {
             "ServerInfoDataUrl": "X04YXBFqd3ZpTg9cKmpvdmpOElwnamB2eE4cXDZqc3ZgTg==",
             "DefaultConnectionGroup": "tSrfb7xhQRKEKtZvrmFjEp4q1G+0YUUSkirOb7NhTxKfKv1vqGFPEoQqym8=",
             "SkipTutorial": "8AOaQvLC5wj3A4RC78L4CNEDmEL6wvsI",
@@ -117,7 +142,7 @@ class Extractor:
         b64_data = base64.b64encode(data).decode()
         json_str = convert_string(b64_data, create_key("GameMainConfig"))
         obj = json.loads(json_str)
-        encrypted_url = obj[decrypt["ServerInfoDataUrl"]]
+        encrypted_url = obj[decryptions["ServerInfoDataUrl"]]
         url = convert_string(encrypted_url, create_key("ServerInfoDataUrl"))
         return url
 

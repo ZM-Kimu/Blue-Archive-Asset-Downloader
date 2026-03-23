@@ -65,6 +65,7 @@ class Console:
 
     def internal_update_message(self, new_message: str) -> None:
         """Method to update message for singleton instance.
+
         Args:
             new_message (str): New message needs to update.
         """
@@ -74,6 +75,7 @@ class Console:
     @staticmethod
     def print_notice(notice: str, mode: Literal["warn", "error"]) -> None:
         """A static method to show a notice on console.
+
         Args:
             notice (str): Notification.
             mode (Literal[&quot;warn&quot;, &quot;error&quot;]): Notification level.
@@ -85,6 +87,7 @@ class Console:
     @staticmethod
     def update_message(new_message: str) -> None:
         """A static method to update the line at bottom of console.
+
         Args:
             new_message (str): Message needs to show.
         """
@@ -116,15 +119,6 @@ class ProgressBar:
         self.unit = unit
         self.unit_size = unit_size
         ProgressBar._instance = self  # Set to static instance when create instance.
-
-    # @classmethod
-    # def instance(
-    #    cls, total: int, note: str = "", unit: str = "MB", unit_size: int = 1
-    # ) -> "ProgressBar":
-    #    with cls._lock:
-    #        if cls._instance is None:
-    #            cls._instance = cls(total, note, unit, unit_size)
-    #        return cls._instance
 
     def __progress_bar(self) -> None:
         start_time = time.time()
@@ -164,6 +158,7 @@ class ProgressBar:
     @staticmethod
     def increase(value: int = 1) -> None:
         """Static method, add a unit value to the progress bar.
+
         Args:
             value (int, optional): Value to increase. Defaults to 1.
         """
@@ -173,6 +168,7 @@ class ProgressBar:
     @staticmethod
     def item_text(message: str) -> None:
         """Static method, update the name of current item being processed by the progress bar.
+
         Args:
             message (str): Message to update.
         """
@@ -181,6 +177,7 @@ class ProgressBar:
 
     def increase_value(self, value: int = 1) -> None:
         """Instance method, increase the counter of the progress bar by a specified value.
+
         Args:
             value (int, optional): Value to increase. Defaults to 1.
         """
@@ -188,6 +185,7 @@ class ProgressBar:
 
     def set_item_text(self, message: str) -> None:
         """Update the name of current item being processed by the progress bar.
+
         Args:
             message (str): Message to update.
         """
@@ -211,6 +209,7 @@ class ProgressBar:
 
 def bar_increase(value: int = 1) -> None:
     """Add a unit value to the progress bar.
+
     Args:
         value (int, optional): Value to increase. Defaults to 1.
     """
@@ -219,6 +218,7 @@ def bar_increase(value: int = 1) -> None:
 
 def bar_text(message: str) -> None:
     """Change the progression status of the progress bar.
+
     Args:
         message (str): Progression status to update.
     """
@@ -227,6 +227,7 @@ def bar_text(message: str) -> None:
 
 def notice(notice: str, type: Literal["warn", "error"] = "warn") -> None:
     """Print information to the console with a notification level.
+
     Args:
         notice (str): Notification to print.
         type (Literal[&quot;warn&quot;, &quot;error&quot;], optional): Notification level. Defaults to "warn".
@@ -236,6 +237,7 @@ def notice(notice: str, type: Literal["warn", "error"] = "warn") -> None:
 
 def print(new_message: str) -> None:
     """Update the console's resident information with an info level.
+
     Args:
         new_message (str): Message to keep.
     """
