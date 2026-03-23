@@ -56,7 +56,7 @@ class CNServer:
 
         apk_size = 0
         if apk_head := FileDownloader(
-            apk_url, headers={}, request_method="head", use_cloud_scraper=True
+            apk_url, headers={}, request_method="head", bypass_cloudflare=True
         ).get_response():
             apk_size = int(apk_head.headers.get("Content-Length", 0))
 

@@ -34,7 +34,7 @@ class CharacterNameRelation(TableExtractor):
     def __convert_kana_to_hepburn(self, kana: str) -> str:
         return "".join([kana["hepburn"] for kana in self.kana_converter.convert(kana)])
 
-    def __get_int_from_str(self, text: str, default: int = 0) -> int:
+    def __str_to_int(self, text: str, default: int = 0) -> int:
         return (
             int(re_digit.group()) if (re_digit := re.search(r"\d+", text)) else default
         )
@@ -106,29 +106,20 @@ class CharacterNameRelation(TableExtractor):
         hash_map: dict[int, CharacterData] = {}
 
         for char_p in char_profile:
-            family_name_ruby_jp = char_p.get("FamilyNameRubyJp", "")
-            personal_name_kana = char_p.get("PersonalNameRubyJp", "") or char_p.get(
-                "PersonalNameJp", ""
-            )
+            names: set = set()
+            for key in char_p.keys():
+                if key.lower().startswith(("fullname", "familyname", "personalname")):
+                    if name := char_p.get(key, ""):
+                        names.add(name)
+                    if name and key.lower() in ("familynamerubyjp", "personalnamejp"):
+                        names.add(self.__convert_kana_to_hepburn(name))
 
-            family_name_en = self.__convert_kana_to_hepburn(family_name_ruby_jp)
-            personal_name_en = self.__convert_kana_to_hepburn(personal_name_kana)
-
-            age = self.__get_int_from_str(char_p.get("CharacterAgeJp", ""))
-            height = self.__get_int_from_str(char_p.get("CharHeightJp", ""))
+            age = self.__str_to_int(char_p.get("CharacterAgeJp", ""))
+            height = self.__str_to_int(char_p.get("CharHeightJp", ""))
 
             data = CharacterData(
                 char_p.get("CharacterId", 0),
-                full_name_kr=char_p.get("FullNameKr", "").replace(" ", ""),
-                full_name_jp=char_p.get("FullNameJp", ""),
-                family_name_jp=char_p.get("FamilyNameJp", ""),
-                family_name_kr=char_p.get("FamilyNameKr", ""),
-                family_name_ruby_jp=family_name_ruby_jp,
-                personal_name_jp=char_p.get("PersonalNameJp", ""),
-                personal_name_kr=char_p.get("PersonalNameKr", ""),
-                personal_name_ruby_jp=char_p.get("PersonalNameRubyJp", ""),
-                family_name_en=family_name_en,
-                personal_name_en=personal_name_en,
+                names=list(names),
                 cv=char_p.get("CharacterVoiceJp", ""),
                 age=age,
                 height=height,
@@ -148,35 +139,44 @@ class CharacterNameRelation(TableExtractor):
 
         for scenario in scenario_db:
             scenario_data_unrelated = True
-            scenario_data = scenario["Bytes"]
-            file_name = self.__split_path_to_name(
-                scenario_data.get("SmallPortrait", "")
-            )
+            scene_data = scenario.get("Bytes", {})
+            file_name = self.__split_path_to_name(scene_data.get("SmallPortrait", ""))
             name_no_underline = file_name.replace("_", "")
-            jp_name = scenario_data.get("NameJP", "")
+            jp_name = scene_data.get("NameJP", "")
+
+            if not (file_name and jp_name):
+                continue
 
             for char_data in hash_map.values():
-                if file_name and (jp_name == char_data.personal_name_jp):
+                char_names = char_data.names if char_data.names else []
+                if char_data.dev_name and (
+                    any(jp_name in n.lower() for n in char_names)
+                    or (char_data.dev_name in file_name)
+                ):
                     if char_data.file_name:
-                        char_data.file_name.add(file_name)
-                        char_data.file_name.add(name_no_underline)
+                        char_data.file_name.update({file_name, name_no_underline})
                     else:
                         char_data.file_name = {file_name, name_no_underline}
                     scenario_data_unrelated = False
 
             if (
                 scenario_data_unrelated
-                and file_name
                 and file_name != "Null"  # Default portrait name.
-                and (char_id := scenario_data.get("CharacterName", 0))
-                and jp_name
+                and (char_id := scene_data.get("CharacterName", 0))
             ):
+                names = set()
+                for key in scene_data.keys():
+                    if key.lower().startswith("name"):
+                        if name := scene_data.get(key, ""):
+                            names.add(name)
+                        if jp_name:
+                            names.add(self.__convert_kana_to_hepburn(jp_name))
+
+                char_id = -char_id if char_id in hash_map else char_id
                 hash_map[char_id] = CharacterData(
                     char_id,
                     dev_name=file_name,
-                    personal_name_jp=jp_name,
-                    personal_name_kr=scenario_data.get("NameKR", ""),
-                    family_name_en=self.__convert_kana_to_hepburn(jp_name),
+                    names=list(names),
                     file_name={file_name, name_no_underline},
                 )
 
@@ -244,17 +244,13 @@ class CharacterNameRelation(TableExtractor):
 
             for char in relation.relations:
                 file_name = list(char.file_name) if char.file_name else []
+                char_names = list(char.names) if char.names else []
                 if any(
                     [
-                        char.full_name_jp in keywords,
-                        char.full_name_kr in keywords,
-                        char.family_name_jp in keywords,
-                        char.family_name_kr in keywords,
-                        char.family_name_ruby_jp in keywords,
-                        char.personal_name_jp in keywords,
-                        char.personal_name_kr in keywords,
-                        char.family_name_en in keywords,
-                        char.personal_name_en in keywords,
+                        any(
+                            keyword in [n.lower() for n in char_names]
+                            for keyword in keywords
+                        ),
                         any(
                             keyword in [f.lower() for f in file_name]
                             for keyword in keywords

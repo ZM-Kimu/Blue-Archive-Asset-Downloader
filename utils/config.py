@@ -2,8 +2,6 @@ import argparse
 import os
 from typing import Literal
 
-# import json
-
 # Commandline Arguments
 parser = argparse.ArgumentParser(description="Blue Archive Resource Donwloader")
 parser.add_argument_group("Required Arguments").add_argument(

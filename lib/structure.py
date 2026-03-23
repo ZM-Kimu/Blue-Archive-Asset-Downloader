@@ -61,16 +61,7 @@ class EnumType:
 class CharacterData:
     character_id: int
     dev_name: str = ""
-    full_name_kr: str = ""
-    full_name_jp: str = ""
-    family_name_jp: str = ""
-    family_name_kr: str = ""
-    family_name_ruby_jp: str = ""
-    personal_name_jp: str = ""
-    personal_name_kr: str = ""
-    personal_name_ruby_jp: str = ""
-    family_name_en: str = ""
-    personal_name_en: str = ""
+    names: list[str] | None = None
     file_name: set[str] | None = None
     cv: str = ""
     age: int = 0
@@ -339,7 +330,7 @@ class GLResource:
 
         elif "MediaResources" in resource_path:
             pure_path = "Media" + resource_path.split("MediaResources", 1)[-1]
-            self.table_files.append(
+            self.media_files.append(
                 {
                     "url": urljoin(self.base_url, resource_path),
                     "path": pure_path,
@@ -350,7 +341,7 @@ class GLResource:
             )
         elif resource_path.endswith(".bundle"):
             pure_path = "Bundle/" + resource_path.split("/")[-1]
-            self.table_files.append(
+            self.bundle_files.append(
                 {
                     "url": urljoin(self.base_url, resource_path),
                     "path": pure_path,

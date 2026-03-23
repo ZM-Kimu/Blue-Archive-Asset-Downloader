@@ -85,6 +85,13 @@ if __name__ == "__main__":
 
         if not Config.downloading_extract:
             Branches.extract()
+    elif Config.region == "gl":
+        Branches().dump()
 
+        if Config.search or Config.advance_search:
+            res = Branches.search(res, True)
+
+        Branches.filter_and_download(res)
+        Branches.extract()
     else:
         Branches.filter_and_download(res)

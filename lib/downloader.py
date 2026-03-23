@@ -19,7 +19,7 @@ class FileDownloader:
         headers: dict | None = None,
         enable_progress: bool = False,
         request_method: Literal["get", "post", "head"] = "get",
-        use_cloud_scraper: bool = False,
+        bypass_cloudflare: bool = False,
         **kwargs,
     ) -> None:
         """Initializes the FileDownloader instance with the provided parameters.
@@ -43,7 +43,7 @@ class FileDownloader:
         }
         self.enable_progress = enable_progress
         self.request_method = request_method
-        self.use_cloud_scraper = use_cloud_scraper
+        self.bypass_cloudflare = bypass_cloudflare
 
     def __download(
         self,
@@ -72,7 +72,7 @@ class FileDownloader:
             return False
         try:
             response: requests.Response = getattr(
-                create_scraper() if self.use_cloud_scraper else requests,
+                create_scraper() if self.bypass_cloudflare else requests,
                 self.request_method,
             )(
                 self.url,

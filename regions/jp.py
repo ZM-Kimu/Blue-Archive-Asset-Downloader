@@ -8,8 +8,6 @@ from os import path
 from typing import Any, Literal
 from urllib.parse import urljoin
 
-from cloudscraper import create_scraper
-
 from lib.console import ProgressBar, notice, print
 from lib.downloader import FileDownloader
 from lib.encryption import convert_string, create_key
@@ -21,9 +19,7 @@ from utils.util import UnityUtils, ZipUtils
 class JPServer:
     INFO_URL = "https://prod-noticeindex.bluearchiveyostar.com/prod/index.json"
     UPTODOWN_INFO_URL = "https://blue-archive.jp.uptodown.com/android"
-    APKPURE_URL = (
-        "https://d.apkpure.com/b/XAPK/com.YostarJP.BlueArchive?nc=arm64-v8a&sv=24"
-    )
+    APKPURE_URL = "https://d.apkpure.com/b/XAPK/com.YostarJP.BlueArchive?version=latest&nc=arm64-v8a&sv=24"
     APK_EXTRACT_FOLDER = path.join(Config.temp_dir, "Data")
 
     def main(self) -> Resource:
@@ -35,8 +31,8 @@ class JPServer:
         version = Config.version = self.get_latest_version()
         notice(f"Current resource version: {version}")
 
-        apk_url = self.get_apk_url(version)
-        apk_path = self.download_apk_file(apk_url)
+        # apk_url = self.get_apk_url(version)
+        apk_path = self.download_apk_file(self.APKPURE_URL)
         self.extract_apk_file(apk_path)
         server_url = self.get_server_url()
 
@@ -53,7 +49,7 @@ class JPServer:
                 apk_req := FileDownloader(
                     apk_url,
                     request_method="get",
-                    use_cloud_scraper=True,
+                    bypass_cloudflare=True,
                 )
             )
             and (apk_data := apk_req.get_response(True))
@@ -72,28 +68,26 @@ class JPServer:
         if path.exists(apk_path) and path.getsize(apk_path) == apk_size:
             return apk_path
 
-        with ProgressBar(apk_size, "Downloading APK...", "B") as bar:
+        with ProgressBar(apk_size, "Downloading APK...", "MB", 1048576) as bar:
             bar.item_text(apk_path.split("/")[-1])
             FileDownloader(
                 apk_url,
                 request_method="get",
                 enable_progress=True,
-                use_cloud_scraper=True,
+                bypass_cloudflare=True,
             ).save_file(apk_path)
 
         return apk_path
 
     def extract_apk_file(self, apk_path: str) -> None:
         """Extract the XAPK file."""
-        apk_files = ZipUtils.extract_zip(
-            apk_path, path.join(Config.temp_dir), keywords=["apk"]
-        )
+        apk_files = ZipUtils.extract_zip(apk_path, Config.temp_dir, keywords=["apk"])
 
         ZipUtils.extract_zip(
             apk_files, self.APK_EXTRACT_FOLDER, zips_dir=Config.temp_dir
         )
 
-    def get_apk_url(self, version: str) -> str:
+    def deprecated_get_apk_url(self, version: str) -> str:
         """Retrieve the link to download the APK."""
         return self.APKPURE_URL + f"&versionCode={version.split('.')[-1]}"
 
