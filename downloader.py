@@ -1,11 +1,6 @@
-import concurrent
-import concurrent.futures
 import os
-from concurrent.futures import ThreadPoolExecutor
 from os import path
 from queue import Empty, Queue
-from threading import Lock
-from time import sleep
 
 from lib.console import ProgressBar, bar_increase, bar_text, notice
 from lib.downloader import FileDownloader
@@ -76,6 +71,7 @@ class Downloader:
             except Empty:
                 break
 
+            # Dynamic change thread count.
             if res["size"] <= 1024**2:
                 target_threads = Config.threads + ((8**7) // (res["size"] + 1e-3))
                 if len(task_manager.futures) < target_threads:

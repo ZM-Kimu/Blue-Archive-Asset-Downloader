@@ -48,7 +48,6 @@ class JPServer:
     def download_apk_file(self, apk_url: str) -> str:
         """Download the APK file."""
         print("Download APK to retrieve server URL...")
-        # data = create_scraper().get(apk_url, stream=True, proxies=Config.proxy)
         if not (
             (
                 apk_req := FileDownloader(

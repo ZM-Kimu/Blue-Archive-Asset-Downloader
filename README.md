@@ -1,16 +1,12 @@
 # Blue Archive Asset Downloader
 
-<div align="center">本项目可以从不同服务器下载<!--并解开-->碧蓝档案的素材，现支援中国服、国际服、日本服。</div>
-
-## 最新情报
-在目前的JP服务器资源中，zip文件似乎被文件哈希加密，目前暂未解开。
+<div align="center">本项目可以从不同服务器下载并解开碧蓝档案的素材，现支援中国服、国际服、日本服。</div>
 
 
 ## 主要功能
 
 - **多服务器支持**：可从中国(蔚蓝档案)、国际(Blue Archive)、日本(ブルーアーカイブ)三个服务器下载素材。
-- **多线程下载**：支持多线程快速下载。
-- **Table**：Table数据解开。(仅在日本服务器可用)
+- **资源解开**：在日本服务器中包含几乎完整的支持。
 
 
 ## 资源类型
@@ -21,6 +17,12 @@
 - Media
 - Table
 
+解开的文件类型包括：
+
+- Bundle(仅JP)
+- Media
+- Table(仅JP)
+
 ## 环境要求
 
 - Python 3.10 或更高版本
@@ -29,7 +31,7 @@
 ## 先决条件
 
 请确保已安装 Python，并安装必要的库：
-
+- 在安装UnityPy时，需要安装C++构建库，如您不希望安装，亦可使用[其他工具](#使用须知)。下载时解开的功能依赖该库。
 ```shell
 pip install -r requirements.txt
 ```
@@ -39,7 +41,7 @@ pip install -r requirements.txt
 ```shell
 python main.py --threads 30 --region jp --proxy http://0.0.0.0:0000
 ```
-<!-- --advance-search azusa,ハナコ,下江小春,아지타니히후미,聖園彌香 -->
+<!-- -as azusa,ハナコ,下江小春,아지타니히후미,聖園彌香 -->
 ## 参数说明
 
 - `--region`, `-g` `*`服务器区域：`cn` (中国), `gl` (国际), `jp` (日本)。
@@ -48,20 +50,25 @@ python main.py --threads 30 --region jp --proxy http://0.0.0.0:0000
 - `--raw`, `-r` 指定原始文件位置。
 - `--extract`, `-e` 指定解压文件位置。
 - `--temporary`, `-m` 指定临时文件位置。
-<!-- - `--downloading-extract`, `-d` 是否在下载时解开文件。 -->
+<!-- - `--downloading-extract`, `-de` 是否在下载时解开文件。 -->
 - `--proxy`, `-p` 设置HTTP代理。
 - `--max-retries`, `-x` 下载时的最大重试次数。
 <!-- - `--search`, `-s` 普通检索，指定需要检索并下载的文件的关键词，使用半角英文逗号`,`分隔。 -->
 <!-- - `--advance-search`, `-as` 高级检索，指定需要检索并下载的角色关键字，使用半角英文逗号`,`分隔。 -->
 
 > **`*`** :必选的选项
+
+## 输出
+- `Temp`: 存储临时文件或非主要文件。如：Apk文件等。
+- `RawData`: 存储经由目录下载的文件。如：Bundle、Media、Table等。
+- `Extract`: 存储已解开的文件。如：Bundle、Media、Table与Dumps等。
+
 ## TODO
 
-- **流式解包**：下载时解开文件。- 59%
-- **Bundle**：游戏数据解开。- 22%
+- **流式解包**：下载时解开文件。- 75%
 - **角色检索**：包名检索或基于任何名称的检索。- 36%
 - **Memory Pack** - 30%
-- **JP服务器VOC解开**
+- **完善CN/GL**
 - **一些bug**
 
 
@@ -69,6 +76,7 @@ python main.py --threads 30 --region jp --proxy http://0.0.0.0:0000
 - JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
 - 在某些地区可能需要使用代理服务器以下载特定区域的游戏资源。
+- Bundle文件的解开基于UnityPy，如希望更加详细的内容请使用[AssetRipper](https://github.com/AssetRipper/AssetRipper)或[AssetStudio](https://github.com/Perfare/AssetStudio)
 
 
 ## 关于项目

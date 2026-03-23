@@ -67,7 +67,7 @@ def calculate_md5(path: str) -> str:
         return hashlib.md5(f.read()).hexdigest()
 
 
-def table_zip_password(key: str) -> bytes:
+def zip_password(key: str) -> bytes:
     """Generate a new zip password based on a base64-encoded key."""
     return b64encode(create_key(key, 15))
 

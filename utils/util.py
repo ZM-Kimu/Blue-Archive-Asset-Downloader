@@ -3,7 +3,8 @@ import math
 import os
 import struct
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 from keyword import kwlist
 from queue import Queue
 from threading import Event, Lock, Thread
@@ -12,6 +13,7 @@ from typing import Any, Callable, Generator, Iterable, Literal, Protocol
 from zipfile import ZipFile
 
 import UnityPy
+from UnityPy.files.File import ObjectReader
 
 from lib.console import ProgressBar, notice, print
 from lib.downloader import FileDownloader
@@ -25,7 +27,8 @@ class ZipUtils:
         *,
         keywords: list[str] | None = None,
         zips_dir: str = "",
-        password: bytes | None = None,
+        password: bytes = bytes(),
+        progress_bar: bool = True,
     ) -> list[str]:
         """Extracts specific files from a zip archive(s) to a destination directory.
 
@@ -34,13 +37,15 @@ class ZipUtils:
             dest_dir (str): Directory where files will be extracted.
             keywords (list[str], optional): List of keywords to filter files for extraction. Defaults to None.
             zips_dir (str, optional): Base directory for relative paths when zip_path is a list. Defaults to "".
+            progress_bar (str, optional): Create a progress bar during extract. Defaults to False.
+
 
         Returns:
             list[str]: List of extracted file paths.
         """
-
-        print(f"Extracting files from {zip_path} to {dest_dir}...")
-        extract_list = []
+        if progress_bar:
+            print(f"Extracting files from {zip_path} to {dest_dir}...")
+        extract_list: list[str] = []
         zip_files = []
 
         if isinstance(zip_path, str):
@@ -50,27 +55,30 @@ class ZipUtils:
 
         os.makedirs(dest_dir, exist_ok=True)
 
+        if progress_bar:
+            bar = ProgressBar(len(extract_list), "Extract...", "items")
         for zip_file in zip_files:
             try:
                 with ZipFile(zip_file, "r") as z:
-                    z.pwd = password
+                    z.setpassword(password)
                     if keywords:
                         extract_list = [
                             item for k in keywords for item in z.namelist() if k in item
                         ]
-                    else:
-                        extract_list = z.namelist()
-
-                    with ProgressBar(len(extract_list), "Extract...", "items") as bar:
                         for item in extract_list:
                             try:
                                 z.extract(item, dest_dir)
                             except Exception as e:
                                 notice(str(e))
-                            bar.increase()
+                            if progress_bar:
+                                bar.increase()
+                    else:
+                        z.extractall(dest_dir)
+
             except Exception as e:
                 notice(f"Error processing file '{zip_file}': {e}")
-
+        if progress_bar:
+            bar.stop()
         return extract_list
 
     # Used to parse the area where the EOCD (End of Central Directory) of the compressed file's central directory is located.
@@ -132,6 +140,22 @@ class ZipUtils:
         except:
             return False
 
+    @staticmethod
+    def decompress_file_part(compressed_data_part, file_path, compress_method) -> bool:
+        """Decompress pure compressed data. Return True if saved to path."""
+        try:
+            if compress_method == 8:  # Deflate compression
+                decompressor = zlib.decompressobj(-zlib.MAX_WBITS)
+                decompressed_data = decompressor.decompress(compressed_data_part)
+                decompressed_data += decompressor.flush()
+            else:
+                decompressed_data = compressed_data_part
+            with open(file_path, "wb") as file:
+                file.write(decompressed_data)
+            return True
+        except:
+            return False
+
 
 class UnityUtils:
     @staticmethod
@@ -141,7 +165,7 @@ class UnityUtils:
         data_name: list | None = None,
         condition_connect: bool = False,
         read_obj_anyway: bool = False,
-    ) -> list[UnityPy.environment.ObjectReader] | None:
+    ) -> list[ObjectReader] | None:
         """Search specified data from unity pack.
 
         Args:
@@ -154,7 +178,7 @@ class UnityUtils:
         Returns:
             list[UnityPy.environment.ObjectReader] | None: A list of UnityPy object.
         """
-        data_list: list[UnityPy.environment.ObjectReader] = []
+        data_list: list[ObjectReader] = []
         type_passed = False
         try:
             env = UnityPy.load(pack_path)
@@ -216,7 +240,7 @@ class CommandUtils:
             *commands (str): Command and its arguments as separate strings.
 
         Returns:
-            bool: True if the command succeeded, False otherwise.
+            tuple (bool, str): True if the command succeeded, False otherwise. And error string.
         """
         try:
             subprocess.run(
@@ -383,6 +407,7 @@ class TaskManager:
     def set_relate(
         self, mode: Literal["event"], related_manager: "TaskManager"
     ) -> None:
+        """Set a relation to another task by a flag."""
         if mode == "event":
             self.event = related_manager.event
             self.__set_conditions(

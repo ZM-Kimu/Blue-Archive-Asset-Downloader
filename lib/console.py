@@ -178,6 +178,26 @@ class ProgressBar:
         if ProgressBar._instance is not None:
             ProgressBar._instance.set_item_text(message)
 
+    @staticmethod
+    def set_progress(value: int) -> None:
+        """Change value of current bar progress.
+
+        Args:
+            value (int): Value to change.
+        """
+        if ProgressBar._instance is not None:
+            ProgressBar._instance.set_progress_value(value)
+
+    @staticmethod
+    def set_note(note: str) -> None:
+        """Change value of current bar progress.
+
+        Args:
+            value (int): Value to change.
+        """
+        if ProgressBar._instance is not None:
+            ProgressBar._instance.set_note_text(note)
+
     def increase_value(self, value: int = 1) -> None:
         """Instance method, increase the counter of the progress bar by a specified value.
 
@@ -193,6 +213,23 @@ class ProgressBar:
             message (str): Message to update.
         """
         self._item_text = str(message)
+
+    def set_note_text(self, note: str) -> None:
+        """Change value of current bar progress.
+
+        Args:
+            value (int): Value to change.
+        """
+        if ProgressBar._instance is not None:
+            ProgressBar._instance.note = str(note)
+
+    def set_progress_value(self, value: int) -> None:
+        """Change value of current bar progress.
+
+        Args:
+            value (int): Value to change.
+        """
+        self._progress_counter = int(value)
 
     def stop(self) -> None:
         """Stop the progress bar."""
