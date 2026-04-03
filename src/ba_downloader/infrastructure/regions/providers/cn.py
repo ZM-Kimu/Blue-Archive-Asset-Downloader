@@ -6,11 +6,30 @@ from io import BytesIO
 from typing import Literal
 from urllib.parse import urljoin
 
-from ba_downloader.domain.models.asset import AssetCollection, AssetType, RegionCapabilities
+from ba_downloader.domain.models.asset import (
+    AssetCollection,
+    AssetType,
+    RegionCapabilities,
+)
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpClientPort, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
+
+
+def _coerce_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
 
 
 class CNServer:
@@ -37,7 +56,9 @@ class CNServer:
         if context.version:
             self.logger.warn("Specifying a version is not allowed with CNServer.")
         if context.platform_explicit:
-            self.logger.warn("The --platform option only applies to JP and was ignored.")
+            self.logger.warn(
+                "The --platform option only applies to JP and was ignored."
+            )
 
         self.logger.info("Automatically fetching latest version...")
         version = self.get_latest_version()
@@ -85,7 +106,9 @@ class CNServer:
         response = self.http_client.request("GET", self.urls["version"])
         if version_match := re.search(r"(\d+\.\d+\.\d+)", response.text):
             return version_match.group(1)
-        raise LookupError("Unable to retrieve the version. Retry might solve this issue.")
+        raise LookupError(
+            "Unable to retrieve the version. Retry might solve this issue."
+        )
 
     def get_resource_manifest(self, server_info: dict[str, object]) -> AssetCollection:
         try:
@@ -121,7 +144,9 @@ class CNServer:
                 )
                 loaded_sections.add("table")
             else:
-                self.logger.error("Failed to fetch table catalog. Retry may solve the issue.")
+                self.logger.error(
+                    "Failed to fetch table catalog. Retry may solve the issue."
+                )
 
             media_data = self.http_client.request("GET", urljoin(base_url, media_url))
             if media_data.content:
@@ -133,7 +158,9 @@ class CNServer:
                 )
                 loaded_sections.add("media")
             else:
-                self.logger.error("Failed to fetch media catalog. Retry may solve the issue.")
+                self.logger.error(
+                    "Failed to fetch media catalog. Retry may solve the issue."
+                )
 
             bundle_data = self.http_client.request("GET", urljoin(base_url, bundle_url))
             content_type = get_header(bundle_data.headers, "Content-Type").lower()
@@ -146,7 +173,9 @@ class CNServer:
                 )
                 loaded_sections.add("bundle")
             else:
-                self.logger.error("Failed to fetch bundle catalog. Retry may solve the issue.")
+                self.logger.error(
+                    "Failed to fetch bundle catalog. Retry may solve the issue."
+                )
 
             if loaded_sections != {"table", "media", "bundle"}:
                 raise FileNotFoundError("Cannot pull the manifest.")
@@ -214,8 +243,10 @@ class CNCatalogDecoder:
         assets.add(
             urljoin(base_url, name),
             urljoin("Bundle/", name),
-            int(data.get("Size", 0) or 0),
+            _coerce_int(data.get("Size", 0)),
             str(data.get("Crc", "")),
+            # The CN endpoint exposes this hash in a field named "Crc",
+            # but the observed value is still used as the legacy MD5-style asset key.
             "md5",
             AssetType.bundle,
         )
@@ -262,8 +293,10 @@ class CNCatalogDecoder:
         assets.add(
             urljoin(base_url, md5[:2] + "/" + md5),
             urljoin("Table/", name),
-            int(data.get("Size", 0) or 0),
+            _coerce_int(data.get("Size", 0)),
             md5,
+            # The CN endpoint exposes this hash in a field named "Crc",
+            # but the observed value is still used as the legacy MD5-style asset key.
             "md5",
             AssetType.table,
             {"includes": list(includes) if isinstance(includes, list) else []},

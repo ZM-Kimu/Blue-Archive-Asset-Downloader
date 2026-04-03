@@ -10,7 +10,7 @@ from math import ceil
 from pathlib import Path
 from threading import Event, Lock, current_thread, main_thread
 from time import monotonic
-from typing import Callable, Iterator
+from collections.abc import Callable, Iterator
 
 from ba_downloader.domain.models.asset import (
     AssetCollection,

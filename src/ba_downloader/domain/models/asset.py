@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Iterator, Literal, overload
+from typing import Any, Literal, overload
+from collections.abc import Callable, Iterable, Iterator
 
 
 ChecksumAlgorithm = Literal["crc", "md5"]
@@ -84,19 +85,20 @@ class AssetCollection:
     def add_item(self, item: AssetRecord) -> None:
         self.assets.append(item)
 
-    def search(self, attr: str, value: Any, exact_match: bool = False) -> "AssetCollection":
+    def search(self, attr: str, value: Any, exact_match: bool = False) -> AssetCollection:
         filtered = AssetCollection()
-
-        def conditional(left: Any, right: Any) -> bool:
+        def contains_comparator(left: Any, right: Any) -> bool:
             return str(left).lower() in str(right).lower()
 
-        if exact_match:
+        def exact_comparator(left: Any, right: Any) -> bool:
+            return left == right
 
-            def conditional(left: Any, right: Any) -> bool:
-                return left == right
+        comparator: Callable[[Any, Any], bool] = (
+            exact_comparator if exact_match else contains_comparator
+        )
 
         for item in self.assets:
-            if conditional(value, getattr(item, attr)):
+            if comparator(value, getattr(item, attr)):
                 filtered.add_item(item)
         return filtered
 

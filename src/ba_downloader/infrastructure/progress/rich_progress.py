@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Optional
 
 from rich.progress import (
     BarColumn,
     DownloadColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TaskProgressColumn,
     TextColumn,
     TimeElapsedColumn,
@@ -101,14 +101,14 @@ class RichProgressReporter(ProgressReporterPort):
             )
 
         self._progress = Progress(*columns, console=get_console(), transient=False)
-        self._task_id: Optional[int] = None
+        self._task_id: TaskID | None = None
         self._total = total
         self._description = description
         self._status = ""
         self._secondary_status = ""
         self._failed_status = ""
 
-    def __enter__(self) -> "RichProgressReporter":
+    def __enter__(self) -> RichProgressReporter:
         self._progress.start()
         self._task_id = self._progress.add_task(
             self._description,
@@ -160,7 +160,7 @@ class RichProgressReporter(ProgressReporterPort):
 
 
 class NullProgressReporter(ProgressReporterPort):
-    def __enter__(self) -> "NullProgressReporter":
+    def __enter__(self) -> NullProgressReporter:
         return self
 
     def __exit__(self, *_: object) -> None:

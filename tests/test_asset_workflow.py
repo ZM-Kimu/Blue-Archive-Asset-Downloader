@@ -29,7 +29,7 @@ class DummyProgressReporter:
     def __init__(self, total: int, description: str, *, download_mode: bool = False) -> None:
         _ = (total, description, download_mode)
 
-    def __enter__(self) -> "DummyProgressReporter":
+    def __enter__(self) -> DummyProgressReporter:
         return self
 
     def __exit__(self, *_: object) -> None:

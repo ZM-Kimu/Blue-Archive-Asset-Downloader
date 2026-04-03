@@ -8,19 +8,22 @@ from binascii import crc32
 from struct import Struct
 from typing import TypeVar
 
+import xxhash
 from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
 from Crypto.Util.strxor import strxor
-try:
-    from xxhash import xxh32_intdigest, xxh64_intdigest
-except Exception:
-    def xxh32_intdigest(data: bytes) -> int:
-        return int.from_bytes(hashlib.md5(data).digest()[:4], "little")
 
-    def xxh64_intdigest(data: bytes) -> int:
-        return int.from_bytes(hashlib.sha256(data).digest()[:8], "little")
+
+def xxh32_intdigest(data: bytes | str, seed: int = 0) -> int:
+    payload = data.encode("utf8") if isinstance(data, str) else data
+    return xxhash.xxh32_intdigest(payload, seed)
+
+
+def xxh64_intdigest(data: bytes | str, seed: int = 0) -> int:
+    payload = data.encode("utf8") if isinstance(data, str) else data
+    return xxhash.xxh64_intdigest(payload, seed)
 
 T = TypeVar("T", int, float)
 

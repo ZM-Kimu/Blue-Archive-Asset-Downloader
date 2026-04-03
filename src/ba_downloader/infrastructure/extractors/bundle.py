@@ -2,6 +2,7 @@ import json
 import multiprocessing.synchronize
 import os
 from pathlib import Path
+from queue import Empty
 from typing import Any, Literal
 
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -35,13 +36,13 @@ class BundleExtractor:
         self, type: Literal["json", "binary", "mesh"], path: str, data: Any
     ) -> None:
         if type == "json":
-            with open(path, "wt", encoding="utf8") as f:
+            with open(path, "w", encoding="utf8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
         elif type == "binary":
             with open(path, "wb") as f:
                 f.write(data)
         elif type == "mesh":
-            with open(path, "wt", encoding="utf8", newline="") as f:
+            with open(path, "w", encoding="utf8", newline="") as f:
                 f.write(data)
 
     @staticmethod
@@ -52,9 +53,12 @@ class BundleExtractor:
     ) -> None:
         """Multi-thread is not allowed in UnityPy. Use multi-process."""
         extractor = BundleExtractor(context)
-        while not tasks.empty():
+        while True:
             try:
-                bundle_path = tasks.get()
+                bundle_path = tasks.get(timeout=0.1)
+            except Empty:
+                break
+            try:
                 extractor.extract_bundle(bundle_path, extract_types)
             except Exception as e:
                 extractor.logger.error(f"Unexpected error occurred: {e}")
@@ -85,9 +89,9 @@ class BundleExtractor:
                             image.save(str(Path(extract_folder) / f"{data.m_Name}.png"))
 
                         case "AudioClip":
-                            for name, data in data.samples.items():
+                            for name, sample_data in data.samples.items():
                                 file_path = str(Path(extract_folder) / name)
-                                self.__save("binary", file_path, data)
+                                self.__save("binary", file_path, sample_data)
 
                         case "Font":
                             if data.m_FontData:

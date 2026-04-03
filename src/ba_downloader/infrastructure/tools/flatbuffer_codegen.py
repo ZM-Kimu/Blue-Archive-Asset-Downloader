@@ -14,6 +14,33 @@ from ba_downloader.infrastructure.tools.codegen_support import (
 
 LOGGER = ConsoleLogger()
 
+CSHARP_TYPE_ALIASES = {
+    "bool": "bool",
+    "byte": "ubyte",
+    "sbyte": "byte",
+    "short": "short",
+    "ushort": "ushort",
+    "int": "int",
+    "uint": "uint",
+    "long": "long",
+    "ulong": "ulong",
+    "float": "float",
+    "double": "double",
+    "string": "string",
+    "System.Boolean": "bool",
+    "System.Byte": "ubyte",
+    "System.SByte": "byte",
+    "System.Int16": "short",
+    "System.UInt16": "ushort",
+    "System.Int32": "int",
+    "System.UInt32": "uint",
+    "System.Int64": "long",
+    "System.UInt64": "ulong",
+    "System.Single": "float",
+    "System.Double": "double",
+    "System.String": "string",
+}
+
 
 class DataSize(Enum):
     bool = 1
@@ -331,8 +358,31 @@ public enum (.{1,128}?) // TypeDefIndex: \d+?
 
 class CSParser:
     def __init__(self, file_path: str) -> None:
-        with open(file_path, "rt", encoding="utf8") as file:
+        with open(file_path, encoding="utf8") as file:
             self.data = file.read()
+
+    @staticmethod
+    def _normalize_type_name(type_name: str) -> str:
+        normalized_type = type_name.strip()
+        normalized_type = normalized_type.removeprefix("global::")
+        normalized_type = normalized_type.removesuffix("?")
+        generic_match = re.fullmatch(r"(?P<outer>[^<]+)<(?P<inner>.+)>", normalized_type)
+        if generic_match:
+            outer_type = generic_match.group("outer").strip()
+            inner_type = generic_match.group("inner").strip()
+            outer_without_arity = outer_type.split("`", maxsplit=1)[0]
+            if outer_without_arity in {
+                "Nullable",
+                "System.Nullable",
+                "FlatBuffers.Offset",
+                "FlatBuffers.VectorOffset",
+            }:
+                return CSParser._normalize_type_name(inner_type)
+            normalized_type = inner_type
+
+        normalized_type = normalized_type.removeprefix("Nullable<").removesuffix(">")
+        normalized_type = normalized_type.removeprefix("FlatData.")
+        return CSHARP_TYPE_ALIASES.get(normalized_type, normalized_type)
 
     def parse_enum(self) -> list[EnumType]:
         """Extract enum from cs."""
@@ -345,7 +395,13 @@ class CSParser:
             for name, value in Re.enum_member.findall(content):
                 enum_members.append(EnumMember(name, value))
 
-            enums.append(EnumType(enum_name, enum_type, enum_members))
+            enums.append(
+                EnumType(
+                    self._normalize_type_name(enum_name),
+                    self._normalize_type_name(enum_type),
+                    enum_members,
+                )
+            )
 
         return enums
 
@@ -356,7 +412,7 @@ class CSParser:
         # Has list in struct if there have its length property.
         prop_is_list = False
 
-        prop_type = prop_type.removeprefix("Nullable<").removesuffix(">")
+        prop_type = self._normalize_type_name(prop_type)
 
         if len(prop_name) > 6 and prop_name.endswith("Length"):
             list_name = prop_name.removesuffix("Length")
@@ -367,10 +423,11 @@ class CSParser:
             if re_type_of_list:
                 list_type = re_type_of_list.group(1)
                 prop_is_list = True
-
-                list_type = list_type.removeprefix("Nullable<").removesuffix(">")
-
-                return Property(list_type, list_name, prop_is_list)
+                return Property(
+                    self._normalize_type_name(list_type),
+                    list_name,
+                    prop_is_list,
+                )
 
         return Property(prop_type, prop_name, prop_is_list)
 
@@ -379,6 +436,7 @@ class CSParser:
         structs = []
         # struct name, field
         for struct_name, struct_data in Re.struct.findall(self.data):
+            struct_name = self._normalize_type_name(struct_name)
             struct_properties = []
             for prop in Re.struct_property.finditer(struct_data):
                 prop_type = prop.group(1)
@@ -557,7 +615,7 @@ class CompileToPython:
         for enum in self.enums:
             enum_name = make_valid_identifier(enum.name)
             with open(
-                f"{os.path.join(self.extract_dir, enum_name)}.py", "wt", encoding="utf8"
+                f"{os.path.join(self.extract_dir, enum_name)}.py", "w", encoding="utf8"
             ) as file:
                 file.write(String.ENUM_CLASS(enum_name) + String.NEWLINE)
                 for member in enum.members:
@@ -583,7 +641,7 @@ class CompileToPython:
             function_string = String.FB_START_AND_END_FUNCTION(len(struct.properties))
             file = open(
                 f"{os.path.join(self.extract_dir, struct_name)}.py",
-                "wt",
+                "w",
                 encoding="utf8",
             )
             file.write(String.FB_BASIC_CLASS(struct_name, struct_name))
@@ -641,7 +699,7 @@ class CompileToPython:
         """Create flatbuffer module file."""
         with open(
             os.path.join(self.extract_dir, "__init__.py"),
-            "wt",
+            "w",
             encoding="utf8",
         ) as file:
             for enum in self.enums:
@@ -727,7 +785,7 @@ class CompileToPython:
         """Dump excel structure of table to python dict."""
         file = open(
             os.path.join(self.extract_dir, f"{self.DUMP_WRAPPER_NAME}.py"),
-            "wt",
+            "w",
             encoding="utf8",
         )
         file.write(String.WRAPPER_BASE)

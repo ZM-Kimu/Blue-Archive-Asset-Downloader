@@ -31,5 +31,14 @@ jobs:
       - name: Compile sources
         run: python -m compileall src tests
 
+      - name: Run lint checks
+        run: uv run ruff check .
+
+      - name: Run type checks
+        run: uv run mypy
+
+      - name: Run pylint error checks
+        run: uv run pylint --rcfile .pylintrc src/ba_downloader scripts
+
       - name: Run tests
         run: uv run pytest -q

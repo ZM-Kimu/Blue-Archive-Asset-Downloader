@@ -1,0 +1,60 @@
+name: Release PR
+
+on:
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-pr-dev
+  cancel-in-progress: true
+
+jobs:
+  open-release-pr:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch main branch
+        run: git fetch origin main
+
+      - name: Generate changelog
+        run: python scripts/update_changelog.py --base origin/main --head HEAD --output CHANGELOG.md
+
+      - name: Create release pull request
+        id: cpr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: main
+          branch: automation/release-dev-to-main
+          title: "chore(release): promote dev to main"
+          commit-message: "docs(changelog): update unreleased changelog"
+          body: |
+            Automated release promotion from `dev` to `main`.
+
+            This pull request:
+            - refreshes `CHANGELOG.md` from commits not yet in `main`
+            - carries the current `dev` branch content into `main`
+            - is intended to be auto-merged after CI passes
+
+      - name: Enable pull request auto-merge
+        if: ${{ steps.cpr.outputs.pull-request-number }}
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          pull-request-number: ${{ steps.cpr.outputs.pull-request-number }}
+          merge-method: squash

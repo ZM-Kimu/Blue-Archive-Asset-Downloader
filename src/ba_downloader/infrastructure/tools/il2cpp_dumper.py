@@ -89,8 +89,7 @@ class IL2CppDumper:
                     global_metadata_path,
                     extract_path,
                 ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 check=True,
                 text=True,
                 cwd=self.project_dir,
@@ -100,7 +99,7 @@ class IL2CppDumper:
             if max_retries == 0:
                 raise RuntimeError(
                     f"Error occurred during dump the lib2cpp file. Retry might solve this issue. Info: {exc}"
-                )
+                ) from exc
             return self.dump_il2cpp(
                 extract_path, il2cpp_path, global_metadata_path, max_retries - 1
             )

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from time import monotonic
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Literal
+from collections.abc import Callable, Iterator, Mapping
 
 import httpx
+from curl_cffi import requests as curl_requests
+from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ba_downloader.domain.exceptions import NetworkError
@@ -12,15 +15,11 @@ from ba_downloader.domain.ports.http import (
     DownloadResult,
     HttpClientPort,
     HttpResponse,
+    TransportKind,
     get_header,
 )
 
-try:
-    from curl_cffi import requests as curl_requests
-    from curl_cffi.requests.exceptions import Timeout as CurlTimeout
-except ModuleNotFoundError:  # pragma: no cover - optional dependency
-    CurlTimeout = None
-    curl_requests = None
+CURL_TIMEOUT_EXCEPTIONS: tuple[type[BaseException], ...] = (CurlTimeout,)
 
 
 DEFAULT_USER_AGENT = (
@@ -52,28 +51,26 @@ class ResilientHttpClient(HttpClientPort):
             headers={"User-Agent": DEFAULT_USER_AGENT},
             proxy=proxy_url,
         )
-        self._browser = None
-        if curl_requests is not None:
-            self._browser = curl_requests.Session(
-                headers={"User-Agent": DEFAULT_USER_AGENT},
-                impersonate="chrome",
-            )
-            if proxy_url:
-                self._browser.proxies = {"http": proxy_url, "https": proxy_url}
+        self._browser: Any = curl_requests.Session(
+            headers={"User-Agent": DEFAULT_USER_AGENT},
+            impersonate="chrome",
+        )
+        if proxy_url:
+            self._browser.proxies = {"http": proxy_url, "https": proxy_url}
 
     def request(
         self,
-        method: str,
+        method: Literal["GET", "POST", "HEAD"],
         url: str,
         *,
         headers: Mapping[str, str] | None = None,
         json: Any | None = None,
         data: Any | None = None,
         params: Mapping[str, Any] | None = None,
-        transport: str = "default",
+        transport: TransportKind = "default",
         timeout: float = 10.0,
     ) -> HttpResponse:
-        method = method.upper()
+        normalized_params = dict(params) if params is not None else None
 
         if transport == "browser":
             response = self._request_with_browser(
@@ -82,7 +79,7 @@ class ResilientHttpClient(HttpClientPort):
                 headers=headers,
                 json=json,
                 data=data,
-                params=params,
+                params=normalized_params,
                 timeout=timeout,
             )
             return self._to_response(response)
@@ -93,7 +90,7 @@ class ResilientHttpClient(HttpClientPort):
             headers=headers,
             json=json,
             data=data,
-            params=params,
+            params=normalized_params,
             timeout=timeout,
         )
         normalized = self._to_response(response)
@@ -104,7 +101,7 @@ class ResilientHttpClient(HttpClientPort):
                 headers=headers,
                 json=json,
                 data=data,
-                params=params,
+                params=normalized_params,
                 timeout=timeout,
             )
             return self._to_response(browser_response)
@@ -116,7 +113,7 @@ class ResilientHttpClient(HttpClientPort):
         destination: str,
         *,
         headers: Mapping[str, str] | None = None,
-        transport: str = "default",
+        transport: TransportKind = "default",
         timeout: float = DEFAULT_DOWNLOAD_TIMEOUT,
         progress_callback: Callable[[int], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
@@ -162,18 +159,17 @@ class ResilientHttpClient(HttpClientPort):
 
     def close(self) -> None:
         self._httpx.close()
-        if self._browser is not None:
-            self._browser.close()
+        self._browser.close()
 
     def _request_with_httpx(
         self,
-        method: str,
+        method: Literal["GET", "POST", "HEAD"],
         url: str,
         *,
         headers: Mapping[str, str] | None,
         json: Any | None,
         data: Any | None,
-        params: Mapping[str, Any] | None,
+        params: dict[str, Any] | None,
         timeout: float,
     ) -> httpx.Response:
         retrying = Retrying(
@@ -202,26 +198,15 @@ class ResilientHttpClient(HttpClientPort):
 
     def _request_with_browser(
         self,
-        method: str,
+        method: Literal["GET", "POST", "HEAD"],
         url: str,
         *,
         headers: Mapping[str, str] | None,
         json: Any | None,
         data: Any | None,
-        params: Mapping[str, Any] | None,
+        params: dict[str, Any] | None,
         timeout: float,
     ):
-        if self._browser is None:
-            return self._request_with_httpx(
-                method,
-                url,
-                headers=headers,
-                json=json,
-                data=data,
-                params=params,
-                timeout=timeout,
-            )
-
         retrying = Retrying(
             stop=stop_after_attempt(max(1, self.max_retries + 1)),
             wait=wait_exponential(multiplier=0.2, min=0.2, max=2),
@@ -306,17 +291,8 @@ class ResilientHttpClient(HttpClientPort):
         progress_callback: Callable[[int], None] | None,
         should_stop: Callable[[], bool] | None,
     ) -> DownloadResult:
-        if self._browser is None:
-            return self._download_with_httpx(
-                url,
-                destination,
-                headers=headers,
-                timeout=timeout,
-                progress_callback=progress_callback,
-                should_stop=should_stop,
-            )
-
         try:
+            response: Any | None = None
             response = self._browser.get(
                 url,
                 headers=dict(headers or {}),
@@ -327,7 +303,7 @@ class ResilientHttpClient(HttpClientPort):
                 destination,
                 url=url,
                 iterator=response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE),
-                timeout_exceptions=((CurlTimeout,) if CurlTimeout is not None else ()),
+                timeout_exceptions=CURL_TIMEOUT_EXCEPTIONS,
                 stall_timeout=timeout,
                 progress_callback=progress_callback,
                 should_stop=should_stop,
@@ -354,7 +330,8 @@ class ResilientHttpClient(HttpClientPort):
             raise NetworkError(f"Failed to download {url}: {exc}") from exc
         finally:
             try:
-                response.close()  # type: ignore[name-defined]
+                if response is not None:
+                    response.close()
             except Exception:
                 pass
 
@@ -414,7 +391,7 @@ class ResilientHttpClient(HttpClientPort):
     @staticmethod
     def _to_response(response: Any) -> HttpResponse:
         headers = {str(key): str(value) for key, value in response.headers.items()}
-        content = response.content if hasattr(response, "content") else bytes()
+        content = response.content if hasattr(response, "content") else b""
         url = str(response.url)
         return HttpResponse(
             status_code=int(response.status_code),

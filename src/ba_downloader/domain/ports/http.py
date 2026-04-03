@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Mapping, Protocol
+from typing import Any, Literal, Protocol
+from collections.abc import Callable, Mapping
 
 
 TransportKind = Literal["default", "browser"]

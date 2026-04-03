@@ -96,7 +96,7 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
                 b_file_paths.append(str(matches[0]))
 
         if len(bytes_files) == 2:
-            for b_path, b_name in zip(b_file_paths, bytes_files):
+            for b_path, b_name in zip(b_file_paths, bytes_files, strict=True):
                 with open(b_path, "rb") as f:
                     excel_data, _, _ = self._process_zip_file(b_name, f.read(), True)
                     if b_name == "characterexceltable.bytes":
@@ -198,7 +198,7 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         self, version: str, region: str, data: list[CharacterData]
     ) -> None:
         region = region.upper()
-        with open(region + self.RELATION_NAME, "wt", encoding="utf8") as f:
+        with open(region + self.RELATION_NAME, "w", encoding="utf8") as f:
             json.dump(
                 asdict(CharacterRelation(region + version, data)),
                 f,
@@ -213,7 +213,6 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         try:
             with open(
                 active_context.region + CharacterNameRelation.RELATION_NAME,
-                "rt",
                 encoding="utf8",
             ) as f:
                 return json.load(f).get("version", "") == (
@@ -243,7 +242,7 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
                 )
 
             relation = CharacterRelation("", [])
-            with open(relation_file, "rt", encoding="utf8") as f:
+            with open(relation_file, encoding="utf8") as f:
                 relation_json = json.load(f)
                 relation.version = relation_json.get("version", "")
                 for rel in relation_json.get("relations", []):

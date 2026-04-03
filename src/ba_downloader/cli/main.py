@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import argparse
+from typing import Any, cast
+from collections.abc import Sequence
 
 from ba_downloader.application.services.download import DownloadService
 from ba_downloader.application.services.extract import ExtractService
 from ba_downloader.application.services.relation import RelationService
 from ba_downloader.application.services.sync import SyncService
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.domain.models.settings import AppSettings
+from ba_downloader.domain.models.settings import AppSettings, Platform, Region
+from ba_downloader.domain.ports.http import HttpClientPort
+from ba_downloader.domain.ports.logging import LoggerPort
 
 
 class _StorePlatformAction(argparse.Action):
@@ -15,13 +19,15 @@ class _StorePlatformAction(argparse.Action):
         self,
         parser: argparse.ArgumentParser,
         namespace: argparse.Namespace,
-        values: str,
+        values: str | Sequence[Any] | None,
         option_string: str | None = None,
     ) -> None:
         _ = parser
         _ = option_string
+        if not isinstance(values, str):
+            raise argparse.ArgumentError(self, "Platform must be a single string value.")
         setattr(namespace, self.dest, values)
-        setattr(namespace, "platform_explicit", True)
+        namespace.platform_explicit = True
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -78,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def runtime_context_from_namespace(args: argparse.Namespace) -> RuntimeContext:
     settings = AppSettings(
-        region=args.region,
+        region=cast(Region, args.region),
         threads=args.threads,
         version=args.version,
         raw_dir=args.raw_dir,
@@ -90,13 +96,17 @@ def runtime_context_from_namespace(args: argparse.Namespace) -> RuntimeContext:
         max_retries=args.max_retries,
         search=tuple(getattr(args, "search", [])),
         advanced_search=tuple(getattr(args, "advanced_search", [])),
-        platform=getattr(args, "platform", "android"),
+        platform=cast(Platform, getattr(args, "platform", "android")),
         platform_explicit=getattr(args, "platform_explicit", False),
     )
     return RuntimeContext.from_settings(settings)
 
 
-def _build_provider(context: RuntimeContext, logger: object, http_client: object):
+def _build_provider(
+    context: RuntimeContext,
+    logger: LoggerPort,
+    http_client: HttpClientPort,
+):
     from ba_downloader.infrastructure.regions.registry import DEFAULT_REGION_REGISTRY
 
     provider_factory = DEFAULT_REGION_REGISTRY.resolve(context.region)
@@ -105,8 +115,8 @@ def _build_provider(context: RuntimeContext, logger: object, http_client: object
 
 def _build_runtime_asset_preparer(
     context: RuntimeContext,
-    logger: object,
-    http_client: object,
+    logger: LoggerPort,
+    http_client: HttpClientPort,
 ):
     from ba_downloader.infrastructure.runtime import (
         DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY,

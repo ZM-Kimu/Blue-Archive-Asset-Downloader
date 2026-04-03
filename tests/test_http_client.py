@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Iterator
+from collections.abc import Iterator
 
 import httpx
 import pytest
@@ -113,7 +113,7 @@ class _ChunkIterator:
         self._chunks = list(chunks)
         self._index = 0
 
-    def __iter__(self) -> "_ChunkIterator":
+    def __iter__(self) -> _ChunkIterator:
         return self
 
     def __next__(self) -> bytes:

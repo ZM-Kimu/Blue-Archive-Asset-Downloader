@@ -25,15 +25,21 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "black>=24.10.0",
+    "mypy>=1.11.0",
+    "pylint>=3.3.0",
     "pre-commit>=4.0.0",
     "pytest>=8.2.0",
+    "ruff>=0.11.0",
 ]
 
 [dependency-groups]
 dev = [
     "black>=24.10.0",
+    "mypy>=1.11.0",
+    "pylint>=3.3.0",
     "pre-commit>=4.0.0",
     "pytest>=8.2.0",
+    "ruff>=0.11.0",
 ]
 
 [project.scripts]
@@ -42,9 +48,34 @@ ba-downloader = "ba_downloader.cli.main:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ba_downloader"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/ba_downloader/infrastructure/tools/templates" = "ba_downloader/infrastructure/tools/templates"
+
 [tool.uv]
 default-groups = ["dev"]
 
 [tool.black]
 line-length = 88
 target-version = ["py310"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+src = ["src", "tests", "scripts"]
+extend-exclude = ["third_party"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/ba_downloader", "scripts"]
+exclude = ["^tests/", "^third_party/"]
+ignore_missing_imports = false
+show_error_codes = true
+pretty = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["UnityPy", "pykakasi", "xxhash", "curl_cffi", "curl_cffi.*", "Crypto.*", "flatbuffers", "flatbuffers.*"]
+ignore_missing_imports = true

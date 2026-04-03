@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from multiprocessing import Queue, freeze_support
 from pathlib import Path
 from threading import Event, current_thread, main_thread
-from typing import Callable, Iterator
+from collections.abc import Callable, Iterator
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import AssetExtractionPort

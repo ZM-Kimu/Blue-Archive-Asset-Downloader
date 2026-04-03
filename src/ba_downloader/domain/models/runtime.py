@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Any
 
-from ba_downloader.domain.models.settings import AppSettings
+from ba_downloader.domain.models.settings import AppSettings, Platform, Region
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeContext:
-    region: str
+    region: Region
     threads: int
     version: str
     raw_dir: str
@@ -20,11 +21,11 @@ class RuntimeContext:
     search: tuple[str, ...]
     advanced_search: tuple[str, ...]
     work_dir: str
-    platform: str = "android"
+    platform: Platform = "android"
     platform_explicit: bool = False
 
     @classmethod
-    def from_settings(cls, settings: AppSettings) -> "RuntimeContext":
+    def from_settings(cls, settings: AppSettings) -> RuntimeContext:
         normalized = settings.normalized()
         return cls(
             region=normalized.region,
@@ -50,9 +51,5 @@ class RuntimeContext:
             return None
         return {"http": self.proxy_url, "https": self.proxy_url}
 
-    @property
-    def max_threads(self) -> int:
-        return max(1, self.threads * 7)
-
-    def with_updates(self, **changes: object) -> "RuntimeContext":
+    def with_updates(self, **changes: Any) -> RuntimeContext:
         return replace(self, **changes)

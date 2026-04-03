@@ -47,6 +47,5 @@ def test_runtime_context_copies_normalized_settings() -> None:
     assert runtime_context.region == "gl"
     assert runtime_context.threads == 8
     assert runtime_context.resource_type == ("media",)
-    assert runtime_context.max_threads == 56
     assert runtime_context.platform == "android"
     assert runtime_context.platform_explicit is False

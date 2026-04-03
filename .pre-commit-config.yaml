@@ -1,4 +1,13 @@
 repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff lint
+        entry: uv run ruff check
+        language: system
+        types: [python]
+        stages: [pre-commit]
+
   - repo: https://github.com/psf/black
     rev: 24.10.0
     hooks:
@@ -9,7 +18,7 @@ repos:
     hooks:
       - id: compileall
         name: compileall preflight
-        entry: python -m compileall src tests
+        entry: python -m compileall src tests scripts
         language: system
         pass_filenames: false
         stages: [pre-commit]
@@ -17,6 +26,20 @@ repos:
       - id: pytest
         name: pytest preflight
         entry: uv run pytest -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: mypy
+        name: mypy static typing
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: pylint
+        name: pylint quality checks
+        entry: uv run pylint --rcfile .pylintrc src/ba_downloader scripts
         language: system
         pass_filenames: false
         stages: [pre-push]

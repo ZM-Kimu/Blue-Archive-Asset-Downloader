@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import py_compile
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import FlatbufferWorkflowPort
@@ -36,9 +37,18 @@ class FlatbufferWorkflow(FlatbufferWorkflowPort):
             str(extract_path.resolve()),
         )
 
+    def _validate_generated_flat_data(self, flat_data_dir: Path) -> None:
+        for python_file in sorted(flat_data_dir.rglob("*.py")):
+            try:
+                py_compile.compile(str(python_file), doraise=True)
+            except py_compile.PyCompileError as exc:
+                raise SyntaxError(
+                    f"Generated FlatData module is invalid: {python_file}."
+                ) from exc
+
     def compile(self, context: RuntimeContext) -> None:
         dump_cs_file_path = str(Path(context.extract_dir) / self.DUMP_PATH / "dump.cs")
-        flat_data_dir = str(Path(context.extract_dir) / "FlatData")
+        flat_data_dir = Path(context.extract_dir) / "FlatData"
 
         self.logger.info("Parsing dump.cs...")
         parser = CSParser(dump_cs_file_path)
@@ -46,8 +56,9 @@ class FlatbufferWorkflow(FlatbufferWorkflowPort):
         structs = parser.parse_struct()
 
         self.logger.info("Generating flatbuffer python dump files...")
-        compiler = CompileToPython(enums, structs, flat_data_dir)
+        compiler = CompileToPython(enums, structs, str(flat_data_dir))
         compiler.create_enum_files()
         compiler.create_struct_files()
         compiler.create_module_file()
         compiler.create_dump_dict_file()
+        self._validate_generated_flat_data(flat_data_dir)

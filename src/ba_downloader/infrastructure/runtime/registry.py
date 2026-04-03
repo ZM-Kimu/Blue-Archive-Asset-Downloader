@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.region import Region

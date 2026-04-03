@@ -12,6 +12,8 @@ from ba_downloader.infrastructure.tools.dump_backend import (
     CPP2IL_COMMIT,
     Cpp2ILSourceResolver,
     Cpp2IlDumpCsBackend,
+    EXPORTER_CSPROJ_TEMPLATE_PATH,
+    EXPORTER_PROGRAM_CS_PATH,
     LegacyIl2CppDumperBackend,
     build_default_dumper_backend_registry,
 )
@@ -229,6 +231,21 @@ def test_cpp2il_source_resolver_downloads_and_reuses_cache(
     assert first == second
     assert (first / "Cpp2IL" / "Cpp2IL.csproj").exists()
     assert len(http_client.download_calls) == 1
+
+
+def test_cpp2il_exporter_project_is_generated_from_template_files(tmp_path: Path) -> None:
+    context = _build_context(tmp_path, region="jp")
+    cpp2il_root = tmp_path / "Cpp2IL"
+    _create_cpp2il_tree(cpp2il_root)
+
+    project_path = Cpp2IlDumpCsBackend._ensure_exporter_project(context, cpp2il_root)
+
+    assert EXPORTER_CSPROJ_TEMPLATE_PATH.exists()
+    assert EXPORTER_PROGRAM_CS_PATH.exists()
+    assert "LibCpp2IL.csproj" in project_path.read_text(encoding="utf8")
+    assert (project_path.parent / "Program.cs").read_text(encoding="utf8").startswith(
+        "using System.Reflection;"
+    )
 
 
 def test_legacy_backend_logs_success_at_info_level(

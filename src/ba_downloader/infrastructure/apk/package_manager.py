@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from zipfile import ZipFile
 
-from ba_downloader.domain.ports.http import HttpClientPort, get_header
+from ba_downloader.domain.ports.http import HttpClientPort, TransportKind, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.progress.rich_progress import (
     NullProgressReporter,
@@ -30,8 +30,8 @@ def download_package_file(
     package_url: str,
     destination_dir: str,
     *,
-    transport: str = "default",
-    headers: dict[str, str] | None = None,
+    transport: TransportKind = "default",
+    headers: Mapping[str, str] | None = None,
 ) -> str:
     os.makedirs(destination_dir, exist_ok=True)
     metadata = _resolve_package_metadata(
@@ -90,7 +90,7 @@ def _resolve_package_metadata(
     http_client: HttpClientPort,
     package_url: str,
     *,
-    transport: str,
+    transport: TransportKind,
     headers: Mapping[str, str] | None,
 ) -> PackageMetadata:
     head_file_name = ""

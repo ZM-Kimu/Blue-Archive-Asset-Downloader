@@ -21,6 +21,7 @@ from ba_downloader.domain.models.asset import (
 )
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.settings import Platform
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.apk import download_package_file, extract_xapk_file
@@ -41,15 +42,36 @@ class DecodedJPCatalog:
     bundles: list[dict[str, object]]
 
 
-JP_PLATFORM_PATCH_SEGMENTS = {
+JP_PLATFORM_PATCH_SEGMENTS: dict[Platform, str] = {
     "windows": "Windows",
     "android": "Android",
     "ios": "iOS",
 }
 
 
-def _resolve_jp_patch_pack_dir(platform: str) -> str:
-    segment = JP_PLATFORM_PATCH_SEGMENTS.get(platform.lower(), "Android")
+def _coerce_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _coerce_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _resolve_jp_patch_pack_dir(platform: Platform) -> str:
+    segment = JP_PLATFORM_PATCH_SEGMENTS[platform]
     return f"{segment}_PatchPack"
 
 
@@ -200,13 +222,18 @@ class JPBootstrapper:
                 if url_obj := UnityAssetReader.search_objects(
                     path.join(dir, file), ["TextAsset"], ["GameMainConfig"], True
                 ):
-                    url = self.__decode_server_url(url_obj[0].read().m_Script.encode("utf-8", "surrogateescape"))  # type: ignore
+                    url = self.__decode_server_url(
+                        url_obj[0].read().m_Script.encode(
+                            "utf-8",
+                            "surrogateescape",
+                        )
+                    )
                     self.logger.info(f"Resolved server URL: {url}")
                 if version_obj := UnityAssetReader.search_objects(
                     path.join(dir, file), ["PlayerSettings"]
                 ):
                     try:
-                        version = version_obj[0].read().bundleVersion  # type: ignore
+                        version = version_obj[0].read().bundleVersion
                     except Exception:
                         version = "unavailable"
                     self.logger.info(f"The apk version is {version}.")
@@ -271,21 +298,22 @@ class JPAssetNormalizer:
         bundle_patch_dir = str(session.metadata.get("bundle_patch_dir", "Android_PatchPack"))
 
         for table in payload.tables:
+            includes = _coerce_string_list(table.get("includes", []))
             assets.add(
                 urljoin(base_url, f"TableBundles/{table['name']}"),
                 urljoin("Table/", str(table["name"])),
-                int(table["size"]),
+                _coerce_int(table.get("size")),
                 str(table["crc"]),
                 "crc",
                 AssetType.table,
-                {"includes": list(table.get("includes", []))},
+                {"includes": includes},
             )
 
         for media in payload.media:
             assets.add(
                 urljoin(base_url, f"MediaResources/{media['path']}"),
                 urljoin("Media/", str(media["path"])),
-                int(media["bytes"]),
+                _coerce_int(media.get("bytes")),
                 str(media["crc"]),
                 "crc",
                 AssetType.media,
@@ -293,14 +321,15 @@ class JPAssetNormalizer:
             )
 
         for bundle in payload.bundles:
+            bundle_files = _coerce_string_list(bundle.get("bundle_files", []))
             assets.add(
                 urljoin(base_url, f"{bundle_patch_dir}/{bundle['name']}"),
                 urljoin("Bundle/", str(bundle["name"])),
-                int(bundle["size"]),
+                _coerce_int(bundle.get("size")),
                 str(bundle["crc"]),
                 "crc",
                 AssetType.bundle,
-                {"bundle_files": list(bundle.get("bundle_files", []))},
+                {"bundle_files": bundle_files},
             )
 
         return assets

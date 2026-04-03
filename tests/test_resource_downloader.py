@@ -73,7 +73,7 @@ class RecordingHttpClient:
 
 
 class RecordingProgressReporter:
-    instances: list["RecordingProgressReporter"] = []
+    instances: list[RecordingProgressReporter] = []
 
     def __init__(self, total: int, description: str, *, download_mode: bool = False) -> None:
         self.total = total
@@ -86,7 +86,7 @@ class RecordingProgressReporter:
         self.failed_statuses: list[str] = []
         RecordingProgressReporter.instances.append(self)
 
-    def __enter__(self) -> "RecordingProgressReporter":
+    def __enter__(self) -> RecordingProgressReporter:
         return self
 
     def __exit__(self, *_: object) -> None:

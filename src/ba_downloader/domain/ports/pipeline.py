@@ -8,7 +8,8 @@ from ba_downloader.domain.models.asset import (
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
 
-TDecoded = TypeVar("TDecoded")
+TDecodedCo = TypeVar("TDecodedCo", covariant=True)
+TDecodedContra = TypeVar("TDecodedContra", contravariant=True)
 
 
 class ReleaseResolver(Protocol):
@@ -34,20 +35,20 @@ class CatalogSourceProvider(Protocol):
         ...
 
 
-class CatalogDecoder(Protocol, Generic[TDecoded]):
+class CatalogDecoder(Protocol, Generic[TDecodedCo]):
     def decode(
         self,
         session: BootstrapSession,
         sources: list[CatalogSource],
         context: RuntimeContext,
-    ) -> TDecoded:
+    ) -> TDecodedCo:
         ...
 
 
-class AssetNormalizer(Protocol, Generic[TDecoded]):
+class AssetNormalizer(Protocol, Generic[TDecodedContra]):
     def normalize(
         self,
-        payload: TDecoded,
+        payload: TDecodedContra,
         session: BootstrapSession,
     ) -> AssetCollection:
         ...

@@ -1,10 +1,12 @@
-import importlib
+import hashlib
+from importlib import import_module, invalidate_caches, util
 import json
 import os
 from os import path
 from pathlib import Path
+import sys
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 from zipfile import ZipFile
 
 from ba_downloader.domain.models.database import DBTable, SQLiteDataType
@@ -20,7 +22,7 @@ class TableExtractor:
         self,
         table_file_folder: str,
         extract_folder: str,
-        flat_data_module_name: str,
+        flat_data_dir: str,
         logger: LoggerPort | None = None,
     ) -> None:
         """Extract files in table folder.
@@ -28,17 +30,17 @@ class TableExtractor:
         Args:
             table_file_folder (str): Folder own table files.
             extract_folder (str): Folder to store the extracted data.
-            flat_data_module_name (str): Name path to import flat data module. Most like "Extracted.FlatData".
+            flat_data_dir (str): Folder path containing generated FlatData Python modules.
         """
         self.table_file_folder = table_file_folder
         self.extract_folder = extract_folder
-        self.flat_data_module_name = flat_data_module_name
+        self.flat_data_dir = flat_data_dir
         self.logger = logger or ConsoleLogger()
 
         self.lower_fb_name_modules: dict[str, type] = {}
         self.dump_wrapper_lib: ModuleType
 
-        self.__import_modules()
+        self._load_modules()
 
     @classmethod
     def from_context(
@@ -53,22 +55,52 @@ class TableExtractor:
             logger=logger,
         )
 
-    def __import_modules(self):
-        flat_data_lib: ModuleType | None = None
-        try:
-            flat_data_lib = importlib.import_module(self.flat_data_module_name)
-            self.dump_wrapper_lib = importlib.import_module(
-                f"{self.flat_data_module_name}.dump_wrapper"
-            )
-        except Exception as e:
-            self.logger.error(
-                f"Cannot import FlatData module. Make sure FlatData is available in Extracted folder. {e}"
-            )
-            return
+    def _load_modules(self) -> None:
+        flat_data_lib = self._load_flat_data_package()
         self.lower_fb_name_modules = {
             t_name.lower(): t_class
             for t_name, t_class in flat_data_lib.__dict__.items()
         }
+
+    def _load_flat_data_package(self) -> ModuleType:
+        flat_data_dir = Path(self.flat_data_dir)
+        init_file = flat_data_dir / "__init__.py"
+        dump_wrapper_file = flat_data_dir / "dump_wrapper.py"
+        if not flat_data_dir.is_dir():
+            raise FileNotFoundError(
+                f"FlatData directory does not exist: {flat_data_dir}."
+            )
+        if not init_file.is_file():
+            raise FileNotFoundError(
+                f"FlatData package initializer is missing: {init_file}."
+            )
+        if not dump_wrapper_file.is_file():
+            raise FileNotFoundError(
+                f"FlatData dump wrapper is missing: {dump_wrapper_file}."
+            )
+
+        invalidate_caches()
+        path_digest = hashlib.sha1(str(flat_data_dir.resolve()).encode("utf-8")).hexdigest()
+        package_name = (
+            "ba_downloader_generated_flatdata_"
+            f"{path_digest}"
+        )
+        spec = util.spec_from_file_location(
+            package_name,
+            init_file,
+            submodule_search_locations=[str(flat_data_dir)],
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to create FlatData import spec for {flat_data_dir}.")
+
+        module = sys.modules.get(package_name)
+        if module is None:
+            module = util.module_from_spec(spec)
+            sys.modules[package_name] = module
+            spec.loader.exec_module(module)
+
+        self.dump_wrapper_lib = import_module(f"{package_name}.dump_wrapper")
+        return module
 
     def _process_bytes_file(
         self, file_name: str, data: bytes
@@ -82,25 +114,25 @@ class TableExtractor:
         Returns:
             tuple[dict[str, Any], str]: Tuple with extracted dict and file name. Always have file name if success extract.
         """
-        if not (
-            flatbuffer_class := self.lower_fb_name_modules.get(
-                file_name.removesuffix(".bytes").lower(), None
-            )
-        ):
+        raw_flatbuffer_class = self.lower_fb_name_modules.get(
+            file_name.removesuffix(".bytes").lower(), None
+        )
+        if raw_flatbuffer_class is None:
             return {}, ""
+        flatbuffer_class = cast(Any, raw_flatbuffer_class)
 
         obj = None
         try:
             if flatbuffer_class.__name__.endswith("Table"):
                 try:
                     data = xor_with_key(flatbuffer_class.__name__, data)
-                    flat_buffer = getattr(flatbuffer_class, "GetRootAs")(data)
-                    obj = getattr(self.dump_wrapper_lib, "dump_table")(flat_buffer)
+                    flat_buffer = flatbuffer_class.GetRootAs(data)
+                    obj = self.dump_wrapper_lib.dump_table(flat_buffer)
                 except Exception:
                     pass
 
             if not obj:
-                flat_buffer = getattr(flatbuffer_class, "GetRootAs")(data)
+                flat_buffer = flatbuffer_class.GetRootAs(data)
                 obj = getattr(
                     self.dump_wrapper_lib, f"dump_{flatbuffer_class.__name__}"
                 )(flat_buffer)
@@ -124,7 +156,7 @@ class TableExtractor:
             data.decode("utf8")
             return data
         except Exception:
-            return bytes()
+            return b""
 
     def _process_db_file(self, file_path: str, table_name: str = "") -> list[DBTable]:
         """Extract sqlite database file.
@@ -147,7 +179,7 @@ class TableExtractor:
                 table_data = []
                 for row in rows:
                     row_data: list[Any] = []
-                    for col, value in zip(columns, row):
+                    for col, value in zip(columns, row, strict=True):
                         col_type = SQLiteDataType[col.data_type].value
                         if col_type is bytes:
                             data, _ = self._process_bytes_file(
@@ -169,7 +201,7 @@ class TableExtractor:
         file_data: bytes,
         detect_type: bool = False,
     ) -> tuple[bytes, str, bool]:
-        data = bytes()
+        data = b""
         if (detect_type or file_name.endswith(".json")) and (
             data := self._process_json_file(file_data)
         ):
@@ -199,7 +231,7 @@ class TableExtractor:
                     os.makedirs(db_extract_folder, exist_ok=True)
                     with open(
                         path.join(db_extract_folder, f"{table.name}.json"),
-                        "wt",
+                        "w",
                         encoding="utf8",
                     ) as f:
                         json.dump(
@@ -228,7 +260,7 @@ class TableExtractor:
                 for item_name in zip.namelist():
                     item_data = zip.read(item_name)
 
-                    data, name, success = bytes(), "", False
+                    data, name, success = b"", "", False
                     if item_name.endswith((".json", ".bytes")):
                         if "RootMotion" in file_name:
                             data, name, success = self._process_zip_file(

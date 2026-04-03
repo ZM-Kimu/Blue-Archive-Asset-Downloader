@@ -1,4 +1,4 @@
-from typing import Callable
+from collections.abc import Callable
 
 from ba_downloader.domain.ports.region import Region, RegionProvider
 from ba_downloader.infrastructure.regions.providers.cn import CNServer

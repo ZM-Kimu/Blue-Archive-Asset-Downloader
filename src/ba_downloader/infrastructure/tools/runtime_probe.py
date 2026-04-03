@@ -8,8 +8,7 @@ def get_installed_dotnet_sdk_major_versions() -> set[int]:
     try:
         result = subprocess.run(
             ["dotnet", "--list-sdks"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             check=True,
         )

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from os import getcwd
-from typing import Literal
+from typing import Literal, cast
 
 Region = Literal["cn", "gl", "jp"]
 Platform = Literal["windows", "android", "ios"]
@@ -31,8 +31,8 @@ class AppSettings:
     platform_explicit: bool = False
 
     def normalized(self) -> "AppSettings":
-        region = self.region.lower()  # type: ignore[assignment]
-        platform = self.platform.lower()  # type: ignore[assignment]
+        region = cast(Region, self.region.lower())
+        platform = cast(Platform, self.platform.lower())
         raw_dir = self.raw_dir
         extract_dir = self.extract_dir
         temp_dir = self.temp_dir

@@ -36,7 +36,7 @@ class TableDatabase:
         table_rows = []
         for row in table.data:
             row_data = {}
-            for col, value in zip(table.columns, row):
+            for col, value in zip(table.columns, row, strict=True):
                 row_data[col.name] = value
             if row_data:
                 table_rows.append(row_data)

@@ -1,8 +1,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from ba_downloader.domain.models.asset import AssetType
 from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -366,6 +364,11 @@ def test_cn_provider_builds_assets_without_downloading_apk() -> None:
         AssetType.table,
         AssetType.media,
         AssetType.bundle,
+    ]
+    assert [item.checksum.algorithm for item in result.resources] == [
+        "md5",
+        "md5",
+        "md5",
     ]
     assert result.resources[0].metadata["includes"] == ["CharacterExcelTable"]
     assert result.resources[1].metadata["media_type"] == "mp4"

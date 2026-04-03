@@ -25,7 +25,7 @@ class ResourceQueryService:
         keywords: list[str] | tuple[str, ...],
     ) -> AssetCollection:
         results = AssetCollection()
-        matches = []
+        matches: list[AssetRecord] = []
 
         for keyword in keywords:
             matches.extend(resource.search("path", keyword))
