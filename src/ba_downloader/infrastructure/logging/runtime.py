@@ -2,11 +2,19 @@ import logging
 
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.theme import Theme
 
 from ba_downloader.infrastructure.logging.highlighter import LogMessageHighlighter
 
 
 LOGGER_NAME = "ba_downloader"
+LOG_THEME = Theme(
+    {
+        "log.url": "underline cyan",
+        "log.path": "cyan",
+        "log.exception": "bold red",
+    }
+)
 _configured = False
 _console: Console | None = None
 
@@ -14,7 +22,7 @@ _console: Console | None = None
 def get_console() -> Console:
     global _console
     if _console is None:
-        _console = Console(stderr=True)
+        _console = Console(stderr=True, theme=LOG_THEME)
     return _console
 
 

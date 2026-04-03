@@ -5,6 +5,14 @@ from typing import Any, Callable, Literal, Mapping, Protocol
 TransportKind = Literal["default", "browser"]
 
 
+def get_header(headers: Mapping[str, str], name: str, default: str = "") -> str:
+    expected = name.casefold()
+    for key, value in headers.items():
+        if key.casefold() == expected:
+            return str(value)
+    return default
+
+
 @dataclass(frozen=True)
 class HttpResponse:
     status_code: int
@@ -15,6 +23,9 @@ class HttpResponse:
     @property
     def text(self) -> str:
         return self.content.decode("utf-8", errors="replace")
+
+    def header(self, name: str, default: str = "") -> str:
+        return get_header(self.headers, name, default)
 
     def json(self) -> Any:
         import json
@@ -29,6 +40,9 @@ class DownloadResult:
     status_code: int
     headers: Mapping[str, str]
     url: str
+
+    def header(self, name: str, default: str = "") -> str:
+        return get_header(self.headers, name, default)
 
 
 class HttpClientPort(Protocol):

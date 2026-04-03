@@ -3,6 +3,28 @@
 import subprocess
 
 
+def get_installed_dotnet_sdk_major_versions() -> set[int]:
+    """Return installed .NET SDK major versions."""
+    try:
+        result = subprocess.run(
+            ["dotnet", "--list-sdks"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        majors: set[int] = set()
+        for line in result.stdout.splitlines():
+            if not line:
+                continue
+            major_text = line.split(".", 1)[0]
+            if major_text.isdigit():
+                majors.add(int(major_text))
+        return majors
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return set()
+
+
 def is_dotnet_sdk_version_equal(*target_versions: int) -> bool:
     """Checks if the installed .NET SDK major version matches the specified target version.
 
@@ -12,25 +34,8 @@ def is_dotnet_sdk_version_equal(*target_versions: int) -> bool:
     Returns:
         bool: Is or not installed specified sdk version.
     """
-    try:
-        result = subprocess.run(
-            ["dotnet", "--list-sdks"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True,
-        )
-        stdout = result.stdout.split("\n")
-        if stdout:
-            major_versions = [
-                ver[0]
-                for ver in stdout
-                if ver and ver[0].isdigit() and int(ver[0]) in target_versions
-            ]
-            return bool(major_versions)
-        return False
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return False
+    installed = get_installed_dotnet_sdk_major_versions()
+    return any(version in installed for version in target_versions)
 
 
 

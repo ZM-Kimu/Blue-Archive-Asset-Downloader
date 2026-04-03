@@ -3,6 +3,13 @@ from os import getcwd
 from typing import Literal
 
 Region = Literal["cn", "gl", "jp"]
+Platform = Literal["windows", "android", "ios"]
+
+PLATFORM_DISPLAY_NAMES: dict[Platform, str] = {
+    "windows": "Windows",
+    "android": "Android",
+    "ios": "iOS",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,19 +27,31 @@ class AppSettings:
     search: tuple[str, ...] = ()
     advanced_search: tuple[str, ...] = ()
     work_dir: str = ""
+    platform: Platform = "android"
+    platform_explicit: bool = False
 
     def normalized(self) -> "AppSettings":
         region = self.region.lower()  # type: ignore[assignment]
+        platform = self.platform.lower()  # type: ignore[assignment]
         raw_dir = self.raw_dir
         extract_dir = self.extract_dir
         temp_dir = self.temp_dir
 
-        if raw_dir == "RawData":
-            raw_dir = f"{region.upper()}{raw_dir}"
-        if extract_dir == "Extracted":
-            extract_dir = f"{region.upper()}{extract_dir}"
-        if temp_dir == "Temp":
-            temp_dir = f"{region.upper()}{temp_dir}"
+        if region == "jp":
+            platform_prefix = f"{region.upper()}_{PLATFORM_DISPLAY_NAMES[platform]}_"
+            if raw_dir == "RawData":
+                raw_dir = f"{platform_prefix}{raw_dir}"
+            if extract_dir == "Extracted":
+                extract_dir = f"{platform_prefix}{extract_dir}"
+            if temp_dir == "Temp":
+                temp_dir = f"{platform_prefix}{temp_dir}"
+        else:
+            if raw_dir == "RawData":
+                raw_dir = f"{region.upper()}{raw_dir}"
+            if extract_dir == "Extracted":
+                extract_dir = f"{region.upper()}{extract_dir}"
+            if temp_dir == "Temp":
+                temp_dir = f"{region.upper()}{temp_dir}"
 
         resource_type = tuple(r.lower() for r in self.resource_type)
         if not resource_type or "all" in resource_type:
@@ -52,4 +71,6 @@ class AppSettings:
             search=tuple(self.search),
             advanced_search=tuple(self.advanced_search),
             work_dir=self.work_dir or getcwd(),
+            platform=platform,
+            platform_explicit=self.platform_explicit,
         )

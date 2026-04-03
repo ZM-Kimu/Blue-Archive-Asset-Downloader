@@ -28,34 +28,57 @@ class FakeProvider:
 
 
 class FakeDownloader:
-    def __init__(self) -> None:
+    def __init__(self, events: list[tuple[str, RuntimeContext]] | None = None) -> None:
         self.received_resources: AssetCollection | None = None
         self.received_context: RuntimeContext | None = None
+        self.events = events if events is not None else []
 
     def verify_and_download(self, resources: AssetCollection, context: RuntimeContext) -> None:
         self.received_resources = resources
         self.received_context = context
+        self.events.append(("download", context))
 
 
 class FakeExtractService:
+    def __init__(self, events: list[tuple[str, RuntimeContext]] | None = None) -> None:
+        self.events = events if events is not None else []
+
     def run(self, context: RuntimeContext) -> None:
-        _ = context
+        self.events.append(("extract", context))
 
     def run_post_download(self, context: RuntimeContext) -> None:
-        _ = context
+        self.events.append(("extract_post_download", context))
 
 
 class FakeFlatbufferWorkflow:
+    def __init__(self, events: list[tuple[str, RuntimeContext]] | None = None) -> None:
+        self.events = events if events is not None else []
+
     def dump(self, context: RuntimeContext) -> None:
-        _ = context
+        self.events.append(("dump", context))
 
     def compile(self, context: RuntimeContext) -> None:
-        _ = context
+        self.events.append(("compile", context))
+
+
+class FakeRuntimeAssetPreparer:
+    def __init__(self, events: list[tuple[str, RuntimeContext]] | None = None) -> None:
+        self.events = events if events is not None else []
+        self.received_contexts: list[RuntimeContext] = []
+
+    def prepare(self, context: RuntimeContext) -> None:
+        self.received_contexts.append(context)
+        self.events.append(("prepare", context))
 
 
 class FakeRelationBuilder:
+    def __init__(self, events: list[tuple[str, RuntimeContext]] | None = None) -> None:
+        self.events = events if events is not None else []
+        self.built_context: RuntimeContext | None = None
+
     def build(self, context: RuntimeContext) -> None:
-        _ = context
+        self.built_context = context
+        self.events.append(("build", context))
 
     def get_excel_resources(self, resources: AssetCollection) -> AssetCollection:
         return resources
@@ -67,6 +90,22 @@ class FakeRelationBuilder:
     def verify_relation_file(self, context: RuntimeContext) -> bool:
         _ = context
         return True
+
+
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.info_messages: list[str] = []
+        self.warn_messages: list[str] = []
+        self.error_messages: list[str] = []
+
+    def info(self, message: str) -> None:
+        self.info_messages.append(message)
+
+    def warn(self, message: str) -> None:
+        self.warn_messages.append(message)
+
+    def error(self, message: str) -> None:
+        self.error_messages.append(message)
 
 
 def _build_context(**changes: object) -> RuntimeContext:
@@ -150,7 +189,7 @@ def test_download_service_applies_plain_search() -> None:
     assert [item.path for item in downloader.received_resources] == ["Bundle/characters.pack"]
 
 
-def test_sync_service_rejects_jp_phase_one() -> None:
+def test_sync_service_rejects_region_without_sync_capability() -> None:
     context = _build_context()
     provider = FakeProvider(
         RegionCatalogResult(
@@ -164,18 +203,19 @@ def test_sync_service_rejects_jp_phase_one() -> None:
         )
     )
 
-    with pytest.raises(LookupError, match="temporarily unavailable for JP"):
+    with pytest.raises(LookupError, match="temporarily unavailable for region 'jp'"):
         SyncService(
             provider,
             FakeDownloader(),
             FakeExtractService(),
             FakeFlatbufferWorkflow(),
+            FakeRuntimeAssetPreparer(),
             lambda active_context: FakeRelationBuilder(),
             NullLogger(),
         ).run(context)
 
 
-def test_relation_service_rejects_jp_phase_one() -> None:
+def test_relation_service_rejects_region_without_relation_capability() -> None:
     context = _build_context()
     provider = FakeProvider(
         RegionCatalogResult(
@@ -194,5 +234,180 @@ def test_relation_service_rejects_jp_phase_one() -> None:
             provider,
             FakeDownloader(),
             FakeFlatbufferWorkflow(),
+            FakeRuntimeAssetPreparer(),
             lambda active_context: FakeRelationBuilder(),
         ).build(context)
+
+
+def test_sync_service_prepares_runtime_assets_before_jp_download() -> None:
+    initial_context = _build_context(region="jp")
+    resolved_context = initial_context.with_updates(version="1.2.3")
+    events: list[tuple[str, RuntimeContext]] = []
+    resources = AssetCollection()
+    resources.add(
+        "https://example.invalid/a",
+        "Media/a.zip",
+        1,
+        "1",
+        "md5",
+        AssetType.media,
+    )
+    provider = FakeProvider(
+        RegionCatalogResult(
+            resources=resources,
+            context=resolved_context,
+            capabilities=RegionCapabilities(
+                supports_sync=True,
+                supports_advanced_search=False,
+                supports_relation_build=True,
+            ),
+        )
+    )
+    downloader = FakeDownloader(events)
+    extract_service = FakeExtractService(events)
+    flatbuffer_workflow = FakeFlatbufferWorkflow(events)
+    runtime_asset_preparer = FakeRuntimeAssetPreparer(events)
+
+    returned_context = SyncService(
+        provider,
+        downloader,
+        extract_service,
+        flatbuffer_workflow,
+        runtime_asset_preparer,
+        lambda active_context: FakeRelationBuilder(events),
+        NullLogger(),
+    ).run(initial_context)
+
+    assert returned_context == resolved_context
+    assert runtime_asset_preparer.received_contexts == [resolved_context]
+    assert events[:4] == [
+        ("prepare", resolved_context),
+        ("dump", resolved_context),
+        ("compile", resolved_context),
+        ("download", resolved_context),
+    ]
+    assert events[-1] == ("extract_post_download", resolved_context)
+
+
+def test_sync_service_prepares_runtime_assets_before_gl_dump_and_compile() -> None:
+    initial_context = _build_context(region="gl")
+    resolved_context = initial_context.with_updates(version="1.2.3")
+    events: list[tuple[str, RuntimeContext]] = []
+    resources = AssetCollection()
+    provider = FakeProvider(
+        RegionCatalogResult(
+            resources=resources,
+            context=resolved_context,
+            capabilities=RegionCapabilities(),
+        )
+    )
+    downloader = FakeDownloader(events)
+    extract_service = FakeExtractService(events)
+    flatbuffer_workflow = FakeFlatbufferWorkflow(events)
+    runtime_asset_preparer = FakeRuntimeAssetPreparer(events)
+
+    returned_context = SyncService(
+        provider,
+        downloader,
+        extract_service,
+        flatbuffer_workflow,
+        runtime_asset_preparer,
+        lambda active_context: FakeRelationBuilder(events),
+        NullLogger(),
+    ).run(initial_context)
+
+    assert returned_context == resolved_context
+    assert runtime_asset_preparer.received_contexts == [resolved_context]
+    assert events[:3] == [
+        ("prepare", resolved_context),
+        ("dump", resolved_context),
+        ("compile", resolved_context),
+    ]
+    assert events[-1] == ("extract", resolved_context)
+
+
+def test_relation_service_uses_resolved_context_for_runtime_preparation() -> None:
+    initial_context = _build_context(region="gl")
+    resolved_context = initial_context.with_updates(version="1.2.3")
+    resources = AssetCollection()
+    resources.add(
+        "https://example.invalid/Excel.zip",
+        "Table/Excel.zip",
+        1,
+        "abc",
+        "md5",
+        AssetType.table,
+    )
+    events: list[tuple[str, RuntimeContext]] = []
+    relation_builder = FakeRelationBuilder(events)
+    provider = FakeProvider(
+        RegionCatalogResult(
+            resources=resources,
+            context=resolved_context,
+            capabilities=RegionCapabilities(),
+        )
+    )
+    downloader = FakeDownloader(events)
+    flatbuffer_workflow = FakeFlatbufferWorkflow(events)
+    runtime_asset_preparer = FakeRuntimeAssetPreparer(events)
+
+    returned_context = RelationService(
+        provider,
+        downloader,
+        flatbuffer_workflow,
+        runtime_asset_preparer,
+        lambda active_context: relation_builder,
+    ).build(initial_context)
+
+    assert returned_context == resolved_context
+    assert runtime_asset_preparer.received_contexts == [resolved_context]
+    assert downloader.received_context == resolved_context
+    assert relation_builder.built_context == resolved_context
+    assert events[:4] == [
+        ("prepare", resolved_context),
+        ("dump", resolved_context),
+        ("compile", resolved_context),
+        ("download", resolved_context),
+    ]
+
+
+def test_sync_service_logs_advanced_search_preparation_at_info_level() -> None:
+    initial_context = _build_context(
+        region="cn",
+        version="1.2.3",
+        advanced_search=("shiroko",),
+    )
+    resources = AssetCollection()
+    resources.add(
+        "https://example.invalid/a",
+        "Media/a.zip",
+        1,
+        "1",
+        "md5",
+        AssetType.media,
+    )
+    logger = RecordingLogger()
+    provider = FakeProvider(
+        RegionCatalogResult(
+            resources=resources,
+            context=initial_context,
+            capabilities=RegionCapabilities(
+                supports_sync=True,
+                supports_advanced_search=True,
+                supports_relation_build=True,
+            ),
+        )
+    )
+
+    SyncService(
+        provider,
+        FakeDownloader(),
+        FakeExtractService(),
+        FakeFlatbufferWorkflow(),
+        FakeRuntimeAssetPreparer(),
+        lambda active_context: FakeRelationBuilder(),
+        logger,
+    ).run(initial_context)
+
+    assert logger.info_messages == ["Preparing for advanced search..."]
+    assert logger.warn_messages == []

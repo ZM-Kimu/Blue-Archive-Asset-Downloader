@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 FORBIDDEN_IMPORTS = (
+    "ba_downloader.legacy",
     "ba_downloader.utils.",
     "ba_downloader.utils.config",
     "get_runtime_context(",
@@ -12,6 +13,8 @@ FORBIDDEN_IMPORTS = (
     "ba_downloader.regions",
     "ba_downloader.infrastructure.services",
     "ba_downloader.shared.misc.template_utils",
+    "ba_downloader.domain.models.resource",
+    "LegacyRegionPipelineAdapter",
 )
 
 

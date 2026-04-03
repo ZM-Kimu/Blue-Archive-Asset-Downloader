@@ -8,6 +8,7 @@ from ba_downloader.domain.ports.extract import FlatbufferWorkflowPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
 from ba_downloader.domain.ports.relation import RelationBuilderPort
+from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 from ba_downloader.domain.services.resource_query import ResourceQueryService
 
 
@@ -18,6 +19,7 @@ class SyncService:
         downloader: ResourceDownloaderPort,
         extract_service: ExtractService,
         flatbuffer_workflow: FlatbufferWorkflowPort,
+        runtime_asset_preparer: RuntimeAssetPreparerPort,
         relation_builder_factory: Callable[[RuntimeContext], RelationBuilderPort],
         logger: LoggerPort,
     ) -> None:
@@ -25,10 +27,12 @@ class SyncService:
         self.downloader = downloader
         self.extract_service = extract_service
         self.flatbuffer_workflow = flatbuffer_workflow
+        self.runtime_asset_preparer = runtime_asset_preparer
         self.relation_builder_factory = relation_builder_factory
         self.logger = logger
 
     def _dump_and_compile(self, context: RuntimeContext) -> None:
+        self.runtime_asset_preparer.prepare(context)
         self.flatbuffer_workflow.dump(context)
         self.flatbuffer_workflow.compile(context)
 
@@ -41,7 +45,7 @@ class SyncService:
         keywords: list[str] = []
         relation_builder = self.relation_builder_factory(context)
         if context.advanced_search:
-            self.logger.warn("Preparing for advanced search...")
+            self.logger.info("Preparing for advanced search...")
             if not relation_builder.verify_relation_file(context):
                 if not dumped:
                     self._dump_and_compile(context)
@@ -75,7 +79,7 @@ class SyncService:
         capabilities = self.provider.get_capabilities()
         if not capabilities.supports_sync:
             raise LookupError(
-                "Sync is temporarily unavailable for JP while the new download pipeline is being rebuilt."
+                f"Sync is temporarily unavailable for region '{context.region}'."
             )
         if context.advanced_search and not capabilities.supports_advanced_search:
             raise LookupError(
@@ -92,6 +96,14 @@ class SyncService:
                 resources = self._search_resource(resources, active_context, True)
             self._filter_and_download(resources, active_context)
             self.extract_service.run(active_context)
+            return active_context
+
+        if active_context.region == "jp":
+            self._dump_and_compile(active_context)
+            if active_context.search or active_context.advanced_search:
+                resources = self._search_resource(resources, active_context, True)
+            self._filter_and_download(resources, active_context)
+            self.extract_service.run_post_download(active_context)
             return active_context
 
         if active_context.search or active_context.advanced_search:

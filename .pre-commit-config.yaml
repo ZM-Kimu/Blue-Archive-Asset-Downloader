@@ -1,0 +1,22 @@
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3
+
+  - repo: local
+    hooks:
+      - id: compileall
+        name: compileall preflight
+        entry: python -m compileall src tests
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: pytest
+        name: pytest preflight
+        entry: uv run pytest -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

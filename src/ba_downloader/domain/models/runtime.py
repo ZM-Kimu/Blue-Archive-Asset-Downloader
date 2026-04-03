@@ -20,6 +20,8 @@ class RuntimeContext:
     search: tuple[str, ...]
     advanced_search: tuple[str, ...]
     work_dir: str
+    platform: str = "android"
+    platform_explicit: bool = False
 
     @classmethod
     def from_settings(cls, settings: AppSettings) -> "RuntimeContext":
@@ -38,6 +40,8 @@ class RuntimeContext:
             search=normalized.search,
             advanced_search=normalized.advanced_search,
             work_dir=normalized.work_dir,
+            platform=normalized.platform,
+            platform_explicit=normalized.platform_explicit,
         )
 
     @property

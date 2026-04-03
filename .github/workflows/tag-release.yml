@@ -1,0 +1,56 @@
+name: Tag Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve project version
+        id: version
+        shell: bash
+        run: |
+          version=$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether tag already exists
+        id: tag
+        shell: bash
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub release
+        if: ${{ steps.tag.outputs.exists != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true

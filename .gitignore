@@ -107,3 +107,4 @@ assets/asset_list.txt
 FlatData/
 *CharacterRelation.json
 .vscode/
+.ba-downloader/

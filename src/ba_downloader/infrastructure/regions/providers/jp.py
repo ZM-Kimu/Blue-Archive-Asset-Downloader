@@ -41,6 +41,18 @@ class DecodedJPCatalog:
     bundles: list[dict[str, object]]
 
 
+JP_PLATFORM_PATCH_SEGMENTS = {
+    "windows": "Windows",
+    "android": "Android",
+    "ios": "iOS",
+}
+
+
+def _resolve_jp_patch_pack_dir(platform: str) -> str:
+    segment = JP_PLATFORM_PATCH_SEGMENTS.get(platform.lower(), "Android")
+    return f"{segment}_PatchPack"
+
+
 class JPReleaseResolver:
     PUREAPK_VERSION_URL = (
         "https://api.pureapk.com/m/v3/cms/app_version"
@@ -138,7 +150,10 @@ class JPBootstrapper:
             release=release,
             server_url=server_url,
             catalog_root=catalog_root,
-            metadata={"apk_path": apk_path},
+            metadata={
+                "apk_path": apk_path,
+                "bundle_patch_dir": _resolve_jp_patch_pack_dir(context.platform),
+            },
         )
 
     @staticmethod
@@ -186,7 +201,7 @@ class JPBootstrapper:
                     path.join(dir, file), ["TextAsset"], ["GameMainConfig"], True
                 ):
                     url = self.__decode_server_url(url_obj[0].read().m_Script.encode("utf-8", "surrogateescape"))  # type: ignore
-                    self.logger.warn(f"Get URL successfully: {url}")
+                    self.logger.info(f"Resolved server URL: {url}")
                 if version_obj := UnityAssetReader.search_objects(
                     path.join(dir, file), ["PlayerSettings"]
                 ):
@@ -221,11 +236,12 @@ class JPCatalogSourceProvider:
         _ = context
         base_url = session.catalog_root.rstrip("/") + "/"
         sources: list[CatalogSource] = []
+        bundle_patch_dir = _resolve_jp_patch_pack_dir(context.platform)
 
         targets = (
             ("table", urljoin(base_url, "TableBundles/TableCatalog.bytes")),
             ("media", urljoin(base_url, "MediaResources/Catalog/MediaCatalog.bytes")),
-            ("bundle", urljoin(base_url, "Android_PatchPack/BundlePackingInfo.json")),
+            ("bundle", urljoin(base_url, f"{bundle_patch_dir}/BundlePackingInfo.json")),
         )
 
         for name, url in targets:
@@ -252,6 +268,7 @@ class JPAssetNormalizer:
     def normalize(payload: DecodedJPCatalog, session: BootstrapSession) -> AssetCollection:
         assets = AssetCollection()
         base_url = session.catalog_root.rstrip("/") + "/"
+        bundle_patch_dir = str(session.metadata.get("bundle_patch_dir", "Android_PatchPack"))
 
         for table in payload.tables:
             assets.add(
@@ -277,7 +294,7 @@ class JPAssetNormalizer:
 
         for bundle in payload.bundles:
             assets.add(
-                urljoin(base_url, f"Android_PatchPack/{bundle['name']}"),
+                urljoin(base_url, f"{bundle_patch_dir}/{bundle['name']}"),
                 urljoin("Bundle/", str(bundle["name"])),
                 int(bundle["size"]),
                 str(bundle["crc"]),
@@ -291,9 +308,9 @@ class JPAssetNormalizer:
 
 class JPServer:
     CAPABILITIES = RegionCapabilities(
-        supports_sync=False,
+        supports_sync=True,
         supports_advanced_search=False,
-        supports_relation_build=False,
+        supports_relation_build=True,
     )
 
     def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
@@ -321,10 +338,10 @@ class JPServer:
         if context.version:
             self.logger.warn("Specifying a version is not allowed with JPServer.")
 
-        self.logger.warn("Automatically fetching latest package info...")
+        self.logger.info("Automatically fetching latest package info...")
         assets, resolved_context = self.pipeline.load(context)
-        self.logger.warn(f"Current resource version: {resolved_context.version}")
-        self.logger.warn(f"Catalog: {assets}.")
+        self.logger.info(f"Current resource version: {resolved_context.version}")
+        self.logger.info(f"Catalog: {assets}.")
         return RegionCatalogResult(
             resources=assets,
             context=resolved_context,
@@ -345,12 +362,6 @@ class JPServer:
             apk_path,
             self.apk_extract_folder(context),
             context.temp_dir,
-        )
-
-    def deprecated_get_apk_url(self, version: str) -> str:
-        return (
-            "https://d.apkpure.com/b/XAPK/com.YostarJP.BlueArchive"
-            f"?versionCode={version.split('.')[-1]}&nc=arm64-v8a&sv=24"
         )
 
     @classmethod

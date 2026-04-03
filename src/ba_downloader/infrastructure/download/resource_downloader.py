@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass
 import os
 import signal
 from concurrent.futures import FIRST_COMPLETED, CancelledError, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
+from math import ceil
 from pathlib import Path
 from threading import Event, Lock, current_thread, main_thread
 from time import monotonic
 from typing import Callable, Iterator
 
-from ba_downloader.domain.models.asset import AssetCollection, AssetRecord, AssetType
+from ba_downloader.domain.models.asset import (
+    AssetCollection,
+    AssetRecord,
+    AssetType,
+    ChecksumSpec,
+)
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.http import HttpClientPort
@@ -21,8 +29,15 @@ from ba_downloader.infrastructure.progress.rich_progress import RichProgressRepo
 from ba_downloader.shared.crypto.encryption import calculate_crc, calculate_md5
 
 
+@dataclass(slots=True)
+class _AdaptiveDownloadState:
+    upper_bound: int
+    target_concurrency: int
+    success_since_adjustment: int = 0
+
+
 class ResourceDownloader(ResourceDownloaderPort):
-    DOWNLOAD_TIMEOUT_SECONDS = 300.0
+    DOWNLOAD_TIMEOUT_SECONDS = 600.0
     POLL_INTERVAL_SECONDS = 0.2
     INTERRUPT_GRACE_SECONDS = 2.0
 
@@ -53,22 +68,27 @@ class ResourceDownloader(ResourceDownloaderPort):
         resources.sorted_by_size()
         pending = self._verify_resources(resources, context)
         if not pending:
-            self.logger.warn("All files have already been downloaded.")
+            self.logger.info("All files have already been downloaded.")
             return
 
+        adaptive_state = self._create_adaptive_download_state(pending, context)
         attempt = 0
         while pending and attempt <= context.max_retries:
             if attempt:
                 self.logger.warn(
                     f"Retrying {len(pending)} failed files. Attempt {attempt}/{context.max_retries}."
                 )
-            pending = self._download_resources(pending, context)
+            pending = self._download_resources(
+                pending,
+                context,
+                adaptive_state=adaptive_state,
+            )
             attempt += 1
 
         if pending:
             self.logger.error(f"Failed to download {len(pending)} files after retries.")
         else:
-            self.logger.warn("All files have been downloaded to your computer.")
+            self.logger.info("All files have been downloaded to your computer.")
 
     def _verify_resources(
         self,
@@ -107,25 +127,35 @@ class ResourceDownloader(ResourceDownloaderPort):
         self,
         resources: list[AssetRecord],
         context: RuntimeContext,
+        *,
+        adaptive_state: _AdaptiveDownloadState | None = None,
     ) -> list[AssetRecord]:
         failed: list[AssetRecord] = []
-        workers = min(max(context.threads, 1), max(len(resources), 1))
+        state = adaptive_state or self._create_adaptive_download_state(resources, context)
         total_bytes = sum(max(resource.size, 0) for resource in resources)
         download_mode = total_bytes > 0
         progress_total = total_bytes if download_mode else len(resources)
         progress_lock = Lock()
         completed_files = 0
         stop_event = Event()
-        executor = ThreadPoolExecutor(max_workers=workers)
+        executor = ThreadPoolExecutor(max_workers=state.upper_bound)
         future_map: dict[Future[AssetRecord], AssetRecord] = {}
+        pending_resources = deque(resources)
 
         try:
             with self._install_interrupt_handler(stop_event):
                 with RichProgressReporter(
                     progress_total,
-                    f"Downloading assets (0/{len(resources)} files)",
+                    "Downloading assets...",
                     download_mode=download_mode,
                 ) as progress:
+                    self._update_download_progress_status(
+                        progress,
+                        completed_files=0,
+                        total_files=len(resources),
+                        failed_files=0,
+                        state=state,
+                    )
 
                     def advance_progress(amount: int) -> None:
                         if not download_mode:
@@ -133,25 +163,33 @@ class ResourceDownloader(ResourceDownloaderPort):
                         with progress_lock:
                             progress.advance(amount)
 
-                    future_map = {
-                        executor.submit(
-                            self._download_resource,
-                            resource,
-                            context,
-                            advance_progress if download_mode else None,
-                            stop_event.is_set,
-                        ): resource
-                        for resource in resources
-                    }
-
                     cancellation_logged = False
                     force_hint_logged = False
                     grace_deadline: float | None = None
-                    pending_futures = set(future_map)
+                    total_files = len(resources)
 
-                    while pending_futures:
+                    while pending_resources or future_map:
+                        if stop_event.is_set() and not future_map:
+                            break
+
+                        self._fill_download_futures(
+                            future_map,
+                            pending_resources,
+                            executor,
+                            context,
+                            progress,
+                            advance_progress if download_mode else None,
+                            stop_event,
+                            state,
+                        )
+
+                        if not future_map:
+                            if stop_event.is_set():
+                                break
+                            continue
+
                         done_futures, pending_futures = wait(
-                            pending_futures,
+                            set(future_map),
                             timeout=self.POLL_INTERVAL_SECONDS,
                             return_when=FIRST_COMPLETED,
                         )
@@ -174,8 +212,11 @@ class ResourceDownloader(ResourceDownloaderPort):
                                 )
                                 force_hint_logged = True
 
+                        successful_downloads: list[AssetRecord] = []
+                        decrease_reason: str | None = None
+
                         for future in done_futures:
-                            resource_item = future_map[future]
+                            resource_item = future_map.pop(future)
                             if future.cancelled():
                                 continue
                             try:
@@ -185,22 +226,37 @@ class ResourceDownloader(ResourceDownloaderPort):
                             except Exception as exc:
                                 if stop_event.is_set() and self._is_cancelled_error(exc):
                                     continue
-                                self.logger.error(
-                                    f"Failed to download {resource_item.path}: {exc}"
-                                )
                                 failed.append(resource_item)
+                                failure_kind = self._classify_download_failure(exc)
+                                if failure_kind != "other" and decrease_reason is None:
+                                    decrease_reason = failure_kind
                                 continue
 
+                            successful_downloads.append(downloaded_item)
+
+                        if decrease_reason is not None:
+                            self._decrease_target_concurrency(state)
+                        else:
+                            for _ in successful_downloads:
+                                self._record_download_success(state)
+
+                        for downloaded_item in successful_downloads:
                             completed_files += 1
                             with progress_lock:
-                                progress.set_description(
-                                    f"Downloading assets ({completed_files}/{len(resources)} files)"
-                                )
                                 if not download_mode:
                                     progress.advance()
 
                             if context.extract_while_download:
                                 self._extract_resource(downloaded_item, context)
+
+                        with progress_lock:
+                            self._update_download_progress_status(
+                                progress,
+                                completed_files=completed_files,
+                                total_files=total_files,
+                                failed_files=len(failed),
+                                state=state,
+                            )
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
@@ -268,20 +324,170 @@ class ResourceDownloader(ResourceDownloaderPort):
     def _is_cancelled_error(exc: Exception) -> bool:
         return "download cancelled by user" in str(exc).lower()
 
+    def _create_adaptive_download_state(
+        self,
+        resources: list[AssetRecord],
+        context: RuntimeContext,
+    ) -> _AdaptiveDownloadState:
+        upper_bound = min(max(context.threads, 1), max(len(resources), 1))
+        return _AdaptiveDownloadState(
+            upper_bound=upper_bound,
+            target_concurrency=upper_bound,
+        )
+
+    def _fill_download_futures(
+        self,
+        future_map: dict[Future[AssetRecord], AssetRecord],
+        pending_resources: deque[AssetRecord],
+        executor: ThreadPoolExecutor,
+        context: RuntimeContext,
+        progress: RichProgressReporter,
+        progress_callback: Callable[[int], None] | None,
+        stop_event: Event,
+        state: _AdaptiveDownloadState,
+    ) -> None:
+        while (
+            not stop_event.is_set()
+            and len(future_map) < state.target_concurrency
+            and pending_resources
+        ):
+            resource = pending_resources.popleft()
+            future = executor.submit(
+                self._download_resource,
+                resource,
+                context,
+                progress_callback,
+                stop_event.is_set,
+            )
+            future_map[future] = resource
+            progress.set_description(Path(resource.path).name)
+
+    def _update_download_progress_status(
+        self,
+        progress: RichProgressReporter,
+        *,
+        completed_files: int,
+        total_files: int,
+        failed_files: int,
+        state: _AdaptiveDownloadState,
+    ) -> None:
+        progress.set_status(self._build_download_file_status(completed_files, total_files))
+        progress.set_secondary_status(self._build_download_concurrency_status(total_files, state))
+        progress.set_failed_status(self._build_download_failed_status(failed_files))
+
+    @staticmethod
+    def _build_download_file_status(
+        completed_files: int,
+        total_files: int,
+    ) -> str:
+        return f"{completed_files}/{total_files} files"
+
+    @staticmethod
+    def _build_download_concurrency_status(
+        total_files: int,
+        state: _AdaptiveDownloadState,
+    ) -> str:
+        current_concurrency = min(state.target_concurrency, max(total_files, 1))
+        return f"conc. {current_concurrency}/{state.upper_bound}"
+
+    @staticmethod
+    def _build_download_failed_status(failed_files: int) -> str:
+        return f"failed {failed_files}"
+
+    @staticmethod
+    def _classify_download_failure(exc: Exception) -> str:
+        message = str(exc).lower()
+        if "timed out" in message:
+            return "timeout"
+        if "429" in message or "403" in message:
+            return "throttled"
+        if any(
+            marker in message
+            for marker in ("connection", "reset", "aborted", "broken pipe")
+        ):
+            return "connection"
+        return "other"
+
+    @staticmethod
+    def _decrease_target_concurrency(state: _AdaptiveDownloadState) -> bool:
+        state.success_since_adjustment = 0
+        next_target = max(1, ceil(state.target_concurrency / 2))
+        if next_target == state.target_concurrency:
+            return False
+        state.target_concurrency = next_target
+        return True
+
+    @staticmethod
+    def _record_download_success(state: _AdaptiveDownloadState) -> bool:
+        state.success_since_adjustment += 1
+        if state.success_since_adjustment < 2:
+            return False
+
+        state.success_since_adjustment = 0
+        if state.target_concurrency >= state.upper_bound:
+            return False
+
+        state.target_concurrency += 1
+        return True
+
     def _verify_resource(
         self,
         resource: AssetRecord,
         context: RuntimeContext,
     ) -> tuple[AssetRecord, bool]:
         asset_path = Path(context.raw_dir) / resource.path
-        if not asset_path.exists() or asset_path.stat().st_size != resource.size:
-            return resource, False
+        return resource, self._get_validation_error(asset_path, resource) is None
 
-        if resource.checksum.algorithm == "crc":
-            return resource, calculate_crc(str(asset_path)) == resource.checksum.value
-        if resource.checksum.algorithm == "md5":
-            return resource, calculate_md5(str(asset_path)) == resource.checksum.value
-        return resource, False
+    @classmethod
+    def _get_validation_error(cls, asset_path: Path, resource: AssetRecord) -> str | None:
+        if not asset_path.exists():
+            return "downloaded file is missing"
+
+        actual_size = asset_path.stat().st_size
+        if actual_size != resource.size:
+            return f"size mismatch (expected {resource.size} bytes, got {actual_size} bytes)"
+
+        if not cls._matches_checksum(asset_path, resource.checksum):
+            return f"checksum mismatch for {resource.checksum.algorithm}"
+
+        return None
+
+    @classmethod
+    def _matches_checksum(cls, asset_path: Path, checksum: ChecksumSpec) -> bool:
+        normalized_value = checksum.value.strip()
+        if not normalized_value:
+            return False
+
+        if checksum.algorithm == "crc":
+            expected_crc = cls._parse_crc_value(normalized_value)
+            if expected_crc is None:
+                return False
+            return calculate_crc(str(asset_path)) == expected_crc
+
+        if checksum.algorithm == "md5":
+            return calculate_md5(str(asset_path)).casefold() == normalized_value.casefold()
+
+        return False
+
+    @staticmethod
+    def _parse_crc_value(value: str) -> int | None:
+        normalized = value.strip()
+        if not normalized:
+            return None
+
+        lowered = normalized.casefold()
+        if lowered.startswith("0x"):
+            normalized = normalized[2:]
+            lowered = lowered[2:]
+
+        if not normalized:
+            return None
+
+        base = 16 if any(character in "abcdef" for character in lowered) else 10
+        try:
+            return int(normalized, base)
+        except ValueError:
+            return None
 
     def _download_resource(
         self,
@@ -292,14 +498,29 @@ class ResourceDownloader(ResourceDownloaderPort):
     ) -> AssetRecord:
         asset_path = Path(context.raw_dir) / resource.path
         asset_path.parent.mkdir(parents=True, exist_ok=True)
-        self.http_client.download_to_file(
+        download_result = self.http_client.download_to_file(
             resource.url,
             str(asset_path),
             timeout=self.DOWNLOAD_TIMEOUT_SECONDS,
             progress_callback=progress_callback,
             should_stop=should_stop,
         )
+        if download_result.status_code >= 400:
+            asset_path.unlink(missing_ok=True)
+            raise RuntimeError(f"unexpected HTTP status {download_result.status_code}")
+
+        self._validate_downloaded_resource(asset_path, resource)
         return resource
+
+    def _validate_downloaded_resource(self, asset_path: Path, resource: AssetRecord) -> None:
+        validation_error = self._get_validation_error(asset_path, resource)
+        if validation_error is None:
+            return
+
+        asset_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"post-download validation failed for {resource.path}: {validation_error}"
+        )
 
     def _extract_resource(self, resource: AssetRecord, context: RuntimeContext) -> None:
         resource_path = str(Path(context.raw_dir) / resource.path)

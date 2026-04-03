@@ -9,6 +9,7 @@ import pytest
 
 from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.infrastructure.http.client import (
+    DEFAULT_DOWNLOAD_TIMEOUT,
     DOWNLOAD_READ_POLL_TIMEOUT,
     ResilientHttpClient,
 )
@@ -69,6 +70,30 @@ def test_http_client_download_falls_back_to_browser(monkeypatch, tmp_path: Path)
 
     assert result.status_code == 200
     assert destination.read_bytes() == b"binary"
+
+
+def test_http_client_download_uses_updated_default_timeout(monkeypatch, tmp_path: Path) -> None:
+    client = ResilientHttpClient(max_retries=0)
+    destination = tmp_path / "archive.bin"
+    captured: dict[str, float] = {}
+
+    def fake_download_with_httpx(*args, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        destination.write_bytes(b"binary")
+        return SimpleNamespace(
+            path=str(destination),
+            bytes_written=destination.stat().st_size,
+            status_code=200,
+            headers={"Content-Type": "application/octet-stream"},
+            url="https://example.com/archive.bin",
+        )
+
+    monkeypatch.setattr(client, "_download_with_httpx", fake_download_with_httpx)
+
+    result = client.download_to_file("https://example.com/archive.bin", str(destination))
+
+    assert result.status_code == 200
+    assert captured["timeout"] == DEFAULT_DOWNLOAD_TIMEOUT == 600.0
 
 
 class FakeHttpxResponse:
@@ -185,7 +210,7 @@ def test_http_client_download_fails_after_stall_timeout(monkeypatch, tmp_path: P
         ]
     )
     fake_httpx = FakeHttpxClient(response)
-    time_points = iter([0.0, 0.0, 150.0, 301.0])
+    time_points = iter([0.0, 0.0, 300.0, 601.0])
 
     monkeypatch.setattr(client, "_httpx", fake_httpx)
     monkeypatch.setattr("ba_downloader.infrastructure.http.client.monotonic", lambda: next(time_points))

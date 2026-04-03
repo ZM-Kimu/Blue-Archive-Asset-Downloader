@@ -1,0 +1,3 @@
+[submodule "third_party/Cpp2IL"]
+	path = third_party/Cpp2IL
+	url = https://github.com/SamboyCoding/Cpp2IL.git

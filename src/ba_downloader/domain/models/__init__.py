@@ -11,14 +11,6 @@ from ba_downloader.domain.models.asset import (
     RegionCapabilities,
     ResolvedRelease,
 )
-from ba_downloader.domain.models.resource import (
-    CNResource,
-    GLResource,
-    JPResource,
-    Resource,
-    ResourceItem,
-    ResourceType,
-)
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 
@@ -40,12 +32,6 @@ __all__ = [
     "ChecksumSpec",
     "RegionCapabilities",
     "ResolvedRelease",
-    "CNResource",
-    "GLResource",
-    "JPResource",
-    "Resource",
-    "ResourceItem",
-    "ResourceType",
     "RegionCatalogResult",
     "RuntimeContext",
 ]

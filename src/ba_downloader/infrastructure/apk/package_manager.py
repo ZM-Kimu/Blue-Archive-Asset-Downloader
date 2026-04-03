@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from zipfile import ZipFile
 
-from ba_downloader.domain.ports.http import HttpClientPort
+from ba_downloader.domain.ports.http import HttpClientPort, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.progress.rich_progress import (
     NullProgressReporter,
@@ -109,7 +109,7 @@ def _resolve_package_metadata(
 
     if head_response is not None and 200 <= head_response.status_code < 400:
         head_file_name = _resolve_filename(
-            head_response.headers.get("Content-Disposition", ""),
+            get_header(head_response.headers, "Content-Disposition"),
             head_response.url,
         )
         head_content_length = _resolve_content_length(head_response.headers)
@@ -121,11 +121,11 @@ def _resolve_package_metadata(
 
 
 def _resolve_content_length(headers: Mapping[str, str]) -> int:
-    if content_range := headers.get("Content-Range"):
+    if content_range := get_header(headers, "Content-Range"):
         if match := re.search(r"/(?P<size>\d+)$", content_range):
             return int(match.group("size"))
 
-    if content_length := headers.get("Content-Length"):
+    if content_length := get_header(headers, "Content-Length"):
         try:
             return int(content_length)
         except ValueError:

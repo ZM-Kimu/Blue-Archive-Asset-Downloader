@@ -8,7 +8,12 @@ import httpx
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ba_downloader.domain.exceptions import NetworkError
-from ba_downloader.domain.ports.http import DownloadResult, HttpClientPort, HttpResponse
+from ba_downloader.domain.ports.http import (
+    DownloadResult,
+    HttpClientPort,
+    HttpResponse,
+    get_header,
+)
 
 try:
     from curl_cffi import requests as curl_requests
@@ -28,7 +33,7 @@ CHALLENGE_MARKERS = (
     b"cf-chl",
     b"Cloudflare",
 )
-DEFAULT_DOWNLOAD_TIMEOUT = 300.0
+DEFAULT_DOWNLOAD_TIMEOUT = 600.0
 DOWNLOAD_READ_POLL_TIMEOUT = 1.0
 DOWNLOAD_CHUNK_SIZE = 64 * 1024
 CONNECT_TIMEOUT_CAP = 20.0
@@ -141,7 +146,7 @@ class ResilientHttpClient(HttpClientPort):
             should_stop=should_stop,
         )
         if result.status_code in {403, 429} or (
-            "text/html" in result.headers.get("Content-Type", "").lower()
+            "text/html" in get_header(result.headers, "Content-Type").lower()
             and destination_path.read_bytes()[:4096].find(b"Cloudflare") != -1
         ):
             destination_path.unlink(missing_ok=True)
@@ -400,7 +405,7 @@ class ResilientHttpClient(HttpClientPort):
     def _should_fallback(response: HttpResponse) -> bool:
         if response.status_code in {403, 429}:
             return True
-        content_type = response.headers.get("Content-Type", "").lower()
+        content_type = get_header(response.headers, "Content-Type").lower()
         if "text/html" not in content_type:
             return False
         sample = response.content[:4096]

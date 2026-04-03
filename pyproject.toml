@@ -24,11 +24,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "black>=24.10.0",
+    "pre-commit>=4.0.0",
     "pytest>=8.2.0",
 ]
 
 [dependency-groups]
 dev = [
+    "black>=24.10.0",
+    "pre-commit>=4.0.0",
     "pytest>=8.2.0",
 ]
 
@@ -40,3 +44,7 @@ packages = ["src/ba_downloader"]
 
 [tool.uv]
 default-groups = ["dev"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]

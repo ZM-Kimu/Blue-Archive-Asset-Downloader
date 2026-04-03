@@ -3,6 +3,11 @@ from typing import Protocol
 from ba_downloader.domain.models.runtime import RuntimeContext
 
 
+class Il2CppDumpBackendPort(Protocol):
+    def dump(self, context: RuntimeContext, output_dir: str) -> None:
+        ...
+
+
 class AssetExtractionPort(Protocol):
     def extract_bundles(self, context: RuntimeContext) -> None:
         ...

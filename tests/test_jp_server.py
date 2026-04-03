@@ -4,11 +4,13 @@ from typing import Any
 
 import pytest
 
+from ba_downloader.domain.models.asset import AssetCollection, BootstrapSession, ResolvedRelease
+from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpResponse
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.apk.package_manager import _resolve_filename
 from ba_downloader.domain.services.resource_query import ResourceQueryService
-from ba_downloader.infrastructure.regions.providers.jp import JPServer
+from ba_downloader.infrastructure.regions.providers.jp import DecodedJPCatalog, JPServer
 
 
 class MemoryPackWriter:
@@ -97,6 +99,22 @@ class RecordingHttpClient:
 
     def close(self) -> None:
         return None
+
+
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.info_messages: list[str] = []
+        self.warn_messages: list[str] = []
+        self.error_messages: list[str] = []
+
+    def info(self, message: str) -> None:
+        self.info_messages.append(message)
+
+    def warn(self, message: str) -> None:
+        self.warn_messages.append(message)
+
+    def error(self, message: str) -> None:
+        self.error_messages.append(message)
 
 
 def _write_table_bundle(writer: MemoryPackWriter, bundle: dict[str, Any]) -> None:
@@ -410,3 +428,144 @@ def test_search_name_matches_jp_bundle_files_from_patch_pack() -> None:
 
     assert len(filtered) == 1
     assert filtered[0].path == "Bundle/bundle/full.pack"
+
+
+@pytest.mark.parametrize(
+    ("platform", "patch_dir"),
+    [
+        ("windows", "Windows_PatchPack"),
+        ("ios", "iOS_PatchPack"),
+    ],
+)
+def test_jp_catalog_source_provider_uses_selected_platform_for_bundle_manifest(
+    platform: str,
+    patch_dir: str,
+) -> None:
+    catalog_root = "https://cdn.example.invalid/catalog-root"
+    context = RuntimeContext(
+        region="jp",
+        threads=4,
+        version="1.2.3",
+        raw_dir="Raw",
+        extract_dir="Extracted",
+        temp_dir="Temp",
+        extract_while_download=False,
+        resource_type=("bundle",),
+        proxy_url="",
+        max_retries=1,
+        search=(),
+        advanced_search=(),
+        work_dir=".",
+        platform=platform,
+        platform_explicit=True,
+    )
+    session = BootstrapSession(
+        release=ResolvedRelease(region="jp", version="1.2.3"),
+        server_url="https://example.invalid/server-info.json",
+        catalog_root=catalog_root,
+    )
+    client = RecordingHttpClient(
+        {
+            ("GET", f"{catalog_root}/TableBundles/TableCatalog.bytes"): HttpResponse(
+                status_code=200,
+                headers={},
+                content=_build_table_catalog_bytes(),
+                url=f"{catalog_root}/TableBundles/TableCatalog.bytes",
+            ),
+            ("GET", f"{catalog_root}/MediaResources/Catalog/MediaCatalog.bytes"): HttpResponse(
+                status_code=200,
+                headers={},
+                content=_build_media_catalog_bytes(),
+                url=f"{catalog_root}/MediaResources/Catalog/MediaCatalog.bytes",
+            ),
+            ("GET", f"{catalog_root}/{patch_dir}/BundlePackingInfo.json"): HttpResponse(
+                status_code=200,
+                headers={"content-type": "application/json"},
+                content=json.dumps({"FullPatchPacks": [], "UpdatePacks": []}).encode("utf-8"),
+                url=f"{catalog_root}/{patch_dir}/BundlePackingInfo.json",
+            ),
+        }
+    )
+    provider = JPServer(client, NullLogger())
+
+    provider.catalog_source_provider.fetch(session, context)
+
+    assert ("GET", f"{catalog_root}/{patch_dir}/BundlePackingInfo.json") in client.calls
+    assert ("GET", f"{catalog_root}/Android_PatchPack/BundlePackingInfo.json") not in client.calls
+
+
+@pytest.mark.parametrize(
+    ("patch_dir", "expected_url"),
+    [
+        (
+            "Windows_PatchPack",
+            "https://cdn.example.invalid/catalog-root/Windows_PatchPack/bundle/full.pack",
+        ),
+        (
+            "iOS_PatchPack",
+            "https://cdn.example.invalid/catalog-root/iOS_PatchPack/bundle/full.pack",
+        ),
+    ],
+)
+def test_jp_asset_normalizer_uses_platform_specific_bundle_urls(
+    patch_dir: str,
+    expected_url: str,
+) -> None:
+    session = BootstrapSession(
+        release=ResolvedRelease(region="jp", version="1.2.3"),
+        server_url="https://example.invalid/server-info.json",
+        catalog_root="https://cdn.example.invalid/catalog-root",
+        metadata={"bundle_patch_dir": patch_dir},
+    )
+    payload = DecodedJPCatalog(
+        tables=[],
+        media=[],
+        bundles=[
+            {
+                "name": "bundle/full.pack",
+                "size": 99,
+                "crc": 1234,
+                "bundle_files": ["character.bundle"],
+            }
+        ],
+    )
+    provider = JPServer(RecordingHttpClient({}), NullLogger())
+
+    assets = provider.asset_normalizer.normalize(payload, session)
+
+    assert assets[0].url == expected_url
+    assert assets[0].path == "Bundle/bundle/full.pack"
+
+
+def test_load_catalog_logs_happy_path_at_info_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    logger = RecordingLogger()
+    provider = JPServer(RecordingHttpClient({}), logger)
+    context = RuntimeContext(
+        region="jp",
+        threads=4,
+        version="",
+        raw_dir="Raw",
+        extract_dir="Extracted",
+        temp_dir="Temp",
+        extract_while_download=False,
+        resource_type=("media",),
+        proxy_url="",
+        max_retries=1,
+        search=(),
+        advanced_search=(),
+        work_dir=".",
+    )
+    resolved_context = context.with_updates(version="1.2.3")
+    resources = AssetCollection()
+
+    monkeypatch.setattr(provider.pipeline, "load", lambda active_context: (resources, resolved_context))
+
+    result = provider.load_catalog(context)
+
+    assert result.context == resolved_context
+    assert logger.warn_messages == []
+    assert logger.info_messages == [
+        "Automatically fetching latest package info...",
+        "Current resource version: 1.2.3",
+        "Catalog: 0 items in the catalog, totaling 0.0GB.",
+    ]

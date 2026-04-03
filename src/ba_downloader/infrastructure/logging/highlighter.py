@@ -8,8 +8,9 @@ class LogMessageHighlighter(RegexHighlighter):
     highlights = [
         r"(?P<url>https?://[^\s]+)",
         (
-            r"(?P<path>"
-            r"(?:[A-Za-z]:[\\/]|(?:\.\.?[\\/])|[/\\])"
+            r"(?:(?<=\s)|^)(?P<path>"
+            r"(?!https?://)"
+            r"(?:[A-Za-z]:[\\/]|(?:\.\.?[\\/])|[/\\]|[^\\/\s:]+[\\/])"
             r"(?:[^\\/\s]+[\\/])*"
             r"[^\\/\s:]+"
             r")"

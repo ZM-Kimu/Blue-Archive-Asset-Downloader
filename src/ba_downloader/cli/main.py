@@ -10,13 +10,27 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.settings import AppSettings
 
 
+class _StorePlatformAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str,
+        option_string: str | None = None,
+    ) -> None:
+        _ = parser
+        _ = option_string
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "platform_explicit", True)
+
+
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--region", "-g", choices=["cn", "gl", "jp"], required=True)
+    parser.add_argument("--region", "-r", choices=["cn", "gl", "jp"], required=True)
     parser.add_argument("--threads", "-t", type=int, default=20)
     parser.add_argument("--version", "-v", default="")
-    parser.add_argument("--raw-dir", "-r", default="RawData")
-    parser.add_argument("--extract-dir", "-e", default="Extracted")
-    parser.add_argument("--temp-dir", "-m", default="Temp")
+    parser.add_argument("--raw-dir", "-rd", default="RawData")
+    parser.add_argument("--extract-dir", "-ed", default="Extracted")
+    parser.add_argument("--temp-dir", "-td", default="Temp")
     parser.add_argument(
         "--resource-type",
         "-rt",
@@ -24,8 +38,17 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         nargs="*",
         default=["all"],
     )
-    parser.add_argument("--proxy", "-p", default="")
+    parser.add_argument("--proxy", "-px", default="")
     parser.add_argument("--max-retries", "-mr", type=int, default=5)
+    parser.add_argument(
+        "--platform",
+        "-p",
+        choices=["windows", "android", "ios"],
+        default="android",
+        action=_StorePlatformAction,
+        help="JP bundle platform (default: android)",
+    )
+    parser.set_defaults(platform_explicit=False)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +90,8 @@ def runtime_context_from_namespace(args: argparse.Namespace) -> RuntimeContext:
         max_retries=args.max_retries,
         search=tuple(getattr(args, "search", [])),
         advanced_search=tuple(getattr(args, "advanced_search", [])),
+        platform=getattr(args, "platform", "android"),
+        platform_explicit=getattr(args, "platform_explicit", False),
     )
     return RuntimeContext.from_settings(settings)
 
@@ -76,6 +101,19 @@ def _build_provider(context: RuntimeContext, logger: object, http_client: object
 
     provider_factory = DEFAULT_REGION_REGISTRY.resolve(context.region)
     return provider_factory(http_client=http_client, logger=logger)
+
+
+def _build_runtime_asset_preparer(
+    context: RuntimeContext,
+    logger: object,
+    http_client: object,
+):
+    from ba_downloader.infrastructure.runtime import (
+        DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY,
+    )
+
+    preparer_factory = DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.resolve(context.region)
+    return preparer_factory(http_client=http_client, logger=logger)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -97,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         max_retries=context.max_retries,
     )
     provider = _build_provider(context, logger, http_client)
+    runtime_asset_preparer = _build_runtime_asset_preparer(context, logger, http_client)
     downloader = ResourceDownloader(http_client, logger)
     extraction_workflow = AssetExtractionWorkflow(logger)
     extract_service = ExtractService(extraction_workflow)
@@ -112,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
                 downloader,
                 extract_service,
                 flatbuffer_workflow,
+                runtime_asset_preparer,
                 relation_builder_factory,
                 logger,
             ).run(context)
@@ -130,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
                 provider,
                 downloader,
                 flatbuffer_workflow,
+                runtime_asset_preparer,
                 relation_builder_factory,
             ).build(context)
             return 0

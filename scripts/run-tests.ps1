@@ -1,2 +1,2 @@
 #!/usr/bin/env pwsh
-pytest
+uv run pytest -q
