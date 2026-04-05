@@ -48,7 +48,8 @@ public struct SampleEntry : FlatBuffers.IFlatbufferObject // TypeDefIndex: 2
 public struct SampleTable : FlatBuffers.IFlatbufferObject // TypeDefIndex: 3
 {
     public System.Nullable`1<FlatData.SampleEntry> OptionalEntry { get; } // Token: 0x17000003
-    public System.Int32 DataListLength { get; } // Token: 0x17000004
+    public FlatBuffers.Offset`1<FlatData.SampleEntry> DirectEntry { get; } // Token: 0x17000004
+    public System.Int32 DataListLength { get; } // Token: 0x17000005
     public Nullable<FlatData.SampleEntry> DataList(int j) { }
 }
 """
@@ -74,6 +75,7 @@ def test_csparser_normalizes_system_and_flatdata_type_names(tmp_path: Path) -> N
     ]
     assert [(prop.name, prop.data_type, prop.is_list) for prop in sample_table.properties] == [
         ("OptionalEntry", "SampleEntry", False),
+        ("DirectEntry", "SampleEntry", False),
         ("DataList", "SampleEntry", True),
     ]
 
@@ -99,6 +101,7 @@ def test_flatbuffer_workflow_compile_generates_valid_python_for_normalized_types
 
     sample_table_source = (flat_data_dir / "SampleTable.py").read_text(encoding="utf8")
     assert "System.Nullable`1" not in sample_table_source
+    assert "FlatBuffers.Offset`1" not in sample_table_source
     assert "from .SampleEntry import SampleEntry" in sample_table_source
 
     for python_file in flat_data_dir.glob("*.py"):

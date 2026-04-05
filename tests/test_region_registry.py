@@ -1,6 +1,9 @@
 import pytest
 
-from ba_downloader.infrastructure.regions.registry import DEFAULT_REGION_REGISTRY, RegionRegistry
+from ba_downloader.infrastructure.regions.registry import (
+    DEFAULT_REGION_REGISTRY,
+    RegionRegistry,
+)
 
 
 def test_default_registry_contains_all_regions() -> None:

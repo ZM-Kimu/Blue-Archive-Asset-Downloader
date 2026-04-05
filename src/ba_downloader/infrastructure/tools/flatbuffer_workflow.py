@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import py_compile
+from pathlib import Path
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import FlatbufferWorkflowPort
@@ -43,7 +43,8 @@ class FlatbufferWorkflow(FlatbufferWorkflowPort):
                 py_compile.compile(str(python_file), doraise=True)
             except py_compile.PyCompileError as exc:
                 raise SyntaxError(
-                    f"Generated FlatData module is invalid: {python_file}."
+                    f"Generated FlatData module is invalid: {python_file}. "
+                    f"Compiler details: {exc.msg.strip()}"
                 ) from exc
 
     def compile(self, context: RuntimeContext) -> None:

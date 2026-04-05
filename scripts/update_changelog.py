@@ -5,7 +5,6 @@ import subprocess
 from collections import OrderedDict
 from pathlib import Path
 
-
 SECTION_TITLES = OrderedDict(
     [
         ("feat", "Features"),

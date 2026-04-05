@@ -28,6 +28,6 @@ class UnityAssetReader:
                         if not (condition_connect or type_passed):
                             continue
                         data_list.append(obj)
-        except Exception:
+        except (ImportError, AttributeError, OSError, RuntimeError, ValueError):
             return []
         return data_list

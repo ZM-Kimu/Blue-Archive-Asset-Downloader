@@ -2,12 +2,14 @@ import json
 from pathlib import Path
 
 from ba_downloader.domain.models.asset import AssetType
-from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.regions.providers.cn import CNServer
-from ba_downloader.infrastructure.regions.providers.gl import GLServer
-from ba_downloader.infrastructure.regions.providers.gl import GLRuntimeAssetPreparer
+from ba_downloader.infrastructure.regions.providers.gl import (
+    GLRuntimeAssetPreparer,
+    GLServer,
+)
 
 
 class RecordingHttpClient:

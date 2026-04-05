@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import os
 import multiprocessing
-import signal
-import time
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+import os
+import sqlite3
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from multiprocessing import Queue, freeze_support
 from pathlib import Path
-from threading import Event, current_thread, main_thread
-from collections.abc import Callable, Iterator
+from threading import Event
+from zipfile import BadZipFile
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import AssetExtractionPort
@@ -18,6 +18,13 @@ from ba_downloader.infrastructure.extractors.bundle import BundleExtractor
 from ba_downloader.infrastructure.extractors.media import MediaExtractor
 from ba_downloader.infrastructure.extractors.table import TableExtractor
 from ba_downloader.infrastructure.progress.rich_progress import RichProgressReporter
+from ba_downloader.infrastructure.runtime.interrupts import (
+    CancellationFeedbackState,
+    build_future_wait_policy,
+    emit_cancellation_feedback,
+    install_interrupt_handler,
+    wait_for_operation_futures,
+)
 
 
 class AssetExtractionWorkflow(AssetExtractionPort):
@@ -32,6 +39,9 @@ class AssetExtractionWorkflow(AssetExtractionPort):
     ) -> None:
         self.logger = logger
         self._force_exit = force_exit or os._exit
+        self._wait_policy = build_future_wait_policy(
+            self.logger, self.POLL_INTERVAL_SECONDS, self.INTERRUPT_GRACE_SECONDS, "Extraction"
+        )
 
     def extract_bundles(self, context: RuntimeContext) -> None:
         bundle_folder = Path(context.raw_dir) / "Bundle"
@@ -45,50 +55,24 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             queue.put(bundle)
 
         stop_event = Event()
-        processes = [
-            multiprocessing.Process(
-                target=BundleExtractor.multiprocess_extract_worker,
-                args=(queue, context, BundleExtractor.MAIN_EXTRACT_TYPES),
-            )
-            for _ in range(min(5, max(len(bundles), 1)))
-        ]
+        processes = self._build_bundle_processes(queue, context, len(bundles))
 
         try:
-            with self._install_interrupt_handler(stop_event):
-                with RichProgressReporter(len(bundles), "Extracting bundles...") as progress:
-                    for process in processes:
-                        process.start()
-
-                    cancellation_logged = False
-                    force_hint_logged = False
-                    grace_deadline: float | None = None
-
-                    while self._has_pending_bundle_work(queue, processes):
-                        if stop_event.is_set():
-                            if not cancellation_logged:
-                                self.logger.warn("Cancelling bundle extraction...")
-                                cancellation_logged = True
-                                grace_deadline = time.monotonic() + self.INTERRUPT_GRACE_SECONDS
-                                self._stop_bundle_processes(processes)
-                            elif (
-                                self._has_live_processes(processes)
-                                and grace_deadline is not None
-                                and time.monotonic() >= grace_deadline
-                                and not force_hint_logged
-                            ):
-                                self.logger.warn(
-                                    "Extraction is still stopping. Press Ctrl+C again to force exit."
-                                )
-                                force_hint_logged = True
-                            if not self._has_live_processes(processes):
-                                break
-
-                        progress.set_completed(len(bundles) - self._queue_size(queue))
-                        time.sleep(self.POLL_INTERVAL_SECONDS)
-
-                    progress.set_completed(len(bundles))
-                    if not stop_event.is_set():
-                        self.logger.info("Extracted bundles successfully.")
+            with self._install_interrupt_handler(
+                stop_event,
+                on_interrupt=lambda: self._stop_bundle_processes(processes),
+            ), RichProgressReporter(
+                len(bundles),
+                "Extracting bundles...",
+            ) as progress:
+                self._start_bundle_processes(processes)
+                self._monitor_bundle_extraction(
+                    queue=queue,
+                    bundles=bundles,
+                    processes=processes,
+                    progress=progress,
+                    stop_event=stop_event,
+                )
         finally:
             if stop_event.is_set():
                 self._stop_bundle_processes(processes)
@@ -109,22 +93,28 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         extractor = MediaExtractor(context)
         stop_event = Event()
         future_map: dict[Future[None], str] = {}
-        executor = ThreadPoolExecutor(max_workers=min(8, len(files)))
+        executor = ThreadPoolExecutor(max_workers=min(max(context.threads, 1), len(files)))
 
         try:
-            with self._install_interrupt_handler(stop_event):
-                with RichProgressReporter(len(files), "Extracting media...") as progress:
-                    future_map = {
-                        executor.submit(extractor.extract_zip, zip_path): zip_path
-                        for zip_path in files
-                    }
-                    self._drain_extraction_futures(
-                        set(future_map),
-                        future_map,
-                        stop_event,
-                        progress,
-                        "media extraction",
-                    )
+            with self._install_interrupt_handler(stop_event), RichProgressReporter(
+                len(files),
+                "Extracting media...",
+            ) as progress:
+                future_map = {
+                    executor.submit(
+                        extractor.extract_zip,
+                        zip_path,
+                        should_stop=stop_event.is_set,
+                    ): zip_path
+                    for zip_path in files
+                }
+                self._drain_extraction_futures(
+                    set(future_map),
+                    future_map,
+                    stop_event,
+                    progress,
+                    "media extraction",
+                )
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
             if stop_event.is_set():
@@ -145,53 +135,106 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
         stop_event = Event()
         future_map: dict[Future[None], str] = {}
-        executor = ThreadPoolExecutor(max_workers=min(max(context.threads, 1), len(table_files)))
+        executor = ThreadPoolExecutor(
+            max_workers=min(max(context.threads, 1), len(table_files))
+        )
 
         try:
-            with self._install_interrupt_handler(stop_event):
-                with RichProgressReporter(len(table_files), "Extracting table files...") as progress:
-                    future_map = {
-                        executor.submit(extractor.extract_table, table_file): table_file
-                        for table_file in table_files
-                    }
-                    self._drain_extraction_futures(
-                        set(future_map),
-                        future_map,
-                        stop_event,
-                        progress,
-                        "table extraction",
-                    )
+            with self._install_interrupt_handler(stop_event), RichProgressReporter(
+                len(table_files),
+                "Extracting table files...",
+            ) as progress:
+                future_map = {
+                    executor.submit(
+                        extractor.extract_table,
+                        table_file,
+                        should_stop=stop_event.is_set,
+                    ): table_file
+                    for table_file in table_files
+                }
+                self._drain_extraction_futures(
+                    set(future_map),
+                    future_map,
+                    stop_event,
+                    progress,
+                    "table extraction",
+                )
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
             if stop_event.is_set():
                 raise KeyboardInterrupt()
 
     @contextmanager
-    def _install_interrupt_handler(self, stop_event: Event) -> Iterator[None]:
-        if current_thread() is not main_thread():
+    def _install_interrupt_handler(
+        self,
+        stop_event: Event,
+        *,
+        on_interrupt: Callable[[], None] | None = None,
+    ) -> Iterator[None]:
+        with install_interrupt_handler(
+            stop_event,
+            self.logger,
+            force_exit=self._force_exit,
+            on_interrupt=on_interrupt,
+        ):
             yield
-            return
 
-        previous_handler = signal.getsignal(signal.SIGINT)
-        interrupt_count = 0
+    def _build_bundle_processes(
+        self,
+        queue: multiprocessing.queues.Queue[str],
+        context: RuntimeContext,
+        bundle_count: int,
+    ) -> list[multiprocessing.Process]:
+        process_count = min(
+            max(context.threads, 1),
+            bundle_count,
+            os.cpu_count() or 1,
+        )
+        return [
+            multiprocessing.Process(
+                target=BundleExtractor.multiprocess_extract_worker,
+                args=(queue, context, BundleExtractor.MAIN_EXTRACT_TYPES),
+            )
+            for _ in range(process_count)
+        ]
 
-        def handle_interrupt(signum: int, frame: object | None) -> None:
-            nonlocal interrupt_count
-            _ = (signum, frame)
-            interrupt_count += 1
-            self._handle_interrupt(stop_event, interrupt_count)
+    @staticmethod
+    def _start_bundle_processes(processes: list[multiprocessing.Process]) -> None:
+        for process in processes:
+            process.start()
 
-        try:
-            signal.signal(signal.SIGINT, handle_interrupt)
-            yield
-        finally:
-            signal.signal(signal.SIGINT, previous_handler)
+    def _monitor_bundle_extraction(
+        self,
+        *,
+        queue: multiprocessing.queues.Queue[str],
+        bundles: list[str],
+        processes: list[multiprocessing.Process],
+        progress: RichProgressReporter,
+        stop_event: Event,
+    ) -> None:
+        cancellation_state = CancellationFeedbackState()
+        while self._has_pending_bundle_work(queue, processes):
+            if stop_event.is_set():
+                self._stop_bundle_processes(processes)
+                emit_cancellation_feedback(
+                    self.logger,
+                    cancellation_state,
+                    grace_seconds=self.INTERRUPT_GRACE_SECONDS,
+                    cancellation_message="Cancelling bundle extraction...",
+                    still_stopping_message=(
+                        "Extraction is still stopping. Press Ctrl+C again to force exit."
+                    ),
+                    has_pending_work=self._has_live_processes(processes),
+                )
+                if not self._has_live_processes(processes):
+                    break
 
-    def _handle_interrupt(self, stop_event: Event, interrupt_count: int) -> None:
-        stop_event.set()
-        if interrupt_count >= 2:
-            self.logger.error("Force exiting immediately.")
-            self._force_exit(130)
+            progress.set_completed(len(bundles) - self._queue_size(queue))
+            stop_event.wait(self.POLL_INTERVAL_SECONDS)
+
+        progress.set_completed(len(bundles))
+        if not stop_event.is_set():
+            self.logger.info("Extracted bundles successfully.")
 
     @staticmethod
     def _queue_size(queue: multiprocessing.queues.Queue[str]) -> int:
@@ -226,39 +269,41 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         progress: RichProgressReporter,
         operation_name: str,
     ) -> None:
-        cancellation_logged = False
-        force_hint_logged = False
-        grace_deadline: float | None = None
+        cancellation_state = CancellationFeedbackState()
 
         while pending_futures:
-            done_futures, pending_futures = wait(
+            done_futures, pending_futures = wait_for_operation_futures(
                 pending_futures,
-                timeout=self.POLL_INTERVAL_SECONDS,
-                return_when=FIRST_COMPLETED,
+                stop_event,
+                self._wait_policy,
+                cancellation_state,
+                operation_name,
             )
-
-            if stop_event.is_set():
-                if not cancellation_logged:
-                    self.logger.warn(f"Cancelling {operation_name}...")
-                    cancellation_logged = True
-                    grace_deadline = time.monotonic() + self.INTERRUPT_GRACE_SECONDS
-                for pending_future in pending_futures:
-                    pending_future.cancel()
-                if (
-                    pending_futures
-                    and grace_deadline is not None
-                    and time.monotonic() >= grace_deadline
-                    and not force_hint_logged
-                ):
-                    self.logger.warn(
-                        "Extraction is still stopping. Press Ctrl+C again to force exit."
-                    )
-                    force_hint_logged = True
 
             for future in done_futures:
                 if future.cancelled():
                     continue
                 file_path = future_map[future]
                 progress.set_description(f"Extracting {Path(file_path).name}")
-                future.result()
+                try:
+                    future.result()
+                except RuntimeError as exc:
+                    if stop_event.is_set() and self._is_cancelled_error(exc):
+                        continue
+                    self.logger.error(f"Failed to extract {file_path}: {exc}")
+                except (
+                    BadZipFile,
+                    LookupError,
+                    OSError,
+                    sqlite3.Error,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    self.logger.error(f"Failed to extract {file_path}: {exc}")
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    self.logger.error(f"Failed to extract {file_path}: {exc}")
                 progress.advance()
+
+    @staticmethod
+    def _is_cancelled_error(exc: Exception) -> bool:
+        return "extraction cancelled by user" in str(exc).lower()

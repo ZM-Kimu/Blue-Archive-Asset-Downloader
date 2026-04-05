@@ -4,6 +4,7 @@ import hashlib
 import math
 import time
 from base64 import b64decode, b64encode
+from binascii import Error as BinasciiError
 from binascii import crc32
 from struct import Struct
 from typing import TypeVar
@@ -39,6 +40,7 @@ DOUBLE = Struct("<d")
 AES_BLOCK_SIZE = 128 // 8
 AES_KEY_SIZE = 128 // 8
 PBKDF2_DERIVATION_ITERATIONS = 1000
+HASH_CHUNK_SIZE = 1024 * 1024
 
 
 def calculate_hash(name: bytes | str) -> int:
@@ -62,8 +64,11 @@ def calculate_crc(path: str) -> int:
     Returns:
         int: Crc checksum.
     """
-    with open(path, "rb") as f:
-        return crc32(f.read()) & 0xFFFFFFFF
+    checksum = 0
+    with open(path, "rb") as file_handle:
+        for chunk in iter(lambda: file_handle.read(HASH_CHUNK_SIZE), b""):
+            checksum = crc32(chunk, checksum)
+    return checksum & 0xFFFFFFFF
 
 
 def calculate_md5(path: str) -> str:
@@ -73,8 +78,11 @@ def calculate_md5(path: str) -> str:
     Returns:
         str: MD5 checksum.
     """
-    with open(path, "rb") as f:
-        return hashlib.md5(f.read()).hexdigest()
+    digest = hashlib.md5()
+    with open(path, "rb") as file_handle:
+        for chunk in iter(lambda: file_handle.read(HASH_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def zip_password(key: str) -> bytes:
@@ -176,8 +184,7 @@ def convert_string(value: bytes | str, key: bytes = b"") -> str:
         raw = b64decode(value)
         if decoded := xor(raw, key).decode("utf16"):
             return decoded
-        raise UnicodeError
-    except Exception:
+    except (BinasciiError, TypeError, UnicodeDecodeError, ValueError):
         if isinstance(value, bytes):
             return value.decode("utf8")
 
@@ -309,8 +316,8 @@ class MersenneTwister:
             return self.genrand_int31()
         if min_value > max_value:
             raise ValueError("min_value must be less than or equal to max_value")
-        return int(
-            math.floor((max_value - min_value + 1) * self.genrand_real1() + min_value)
+        return math.floor(
+            (max_value - min_value + 1) * self.genrand_real1() + min_value
         )
 
     def genrand_real1(self) -> float:

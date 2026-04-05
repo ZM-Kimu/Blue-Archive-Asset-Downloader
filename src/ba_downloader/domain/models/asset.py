@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal, overload
-from collections.abc import Callable, Iterable, Iterator
-
 
 ChecksumAlgorithm = Literal["crc", "md5"]
 

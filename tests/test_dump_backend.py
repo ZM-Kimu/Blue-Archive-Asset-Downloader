@@ -10,10 +10,10 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.tools.dump_backend import (
     CPP2IL_COMMIT,
-    Cpp2ILSourceResolver,
-    Cpp2IlDumpCsBackend,
     EXPORTER_CSPROJ_TEMPLATE_PATH,
     EXPORTER_PROGRAM_CS_PATH,
+    Cpp2IlDumpCsBackend,
+    Cpp2ILSourceResolver,
     LegacyIl2CppDumperBackend,
     build_default_dumper_backend_registry,
 )
@@ -161,7 +161,7 @@ def test_cpp2il_framework_selection_raises_without_supported_dotnet(
         "ba_downloader.infrastructure.tools.dump_backend.get_installed_dotnet_sdk_major_versions",
         lambda: {7},
     )
-    with pytest.raises(FileNotFoundError, match="NET 9 or .NET 8"):
+    with pytest.raises(FileNotFoundError, match=r"NET 9 or \.NET 8"):
         Cpp2IlDumpCsBackend._resolve_framework_order()
 
 

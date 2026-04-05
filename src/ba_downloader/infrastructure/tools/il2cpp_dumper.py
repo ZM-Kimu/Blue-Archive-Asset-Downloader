@@ -95,7 +95,7 @@ class IL2CppDumper:
                 cwd=self.project_dir,
                 encoding="utf8",
             )
-        except Exception as exc:
+        except (FileNotFoundError, OSError, subprocess.CalledProcessError) as exc:
             if max_retries == 0:
                 raise RuntimeError(
                     f"Error occurred during dump the lib2cpp file. Retry might solve this issue. Info: {exc}"

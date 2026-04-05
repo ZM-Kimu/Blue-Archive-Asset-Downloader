@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, cast
-from collections.abc import Sequence
 
 from ba_downloader.application.services.download import DownloadService
 from ba_downloader.application.services.extract import ExtractService
@@ -12,6 +13,17 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.settings import AppSettings, Platform, Region
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+
+
+@dataclass(frozen=True, slots=True)
+class _CliRuntimeServices:
+    logger: LoggerPort
+    http_client: HttpClientPort
+    provider: Any
+    runtime_asset_preparer: Any
+    downloader: Any
+    extract_service: ExtractService
+    flatbuffer_workflow: Any
 
 
 class _StorePlatformAction(argparse.Action):
@@ -126,69 +138,102 @@ def _build_runtime_asset_preparer(
     return preparer_factory(http_client=http_client, logger=logger)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_cli_runtime_services(context: RuntimeContext) -> _CliRuntimeServices:
     from ba_downloader.infrastructure.download import ResourceDownloader
     from ba_downloader.infrastructure.extract import AssetExtractionWorkflow
-    from ba_downloader.infrastructure.extractors.character import CharacterNameRelation
     from ba_downloader.infrastructure.http import ResilientHttpClient
     from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
-    from ba_downloader.infrastructure.logging.runtime import configure_logging
-    from ba_downloader.infrastructure.tools.flatbuffer_workflow import FlatbufferWorkflow
+    from ba_downloader.infrastructure.tools.flatbuffer_workflow import (
+        FlatbufferWorkflow,
+    )
 
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    configure_logging()
-    context = runtime_context_from_namespace(args)
     logger = ConsoleLogger()
     http_client = ResilientHttpClient(
         proxy_url=context.proxy_url or None,
         max_retries=context.max_retries,
     )
-    provider = _build_provider(context, logger, http_client)
-    runtime_asset_preparer = _build_runtime_asset_preparer(context, logger, http_client)
-    downloader = ResourceDownloader(http_client, logger)
-    extraction_workflow = AssetExtractionWorkflow(logger)
-    extract_service = ExtractService(extraction_workflow)
-    flatbuffer_workflow = FlatbufferWorkflow(http_client, logger)
+    return _CliRuntimeServices(
+        logger=logger,
+        http_client=http_client,
+        provider=_build_provider(context, logger, http_client),
+        runtime_asset_preparer=_build_runtime_asset_preparer(
+            context, logger, http_client
+        ),
+        downloader=ResourceDownloader(http_client, logger),
+        extract_service=ExtractService(AssetExtractionWorkflow(logger)),
+        flatbuffer_workflow=FlatbufferWorkflow(http_client, logger),
+    )
+
+
+def _build_relation_builder_factory(
+    logger: LoggerPort,
+) -> Callable[[RuntimeContext], Any]:
+    from ba_downloader.infrastructure.extractors.character import CharacterNameRelation
 
     def relation_builder_factory(active_context: RuntimeContext) -> CharacterNameRelation:
         return CharacterNameRelation(active_context, logger)
 
+    return relation_builder_factory
+
+
+def _run_command(
+    args: argparse.Namespace,
+    context: RuntimeContext,
+    services: _CliRuntimeServices,
+) -> int:
+    relation_builder_factory = _build_relation_builder_factory(services.logger)
+
+    if args.command == "sync":
+        SyncService(
+            services.provider,
+            services.downloader,
+            services.extract_service,
+            services.flatbuffer_workflow,
+            services.runtime_asset_preparer,
+            relation_builder_factory,
+            services.logger,
+        ).run(context)
+        return 0
+
+    if args.command == "download":
+        DownloadService(services.provider, services.downloader).run(context)
+        return 0
+
+    if args.command == "extract":
+        services.extract_service.run(context)
+        return 0
+
+    if args.command == "relation" and args.relation_command == "build":
+        RelationService(
+            services.provider,
+            services.downloader,
+            services.flatbuffer_workflow,
+            services.runtime_asset_preparer,
+            relation_builder_factory,
+        ).build(context)
+        return 0
+
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    from ba_downloader.infrastructure.logging.runtime import configure_logging
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    configure_logging()
+    context = runtime_context_from_namespace(args)
+    services = _build_cli_runtime_services(context)
+
     try:
-        if args.command == "sync":
-            SyncService(
-                provider,
-                downloader,
-                extract_service,
-                flatbuffer_workflow,
-                runtime_asset_preparer,
-                relation_builder_factory,
-                logger,
-            ).run(context)
-            return 0
-
-        if args.command == "download":
-            DownloadService(provider, downloader).run(context)
-            return 0
-
-        if args.command == "extract":
-            extract_service.run(context)
-            return 0
-
-        if args.command == "relation" and args.relation_command == "build":
-            RelationService(
-                provider,
-                downloader,
-                flatbuffer_workflow,
-                runtime_asset_preparer,
-                relation_builder_factory,
-            ).build(context)
+        command_result = _run_command(args, context, services)
+        if command_result == 0:
             return 0
     except KeyboardInterrupt:
-        logger.warn("Operation cancelled by user.")
+        services.logger.warn("Operation cancelled by user.")
         return 130
     finally:
-        http_client.close()
+        services.http_client.close()
 
     parser.print_help()
     return 1

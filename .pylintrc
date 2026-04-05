@@ -4,7 +4,7 @@ jobs=0
 
 [MESSAGES CONTROL]
 disable=all
-enable=E,F,unused-import,unused-variable,raise-missing-from,unspecified-encoding
+enable=E,F,unused-import,unused-variable,raise-missing-from,unspecified-encoding,broad-exception-caught,consider-using-with,duplicate-code,too-many-locals,too-many-branches,too-many-statements,too-many-return-statements
 
 [REPORTS]
 score=no

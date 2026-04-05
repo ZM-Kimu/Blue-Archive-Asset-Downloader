@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from base64 import b64decode
-from binascii import Error as BinasciiError
-from dataclasses import dataclass
 import os
 import re
+from base64 import b64decode
+from binascii import Error as BinasciiError
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 from zipfile import ZipFile
 
+from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.ports.http import HttpClientPort, TransportKind, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.progress.rich_progress import (
@@ -43,9 +44,8 @@ def download_package_file(
     destination = str(Path(destination_dir) / metadata.file_name)
     content_length = metadata.content_length
 
-    if content_length and Path(destination).exists():
-        if Path(destination).stat().st_size == content_length:
-            return destination
+    if content_length and Path(destination).exists() and Path(destination).stat().st_size == content_length:
+        return destination
 
     logger.info(f"Downloading package {metadata.file_name}...")
     progress = (
@@ -104,7 +104,7 @@ def _resolve_package_metadata(
             transport=transport,
             timeout=15.0,
         )
-    except Exception:
+    except NetworkError:
         head_response = None
 
     if head_response is not None and 200 <= head_response.status_code < 400:
@@ -121,9 +121,10 @@ def _resolve_package_metadata(
 
 
 def _resolve_content_length(headers: Mapping[str, str]) -> int:
-    if content_range := get_header(headers, "Content-Range"):
-        if match := re.search(r"/(?P<size>\d+)$", content_range):
-            return int(match.group("size"))
+    if (content_range := get_header(headers, "Content-Range")) and (
+        match := re.search(r"/(?P<size>\d+)$", content_range)
+    ):
+        return int(match.group("size"))
 
     if content_length := get_header(headers, "Content-Length"):
         try:
@@ -154,6 +155,14 @@ def _resolve_content_length_from_url(package_url: str) -> int:
 
 
 def _resolve_filename(content_disposition: str, package_url: str) -> str:
+    return (
+        _resolve_filename_from_disposition(content_disposition)
+        or _resolve_filename_from_query(package_url)
+        or _resolve_filename_from_path(package_url)
+    )
+
+
+def _resolve_filename_from_disposition(content_disposition: str) -> str:
     if filename_match := re.search(
         r"filename\*=UTF-8''(?P<name>[^;]+)", content_disposition, re.I
     ):
@@ -166,15 +175,7 @@ def _resolve_filename(content_disposition: str, package_url: str) -> str:
         except UnicodeDecodeError:
             return _sanitize_file_name(file_name)
 
-    if query_file_name := _resolve_filename_from_query(package_url):
-        return query_file_name
-
-    file_name = Path(urlparse(package_url).path).name
-    if not file_name:
-        return "package.xapk"
-    if not file_name.lower().endswith((".apk", ".xapk")):
-        return f"{file_name}.xapk"
-    return _sanitize_file_name(file_name)
+    return ""
 
 
 def _resolve_filename_from_query(package_url: str) -> str:
@@ -192,6 +193,15 @@ def _resolve_filename_from_query(package_url: str) -> str:
             return ""
 
     return _sanitize_file_name(candidate)
+
+
+def _resolve_filename_from_path(package_url: str) -> str:
+    file_name = Path(urlparse(package_url).path).name
+    if not file_name:
+        return "package.xapk"
+    if file_name.lower().endswith((".apk", ".xapk")):
+        return _sanitize_file_name(file_name)
+    return _sanitize_file_name(f"{file_name}.xapk")
 
 
 def _sanitize_file_name(file_name: str) -> str:

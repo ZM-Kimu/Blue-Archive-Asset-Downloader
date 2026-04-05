@@ -12,7 +12,6 @@ from ba_downloader.domain.ports.pipeline import (
     SessionBootstrapper,
 )
 
-
 TDecoded = TypeVar("TDecoded")
 
 

@@ -4,13 +4,17 @@ import os
 import re
 from enum import Enum
 
-from ba_downloader.domain.models.codegen import EnumMember, EnumType, Property, StructTable
+from ba_downloader.domain.models.codegen import (
+    EnumMember,
+    EnumType,
+    Property,
+    StructTable,
+)
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
 from ba_downloader.infrastructure.tools.codegen_support import (
     TemplateString,
     make_valid_identifier,
 )
-
 
 LOGGER = ConsoleLogger()
 
@@ -39,6 +43,7 @@ CSHARP_TYPE_ALIASES = {
     "System.Single": "float",
     "System.Double": "double",
     "System.String": "string",
+    "FlatBuffers.VectorOffset": "uint",
 }
 
 
@@ -639,61 +644,58 @@ class CompileToPython:
         for struct in self.structs:
             struct_name = make_valid_identifier(struct.name)
             function_string = String.FB_START_AND_END_FUNCTION(len(struct.properties))
-            file = open(
+            with open(
                 f"{os.path.join(self.extract_dir, struct_name)}.py",
                 "w",
                 encoding="utf8",
-            )
-            file.write(String.FB_BASIC_CLASS(struct_name, struct_name))
+            ) as file_handle:
+                file_handle.write(String.FB_BASIC_CLASS(struct_name, struct_name))
 
-            for index, prop in enumerate(struct.properties):
-                method, func = "", ""
-                field_offset = 4 + 2 * index
-                type_size = (
-                    DataSize[prop.data_type].value
-                    if prop.data_type in DataSize.__members__
-                    else DataSize.struct.value
-                )
-                prop_name = make_valid_identifier(prop.name)
-
-                # Prop is scalar type.
-                if prop.data_type in DataFlag.__members__:
-                    method, func = self.__convert_scalar_type(
-                        prop, index, prop_name, field_offset, type_size
+                for index, prop in enumerate(struct.properties):
+                    method, func = "", ""
+                    field_offset = 4 + 2 * index
+                    type_size = (
+                        DataSize[prop.data_type].value
+                        if prop.data_type in DataSize.__members__
+                        else DataSize.struct.value
                     )
+                    prop_name = make_valid_identifier(prop.name)
 
-                # Prop is string type and not a list.
-                elif prop.data_type == "string":
-                    method, func = self.__convert_string_type(
-                        prop, index, prop_name, field_offset
-                    )
-
-                # Prop type is struct or enum.
-                elif prop_data := self.__type_in_struct_or_num(
-                    prop.data_type, self.structs, self.enums
-                ):
-                    if isinstance(prop_data, StructTable):
-                        method, func = self.__convert_struct_type(
+                    if prop.data_type in DataFlag.__members__:
+                        method, func = self.__convert_scalar_type(
+                            prop, index, prop_name, field_offset, type_size
+                        )
+                    elif prop.data_type == "string":
+                        method, func = self.__convert_string_type(
                             prop, index, prop_name, field_offset
                         )
-                    elif isinstance(prop_data, EnumType):
-                        method, func = self.__convert_enum_type(
-                            prop, prop_data, index, prop_name, field_offset, type_size
+                    elif prop_data := self.__type_in_struct_or_num(
+                        prop.data_type, self.structs, self.enums
+                    ):
+                        if isinstance(prop_data, StructTable):
+                            method, func = self.__convert_struct_type(
+                                prop, index, prop_name, field_offset
+                            )
+                        elif isinstance(prop_data, EnumType):
+                            method, func = self.__convert_enum_type(
+                                prop,
+                                prop_data,
+                                index,
+                                prop_name,
+                                field_offset,
+                                type_size,
+                            )
+
+                    if not (method or func):
+                        method, func = self.__convert_isolated_type(
+                            prop, index, prop_name, field_offset, type_size
                         )
 
-                # Prop is a isolated type.
-                if not (method or func):
-                    method, func = self.__convert_isolated_type(
-                        prop, index, prop_name, field_offset, type_size
-                    )
+                    file_handle.write(method)
+                    function_string += func
 
-                file.write(method)
-                function_string += func
-
-            if function_string:
-                file.write(String.NEWLINE * 2 + function_string)
-
-        file.close()
+                if function_string:
+                    file_handle.write(String.NEWLINE * 2 + function_string)
 
     def create_module_file(self) -> None:
         """Create flatbuffer module file."""
@@ -783,47 +785,42 @@ class CompileToPython:
 
     def create_dump_dict_file(self) -> None:
         """Dump excel structure of table to python dict."""
-        file = open(
+        with open(
             os.path.join(self.extract_dir, f"{self.DUMP_WRAPPER_NAME}.py"),
             "w",
             encoding="utf8",
-        )
-        file.write(String.WRAPPER_BASE)
+        ) as file_handle:
+            file_handle.write(String.WRAPPER_BASE)
 
-        for enum in self.enums:
-            file.write(
-                String.WRAPPER_INT_ENUM(make_valid_identifier(enum.name))
-                + String.NEWLINE
-            )
-            if enum.underlying_type != "int":
-                LOGGER.warn(f"Not implementation for enum type: {enum.underlying_type}.")
-            for kv in enum.members:
-                file.write(
-                    String.INDENT
-                    + String.VARIABLE_ASSIGNMENT(
-                        make_valid_identifier(kv.name), kv.value
-                    )
+            for enum in self.enums:
+                file_handle.write(
+                    String.WRAPPER_INT_ENUM(make_valid_identifier(enum.name))
                     + String.NEWLINE
                 )
-            file.write(String.NEWLINE)
+                if enum.underlying_type != "int":
+                    LOGGER.warn(
+                        f"Not implementation for enum type: {enum.underlying_type}."
+                    )
+                for kv in enum.members:
+                    file_handle.write(
+                        String.INDENT
+                        + String.VARIABLE_ASSIGNMENT(
+                            make_valid_identifier(kv.name), kv.value
+                        )
+                        + String.NEWLINE
+                    )
+                file_handle.write(String.NEWLINE)
 
-        for struct in self.structs:
-            # if struct.name.endswith("Table"):
-            # continue
-            struct_name = make_valid_identifier(struct.name)
-            items = ""
-            for prop in struct.properties:
-                prop_name = make_valid_identifier(prop.name)
-                func = ""
-
-                if prop.is_list:
-                    func = self.__wrap_list_prop(prop, prop_name)
-
-                else:
-                    func = self.__wrap_prop(prop, prop_name)
-
-                items += String.INDENT * 2 + func
-            file.write(String.WRAPPER_FUNC(struct_name, items))
-
-        file.close()
+            for struct in self.structs:
+                struct_name = make_valid_identifier(struct.name)
+                items = ""
+                for prop in struct.properties:
+                    prop_name = make_valid_identifier(prop.name)
+                    func = (
+                        self.__wrap_list_prop(prop, prop_name)
+                        if prop.is_list
+                        else self.__wrap_prop(prop, prop_name)
+                    )
+                    items += String.INDENT * 2 + func
+                file_handle.write(String.WRAPPER_FUNC(struct_name, items))
 

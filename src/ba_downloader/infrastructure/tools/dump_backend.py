@@ -238,7 +238,7 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
         for manager_path in managers:
             try:
                 raw = manager_path.read_bytes().decode("latin-1", errors="ignore")
-            except Exception:
+            except OSError:
                 continue
             if match := UNITY_VERSION_PATTERN.search(raw):
                 return match.group(1)

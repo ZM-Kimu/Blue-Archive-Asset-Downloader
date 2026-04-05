@@ -1,13 +1,19 @@
+from __future__ import annotations
+
 import hashlib
-from importlib import import_module, invalidate_caches, util
 import json
 import os
+import sqlite3
+import struct
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass
+from importlib import import_module, invalidate_caches, util
 from os import path
 from pathlib import Path
-import sys
 from types import ModuleType
-from typing import Any, cast
-from zipfile import ZipFile
+from typing import Any
+from zipfile import BadZipFile, ZipFile
 
 from ba_downloader.domain.models.database import DBTable, SQLiteDataType
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -15,6 +21,32 @@ from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
 from ba_downloader.infrastructure.storage import TableDatabase
 from ba_downloader.shared.crypto.encryption import xor_with_key, zip_password
+
+
+class TableProcessingError(RuntimeError):
+    """Raised when a table payload cannot be processed."""
+
+
+class UnsupportedSchemaError(TableProcessingError):
+    """Raised when no generated FlatData class matches a payload."""
+
+
+class GeneratedDumpWrapperError(TableProcessingError):
+    """Raised when generated dump wrapper functions are missing or invalid."""
+
+
+class TableDecryptError(TableProcessingError):
+    """Raised when xor-protected table payloads cannot be decoded."""
+
+
+class MalformedTablePayloadError(TableProcessingError):
+    """Raised when bytes or JSON payload content is malformed."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessedTableArtifact:
+    data: bytes
+    file_name: str
 
 
 class TableExtractor:
@@ -25,21 +57,12 @@ class TableExtractor:
         flat_data_dir: str,
         logger: LoggerPort | None = None,
     ) -> None:
-        """Extract files in table folder.
-
-        Args:
-            table_file_folder (str): Folder own table files.
-            extract_folder (str): Folder to store the extracted data.
-            flat_data_dir (str): Folder path containing generated FlatData Python modules.
-        """
         self.table_file_folder = table_file_folder
         self.extract_folder = extract_folder
         self.flat_data_dir = flat_data_dir
         self.logger = logger or ConsoleLogger()
-
-        self.lower_fb_name_modules: dict[str, type] = {}
+        self.lower_fb_name_modules: dict[str, Any] = {}
         self.dump_wrapper_lib: ModuleType
-
         self._load_modules()
 
     @classmethod
@@ -47,7 +70,7 @@ class TableExtractor:
         cls,
         context: RuntimeContext,
         logger: LoggerPort | None = None,
-    ) -> "TableExtractor":
+    ) -> TableExtractor:
         return cls(
             str(Path(context.raw_dir) / "Table"),
             str(Path(context.extract_dir) / "Table"),
@@ -58,9 +81,13 @@ class TableExtractor:
     def _load_modules(self) -> None:
         flat_data_lib = self._load_flat_data_package()
         self.lower_fb_name_modules = {
-            t_name.lower(): t_class
-            for t_name, t_class in flat_data_lib.__dict__.items()
+            name.lower(): value for name, value in flat_data_lib.__dict__.items()
         }
+
+    @staticmethod
+    def _ensure_not_cancelled(should_stop: Callable[[], bool] | None) -> None:
+        if should_stop is not None and should_stop():
+            raise RuntimeError("Extraction cancelled by user.")
 
     def _load_flat_data_package(self) -> ModuleType:
         flat_data_dir = Path(self.flat_data_dir)
@@ -80,11 +107,10 @@ class TableExtractor:
             )
 
         invalidate_caches()
-        path_digest = hashlib.sha1(str(flat_data_dir.resolve()).encode("utf-8")).hexdigest()
-        package_name = (
-            "ba_downloader_generated_flatdata_"
-            f"{path_digest}"
-        )
+        path_digest = hashlib.sha1(
+            str(flat_data_dir.resolve()).encode("utf-8")
+        ).hexdigest()
+        package_name = f"ba_downloader_generated_flatdata_{path_digest}"
         spec = util.spec_from_file_location(
             package_name,
             init_file,
@@ -102,204 +128,325 @@ class TableExtractor:
         self.dump_wrapper_lib = import_module(f"{package_name}.dump_wrapper")
         return module
 
-    def _process_bytes_file(
-        self, file_name: str, data: bytes
-    ) -> tuple[dict[str, Any], str]:
-        """Extract flatbuffer bytes file to dict
+    def _process_bytes_file(self, file_name: str, data: bytes) -> tuple[dict[str, Any], str]:
+        flatbuffer_class = self._resolve_flatbuffer_class(file_name)
+        normalized_name = flatbuffer_class.__name__
 
-        Args:
-            file_name (str): Schema name of data.
-            data (bytes): Flatbuffer data to extract.
+        if normalized_name.endswith("Table"):
+            encrypted_error: TableProcessingError | None = None
+            try:
+                return self._dump_encrypted_table(flatbuffer_class, data)
+            except TableProcessingError as exc:
+                encrypted_error = exc
 
-        Returns:
-            tuple[dict[str, Any], str]: Tuple with extracted dict and file name. Always have file name if success extract.
-        """
-        raw_flatbuffer_class = self.lower_fb_name_modules.get(
-            file_name.removesuffix(".bytes").lower(), None
+            try:
+                return self._dump_flatbuffer_payload(flatbuffer_class, data)
+            except TableProcessingError as exc:
+                raise MalformedTablePayloadError(
+                    f"Malformed flatbuffer payload for {file_name}: "
+                    f"encrypted decode failed ({encrypted_error}); raw decode failed ({exc})."
+                ) from exc
+
+        return self._dump_flatbuffer_payload(flatbuffer_class, data)
+
+    def _resolve_flatbuffer_class(self, file_name: str) -> Any:
+        flatbuffer_class = self.lower_fb_name_modules.get(
+            file_name.removesuffix(".bytes").lower()
         )
-        if raw_flatbuffer_class is None:
-            return {}, ""
-        flatbuffer_class = cast(Any, raw_flatbuffer_class)
+        if flatbuffer_class is None:
+            raise UnsupportedSchemaError(
+                f"Unsupported schema for {file_name}: generated FlatData class is missing."
+            )
+        return flatbuffer_class
 
-        obj = None
+    def _dump_encrypted_table(self, flatbuffer_class: Any, data: bytes) -> tuple[dict[str, Any], str]:
         try:
-            if flatbuffer_class.__name__.endswith("Table"):
-                try:
-                    data = xor_with_key(flatbuffer_class.__name__, data)
-                    flat_buffer = flatbuffer_class.GetRootAs(data)
-                    obj = self.dump_wrapper_lib.dump_table(flat_buffer)
-                except Exception:
-                    pass
+            decrypted_data = xor_with_key(flatbuffer_class.__name__, data)
+        except (TypeError, ValueError) as exc:
+            raise TableDecryptError(
+                f"xor/decrypt failed for {flatbuffer_class.__name__}: {exc}"
+            ) from exc
 
-            if not obj:
-                flat_buffer = flatbuffer_class.GetRootAs(data)
-                obj = getattr(
-                    self.dump_wrapper_lib, f"dump_{flatbuffer_class.__name__}"
-                )(flat_buffer)
-            return (obj, f"{flatbuffer_class.__name__}.json")
-        except Exception:
-            # if json_data := self.__process_json_file(file_name, data):
-            #     return json.loads(json_data), f"{file_name}.json"
-            return {}, ""
+        try:
+            flat_buffer = flatbuffer_class.GetRootAs(decrypted_data)
+            return self.dump_wrapper_lib.dump_table(flat_buffer), f"{flatbuffer_class.__name__}.json"
+        except AttributeError as exc:
+            raise GeneratedDumpWrapperError(
+                f"Generated dump wrapper is missing dump_table for {flatbuffer_class.__name__}: {exc}"
+            ) from exc
+        except StopIteration as exc:
+            raise GeneratedDumpWrapperError(
+                f"Generated dump wrapper could not resolve a table dump for {flatbuffer_class.__name__}."
+            ) from exc
+        except (
+            TypeError,
+            ValueError,
+            KeyError,
+            IndexError,
+            RuntimeError,
+            struct.error,
+        ) as exc:
+            raise TableDecryptError(
+                f"xor/decrypt failed for {flatbuffer_class.__name__}: {exc}"
+            ) from exc
 
-    def _process_json_file(self, data: bytes) -> bytes:
-        """Extract json file in zip.
+    def _dump_flatbuffer_payload(
+        self,
+        flatbuffer_class: Any,
+        data: bytes,
+    ) -> tuple[dict[str, Any], str]:
+        dump_function_name = f"dump_{flatbuffer_class.__name__}"
+        try:
+            dump_function = getattr(self.dump_wrapper_lib, dump_function_name)
+        except AttributeError as exc:
+            raise GeneratedDumpWrapperError(
+                f"Generated dump wrapper is missing {dump_function_name}."
+            ) from exc
 
-        Args:
-            file_name (str): File name.
-            data (bytes): Data of file.
+        try:
+            flat_buffer = flatbuffer_class.GetRootAs(data)
+            return dump_function(flat_buffer), f"{flatbuffer_class.__name__}.json"
+        except StopIteration as exc:
+            raise GeneratedDumpWrapperError(
+                f"Generated dump wrapper could not resolve a table dump for {flatbuffer_class.__name__}."
+            ) from exc
+        except (
+            TypeError,
+            ValueError,
+            KeyError,
+            IndexError,
+            RuntimeError,
+            struct.error,
+        ) as exc:
+            raise MalformedTablePayloadError(
+                f"Malformed flatbuffer payload for {flatbuffer_class.__name__}: {exc}"
+            ) from exc
 
-        Returns:
-            bytes: Bytes of json data.
-        """
+    @staticmethod
+    def _process_json_file(data: bytes) -> bytes:
         try:
             data.decode("utf8")
-            return data
-        except Exception:
+        except UnicodeDecodeError:
             return b""
+        return data
 
-    def _process_db_file(self, file_path: str, table_name: str = "") -> list[DBTable]:
-        """Extract sqlite database file.
-
-        Args:
-            file_path (str): Database path.
-            table_name (str): Specify table to extract.
-
-        Returns:
-            list[DBTable]: A list of DBTables.
-        """
+    def _process_db_file(
+        self,
+        file_path: str,
+        table_name: str = "",
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> list[DBTable]:
         with TableDatabase(file_path) as db:
-            tables = []
-
+            tables: list[DBTable] = []
             table_list = [table_name] if table_name else db.get_table_list()
 
             for table in table_list:
-                columns = db.get_table_column_structure(table)
-                rows: list[tuple] = db.get_table_data(table)[1]
-                table_data = []
-                for row in rows:
-                    row_data: list[Any] = []
-                    for col, value in zip(columns, row, strict=True):
-                        col_type = SQLiteDataType[col.data_type].value
-                        if col_type is bytes:
-                            data, _ = self._process_bytes_file(
-                                table.replace("DBSchema", "Excel"), value
-                            )
-                            row_data.append(data)
-                        elif col_type is bool:
-                            row_data.append(bool(value))
-                        else:
-                            row_data.append(value)
-
-                    table_data.append(row_data)
-                tables.append(DBTable(table, columns, table_data))
+                self._ensure_not_cancelled(should_stop)
+                tables.append(self._read_database_table(db, table, should_stop=should_stop))
             return tables
+
+    def _read_database_table(
+        self,
+        db: TableDatabase,
+        table_name: str,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> DBTable:
+        columns = db.get_table_column_structure(table_name)
+        rows: list[tuple] = db.get_table_data(table_name)[1]
+        table_data: list[list[Any]] = []
+        schema_name = table_name.replace("DBSchema", "Excel")
+
+        for row in rows:
+            self._ensure_not_cancelled(should_stop)
+            row_data = []
+            for column, value in zip(columns, row, strict=True):
+                row_data.append(self._convert_database_value(schema_name, table_name, column, value))
+            table_data.append(row_data)
+
+        return DBTable(table_name, columns, table_data)
+
+    def _convert_database_value(
+        self,
+        schema_name: str,
+        table_name: str,
+        column: Any,
+        value: Any,
+    ) -> Any:
+        column_type = SQLiteDataType[column.data_type].value
+        if column_type is bytes:
+            try:
+                processed, _ = self._process_bytes_file(schema_name, value)
+                return processed
+            except TableProcessingError as exc:
+                self.logger.warn(
+                    f"Skipping bytes field {column.name} in {table_name}: {exc}"
+                )
+                return {}
+        if column_type is bool:
+            return bool(value)
+        return value
 
     def _process_zip_file(
         self,
+        archive_name: str,
         file_name: str,
         file_data: bytes,
+        *,
         detect_type: bool = False,
-    ) -> tuple[bytes, str, bool]:
-        data = b""
+    ) -> ProcessedTableArtifact:
         if (detect_type or file_name.endswith(".json")) and (
-            data := self._process_json_file(file_data)
+            json_bytes := self._process_json_file(file_data)
         ):
-            return data, "", True
+            return ProcessedTableArtifact(json_bytes, file_name)
 
         if detect_type or file_name.endswith(".bytes"):
-            b_data = self._process_bytes_file(file_name, file_data)
-            file_dict, file_name = b_data
-            if file_name:
-                return (
-                    json.dumps(file_dict, indent=4, ensure_ascii=False).encode("utf8"),
-                    file_name,
-                    True,
-                )
-
-        return data, "", False
-
-    def extract_db_file(self, file_path: str) -> bool:
-        """Extract db file."""
-        try:
-            if db_tables := self._process_db_file(
-                path.join(self.table_file_folder, file_path)
-            ):
-                db_name = file_path.removesuffix(".db")
-                for table in db_tables:
-                    db_extract_folder = path.join(self.extract_folder, db_name)
-                    os.makedirs(db_extract_folder, exist_ok=True)
-                    with open(
-                        path.join(db_extract_folder, f"{table.name}.json"),
-                        "w",
-                        encoding="utf8",
-                    ) as f:
-                        json.dump(
-                            TableDatabase.convert_to_list_dict(table),
-                            f,
-                            indent=4,
-                            ensure_ascii=False,
-                        )
-                return True
-            return False
-        except Exception as e:
-            self.logger.error(f"Error when process {file_path}: {e}")
-            return False
-
-    def extract_zip_file(self, file_name: str) -> None:
-        """Extract zip file."""
-        try:
-            zip_extract_folder = path.join(
-                self.extract_folder, file_name.removesuffix(".zip")
+            file_dict, normalized_name = self._process_bytes_file(file_name, file_data)
+            return ProcessedTableArtifact(
+                json.dumps(file_dict, indent=4, ensure_ascii=False).encode("utf8"),
+                normalized_name,
             )
-            os.makedirs(zip_extract_folder, exist_ok=True)
 
-            password = zip_password(path.basename(file_name))
-            with ZipFile(path.join(self.table_file_folder, file_name), "r") as zip:
-                zip.setpassword(password)
-                for item_name in zip.namelist():
-                    item_data = zip.read(item_name)
+        raise UnsupportedSchemaError(
+            f"Unsupported entry {file_name} in {archive_name}: no matching table processor."
+        )
 
-                    data, name, success = b"", "", False
-                    if item_name.endswith((".json", ".bytes")):
-                        if "RootMotion" in file_name:
-                            data, name, success = self._process_zip_file(
-                                f"{file_name.removesuffix('.zip')}Flat", item_data, True
-                            )
-                            name = item_name
-                        else:
-                            data, name, success = self._process_zip_file(
-                                item_name, item_data
-                            )
+    def extract_db_file(
+        self,
+        file_path: str,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> bool:
+        source_path = path.join(self.table_file_folder, file_path)
+        try:
+            db_tables = self._process_db_file(source_path, should_stop=should_stop)
+        except RuntimeError as exc:
+            if str(exc) == "Extraction cancelled by user.":
+                raise
+            self.logger.error(f"Failed to process {file_path}: {exc}")
+            return False
+        except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
+            self.logger.error(f"Failed to process {file_path}: {exc}")
+            return False
 
-                    if not success:
-                        data, name, success = self._process_zip_file(
-                            item_name, item_data, True
-                        )
-                    if success:
-                        item_name = name if name else item_name
-                        item_data = data
-                    else:
-                        self.logger.warn(
-                            f"The file {item_name} in {file_name} is not be implementate or cannot process."
-                        )
-                        continue
+        if not db_tables:
+            self.logger.warn(f"No readable tables were found in {file_path}.")
+            return False
 
-                    with open(path.join(zip_extract_folder, item_name), "wb") as f:
-                        f.write(item_data)
-        except Exception as e:
-            self.logger.error(f"Error when process {file_name}: {e}")
+        db_name = file_path.removesuffix(".db")
+        db_extract_folder = path.join(self.extract_folder, db_name)
+        os.makedirs(db_extract_folder, exist_ok=True)
+        for table in db_tables:
+            output_path = path.join(db_extract_folder, f"{table.name}.json")
+            with open(output_path, "w", encoding="utf8") as file_handle:
+                json.dump(
+                    TableDatabase.convert_to_list_dict(table),
+                    file_handle,
+                    indent=4,
+                    ensure_ascii=False,
+                )
+        return True
 
-    def extract_table(self, file_path: str) -> None:
-        """Extract a table by file path."""
+    def extract_zip_file(
+        self,
+        file_name: str,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
+        zip_extract_folder = path.join(self.extract_folder, file_name.removesuffix(".zip"))
+        os.makedirs(zip_extract_folder, exist_ok=True)
+        warnings: list[str] = []
+
+        try:
+            with ZipFile(path.join(self.table_file_folder, file_name), "r") as archive:
+                archive.setpassword(zip_password(path.basename(file_name)))
+                for item_name in archive.namelist():
+                    self._ensure_not_cancelled(should_stop)
+                    self._extract_zip_entry(
+                        archive_name=file_name,
+                        item_name=item_name,
+                        archive=archive,
+                        extract_folder=zip_extract_folder,
+                        warnings=warnings,
+                        should_stop=should_stop,
+                    )
+        except RuntimeError as exc:
+            if str(exc) == "Extraction cancelled by user.":
+                raise
+            self.logger.error(f"Failed to process {file_name}: {exc}")
+            return
+        except (BadZipFile, FileNotFoundError, OSError, ValueError) as exc:
+            self.logger.error(f"Failed to process {file_name}: {exc}")
+            return
+
+        if warnings:
+            self.logger.warn(
+                f"Skipped {len(warnings)} entries while extracting {file_name}."
+            )
+
+    def _extract_zip_entry(
+        self,
+        *,
+        archive_name: str,
+        item_name: str,
+        archive: ZipFile,
+        extract_folder: str,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
+        self._ensure_not_cancelled(should_stop)
+        item_data = archive.read(item_name)
+        processed_file: ProcessedTableArtifact | None = None
+
+        try:
+            processed_file = self._process_zip_file(
+                archive_name,
+                item_name,
+                item_data,
+            )
+        except TableProcessingError as first_error:
+            try:
+                detect_name = (
+                    f"{archive_name.removesuffix('.zip')}Flat"
+                    if "RootMotion" in archive_name
+                    else item_name
+                )
+                processed_file = self._process_zip_file(
+                    archive_name,
+                    detect_name,
+                    item_data,
+                    detect_type=True,
+                )
+                if "RootMotion" in archive_name:
+                    processed_file = ProcessedTableArtifact(
+                        processed_file.data,
+                        item_name,
+                    )
+            except TableProcessingError as second_error:
+                warning = f"Skipping {item_name} in {archive_name}: {first_error}; fallback failed ({second_error})."
+                self.logger.warn(warning)
+                warnings.append(warning)
+                return
+
+        self._ensure_not_cancelled(should_stop)
+        with open(path.join(extract_folder, processed_file.file_name), "wb") as file_handle:
+            file_handle.write(processed_file.data)
+
+    def extract_table(
+        self,
+        file_path: str,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
         if not file_path.endswith((".zip", ".db")):
-            self.logger.warn(f"The file {file_path} is not supported in current implementation.")
+            self.logger.warn(
+                f"The file {file_path} is not supported in current implementation."
+            )
+            return
 
         if file_path.endswith(".db"):
-            self.extract_db_file(file_path)
+            self.extract_db_file(file_path, should_stop=should_stop)
+            return
 
-        if file_path.endswith(".zip"):
-            self.extract_zip_file(file_path)
-
-
-
+        self.extract_zip_file(file_path, should_stop=should_stop)

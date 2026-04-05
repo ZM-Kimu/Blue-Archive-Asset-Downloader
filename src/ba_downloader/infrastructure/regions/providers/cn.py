@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from io import BytesIO
-from typing import Literal
+from typing import ClassVar, Literal
 from urllib.parse import urljoin
 
 from ba_downloader.domain.models.asset import (
@@ -15,21 +15,12 @@ from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpClientPort, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
-
-
-def _coerce_int(value: object) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
+from ba_downloader.infrastructure.regions.providers.common import (
+    build_region_catalog_result,
+    coerce_int,
+    join_catalog_url,
+    warn_if_platform_ignored,
+)
 
 
 class CNServer:
@@ -55,10 +46,7 @@ class CNServer:
     def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
         if context.version:
             self.logger.warn("Specifying a version is not allowed with CNServer.")
-        if context.platform_explicit:
-            self.logger.warn(
-                "The --platform option only applies to JP and was ignored."
-            )
+        warn_if_platform_ignored(context, self.logger)
 
         self.logger.info("Automatically fetching latest version...")
         version = self.get_latest_version()
@@ -67,8 +55,8 @@ class CNServer:
 
         self.logger.info("Pulling catalog...")
         resources = self.get_resource_manifest(self.get_server_info(resolved_context))
-        self.logger.info(f"Catalog: {resources}.")
-        return RegionCatalogResult(
+        return build_region_catalog_result(
+            self.logger,
             resources=resources,
             context=resolved_context,
             capabilities=self.get_capabilities(),
@@ -94,8 +82,8 @@ class CNServer:
             if apk_match := re.search(r'http[s]?://[^\s"<>]+?\.apk', js_response.text):
                 return apk_match.group()
 
-            raise LookupError
-        except Exception as exc:
+            raise LookupError("Could not find the latest CN APK URL.")
+        except (LookupError, OSError, ValueError, TypeError) as exc:
             if server == "bili":
                 raise LookupError(
                     "Could not find the latest version. Retrying may resolve the issue."
@@ -112,79 +100,97 @@ class CNServer:
 
     def get_resource_manifest(self, server_info: dict[str, object]) -> AssetCollection:
         try:
-            roots = server_info.get("AddressablesCatalogUrlRoots", [])
-            if not isinstance(roots, list) or not roots:
-                raise LookupError("AddressablesCatalogUrlRoots was not found.")
-
-            base_url = str(roots[0]).rstrip("/") + "/"
-            table_url = (
-                f"Manifest/TableBundles/{server_info['TableVersion']}/TableManifest"
-            )
-            media_url = (
-                f"Manifest/MediaResources/{server_info['MediaVersion']}/MediaManifest"
-            )
-            bundle_url = (
-                "AssetBundles/Catalog/"
-                f"{server_info['ResourceVersion']}/Android/bundleDownloadInfo.json"
-            )
-            table_root = urljoin(base_url, "pool/TableBundles/")
-            media_root = urljoin(base_url, "pool/MediaResources/")
-            bundle_root = urljoin(base_url, "AssetBundles/Android/")
-
+            base_url = self._resolve_catalog_root(server_info)
             assets = AssetCollection()
-            loaded_sections: set[str] = set()
-
-            table_data = self.http_client.request("GET", urljoin(base_url, table_url))
-            if table_data.content:
-                CNCatalogDecoder.decode_to_assets(
-                    table_data.content,
-                    assets,
-                    "table",
-                    table_root,
-                )
-                loaded_sections.add("table")
-            else:
-                self.logger.error(
-                    "Failed to fetch table catalog. Retry may solve the issue."
-                )
-
-            media_data = self.http_client.request("GET", urljoin(base_url, media_url))
-            if media_data.content:
-                CNCatalogDecoder.decode_to_assets(
-                    media_data.content,
-                    assets,
-                    "media",
-                    media_root,
-                )
-                loaded_sections.add("media")
-            else:
-                self.logger.error(
-                    "Failed to fetch media catalog. Retry may solve the issue."
-                )
-
-            bundle_data = self.http_client.request("GET", urljoin(base_url, bundle_url))
-            content_type = get_header(bundle_data.headers, "Content-Type").lower()
-            if bundle_data.content and "application/json" in content_type:
-                CNCatalogDecoder.decode_to_assets(
-                    bundle_data.content,
-                    assets,
-                    "bundle",
-                    bundle_root,
-                )
-                loaded_sections.add("bundle")
-            else:
-                self.logger.error(
-                    "Failed to fetch bundle catalog. Retry may solve the issue."
-                )
-
+            loaded_sections = self._load_cn_catalog_sections(server_info, base_url, assets)
             if loaded_sections != {"table", "media", "bundle"}:
                 raise FileNotFoundError("Cannot pull the manifest.")
-
             return assets
-        except Exception as exc:
+        except (FileNotFoundError, KeyError, LookupError, TypeError, ValueError) as exc:
             raise LookupError(
                 f"Encountered the following error while attempting to fetch manifest: {exc}."
             ) from exc
+
+    @staticmethod
+    def _resolve_catalog_root(server_info: dict[str, object]) -> str:
+        roots = server_info.get("AddressablesCatalogUrlRoots", [])
+        if not isinstance(roots, list) or not roots:
+            raise LookupError("AddressablesCatalogUrlRoots was not found.")
+        return str(roots[0]).rstrip("/") + "/"
+
+    def _load_cn_catalog_sections(
+        self,
+        server_info: dict[str, object],
+        base_url: str,
+        assets: AssetCollection,
+    ) -> set[str]:
+        loaded_sections: set[str] = set()
+        sections: tuple[
+            tuple[Literal["table", "media", "bundle"], str, str, bool],
+            ...,
+        ] = (
+            (
+                "table",
+                f"Manifest/TableBundles/{server_info['TableVersion']}/TableManifest",
+                urljoin(base_url, "pool/TableBundles/"),
+                False,
+            ),
+            (
+                "media",
+                f"Manifest/MediaResources/{server_info['MediaVersion']}/MediaManifest",
+                urljoin(base_url, "pool/MediaResources/"),
+                False,
+            ),
+            (
+                "bundle",
+                (
+                    "AssetBundles/Catalog/"
+                    f"{server_info['ResourceVersion']}/Android/bundleDownloadInfo.json"
+                ),
+                urljoin(base_url, "AssetBundles/Android/"),
+                True,
+            ),
+        )
+        for section_name, relative_url, root_url, require_json in sections:
+            if self._load_cn_catalog_section(
+                section_name,
+                join_catalog_url(base_url, relative_url),
+                root_url,
+                assets,
+                require_json=require_json,
+            ):
+                loaded_sections.add(section_name)
+        return loaded_sections
+
+    def _load_cn_catalog_section(
+        self,
+        section_name: Literal["table", "media", "bundle"],
+        section_url: str,
+        root_url: str,
+        assets: AssetCollection,
+        *,
+        require_json: bool,
+    ) -> bool:
+        section_data = self.http_client.request("GET", section_url)
+        content_type = get_header(section_data.headers, "Content-Type").lower()
+        if not section_data.content:
+            self.logger.error(
+                f"Failed to fetch {section_name} catalog. Retry may solve the issue."
+            )
+            return False
+        if require_json and "application/json" not in content_type:
+            self.logger.error(
+                f"Failed to fetch {section_name} catalog. Retry may solve the issue."
+            )
+            return False
+
+        CNCatalogDecoder.decode_to_assets(
+            section_data.content,
+            assets,
+            section_name,
+            root_url,
+        )
+        return True
 
     def get_server_info(self, context: RuntimeContext) -> dict[str, object]:
         response = self.http_client.request(
@@ -200,7 +206,14 @@ class CNServer:
 
 
 class CNCatalogDecoder:
-    MEDIA_TYPES = {1: "ogg", 2: "mp4", 3: "jpg", 4: "png", 5: "acb", 6: "awb"}
+    MEDIA_TYPES: ClassVar[dict[int, str]] = {
+        1: "ogg",
+        2: "mp4",
+        3: "jpg",
+        4: "png",
+        5: "acb",
+        6: "awb",
+    }
 
     @staticmethod
     def decode_to_assets(
@@ -243,7 +256,7 @@ class CNCatalogDecoder:
         assets.add(
             urljoin(base_url, name),
             urljoin("Bundle/", name),
-            _coerce_int(data.get("Size", 0)),
+            coerce_int(data.get("Size", 0)),
             str(data.get("Crc", "")),
             # The CN endpoint exposes this hash in a field named "Crc",
             # but the observed value is still used as the legacy MD5-style asset key.
@@ -293,7 +306,7 @@ class CNCatalogDecoder:
         assets.add(
             urljoin(base_url, md5[:2] + "/" + md5),
             urljoin("Table/", name),
-            _coerce_int(data.get("Size", 0)),
+            coerce_int(data.get("Size", 0)),
             md5,
             # The CN endpoint exposes this hash in a field named "Crc",
             # but the observed value is still used as the legacy MD5-style asset key.

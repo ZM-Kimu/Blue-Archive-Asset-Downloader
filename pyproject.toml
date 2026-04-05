@@ -65,7 +65,7 @@ src = ["src", "tests", "scripts"]
 extend-exclude = ["third_party"]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "B", "UP"]
+select = ["E4", "E7", "E9", "F", "B", "I", "RUF", "SIM", "UP"]
 
 [tool.mypy]
 python_version = "3.10"

@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from os import path
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urljoin
 
 from ba_downloader.application.catalog_pipeline import CatalogPipeline
@@ -25,6 +25,10 @@ from ba_downloader.domain.models.settings import Platform
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.apk import download_package_file, extract_xapk_file
+from ba_downloader.infrastructure.regions.providers.common import (
+    coerce_int,
+    coerce_string_list,
+)
 from ba_downloader.infrastructure.unity import UnityAssetReader
 from ba_downloader.shared.crypto.encryption import convert_string, create_key
 
@@ -47,29 +51,6 @@ JP_PLATFORM_PATCH_SEGMENTS: dict[Platform, str] = {
     "android": "Android",
     "ios": "iOS",
 }
-
-
-def _coerce_int(value: object) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
-
-
-def _coerce_string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item) for item in value]
-
-
 def _resolve_jp_patch_pack_dir(platform: Platform) -> str:
     segment = JP_PLATFORM_PATCH_SEGMENTS[platform]
     return f"{segment}_PatchPack"
@@ -80,7 +61,7 @@ class JPReleaseResolver:
         "https://api.pureapk.com/m/v3/cms/app_version"
         "?hl=en-US&package_name=com.YostarJP.BlueArchive"
     )
-    PUREAPK_HEADERS = {
+    PUREAPK_HEADERS: ClassVar[dict[str, str]] = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -234,7 +215,7 @@ class JPBootstrapper:
                 ):
                     try:
                         version = version_obj[0].read().bundleVersion
-                    except Exception:
+                    except (AttributeError, OSError, RuntimeError, ValueError):
                         version = "unavailable"
                     self.logger.info(f"The apk version is {version}.")
 
@@ -298,11 +279,11 @@ class JPAssetNormalizer:
         bundle_patch_dir = str(session.metadata.get("bundle_patch_dir", "Android_PatchPack"))
 
         for table in payload.tables:
-            includes = _coerce_string_list(table.get("includes", []))
+            includes = coerce_string_list(table.get("includes", []))
             assets.add(
                 urljoin(base_url, f"TableBundles/{table['name']}"),
                 urljoin("Table/", str(table["name"])),
-                _coerce_int(table.get("size")),
+                coerce_int(table.get("size")),
                 str(table["crc"]),
                 "crc",
                 AssetType.table,
@@ -313,7 +294,7 @@ class JPAssetNormalizer:
             assets.add(
                 urljoin(base_url, f"MediaResources/{media['path']}"),
                 urljoin("Media/", str(media["path"])),
-                _coerce_int(media.get("bytes")),
+                coerce_int(media.get("bytes")),
                 str(media["crc"]),
                 "crc",
                 AssetType.media,
@@ -321,11 +302,11 @@ class JPAssetNormalizer:
             )
 
         for bundle in payload.bundles:
-            bundle_files = _coerce_string_list(bundle.get("bundle_files", []))
+            bundle_files = coerce_string_list(bundle.get("bundle_files", []))
             assets.add(
                 urljoin(base_url, f"{bundle_patch_dir}/{bundle['name']}"),
                 urljoin("Bundle/", str(bundle["name"])),
-                _coerce_int(bundle.get("size")),
+                coerce_int(bundle.get("size")),
                 str(bundle["crc"]),
                 "crc",
                 AssetType.bundle,
@@ -445,7 +426,7 @@ class JPServer:
             if not assets:
                 raise FileNotFoundError("Cannot pull the JP manifest.")
             return assets
-        except Exception as exc:
+        except (FileNotFoundError, KeyError, TypeError, ValueError) as exc:
             raise LookupError(
                 f"Encountered the following error while attempting to fetch manifest: {exc}."
             ) from exc

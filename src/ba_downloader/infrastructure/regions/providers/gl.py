@@ -6,13 +6,21 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
-from ba_downloader.domain.models.asset import AssetCollection, AssetType, RegionCapabilities
+from ba_downloader.domain.models.asset import (
+    AssetCollection,
+    AssetType,
+    RegionCapabilities,
+)
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 from ba_downloader.infrastructure.apk import download_package_file, extract_xapk_file
+from ba_downloader.infrastructure.regions.providers.common import (
+    build_region_catalog_result,
+    warn_if_platform_ignored,
+)
 
 
 class GLServer:
@@ -45,8 +53,7 @@ class GLServer:
     def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
         version = context.version
         resolved_context = context
-        if context.platform_explicit:
-            self.logger.warn("The --platform option only applies to JP and was ignored.")
+        warn_if_platform_ignored(context, self.logger)
 
         if not version:
             self.logger.info("Version not specified. Automatically fetching latest...")
@@ -56,10 +63,17 @@ class GLServer:
         self.logger.info(f"Current resource version: {version}")
         self.logger.info("Pulling catalog...")
         resources = self.get_resource_catalog(self.get_server_url(version))
-        self.logger.info(f"Catalog: {resources}.")
-        return RegionCatalogResult(
+        return self._build_catalog_result(resources, resolved_context)
+
+    def _build_catalog_result(
+        self,
+        resources: AssetCollection,
+        context: RuntimeContext,
+    ) -> RegionCatalogResult:
+        return build_region_catalog_result(
+            self.logger,
             resources=resources,
-            context=resolved_context,
+            context=context,
             capabilities=self.get_capabilities(),
         )
 
@@ -104,7 +118,7 @@ class GLServer:
                 self.logger.warn(
                     "The catalog is incomplete, and some resource types may fail to be retrieved.",
                 )
-        except Exception as exc:
+        except (LookupError, OSError, TypeError, ValueError) as exc:
             raise LookupError(
                 f"Encountered the following error while attempting to fetch catalog: {exc}."
             ) from exc

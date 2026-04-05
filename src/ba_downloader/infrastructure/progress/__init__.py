@@ -3,4 +3,4 @@ from ba_downloader.infrastructure.progress.rich_progress import (
     RichProgressReporter,
 )
 
-__all__ = ["RichProgressReporter", "NullProgressReporter"]
+__all__ = ["NullProgressReporter", "RichProgressReporter"]

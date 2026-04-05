@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import re
 from dataclasses import asdict
@@ -22,6 +24,15 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
     EXCEL_NAME = "Excel.zip"
     DB_NAME = "ExcelDB.db"
     RELATION_NAME = "CharacterRelation.json"
+    REQUIRED_BYTES_FILES = (
+        "characterexceltable.bytes",
+        "localizecharprofileexceltable.bytes",
+    )
+    REQUIRED_RELATION_SOURCES = (
+        "ScenarioCharacterNameDBSchema",
+        "characterexceltable.bytes",
+        "localizecharprofileexceltable.bytes",
+    )
 
     def __init__(
         self,
@@ -36,22 +47,20 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             str(Path(context.extract_dir) / "FlatData"),
             logger=self.logger,
         )
-
         self.kana_converter = pykakasi.kakasi()
 
     def __convert_kana_to_hepburn(self, kana: str) -> str:
-        return "".join([kana["hepburn"] for kana in self.kana_converter.convert(kana)])
+        return "".join(item["hepburn"] for item in self.kana_converter.convert(kana))
 
-    def __str_to_int(self, text: str, default: int = 0) -> int:
-        return (
-            int(re_digit.group()) if (re_digit := re.search(r"\d+", text)) else default
-        )
+    @staticmethod
+    def __str_to_int(text: str, default: int = 0) -> int:
+        return int(match.group()) if (match := re.search(r"\d+", text)) else default
 
-    def __split_path_to_name(self, file_path: str, max_split=2):
+    @staticmethod
+    def __split_path_to_name(file_path: str, max_split: int = 2) -> str:
         return Path(file_path).name.split("_", max_split)[-1]
 
     def build(self, context: RuntimeContext | None = None) -> None:
-        """Character extract entry."""
         self.context = context or self.context
         self.logger.info("Extracting necessary data...")
         excel = self.__extract_excel()
@@ -60,244 +69,368 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         self.__create_relation_file(self.context.version, self.context.region, relations)
 
     def get_excel_resources(self, resource: AssetCollection) -> AssetCollection:
-        """Get excel file item from resources."""
         if not (searched := resource.search("path", "Excel")):
             raise LookupError("Excel not found, advanced search is unavailable now.")
         return searched
 
-    def __extract_excel(self) -> tuple[list, list, list]:
-        scenario_db: list[dict] = []
-        char_excel: list[dict] = []
-        char_profile: list[dict] = []
+    def __extract_excel(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        scenario_db = self.__extract_scenario_db()
+        extracted_paths = self.__extract_excel_bytes_files()
+        excel_payloads = self.__load_excel_payloads(extracted_paths)
 
-        bytes_files = [
-            "characterexceltable.bytes",
-            "localizecharprofileexceltable.bytes",
-        ]
+        self.__validate_relation_sources(
+            scenario_db=scenario_db,
+            extracted_payloads=excel_payloads,
+        )
+
+        char_profile = excel_payloads.get("localizecharprofileexceltable.bytes", [])
+        char_excel = excel_payloads.get("characterexceltable.bytes", [])
+        return scenario_db, char_profile, char_excel
+
+    def __extract_scenario_db(self) -> list[dict[str, Any]]:
+        tables = self._process_db_file(
+            str(Path(self.table_file_folder) / self.DB_NAME),
+            "ScenarioCharacterNameDBSchema",
+        )
+        if not tables:
+            return []
+        return TableDatabase.convert_to_list_dict(tables[0])
+
+    def __extract_excel_bytes_files(self) -> dict[str, Path]:
         excel_folder = Path(self.table_file_folder)
-
         extract_dir = Path(self.extract_folder) / self.EXCEL_NAME.removesuffix(".zip")
         extract_dir.mkdir(parents=True, exist_ok=True)
+
         with ZipFile(excel_folder / self.EXCEL_NAME, "r") as excel_zip:
             excel_zip.setpassword(zip_password(self.EXCEL_NAME))
             for item_name in excel_zip.namelist():
-                if item_name.lower() in bytes_files:
+                lowered_name = item_name.lower()
+                if lowered_name in self.REQUIRED_BYTES_FILES:
                     excel_zip.extract(item_name, extract_dir)
 
-        if tables := self._process_db_file(
-            str(excel_folder / self.DB_NAME), "ScenarioCharacterNameDBSchema"
-        ):
-            scenario_db = TableDatabase.convert_to_list_dict(tables[0])
-
-        b_file_paths = []
-        for file_name in bytes_files:
+        extracted_paths: dict[str, Path] = {}
+        for file_name in self.REQUIRED_BYTES_FILES:
             matches = list(extract_dir.rglob(file_name))
             if matches:
-                b_file_paths.append(str(matches[0]))
+                extracted_paths[file_name] = matches[0]
+        return extracted_paths
 
-        if len(bytes_files) == 2:
-            for b_path, b_name in zip(b_file_paths, bytes_files, strict=True):
-                with open(b_path, "rb") as f:
-                    excel_data, _, _ = self._process_zip_file(b_name, f.read(), True)
-                    if b_name == "characterexceltable.bytes":
-                        char_excel = json.loads(excel_data)
-                    else:
-                        char_profile = json.loads(excel_data)
+    def __load_excel_payloads(
+        self,
+        extracted_paths: dict[str, Path],
+    ) -> dict[str, list[dict[str, Any]]]:
+        payloads: dict[str, list[dict[str, Any]]] = {}
+        for file_name, file_path in extracted_paths.items():
+            try:
+                with file_path.open("rb") as file_handle:
+                    processed = self._process_zip_file(
+                        self.EXCEL_NAME,
+                        file_name,
+                        file_handle.read(),
+                        detect_type=True,
+                    )
+                payloads[file_name] = json.loads(processed.data)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                self.logger.warn(f"Failed to process {file_name}: {exc}")
+        return payloads
 
-        if not (scenario_db and char_excel and char_profile):
-            self.logger.warn("Some files went wrong. Name relation might be incomplete.")
+    def __validate_relation_sources(
+        self,
+        *,
+        scenario_db: list[dict[str, Any]],
+        extracted_payloads: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        missing_sources: list[str] = []
+        if not scenario_db:
+            missing_sources.append("ScenarioCharacterNameDBSchema")
+        for file_name in self.REQUIRED_BYTES_FILES:
+            if not extracted_payloads.get(file_name):
+                missing_sources.append(file_name)
 
-        return scenario_db, char_profile, char_excel
+        if len(missing_sources) == len(self.REQUIRED_RELATION_SOURCES):
+            raise LookupError(
+                "Relation build failed because all core relation sources are missing."
+            )
+
+        if missing_sources:
+            missing_text = ", ".join(missing_sources)
+            self.logger.warn(
+                f"Some relation sources are missing or invalid: {missing_text}. "
+                "Name relation might be incomplete."
+            )
 
     def __create_relation_list(
         self,
         scenario_db: list[dict[str, Any]],
         char_profile: list[dict[str, Any]],
-        char_excel: list[dict],
+        char_excel: list[dict[str, Any]],
     ) -> list[CharacterData]:
         hash_map: dict[int, CharacterData] = {}
+        self.__apply_profile_data(hash_map, char_profile)
+        self.__apply_excel_data(hash_map, char_excel)
+        self.__apply_scenario_data(hash_map, scenario_db)
+        return list(hash_map.values())
 
-        for char_p in char_profile:
-            names: set = set()
-            for key in char_p.keys():
-                if key.lower().startswith(("fullname", "familyname", "personalname")):
-                    if name := char_p.get(key, ""):
-                        names.add(name)
-                    if name and key.lower() in ("familynamerubyjp", "personalnamejp"):
-                        names.add(self.__convert_kana_to_hepburn(name))
-
-            age = self.__str_to_int(char_p.get("CharacterAgeJp", ""))
-            height = self.__str_to_int(char_p.get("CharHeightJp", ""))
-
+    def __apply_profile_data(
+        self,
+        hash_map: dict[int, CharacterData],
+        char_profile: list[dict[str, Any]],
+    ) -> None:
+        for profile in char_profile:
+            names = self.__collect_profile_names(profile)
             data = CharacterData(
-                char_p.get("CharacterId", 0),
+                profile.get("CharacterId", 0),
                 names=list(names),
-                cv=char_p.get("CharacterVoiceJp", ""),
-                age=age,
-                height=height,
-                birthday=char_p.get("BirthDay", ""),
-                illustrator=char_p.get("IllustratorNameJp", ""),
+                cv=profile.get("CharacterVoiceJp", ""),
+                age=self.__str_to_int(profile.get("CharacterAgeJp", "")),
+                height=self.__str_to_int(profile.get("CharHeightJp", "")),
+                birthday=profile.get("BirthDay", ""),
+                illustrator=profile.get("IllustratorNameJp", ""),
             )
-
             hash_map[data.character_id] = data
 
-        for char_e in char_excel:
+    def __collect_profile_names(self, profile: dict[str, Any]) -> set[str]:
+        names: set[str] = set()
+        for key in profile:
+            if not key.lower().startswith(("fullname", "familyname", "personalname")):
+                continue
+            name = profile.get(key, "")
+            if name:
+                names.add(name)
+            if name and key.lower() in ("familynamerubyjp", "personalnamejp"):
+                names.add(self.__convert_kana_to_hepburn(str(name)))
+        return names
+
+    @staticmethod
+    def __apply_excel_data(
+        hash_map: dict[int, CharacterData],
+        char_excel: list[dict[str, Any]],
+    ) -> None:
+        for excel_entry in char_excel:
             data = hash_map.get(
-                char_e.get("Id", -1), CharacterData(char_e.get("Id", 0))
+                excel_entry.get("Id", -1),
+                CharacterData(excel_entry.get("Id", 0)),
             )
-            data.dev_name = char_e.get("DevName", "")
-            data.school_en = char_e.get("School", "")
-            data.club_en = char_e.get("Club", "")
+            data.dev_name = excel_entry.get("DevName", "")
+            data.school_en = excel_entry.get("School", "")
+            data.club_en = excel_entry.get("Club", "")
+            hash_map[data.character_id] = data
 
+    def __apply_scenario_data(
+        self,
+        hash_map: dict[int, CharacterData],
+        scenario_db: list[dict[str, Any]],
+    ) -> None:
         for scenario in scenario_db:
-            scenario_data_unrelated = True
             scene_data = scenario.get("Bytes", {})
-            file_name = self.__split_path_to_name(scene_data.get("SmallPortrait", ""))
-            name_no_underline = file_name.replace("_", "")
-            jp_name = scene_data.get("NameJP", "")
+            if not isinstance(scene_data, dict):
+                continue
 
+            file_name = self.__split_path_to_name(str(scene_data.get("SmallPortrait", "")))
+            name_no_underline = file_name.replace("_", "")
+            jp_name = str(scene_data.get("NameJP", ""))
             if not (file_name and jp_name):
                 continue
 
-            for char_data in hash_map.values():
-                char_names = char_data.names if char_data.names else []
-                if char_data.dev_name and (
-                    any(jp_name in n.lower() for n in char_names)
-                    or (char_data.dev_name in file_name)
-                ):
-                    if char_data.file_name:
-                        char_data.file_name.update({file_name, name_no_underline})
-                    else:
-                        char_data.file_name = {file_name, name_no_underline}
-                    scenario_data_unrelated = False
-
-            if (
-                scenario_data_unrelated
-                and file_name != "Null"  # Default portrait name.
-                and (char_id := scene_data.get("CharacterName", 0))
+            if self.__apply_existing_scenario_mapping(
+                hash_map,
+                scene_data,
+                file_name,
+                name_no_underline,
+                jp_name,
             ):
-                names = set()
-                for key in scene_data.keys():
-                    if key.lower().startswith("name"):
-                        if name := scene_data.get(key, ""):
-                            names.add(name)
-                        if jp_name:
-                            names.add(self.__convert_kana_to_hepburn(jp_name))
+                continue
 
-                char_id = -char_id if char_id in hash_map else char_id
-                hash_map[char_id] = CharacterData(
-                    char_id,
-                    dev_name=file_name,
-                    names=list(names),
-                    file_name={file_name, name_no_underline},
-                )
+            self.__register_unmatched_scenario(
+                hash_map,
+                scene_data,
+                file_name,
+                name_no_underline,
+                jp_name,
+            )
 
-        return list(hash_map.values())
+    def __apply_existing_scenario_mapping(
+        self,
+        hash_map: dict[int, CharacterData],
+        scene_data: dict[str, Any],
+        file_name: str,
+        name_no_underline: str,
+        jp_name: str,
+    ) -> bool:
+        for char_data in hash_map.values():
+            char_names = char_data.names or []
+            if not char_data.dev_name:
+                continue
+            if any(jp_name in name.lower() for name in char_names) or char_data.dev_name in file_name:
+                if char_data.file_name:
+                    char_data.file_name.update({file_name, name_no_underline})
+                else:
+                    char_data.file_name = {file_name, name_no_underline}
+                return True
+        return False
+
+    def __register_unmatched_scenario(
+        self,
+        hash_map: dict[int, CharacterData],
+        scene_data: dict[str, Any],
+        file_name: str,
+        name_no_underline: str,
+        jp_name: str,
+    ) -> None:
+        if file_name == "Null":
+            return
+        char_id = scene_data.get("CharacterName", 0)
+        if not char_id:
+            return
+
+        names = self.__collect_scenario_names(scene_data, jp_name)
+        normalized_id = -char_id if char_id in hash_map else char_id
+        hash_map[normalized_id] = CharacterData(
+            normalized_id,
+            dev_name=file_name,
+            names=list(names),
+            file_name={file_name, name_no_underline},
+        )
+
+    def __collect_scenario_names(
+        self,
+        scene_data: dict[str, Any],
+        jp_name: str,
+    ) -> set[str]:
+        names: set[str] = set()
+        for key in scene_data:
+            if not key.lower().startswith("name"):
+                continue
+            name = scene_data.get(key, "")
+            if name:
+                names.add(name)
+        if jp_name:
+            names.add(self.__convert_kana_to_hepburn(jp_name))
+        return names
 
     def __create_relation_file(
-        self, version: str, region: str, data: list[CharacterData]
+        self,
+        version: str,
+        region: str,
+        data: list[CharacterData],
     ) -> None:
         region = region.upper()
-        with open(region + self.RELATION_NAME, "w", encoding="utf8") as f:
+        with open(region + self.RELATION_NAME, "w", encoding="utf8") as file_handle:
             json.dump(
                 asdict(CharacterRelation(region + version, data)),
-                f,
+                file_handle,
                 indent=4,
                 ensure_ascii=False,
                 default=CharacterData.serialize,
             )
 
     def verify_relation_file(self, context: RuntimeContext | None = None) -> bool:
-        """Ensure the relation file exists in the directory."""
         active_context = context or self.context
+        relation_path = active_context.region.upper() + CharacterNameRelation.RELATION_NAME
         try:
-            with open(
-                active_context.region + CharacterNameRelation.RELATION_NAME,
-                encoding="utf8",
-            ) as f:
-                return json.load(f).get("version", "") == (
-                    active_context.region.upper() + active_context.version
-                )
-        except Exception:
+            with open(relation_path, encoding="utf8") as file_handle:
+                payload = json.load(file_handle)
+        except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
             return False
+        return payload.get("version", "") == (
+            active_context.region.upper() + active_context.version
+        )
 
     def search(
         self,
         context: RuntimeContext | None = None,
         search_terms: list[str] | None = None,
     ) -> list[str]:
-        """Search relation from file."""
         active_context = context or self.context
-        search_terms = search_terms or []
+        normalized_terms = search_terms or []
+        relation_file = active_context.region.upper() + CharacterNameRelation.RELATION_NAME
         try:
-            relation_file = (
-                active_context.region.upper() + CharacterNameRelation.RELATION_NAME
-            )
-            if not Path(relation_file).exists():
-                raise FileNotFoundError("Character relation file does not exist.")
-
-            if not self.verify_relation_file(active_context):
-                self.logger.warn(
-                    "The character relation version does not match the latest game version."
-                )
-
-            relation = CharacterRelation("", [])
-            with open(relation_file, encoding="utf8") as f:
-                relation_json = json.load(f)
-                relation.version = relation_json.get("version", "")
-                for rel in relation_json.get("relations", []):
-                    relation.relations.append(CharacterData(**rel))
-
-            search_keywords = []
-            keywords = [s.lower() for s in search_terms if "=" not in s]
-            char_attr = {}
-            for keyword in search_terms:
-                arg = keyword.lower().split("=")
-                if "=" in keyword and arg[0] in [
-                    "cv",
-                    "age",
-                    "height",
-                    "birthday",
-                    "illustrator",
-                    "school",
-                    "club",
-                ]:
-                    char_attr[arg[0]] = arg[1]
-
-            for char in relation.relations:
-                file_name = list(char.file_name) if char.file_name else []
-                char_names = list(char.names) if char.names else []
-                if any(
-                    [
-                        any(
-                            keyword in [n.lower() for n in char_names]
-                            for keyword in keywords
-                        ),
-                        any(
-                            keyword in [f.lower() for f in file_name]
-                            for keyword in keywords
-                        ),
-                        (char.cv.lower() or "None") in char_attr.get("cv", "_"),
-                        str(char.age) == char_attr.get("age", -1),
-                        str(char.height) == char_attr.get("height", -1),
-                        (char.birthday.lower() or "None")
-                        in char_attr.get("birthday", "_"),
-                        (char.illustrator.lower() or "None")
-                        in char_attr.get("illustrator", "_"),
-                        (char.school_en.lower() or "None")
-                        in char_attr.get("school", "_"),
-                        (char.club_en.lower() or "None") in char_attr.get("club", "_"),
-                    ]
-                ):
-                    search_keywords += file_name
-                    search_keywords += [char.dev_name]
-
-            search_keywords = [k for k in search_keywords if k]
-            return search_keywords
-        except Exception as e:
+            relation = self.__load_relation_file(relation_file, active_context)
+            return self.__search_keywords(relation, normalized_terms)
+        except (
+            FileNotFoundError,
+            OSError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             raise LookupError(
-                f"Search failed due to error {e}. Retrying may solve the issue."
-            ) from e
+                f"Search failed due to error {exc}. Retrying may solve the issue."
+            ) from exc
 
+    def __load_relation_file(
+        self,
+        relation_file: str,
+        context: RuntimeContext,
+    ) -> CharacterRelation:
+        if not Path(relation_file).exists():
+            raise FileNotFoundError("Character relation file does not exist.")
 
+        if not self.verify_relation_file(context):
+            self.logger.warn(
+                "The character relation version does not match the latest game version."
+            )
 
+        relation = CharacterRelation("", [])
+        with open(relation_file, encoding="utf8") as file_handle:
+            relation_json = json.load(file_handle)
+        relation.version = relation_json.get("version", "")
+        for payload in relation_json.get("relations", []):
+            relation.relations.append(CharacterData(**payload))
+        return relation
+
+    def __search_keywords(
+        self,
+        relation: CharacterRelation,
+        search_terms: list[str],
+    ) -> list[str]:
+        search_keywords: list[str] = []
+        keywords = [term.lower() for term in search_terms if "=" not in term]
+        char_attr = {}
+        for keyword in search_terms:
+            attr, _, value = keyword.lower().partition("=")
+            if value and attr in {
+                "cv",
+                "age",
+                "height",
+                "birthday",
+                "illustrator",
+                "school",
+                "club",
+            }:
+                char_attr[attr] = value
+
+        for char in relation.relations:
+            file_names = list(char.file_name or [])
+            char_names = list(char.names or [])
+            if self.__match_character(char, char_names, file_names, keywords, char_attr):
+                search_keywords.extend(file_names)
+                if char.dev_name:
+                    search_keywords.append(char.dev_name)
+
+        return [keyword for keyword in search_keywords if keyword]
+
+    @staticmethod
+    def __match_character(
+        char: CharacterData,
+        char_names: list[str],
+        file_names: list[str],
+        keywords: list[str],
+        char_attr: dict[str, str],
+    ) -> bool:
+        lowered_names = [name.lower() for name in char_names]
+        lowered_files = [file_name.lower() for file_name in file_names]
+        return any(
+            [
+                any(keyword in lowered_names for keyword in keywords),
+                any(keyword in lowered_files for keyword in keywords),
+                (char.cv.lower() or "None") in char_attr.get("cv", "_"),
+                str(char.age) == char_attr.get("age", -1),
+                str(char.height) == char_attr.get("height", -1),
+                (char.birthday.lower() or "None") in char_attr.get("birthday", "_"),
+                (char.illustrator.lower() or "None")
+                in char_attr.get("illustrator", "_"),
+                (char.school_en.lower() or "None") in char_attr.get("school", "_"),
+                (char.club_en.lower() or "None") in char_attr.get("club", "_"),
+            ]
+        )

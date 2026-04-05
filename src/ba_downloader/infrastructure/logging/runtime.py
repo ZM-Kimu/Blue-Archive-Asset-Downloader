@@ -6,7 +6,6 @@ from rich.theme import Theme
 
 from ba_downloader.infrastructure.logging.highlighter import LogMessageHighlighter
 
-
 LOGGER_NAME = "ba_downloader"
 LOG_THEME = Theme(
     {

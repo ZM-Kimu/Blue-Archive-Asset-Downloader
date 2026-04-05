@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
+import struct
 from contextlib import contextmanager
 from pathlib import Path
+from zipfile import BadZipFile
 
 import pytest
 
@@ -128,7 +131,6 @@ def test_extract_bundles_logs_success_at_info_level(monkeypatch, tmp_path: Path)
         "ba_downloader.infrastructure.extract.asset_workflow.RichProgressReporter",
         DummyProgressReporter,
     )
-    monkeypatch.setattr("ba_downloader.infrastructure.extract.asset_workflow.time.sleep", lambda *_: None)
 
     workflow.extract_bundles(context)
 
@@ -143,7 +145,6 @@ def test_extract_bundles_can_be_interrupted(monkeypatch, tmp_path: Path) -> None
     (bundle_dir / "test.bundle").write_bytes(b"bundle")
     logger = RecordingLogger()
     workflow = AssetExtractionWorkflow(logger)
-    stop_event_holder: dict[str, object] = {}
     created_processes: list[InterruptibleProcess] = []
 
     class BlockingQueue:
@@ -177,13 +178,15 @@ def test_extract_bundles_can_be_interrupted(monkeypatch, tmp_path: Path) -> None
             return self.started and not self.killed
 
     @contextmanager
-    def fake_install_interrupt_handler(stop_event):  # type: ignore[no-untyped-def]
-        stop_event_holder["event"] = stop_event
-        yield
-
-    def trigger_interrupt(*_args) -> None:
-        stop_event = stop_event_holder["event"]
+    def fake_install_interrupt_handler(
+        stop_event,
+        *,
+        on_interrupt=None,
+    ):  # type: ignore[no-untyped-def]
         stop_event.set()
+        if on_interrupt is not None:
+            on_interrupt()
+        yield
 
     monkeypatch.setattr(
         "ba_downloader.infrastructure.extract.asset_workflow.Queue",
@@ -202,10 +205,267 @@ def test_extract_bundles_can_be_interrupted(monkeypatch, tmp_path: Path) -> None
         "_install_interrupt_handler",
         fake_install_interrupt_handler,
     )
-    monkeypatch.setattr("ba_downloader.infrastructure.extract.asset_workflow.time.sleep", trigger_interrupt)
 
     with pytest.raises(KeyboardInterrupt):
         workflow.extract_bundles(context)
 
     assert logger.warn_messages == ["Cancelling bundle extraction..."]
     assert all(process.killed for process in created_processes)
+
+
+def test_extract_bundles_respects_context_threads(monkeypatch, tmp_path: Path) -> None:
+    context = _build_context(tmp_path).with_updates(threads=3)
+    bundle_dir = Path(context.raw_dir) / "Bundle"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(5):
+        (bundle_dir / f"test_{index}.bundle").write_bytes(b"bundle")
+
+    logger = RecordingLogger()
+    workflow = AssetExtractionWorkflow(logger)
+    created_processes: list[FakeProcess] = []
+
+    class CountingQueue(FakeQueue):
+        def qsize(self) -> int:
+            return 0
+
+    class CountingProcess(FakeProcess):
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            super().__init__(*args, **kwargs)
+            created_processes.append(self)
+
+    monkeypatch.setattr("ba_downloader.infrastructure.extract.asset_workflow.Queue", CountingQueue)
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.multiprocessing.Process",
+        CountingProcess,
+    )
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.RichProgressReporter",
+        DummyProgressReporter,
+    )
+    monkeypatch.setattr("ba_downloader.infrastructure.extract.asset_workflow.os.cpu_count", lambda: 8)
+
+    workflow.extract_bundles(context)
+
+    assert len(created_processes) == 3
+
+
+def test_extract_media_can_be_interrupted(monkeypatch, tmp_path: Path) -> None:
+    context = _build_context(tmp_path).with_updates(resource_type=("media",))
+    media_dir = Path(context.raw_dir) / "Media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    (media_dir / "test.zip").write_bytes(b"zip")
+    logger = RecordingLogger()
+    workflow = AssetExtractionWorkflow(logger)
+
+    class InterruptibleMediaExtractor:
+        def __init__(self, active_context: RuntimeContext) -> None:
+            _ = active_context
+
+        def extract_zip(self, file_path: str, *, should_stop=None) -> None:  # type: ignore[no-untyped-def]
+            _ = file_path
+            if should_stop is not None and should_stop():
+                raise RuntimeError("Extraction cancelled by user.")
+
+    @contextmanager
+    def fake_install_interrupt_handler(
+        stop_event,
+        *,
+        on_interrupt=None,
+    ):  # type: ignore[no-untyped-def]
+        _ = on_interrupt
+        stop_event.set()
+        yield
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.MediaExtractor",
+        InterruptibleMediaExtractor,
+    )
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.RichProgressReporter",
+        DummyProgressReporter,
+    )
+    monkeypatch.setattr(workflow, "_install_interrupt_handler", fake_install_interrupt_handler)
+
+    with pytest.raises(KeyboardInterrupt):
+        workflow.extract_media(context)
+
+
+def test_extract_tables_can_be_interrupted(monkeypatch, tmp_path: Path) -> None:
+    context = _build_context(tmp_path).with_updates(resource_type=("table",))
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    (table_dir / "Excel.zip").write_bytes(b"zip")
+    logger = RecordingLogger()
+    workflow = AssetExtractionWorkflow(logger)
+
+    class InterruptibleTableExtractor:
+        table_file_folder = str(table_dir)
+        extract_folder = str(Path(context.extract_dir) / "Table")
+
+        @classmethod
+        def from_context(cls, active_context: RuntimeContext, logger=None):  # type: ignore[no-untyped-def]
+            _ = (active_context, logger)
+            return cls()
+
+        def extract_table(self, file_path: str, *, should_stop=None) -> None:  # type: ignore[no-untyped-def]
+            _ = file_path
+            if should_stop is not None and should_stop():
+                raise RuntimeError("Extraction cancelled by user.")
+
+    @contextmanager
+    def fake_install_interrupt_handler(
+        stop_event,
+        *,
+        on_interrupt=None,
+    ):  # type: ignore[no-untyped-def]
+        _ = on_interrupt
+        stop_event.set()
+        yield
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.TableExtractor",
+        InterruptibleTableExtractor,
+    )
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.RichProgressReporter",
+        DummyProgressReporter,
+    )
+    monkeypatch.setattr(workflow, "_install_interrupt_handler", fake_install_interrupt_handler)
+
+    with pytest.raises(KeyboardInterrupt):
+        workflow.extract_tables(context)
+
+
+def test_extract_tables_continues_after_single_file_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(resource_type=("table",), threads=1)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    (table_dir / "ExcelDB.db").write_bytes(b"not-a-db")
+    (table_dir / "RhythmBeatmapData.zip").write_bytes(b"zip")
+    logger = RecordingLogger()
+    workflow = AssetExtractionWorkflow(logger)
+    processed: list[str] = []
+
+    class ResilientTableExtractor:
+        table_file_folder = str(table_dir)
+        extract_folder = str(Path(context.extract_dir) / "Table")
+
+        @classmethod
+        def from_context(cls, active_context: RuntimeContext, logger=None):  # type: ignore[no-untyped-def]
+            _ = (active_context, logger)
+            return cls()
+
+        def extract_table(self, file_path: str, *, should_stop=None) -> None:  # type: ignore[no-untyped-def]
+            _ = should_stop
+            processed.append(file_path)
+            if file_path == "ExcelDB.db":
+                raise sqlite3.DatabaseError("file is not a database")
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.TableExtractor",
+        ResilientTableExtractor,
+    )
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.RichProgressReporter",
+        DummyProgressReporter,
+    )
+
+    workflow.extract_tables(context)
+
+    assert processed == ["ExcelDB.db", "RhythmBeatmapData.zip"]
+    assert logger.error_messages == [
+        "Failed to extract ExcelDB.db: file is not a database"
+    ]
+
+
+def test_extract_tables_continues_after_bad_zip_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(resource_type=("table",), threads=1)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    (table_dir / "HexaMap.zip").write_bytes(b"not-a-zip")
+    (table_dir / "Valid.zip").write_bytes(b"zip")
+    logger = RecordingLogger()
+    workflow = AssetExtractionWorkflow(logger)
+    processed: list[str] = []
+
+    class ResilientTableExtractor:
+        table_file_folder = str(table_dir)
+        extract_folder = str(Path(context.extract_dir) / "Table")
+
+        @classmethod
+        def from_context(cls, active_context: RuntimeContext, logger=None):  # type: ignore[no-untyped-def]
+            _ = (active_context, logger)
+            return cls()
+
+        def extract_table(self, file_path: str, *, should_stop=None) -> None:  # type: ignore[no-untyped-def]
+            _ = should_stop
+            processed.append(file_path)
+            if file_path == "HexaMap.zip":
+                raise BadZipFile("File is not a zip file")
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.TableExtractor",
+        ResilientTableExtractor,
+    )
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.RichProgressReporter",
+        DummyProgressReporter,
+    )
+
+    workflow.extract_tables(context)
+
+    assert processed == ["HexaMap.zip", "Valid.zip"]
+    assert logger.error_messages == [
+        "Failed to extract HexaMap.zip: File is not a zip file"
+    ]
+
+
+def test_extract_tables_continues_after_unexpected_worker_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(resource_type=("table",), threads=1)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    (table_dir / "HexaMap.zip").write_bytes(b"payload")
+    (table_dir / "Valid.zip").write_bytes(b"payload")
+    logger = RecordingLogger()
+    workflow = AssetExtractionWorkflow(logger)
+    processed: list[str] = []
+
+    class ResilientTableExtractor:
+        table_file_folder = str(table_dir)
+        extract_folder = str(Path(context.extract_dir) / "Table")
+
+        @classmethod
+        def from_context(cls, active_context: RuntimeContext, logger=None):  # type: ignore[no-untyped-def]
+            _ = (active_context, logger)
+            return cls()
+
+        def extract_table(self, file_path: str, *, should_stop=None) -> None:  # type: ignore[no-untyped-def]
+            _ = should_stop
+            processed.append(file_path)
+            if file_path == "HexaMap.zip":
+                raise struct.error("unpack_from requires a buffer")
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.TableExtractor",
+        ResilientTableExtractor,
+    )
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extract.asset_workflow.RichProgressReporter",
+        DummyProgressReporter,
+    )
+
+    workflow.extract_tables(context)
+
+    assert processed == ["HexaMap.zip", "Valid.zip"]
+    assert logger.error_messages == [
+        "Failed to extract HexaMap.zip: unpack_from requires a buffer"
+    ]

@@ -3,7 +3,11 @@ import pytest
 from ba_downloader.application.services.download import DownloadService
 from ba_downloader.application.services.relation import RelationService
 from ba_downloader.application.services.sync import SyncService
-from ba_downloader.domain.models.asset import AssetCollection, AssetType, RegionCapabilities
+from ba_downloader.domain.models.asset import (
+    AssetCollection,
+    AssetType,
+    RegionCapabilities,
+)
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.logging.console_logger import NullLogger

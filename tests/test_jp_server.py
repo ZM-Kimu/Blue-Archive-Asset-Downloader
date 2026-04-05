@@ -4,12 +4,16 @@ from typing import Any
 
 import pytest
 
-from ba_downloader.domain.models.asset import AssetCollection, BootstrapSession, ResolvedRelease
+from ba_downloader.domain.models.asset import (
+    AssetCollection,
+    BootstrapSession,
+    ResolvedRelease,
+)
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpResponse
-from ba_downloader.infrastructure.logging.console_logger import NullLogger
-from ba_downloader.infrastructure.apk.package_manager import _resolve_filename
 from ba_downloader.domain.services.resource_query import ResourceQueryService
+from ba_downloader.infrastructure.apk.package_manager import _resolve_filename
+from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.regions.providers.jp import DecodedJPCatalog, JPServer
 
 

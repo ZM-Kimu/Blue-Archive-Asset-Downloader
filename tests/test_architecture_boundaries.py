@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 FORBIDDEN_IMPORTS = (
     "ba_downloader.legacy",
     "ba_downloader.utils.",

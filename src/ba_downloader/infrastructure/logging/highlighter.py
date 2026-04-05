@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 from rich.highlighter import RegexHighlighter
 
 
 class LogMessageHighlighter(RegexHighlighter):
     base_style = "log."
-    highlights = [
+    highlights: ClassVar[list[str]] = [
         r"(?P<url>https?://[^\s]+)",
         (
             r"(?:(?<=\s)|^)(?P<path>"

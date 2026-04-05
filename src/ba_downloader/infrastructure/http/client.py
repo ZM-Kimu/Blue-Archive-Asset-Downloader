@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import suppress
 from pathlib import Path
 from time import monotonic
 from typing import Any, Literal
-from collections.abc import Callable, Iterator, Mapping
 
 import httpx
 from curl_cffi import requests as curl_requests
+from curl_cffi.requests.exceptions import RequestException as CurlRequestError
 from curl_cffi.requests.exceptions import Timeout as CurlTimeout
-from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    Retrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.ports.http import (
@@ -20,6 +27,23 @@ from ba_downloader.domain.ports.http import (
 )
 
 CURL_TIMEOUT_EXCEPTIONS: tuple[type[BaseException], ...] = (CurlTimeout,)
+BROWSER_REQUEST_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    CurlRequestError,
+    OSError,
+)
+HTTPX_REQUEST_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    httpx.HTTPError,
+    httpx.TimeoutException,
+    OSError,
+)
+HTTPX_DOWNLOAD_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    *HTTPX_REQUEST_EXCEPTIONS,
+    NetworkError,
+)
+BROWSER_DOWNLOAD_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    *BROWSER_REQUEST_EXCEPTIONS,
+    NetworkError,
+)
 
 
 DEFAULT_USER_AGENT = (
@@ -175,9 +199,7 @@ class ResilientHttpClient(HttpClientPort):
         retrying = Retrying(
             stop=stop_after_attempt(max(1, self.max_retries + 1)),
             wait=wait_exponential(multiplier=0.2, min=0.2, max=2),
-            retry=retry_if_exception_type(
-                (httpx.HTTPError, httpx.TimeoutException, OSError)
-            ),
+            retry=retry_if_exception_type(HTTPX_REQUEST_EXCEPTIONS),
             reraise=True,
         )
         try:
@@ -192,7 +214,7 @@ class ResilientHttpClient(HttpClientPort):
                         params=params,
                         timeout=timeout,
                     )
-        except Exception as exc:
+        except HTTPX_REQUEST_EXCEPTIONS as exc:
             raise NetworkError(f"Failed to fetch {url}: {exc}") from exc
         raise NetworkError(f"Failed to fetch {url}: unexpected retry state.")
 
@@ -210,7 +232,7 @@ class ResilientHttpClient(HttpClientPort):
         retrying = Retrying(
             stop=stop_after_attempt(max(1, self.max_retries + 1)),
             wait=wait_exponential(multiplier=0.2, min=0.2, max=2),
-            retry=retry_if_exception_type(Exception),
+            retry=retry_if_exception_type(BROWSER_REQUEST_EXCEPTIONS),
             reraise=True,
         )
         try:
@@ -225,7 +247,7 @@ class ResilientHttpClient(HttpClientPort):
                         params=params,
                         timeout=timeout,
                     )
-        except Exception as exc:
+        except BROWSER_REQUEST_EXCEPTIONS as exc:
             raise NetworkError(f"Failed to fetch {url}: {exc}") from exc
         raise NetworkError(f"Failed to fetch {url}: unexpected retry state.")
 
@@ -273,7 +295,7 @@ class ResilientHttpClient(HttpClientPort):
         except KeyboardInterrupt:
             destination.unlink(missing_ok=True)
             raise
-        except Exception as exc:
+        except HTTPX_DOWNLOAD_EXCEPTIONS as exc:
             if should_stop is not None and should_stop():
                 destination.unlink(missing_ok=True)
                 raise NetworkError(
@@ -321,7 +343,7 @@ class ResilientHttpClient(HttpClientPort):
         except KeyboardInterrupt:
             destination.unlink(missing_ok=True)
             raise
-        except Exception as exc:
+        except BROWSER_DOWNLOAD_EXCEPTIONS as exc:
             if should_stop is not None and should_stop():
                 destination.unlink(missing_ok=True)
                 raise NetworkError(
@@ -329,11 +351,9 @@ class ResilientHttpClient(HttpClientPort):
                 ) from exc
             raise NetworkError(f"Failed to download {url}: {exc}") from exc
         finally:
-            try:
-                if response is not None:
+            if response is not None:
+                with suppress(OSError, RuntimeError, ValueError):
                     response.close()
-            except Exception:
-                pass
 
     def _stream_to_destination(
         self,

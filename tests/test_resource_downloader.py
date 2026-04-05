@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from pathlib import Path
 from threading import Event
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -73,7 +73,7 @@ class RecordingHttpClient:
 
 
 class RecordingProgressReporter:
-    instances: list[RecordingProgressReporter] = []
+    instances: ClassVar[list[RecordingProgressReporter]] = []
 
     def __init__(self, total: int, description: str, *, download_mode: bool = False) -> None:
         self.total = total
@@ -418,7 +418,7 @@ def test_download_resource_rejects_http_error_status(tmp_path: Path) -> None:
     client = RecordingHttpClient(status_codes=[403])
     downloader = ResourceDownloader(client, NullLogger())
     context = _build_context(tmp_path)
-    resource = list(_build_resources("Bundle/a.bundle"))[0]
+    resource = next(iter(_build_resources("Bundle/a.bundle")))
     asset_path = Path(context.raw_dir) / resource.path
 
     with pytest.raises(RuntimeError, match="403"):
@@ -431,7 +431,7 @@ def test_download_resource_rejects_post_download_size_mismatch(tmp_path: Path) -
     client = RecordingHttpClient(payloads=[b"short"])
     downloader = ResourceDownloader(client, NullLogger())
     context = _build_context(tmp_path)
-    resource = list(_build_resources("Bundle/a.bundle"))[0]
+    resource = next(iter(_build_resources("Bundle/a.bundle")))
     asset_path = Path(context.raw_dir) / resource.path
 
     with pytest.raises(RuntimeError, match="size mismatch"):
@@ -444,7 +444,7 @@ def test_download_resource_rejects_post_download_checksum_mismatch(tmp_path: Pat
     client = RecordingHttpClient(payloads=[b"x" * 10])
     downloader = ResourceDownloader(client, NullLogger())
     context = _build_context(tmp_path)
-    resource = list(_build_resources("Bundle/a.bundle"))[0]
+    resource = next(iter(_build_resources("Bundle/a.bundle")))
     asset_path = Path(context.raw_dir) / resource.path
 
     with pytest.raises(RuntimeError, match="checksum mismatch"):
@@ -458,7 +458,9 @@ def test_download_resource_accepts_valid_downloaded_file(tmp_path: Path) -> None
     client = RecordingHttpClient(payloads=[payload])
     downloader = ResourceDownloader(client, NullLogger())
     context = _build_context(tmp_path)
-    resource = list(_build_checked_resources(tmp_path, "Bundle/a.bundle", payload=payload))[0]
+    resource = next(
+        iter(_build_checked_resources(tmp_path, "Bundle/a.bundle", payload=payload))
+    )
 
     returned_resource = downloader._download_resource(resource, context)
 
@@ -585,6 +587,107 @@ def test_download_resources_does_not_extract_when_post_download_validation_fails
     assert progress.secondary_statuses[-1] == "conc. 1/1"
     assert progress.failed_statuses[-1] == "failed 1"
     assert logger.error_messages == []
+
+
+def test_extract_resource_reuses_media_extractor_instances(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    init_count = {"value": 0}
+
+    class FakeMediaExtractor:
+        def __init__(self, extract_dir: str) -> None:
+            _ = extract_dir
+            init_count["value"] += 1
+
+        def extract_zip(self, file_path: str) -> None:
+            _ = file_path
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.download.resource_downloader.MediaExtractor",
+        FakeMediaExtractor,
+    )
+
+    downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
+    context = _build_context(tmp_path).with_updates(resource_type=("media",))
+    resources = AssetCollection()
+    resources.add(
+        "https://example.com/Media/a.zip",
+        "Media/a.zip",
+        10,
+        "deadbeef",
+        "md5",
+        AssetType.media,
+    )
+    resources.add(
+        "https://example.com/Media/b.zip",
+        "Media/b.zip",
+        10,
+        "deadbeef",
+        "md5",
+        AssetType.media,
+    )
+    resource_one = resources[0]
+    resource_two = resources[1]
+
+    downloader._extract_resource(resource_one, context)
+    downloader._extract_resource(resource_two, context)
+
+    assert init_count["value"] == 1
+
+
+def test_extract_resource_reuses_table_extractor_instances(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    init_count = {"value": 0}
+
+    class FakeTableExtractor:
+        @classmethod
+        def from_context(
+            cls,
+            context: RuntimeContext,
+            logger: NullLogger,
+        ) -> FakeTableExtractor:
+            _ = (context, logger)
+            init_count["value"] += 1
+            return cls()
+
+        def extract_table(self, file_path: str) -> bool:
+            _ = file_path
+            return True
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.download.resource_downloader.TableExtractor",
+        FakeTableExtractor,
+    )
+
+    downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
+    context = _build_context(tmp_path).with_updates(resource_type=("table",))
+    resources = AssetCollection()
+    resources.add(
+        "https://example.com/Table/a.bytes",
+        "Table/a.bytes",
+        10,
+        "deadbeef",
+        "md5",
+        AssetType.table,
+    )
+    resources.add(
+        "https://example.com/Table/b.bytes",
+        "Table/b.bytes",
+        10,
+        "deadbeef",
+        "md5",
+        AssetType.table,
+    )
+    resource_one = resources[0]
+    resource_two = resources[1]
+
+    downloader._extract_resource(resource_one, context)
+    downloader._extract_resource(resource_two, context)
+
+    assert init_count["value"] == 1
 
 
 def test_verify_resource_accepts_jp_crc_decimal_strings(tmp_path: Path) -> None:

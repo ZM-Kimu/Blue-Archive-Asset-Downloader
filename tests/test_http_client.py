@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from collections.abc import Iterator
 
 import httpx
 import pytest
@@ -94,6 +94,33 @@ def test_http_client_download_uses_updated_default_timeout(monkeypatch, tmp_path
 
     assert result.status_code == 200
     assert captured["timeout"] == DEFAULT_DOWNLOAD_TIMEOUT == 600.0
+
+
+def test_http_client_browser_request_does_not_retry_programming_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = ResilientHttpClient(max_retries=3)
+    attempts = {"count": 0}
+
+    def fake_browser_request(*args, **kwargs):  # type: ignore[no-untyped-def]
+        _ = (args, kwargs)
+        attempts["count"] += 1
+        raise ValueError("bad serialization")
+
+    monkeypatch.setattr(client._browser, "request", fake_browser_request)
+
+    with pytest.raises(ValueError, match="bad serialization"):
+        client._request_with_browser(
+            "GET",
+            "https://example.com",
+            headers=None,
+            json=None,
+            data=None,
+            params=None,
+            timeout=5.0,
+        )
+
+    assert attempts["count"] == 1
 
 
 class FakeHttpxResponse:
