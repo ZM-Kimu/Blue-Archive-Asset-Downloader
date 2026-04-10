@@ -103,8 +103,29 @@ function Get-DefaultBaseRef {
     return "HEAD"
 }
 
+function Read-Utf8File {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+}
+
+function Write-Utf8File {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Content
+    )
+
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+}
+
 function Get-ProjectVersion {
-    $content = Get-Content (Join-Path (Get-RepoRoot) "pyproject.toml") -Raw
+    $content = Read-Utf8File (Join-Path (Get-RepoRoot) "pyproject.toml")
     $match = [regex]::Match($content, '(?m)^version = "([^"]+)"\s*$')
     if (-not $match.Success) {
         throw "Unable to locate the project version in pyproject.toml."
@@ -113,7 +134,7 @@ function Get-ProjectVersion {
 }
 
 function Get-ReadmeVersion {
-    $content = Get-Content (Join-Path (Get-RepoRoot) "README.md") -Raw
+    $content = Read-Utf8File (Join-Path (Get-RepoRoot) "README.md")
     $match = [regex]::Match($content, '(?m)^Blue Archive Asset Downloader v([^\r\n]+)\.\s*$')
     if (-not $match.Success) {
         throw "Unable to locate the README version marker."
@@ -128,7 +149,7 @@ function Set-ProjectVersion {
     )
 
     $path = Join-Path (Get-RepoRoot) "pyproject.toml"
-    $content = Get-Content $path -Raw
+    $content = Read-Utf8File $path
     $updated = $content -creplace '(?m)^version = "[^"]+"\s*$', "version = `"$NewVersion`""
 
     if ($updated -eq $content) {
@@ -140,7 +161,7 @@ function Set-ProjectVersion {
         return
     }
 
-    Set-Content -Path $path -Value $updated -Encoding utf8
+    Write-Utf8File -Path $path -Content $updated
 }
 
 function Set-ReadmeVersion {
@@ -150,7 +171,7 @@ function Set-ReadmeVersion {
     )
 
     $path = Join-Path (Get-RepoRoot) "README.md"
-    $content = Get-Content $path -Raw
+    $content = Read-Utf8File $path
     $updated = $content -creplace '(?m)^Blue Archive Asset Downloader v[^\r\n]+\.\s*$', "Blue Archive Asset Downloader v$NewVersion."
 
     if ($updated -eq $content) {
@@ -162,7 +183,7 @@ function Set-ReadmeVersion {
         return
     }
 
-    Set-Content -Path $path -Value $updated -Encoding utf8
+    Write-Utf8File -Path $path -Content $updated
 }
 
 function Invoke-PreflightChecks {
