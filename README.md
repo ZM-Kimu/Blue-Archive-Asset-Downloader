@@ -22,11 +22,11 @@
 - Media
 - Table
 
-提取的文件类型包括：
+<!-- 提取的文件类型包括：
 
 - Bundle(仅JP)
 - Media
-- Table(仅JP)
+- Table(仅JP) -->
 
 #### **注意**：尽管部分区域支持下载不同版本的资源，但是该程序不保证能够提取过时版本的资源文件。
 
@@ -60,10 +60,10 @@ python -m ba_downloader <subcommand> [options]
 
 子命令：
 
-- `ba-downloader sync [options]`: 下载并解开全部内容
+<!-- - `ba-downloader sync [options]`: 下载并解开全部内容 -->
 - `ba-downloader download [options]`: 下载全部内容
-- `ba-downloader extract [options]`: 解开已下载的内容
-- `ba-downloader relation build [options]`: 构建角色信息表
+<!-- - `ba-downloader extract [options]`: 解开已下载的内容 -->
+<!-- - `ba-downloader relation build [options]`: 构建角色信息表 -->
 
 使用下列命令运行完整下载与提取流程（示例）：
 
@@ -86,21 +86,21 @@ python -m ba_downloader sync --region jp
 
 ## **基本参数**
 **`*`** :**必选的选项**
-| 参数                       | 缩&nbsp;写 | 说明                                                                      | 默认值             | 示例                          |
-| -------------------------- | ---------- | ------------------------------------------------------------------------- | ------------------ | ----------------------------- |
-| **`--region`**`*`          | `-r`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                  | 无                 | `-r jp`                       |
-| `--threads`                | `-t`       | **同时下载或解压的线程数**                                                | `20`               | `-t 50`                       |
-| `--version`                | `-v`       | **需要下载的资源的版本号**（主要用于国际服务器）                          | 无                 | `-v 1.2.3`                    |
-| `--platform`               | `-p`       | **JP bundle 平台**：`windows`、`android`、`ios`（仅 JP 生效）             | `android`          | `-p windows`                  |
-| `--raw-dir`                | `-rd`      | **指定未处理文件的位置**                                                  | `"RawData"`        | `-rd raw_folder`              |
-| `--extract-dir`            | `-ed`      | **指定已提取文件的位置**                                                  | `"Extracted"`      | `-ed output_folder`           |
-| `--temp-dir`               | `-td`      | **指定临时文件的位置**                                                    | `"Temp"`           | `-td temp_dir`                |
-| `--extract-while-download` | `-ewd`     | **是否在下载时便提取文件**（⚠较慢，在资源数量多于500时请勿使用）          | `False`            | `--extract-while-download`    |
-| `--resource-type`          | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                           | `all`              | `--resource-type media table` |
-| `--proxy`                  | `-px`      | **设置 HTTP 代理**                                                        | 无（使用系统代理） | `-px http://127.0.0.1:8080`   |
-| `--max-retries`            | `-mr`      | **下载失败时的最大重试次数**                                              | `5`                | `--max-retries 3`             |
-| `--search`                 | `-s`       | **普通检索**，指定需要检索并下载的文件关键词（`sync` 与 `download` 可用） |
-| `--advanced-search`        | `-as`      | **高级检索**，指定角色关键词（仅 `sync` 命令可用，需要.NET8环境）         |
+| 参数                       | 缩&nbsp;写 | 说明                                                                           | 默认值             | 示例                          |
+| -------------------------- | ---------- | ------------------------------------------------------------------------------ | ------------------ | ----------------------------- |
+| **`--region`**`*`          | `-r`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                       | 无                 | `-r jp`                       |
+| `--threads`                | `-t`       | **同时下载或解压的线程数**                                                     | `20`               | `-t 50`                       |
+| `--version`                | `-v`       | **需要下载的资源版本号**（仅 GL 生效）                                         | 无                 | `-v 1.2.3`                    |
+| `--platform`               | `-p`       | **资源所属平台**：`windows`、`android`、`ios`（仅 JP 生效）                    | `android`          | `-p windows`                  |
+| `--raw-dir`                | `-rd`      | **指定未处理文件的位置**                                                       | `"RawData"`        | `-rd raw_folder`              |
+| `--extract-dir`            | `-ed`      | **指定已提取文件的位置**                                                       | `"Extracted"`      | `-ed output_folder`           |
+| `--temp-dir`               | `-td`      | **指定临时文件的位置**                                                         | `"Temp"`           | `-td temp_dir`                |
+| `--extract-while-download` | `-ewd`     | **是否在下载时便提取文件**（仅 `sync` 可用；较慢，在资源数量较多时酌情使用）   | `False`            | `--extract-while-download`    |
+| `--resource-type`          | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                                | `all`              | `--resource-type media table` |
+| `--proxy`                  | `-px`      | **设置 HTTP 代理**                                                             | 无（使用系统代理） | `-px http://127.0.0.1:8080`   |
+| `--max-retries`            | `-mr`      | **下载失败时的最大重试次数**                                                   | `5`                | `--max-retries 3`             |
+| `--search`                 | `-s`       | **普通检索**，指定需要检索并下载的文件关键词（仅 `sync` 与 `download` 可用）   |
+| `--advanced-search`        | `-as`      | **高级检索**，指定角色关键词（仅 `sync` 可用；当前仅 GL 支持，需要 .NET 环境） |
 
 **(CN服务器目前不支持高级检索)高级检索支持的检索条件：**
 - `[*]` **角色名称**
@@ -119,7 +119,7 @@ python -m ba_downloader sync --region jp
   - `FoodService`、`Countermeasure`、`BookClub`、`MatsuriOffice` ...
 
 ---
-#### 并且，在不同的服务器中亦支持不同的名称检索方式，具体内容请参照`CharacterRelation.json`。
+#### 并且，在不同的服务器中亦支持不同的名称检索方式，具体内容请参照`<Region>CharacterRelation.json`。
 - 示例：
   > sync
   >```sh
@@ -152,16 +152,12 @@ JP 默认目录会按平台隔离：
 
 ```shell
 ba-downloader download --region jp --platform windows
-python -m ba_downloader extract --region jp --platform ios
 ```
 
 
 ## 使用须知
-- `--platform` 仅对 JP 生效，用于切换 JP bundle 路径：
-  - `windows -> Windows_PatchPack`
-  - `android -> Android_PatchPack`
-  - `ios -> iOS_PatchPack`
-  - 在 `cn/gl` 上显式传入时只会提示已忽略。
+- `--platform` 仅对 JP 生效，用于指定 JP 平台的资源：
+  - 同时影响 JP 默认输出目录前缀，例如 `JP_Windows_RawData`。
 - JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本，后续开放官方 PC 版解析支持。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
