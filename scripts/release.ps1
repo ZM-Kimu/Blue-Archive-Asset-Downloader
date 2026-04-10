@@ -93,9 +93,36 @@ function Test-GitRef {
     return $LASTEXITCODE -eq 0
 }
 
+function Get-PreferredRemote {
+    $upstream = & git rev-parse --abbrev-ref --symbolic-full-name "@{upstream}" 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($upstream)) {
+        $parts = $upstream.Trim().Split("/", 2)
+        if ($parts.Length -ge 2 -and -not [string]::IsNullOrWhiteSpace($parts[0])) {
+            return $parts[0]
+        }
+    }
+
+    if (Test-GitRef -RefName "origin/HEAD" -or Test-GitRef -RefName "origin/main") {
+        return "origin"
+    }
+
+    $remotes = & git remote 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        foreach ($remote in $remotes) {
+            if (-not [string]::IsNullOrWhiteSpace($remote)) {
+                return $remote.Trim()
+            }
+        }
+    }
+
+    throw "Unable to determine the preferred Git remote."
+}
+
 function Get-DefaultBaseRef {
-    if (Test-GitRef -RefName "origin/main") {
-        return "origin/main"
+    $remote = Get-PreferredRemote
+
+    if (Test-GitRef -RefName "$remote/main") {
+        return "$remote/main"
     }
     if (Test-GitRef -RefName "main") {
         return "main"
@@ -150,6 +177,14 @@ function Set-ProjectVersion {
 
     $path = Join-Path (Get-RepoRoot) "pyproject.toml"
     $content = Read-Utf8File $path
+    $currentVersion = [regex]::Match($content, '(?m)^version = "([^"]+)"\s*$')
+    if ($currentVersion.Success -and $currentVersion.Groups[1].Value -eq $NewVersion) {
+        if ($DryRun) {
+            Write-Host "[dry-run] Project version already matches $NewVersion" -ForegroundColor Cyan
+        }
+        return
+    }
+
     $updated = $content -creplace '(?m)^version = "[^"]+"\s*$', "version = `"$NewVersion`""
 
     if ($updated -eq $content) {
@@ -172,6 +207,14 @@ function Set-ReadmeVersion {
 
     $path = Join-Path (Get-RepoRoot) "README.md"
     $content = Read-Utf8File $path
+    $currentVersion = [regex]::Match($content, '(?m)^Blue Archive Asset Downloader v([^\r\n]+)\.\s*$')
+    if ($currentVersion.Success -and $currentVersion.Groups[1].Value -eq $NewVersion) {
+        if ($DryRun) {
+            Write-Host "[dry-run] README version already matches $NewVersion" -ForegroundColor Cyan
+        }
+        return
+    }
+
     $updated = $content -creplace '(?m)^Blue Archive Asset Downloader v[^\r\n]+\.\s*$', "Blue Archive Asset Downloader v$NewVersion."
 
     if ($updated -eq $content) {
@@ -260,14 +303,16 @@ function Push-CurrentBranch {
         [string]$BranchName
     )
 
+    $remote = Get-PreferredRemote
+
     if ($DryRun) {
-        Write-Host "[dry-run] Would push branch '$BranchName' to origin" -ForegroundColor Cyan
+        Write-Host "[dry-run] Would push branch '$BranchName' to $remote" -ForegroundColor Cyan
         return
     }
 
-    & git push origin $BranchName
+    & git push $remote $BranchName
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to push branch '$BranchName' to origin."
+        throw "Failed to push branch '$BranchName' to $remote."
     }
 }
 
