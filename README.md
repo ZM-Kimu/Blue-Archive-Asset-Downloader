@@ -179,7 +179,6 @@ ba-downloader download --region jp --platform windows
   
 ## 关于项目
 Blue Archive Asset Downloader v2.0.0.
-
 ✨ 技术支持：Codex ✨
 
 本项目采用 [MIT 许可证](LICENSE)。
