@@ -72,7 +72,9 @@ class MemoryPackWriter:
         for value in values:
             item_writer(self, value)
 
-    def write_string_map(self, values: dict[str, Any] | None, value_writer: Any) -> None:
+    def write_string_map(
+        self, values: dict[str, Any] | None, value_writer: Any
+    ) -> None:
         if values is None:
             self.write_collection_header(None)
             return
@@ -106,7 +108,9 @@ class RecordingHttpClient:
         return self.responses[key]
 
     def download_to_file(self, *args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("download_to_file should not be used in JP manifest tests.")
+        raise AssertionError(
+            "download_to_file should not be used in JP manifest tests."
+        )
 
     def close(self) -> None:
         return None
@@ -139,7 +143,9 @@ def _write_table_bundle(writer: MemoryPackWriter, bundle: dict[str, Any]) -> Non
             payload.write_bool(bundle["is_changed"]),
             payload.write_bool(bundle["is_prologue"]),
             payload.write_bool(bundle["is_split_download"]),
-            payload.write_array(bundle["includes"], lambda nested, item: nested.write_string(item)),
+            payload.write_array(
+                bundle["includes"], lambda nested, item: nested.write_string(item)
+            ),
         ),
     )
 
@@ -289,9 +295,13 @@ def test_get_resource_manifest_uses_second_root_and_bundle_packing_info() -> Non
                     "ConnectionGroups": [
                         {
                             "OverrideConnectionGroups": [
-                                {"AddressablesCatalogUrlRoot": "https://ignore.invalid/root"},
+                                {
+                                    "AddressablesCatalogUrlRoot": "https://ignore.invalid/root"
+                                },
                                 {"AddressablesCatalogUrlRoot": catalog_root},
-                                {"AddressablesCatalogUrlRoot": "https://last.invalid/root"},
+                                {
+                                    "AddressablesCatalogUrlRoot": "https://last.invalid/root"
+                                },
                             ]
                         }
                     ]
@@ -368,7 +378,9 @@ def test_get_resource_manifest_uses_second_root_and_bundle_packing_info() -> Non
     ) not in client.calls
     assert any(item.path == "Table/MainTable.bytes" for item in resources)
     assert any(item.path == "Table/PackTable.bytes" for item in resources)
-    assert any(item.path == "Media/GameData/Audio/BGM/title_theme.zip" for item in resources)
+    assert any(
+        item.path == "Media/GameData/Audio/BGM/title_theme.zip" for item in resources
+    )
     bundle_items = [item for item in resources if item.path.startswith("Bundle/")]
     assert {item.path for item in bundle_items} == {
         "Bundle/bundle/full.pack",
@@ -390,7 +402,9 @@ def test_search_name_matches_jp_bundle_files_from_patch_pack() -> None:
                         "ConnectionGroups": [
                             {
                                 "OverrideConnectionGroups": [
-                                    {"AddressablesCatalogUrlRoot": "https://ignore.invalid/root"},
+                                    {
+                                        "AddressablesCatalogUrlRoot": "https://ignore.invalid/root"
+                                    },
                                     {"AddressablesCatalogUrlRoot": catalog_root},
                                 ]
                             }
@@ -405,13 +419,19 @@ def test_search_name_matches_jp_bundle_files_from_patch_pack() -> None:
                 content=_build_table_catalog_bytes(),
                 url=f"{catalog_root}/TableBundles/TableCatalog.bytes",
             ),
-            ("GET", f"{catalog_root}/MediaResources/Catalog/MediaCatalog.bytes"): HttpResponse(
+            (
+                "GET",
+                f"{catalog_root}/MediaResources/Catalog/MediaCatalog.bytes",
+            ): HttpResponse(
                 status_code=200,
                 headers={},
                 content=_build_media_catalog_bytes(),
                 url=f"{catalog_root}/MediaResources/Catalog/MediaCatalog.bytes",
             ),
-            ("GET", f"{catalog_root}/Android_PatchPack/BundlePackingInfo.json"): HttpResponse(
+            (
+                "GET",
+                f"{catalog_root}/Android_PatchPack/BundlePackingInfo.json",
+            ): HttpResponse(
                 status_code=200,
                 headers={"content-type": "application/json"},
                 content=json.dumps(
@@ -483,7 +503,10 @@ def test_jp_catalog_source_provider_uses_selected_platform_for_bundle_manifest(
                 content=_build_table_catalog_bytes(),
                 url=f"{catalog_root}/TableBundles/TableCatalog.bytes",
             ),
-            ("GET", f"{catalog_root}/MediaResources/Catalog/MediaCatalog.bytes"): HttpResponse(
+            (
+                "GET",
+                f"{catalog_root}/MediaResources/Catalog/MediaCatalog.bytes",
+            ): HttpResponse(
                 status_code=200,
                 headers={},
                 content=_build_media_catalog_bytes(),
@@ -492,7 +515,9 @@ def test_jp_catalog_source_provider_uses_selected_platform_for_bundle_manifest(
             ("GET", f"{catalog_root}/{patch_dir}/BundlePackingInfo.json"): HttpResponse(
                 status_code=200,
                 headers={"content-type": "application/json"},
-                content=json.dumps({"FullPatchPacks": [], "UpdatePacks": []}).encode("utf-8"),
+                content=json.dumps({"FullPatchPacks": [], "UpdatePacks": []}).encode(
+                    "utf-8"
+                ),
                 url=f"{catalog_root}/{patch_dir}/BundlePackingInfo.json",
             ),
         }
@@ -502,7 +527,10 @@ def test_jp_catalog_source_provider_uses_selected_platform_for_bundle_manifest(
     provider.catalog_source_provider.fetch(session, context)
 
     assert ("GET", f"{catalog_root}/{patch_dir}/BundlePackingInfo.json") in client.calls
-    assert ("GET", f"{catalog_root}/Android_PatchPack/BundlePackingInfo.json") not in client.calls
+    assert (
+        "GET",
+        f"{catalog_root}/Android_PatchPack/BundlePackingInfo.json",
+    ) not in client.calls
 
 
 @pytest.mark.parametrize(
@@ -548,7 +576,9 @@ def test_jp_asset_normalizer_uses_platform_specific_bundle_urls(
     assert assets[0].path == "Bundle/bundle/full.pack"
 
 
-def test_load_catalog_logs_happy_path_at_info_level(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_catalog_logs_happy_path_at_info_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     logger = RecordingLogger()
     provider = JPServer(RecordingHttpClient({}), logger)
     context = RuntimeContext(
@@ -569,7 +599,9 @@ def test_load_catalog_logs_happy_path_at_info_level(monkeypatch: pytest.MonkeyPa
     resolved_context = context.with_updates(version="1.2.3")
     resources = AssetCollection()
 
-    monkeypatch.setattr(provider.pipeline, "load", lambda active_context: (resources, resolved_context))
+    monkeypatch.setattr(
+        provider.pipeline, "load", lambda active_context: (resources, resolved_context)
+    )
 
     result = provider.load_catalog(context)
 
@@ -615,7 +647,9 @@ def test_jp_bootstrap_translates_package_download_validation_errors(
         ),
     )
 
-    with pytest.raises(LookupError, match="Downloaded JP package is invalid or incomplete"):
+    with pytest.raises(
+        LookupError, match="Downloaded JP package is invalid or incomplete"
+    ):
         bootstrapper.bootstrap(release, context)
 
 
@@ -652,5 +686,7 @@ def test_jp_bootstrap_translates_package_extraction_errors(
         lambda *args, **kwargs: str(package_path),
     )
 
-    with pytest.raises(LookupError, match="Downloaded JP package is invalid or incomplete"):
+    with pytest.raises(
+        LookupError, match="Downloaded JP package is invalid or incomplete"
+    ):
         bootstrapper.bootstrap(release, context)

@@ -17,7 +17,11 @@ class DownloadService:
         catalog = self.provider.load_catalog(context)
         resources = catalog.resources
         if catalog.context.search:
-            resources = ResourceQueryService.search_name(resources, catalog.context.search)
-        filtered = ResourceQueryService.filter_type(resources, catalog.context.resource_type)
+            resources = ResourceQueryService.search_name(
+                resources, catalog.context.search
+            )
+        filtered = ResourceQueryService.filter_type(
+            resources, catalog.context.resource_type
+        )
         self.downloader.verify_and_download(filtered, catalog.context)
         return catalog.context

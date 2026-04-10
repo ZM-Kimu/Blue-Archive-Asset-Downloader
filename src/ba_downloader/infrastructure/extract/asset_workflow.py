@@ -41,7 +41,10 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         self.logger = logger
         self._force_exit = force_exit or os._exit
         self._wait_policy = build_future_wait_policy(
-            self.logger, self.POLL_INTERVAL_SECONDS, self.INTERRUPT_GRACE_SECONDS, "Extraction"
+            self.logger,
+            self.POLL_INTERVAL_SECONDS,
+            self.INTERRUPT_GRACE_SECONDS,
+            "Extraction",
         )
 
     def extract_bundles(self, context: RuntimeContext) -> None:
@@ -52,21 +55,28 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         freeze_support()
         queue: multiprocessing.queues.Queue[str] = Queue()
         error_count = multiprocessing.Value("i", 0)
-        bundles = [str(bundle_folder / bundle.name) for bundle in bundle_folder.iterdir()]
+        bundles = [
+            str(bundle_folder / bundle.name) for bundle in bundle_folder.iterdir()
+        ]
         for bundle in bundles:
             queue.put(bundle)
 
         stop_event = Event()
-        processes = self._build_bundle_processes(queue, context, len(bundles), error_count)
+        processes = self._build_bundle_processes(
+            queue, context, len(bundles), error_count
+        )
 
         try:
-            with self._install_interrupt_handler(
-                stop_event,
-                on_interrupt=lambda: self._stop_bundle_processes(processes),
-            ), RichProgressReporter(
-                len(bundles),
-                "Extracting bundles...",
-            ) as progress:
+            with (
+                self._install_interrupt_handler(
+                    stop_event,
+                    on_interrupt=lambda: self._stop_bundle_processes(processes),
+                ),
+                RichProgressReporter(
+                    len(bundles),
+                    "Extracting bundles...",
+                ) as progress,
+            ):
                 self._start_bundle_processes(processes)
                 self._monitor_bundle_extraction(
                     queue=queue,
@@ -97,13 +107,18 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         extractor = MediaExtractor(context)
         stop_event = Event()
         future_map: dict[Future[None], str] = {}
-        executor = ThreadPoolExecutor(max_workers=min(max(context.threads, 1), len(files)))
+        executor = ThreadPoolExecutor(
+            max_workers=min(max(context.threads, 1), len(files))
+        )
 
         try:
-            with self._install_interrupt_handler(stop_event), RichProgressReporter(
-                len(files),
-                "Extracting media...",
-            ) as progress:
+            with (
+                self._install_interrupt_handler(stop_event),
+                RichProgressReporter(
+                    len(files),
+                    "Extracting media...",
+                ) as progress,
+            ):
                 future_map = {
                     executor.submit(
                         extractor.extract_zip,
@@ -132,7 +147,9 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         extractor = TableExtractor.from_context(context, self.logger)
         Path(extractor.extract_folder).mkdir(parents=True, exist_ok=True)
         table_files = [
-            file_path.name for file_path in table_folder.iterdir() if file_path.is_file()
+            file_path.name
+            for file_path in table_folder.iterdir()
+            if file_path.is_file()
         ]
         if not table_files:
             return
@@ -144,10 +161,13 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         )
 
         try:
-            with self._install_interrupt_handler(stop_event), RichProgressReporter(
-                len(table_files),
-                "Extracting table files...",
-            ) as progress:
+            with (
+                self._install_interrupt_handler(stop_event),
+                RichProgressReporter(
+                    len(table_files),
+                    "Extracting table files...",
+                ) as progress,
+            ):
                 future_map = {
                     executor.submit(
                         extractor.extract_table,

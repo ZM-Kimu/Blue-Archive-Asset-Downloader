@@ -96,7 +96,12 @@ class RichProgressReporter(ProgressReporterPort):
             )
         else:
             columns.extend(
-                [BarColumn(), TaskProgressColumn(), TimeElapsedColumn(), TimeRemainingColumn()]
+                [
+                    BarColumn(),
+                    TaskProgressColumn(),
+                    TimeElapsedColumn(),
+                    TimeRemainingColumn(),
+                ]
             )
 
         self._progress = Progress(*columns, console=get_console(), transient=False)

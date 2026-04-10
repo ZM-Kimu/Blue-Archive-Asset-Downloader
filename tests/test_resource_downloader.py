@@ -78,7 +78,9 @@ class RecordingHttpClient:
 class RecordingProgressReporter:
     instances: ClassVar[list[RecordingProgressReporter]] = []
 
-    def __init__(self, total: int, description: str, *, download_mode: bool = False) -> None:
+    def __init__(
+        self, total: int, description: str, *, download_mode: bool = False
+    ) -> None:
         self.total = total
         self.description = description
         self.download_mode = download_mode
@@ -218,7 +220,9 @@ def test_download_resources_tracks_aggregate_bytes(monkeypatch, tmp_path: Path) 
         "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
         RecordingProgressReporter,
     )
-    monkeypatch.setattr(downloader, "_install_interrupt_handler", lambda stop_event: nullcontext())
+    monkeypatch.setattr(
+        downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
+    )
 
     failed = downloader._download_resources(list(resources), context)
 
@@ -240,7 +244,9 @@ def test_download_resources_tracks_aggregate_bytes(monkeypatch, tmp_path: Path) 
     assert callable(client.download_calls[0]["should_stop"])
 
 
-def test_handle_interrupt_closes_client_and_force_exits_on_second_interrupt(tmp_path: Path) -> None:
+def test_handle_interrupt_closes_client_and_force_exits_on_second_interrupt(
+    tmp_path: Path,
+) -> None:
     client = RecordingHttpClient()
     exit_codes: list[int] = []
     downloader = ResourceDownloader(client, NullLogger(), force_exit=exit_codes.append)
@@ -271,7 +277,9 @@ def test_classify_download_failure(message: str, expected: str) -> None:
     assert downloader._classify_download_failure(RuntimeError(message)) == expected
 
 
-def test_adaptive_concurrency_decreases_and_resets_success_counter(tmp_path: Path) -> None:
+def test_adaptive_concurrency_decreases_and_resets_success_counter(
+    tmp_path: Path,
+) -> None:
     downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
     context = _build_context(tmp_path).with_updates(threads=5)
     state = downloader._create_adaptive_download_state(
@@ -335,14 +343,24 @@ def test_download_resources_keeps_concurrency_on_non_network_failure(
         "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
         RecordingProgressReporter,
     )
-    monkeypatch.setattr(downloader, "_install_interrupt_handler", lambda stop_event: nullcontext())
+    monkeypatch.setattr(
+        downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
+    )
 
     failed = downloader._download_resources(resources, context, adaptive_state=state)
 
     assert [resource.path for resource in failed] == ["Bundle/a.bundle"]
     assert state.target_concurrency == 2
-    assert not [message for message in logger.warn_messages if "Adaptive download concurrency" in message]
-    assert not [message for message in logger.info_messages if "Adaptive download concurrency" in message]
+    assert not [
+        message
+        for message in logger.warn_messages
+        if "Adaptive download concurrency" in message
+    ]
+    assert not [
+        message
+        for message in logger.info_messages
+        if "Adaptive download concurrency" in message
+    ]
     assert logger.error_messages == []
     progress = RecordingProgressReporter.instances[-1]
     assert progress.statuses[-1] == "1/2 files"
@@ -371,7 +389,9 @@ def test_download_resources_reduces_concurrency_for_timeout_failures(
         "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
         RecordingProgressReporter,
     )
-    monkeypatch.setattr(downloader, "_install_interrupt_handler", lambda stop_event: nullcontext())
+    monkeypatch.setattr(
+        downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
+    )
 
     failed = downloader._download_resources(resources, context, adaptive_state=state)
 
@@ -409,7 +429,9 @@ def test_download_resources_treats_network_timeout_as_retryable_failure(
         "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
         RecordingProgressReporter,
     )
-    monkeypatch.setattr(downloader, "_install_interrupt_handler", lambda stop_event: nullcontext())
+    monkeypatch.setattr(
+        downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
+    )
 
     failed = downloader._download_resources(resources, context, adaptive_state=state)
 
@@ -439,7 +461,9 @@ def test_retry_rounds_reuse_adaptive_state(monkeypatch, tmp_path: Path) -> None:
         "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
         RecordingProgressReporter,
     )
-    monkeypatch.setattr(downloader, "_install_interrupt_handler", lambda stop_event: nullcontext())
+    monkeypatch.setattr(
+        downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
+    )
 
     failed = downloader._download_resources(
         retry_resources,
@@ -481,7 +505,9 @@ def test_download_resource_rejects_post_download_size_mismatch(tmp_path: Path) -
     assert not asset_path.exists()
 
 
-def test_download_resource_rejects_post_download_checksum_mismatch(tmp_path: Path) -> None:
+def test_download_resource_rejects_post_download_checksum_mismatch(
+    tmp_path: Path,
+) -> None:
     client = RecordingHttpClient(payloads=[b"x" * 10])
     downloader = ResourceDownloader(client, NullLogger())
     context = _build_context(tmp_path)
@@ -643,12 +669,16 @@ def test_verify_and_download_logs_successful_completion(
     context = _build_context(tmp_path)
     pending_resources = list(_build_resources("Bundle/a.bundle"))
 
-    monkeypatch.setattr(downloader, "_verify_resources", lambda *_args, **_kwargs: pending_resources)
+    monkeypatch.setattr(
+        downloader, "_verify_resources", lambda *_args, **_kwargs: pending_resources
+    )
     monkeypatch.setattr(downloader, "_download_resources", lambda *_args, **_kwargs: [])
 
     downloader.verify_and_download(_build_resources("Bundle/a.bundle"), context)
 
-    assert logger.info_messages[-1] == "All files have been downloaded to your computer."
+    assert (
+        logger.info_messages[-1] == "All files have been downloaded to your computer."
+    )
 
 
 def test_verify_and_download_retries_failed_downloads_before_logging_success(
@@ -675,7 +705,9 @@ def test_verify_and_download_retries_failed_downloads_before_logging_success(
     downloader.verify_and_download(_build_resources("Bundle/a.bundle"), context)
 
     assert logger.warn_messages[-1] == "Retrying 1 failed files. Attempt 1/1."
-    assert logger.info_messages[-1] == "All files have been downloaded to your computer."
+    assert (
+        logger.info_messages[-1] == "All files have been downloaded to your computer."
+    )
     assert not logger.error_messages
 
 
@@ -701,7 +733,9 @@ def test_verify_and_download_does_not_log_success_when_retries_are_exhausted(
 
     downloader.verify_and_download(_build_resources("Bundle/a.bundle"), context)
 
-    assert "All files have been downloaded to your computer." not in logger.info_messages
+    assert (
+        "All files have been downloaded to your computer." not in logger.info_messages
+    )
     assert logger.error_messages[-1] == "Failed to download 1 files after retries."
 
 
@@ -721,7 +755,9 @@ def test_download_resources_does_not_extract_when_post_download_validation_fails
         "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
         RecordingProgressReporter,
     )
-    monkeypatch.setattr(downloader, "_install_interrupt_handler", lambda stop_event: nullcontext())
+    monkeypatch.setattr(
+        downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
+    )
     monkeypatch.setattr(
         downloader,
         "_extract_resource",

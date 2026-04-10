@@ -47,7 +47,9 @@ class ArchiveHttpClient(DummyHttpClient):
         archive_root = f"Cpp2IL-{CPP2IL_COMMIT}"
         with ZipFile(dest_path, "w") as archive:
             archive.writestr(f"{archive_root}/Cpp2IL/Cpp2IL.csproj", "<Project />")
-            archive.writestr(f"{archive_root}/LibCpp2IL/LibCpp2IL.csproj", "<Project />")
+            archive.writestr(
+                f"{archive_root}/LibCpp2IL/LibCpp2IL.csproj", "<Project />"
+            )
 
 
 class RecordingLogger:
@@ -164,7 +166,9 @@ def test_flatbuffer_workflow_does_not_fallback_when_jp_backend_fails(
     assert ForbiddenBackend.called is False
 
 
-def test_cpp2il_framework_selection_prefers_net9(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cpp2il_framework_selection_prefers_net9(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         "ba_downloader.infrastructure.tools.dump_backend.get_installed_dotnet_sdk_major_versions",
         lambda: {8, 9},
@@ -261,7 +265,9 @@ def test_cpp2il_source_resolver_downloads_and_reuses_cache(
     assert len(http_client.download_calls) == 1
 
 
-def test_cpp2il_exporter_project_is_generated_from_template_files(tmp_path: Path) -> None:
+def test_cpp2il_exporter_project_is_generated_from_template_files(
+    tmp_path: Path,
+) -> None:
     context = _build_context(tmp_path, region="jp")
     cpp2il_root = tmp_path / "Cpp2IL"
     _create_cpp2il_tree(cpp2il_root)
@@ -271,8 +277,10 @@ def test_cpp2il_exporter_project_is_generated_from_template_files(tmp_path: Path
     assert EXPORTER_CSPROJ_TEMPLATE_PATH.exists()
     assert EXPORTER_PROGRAM_CS_PATH.exists()
     assert "LibCpp2IL.csproj" in project_path.read_text(encoding="utf8")
-    assert (project_path.parent / "Program.cs").read_text(encoding="utf8").startswith(
-        "using System.Reflection;"
+    assert (
+        (project_path.parent / "Program.cs")
+        .read_text(encoding="utf8")
+        .startswith("using System.Reflection;")
     )
 
 
@@ -336,11 +344,21 @@ def test_cpp2il_backend_logs_framework_retry_as_warning_and_success_as_info(
             )
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(backend.source_resolver, "resolve", lambda _context: tmp_path / "Cpp2IL")
-    monkeypatch.setattr(backend, "_ensure_exporter_project", lambda *_args, **_kwargs: exporter_project)
-    monkeypatch.setattr(backend, "_resolve_unity_version", lambda *_args, **_kwargs: "2021.3.36f1")
-    monkeypatch.setattr(backend, "_resolve_framework_order", lambda: ("net9.0", "net8.0"))
-    monkeypatch.setattr("ba_downloader.infrastructure.tools.dump_backend.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        backend.source_resolver, "resolve", lambda _context: tmp_path / "Cpp2IL"
+    )
+    monkeypatch.setattr(
+        backend, "_ensure_exporter_project", lambda *_args, **_kwargs: exporter_project
+    )
+    monkeypatch.setattr(
+        backend, "_resolve_unity_version", lambda *_args, **_kwargs: "2021.3.36f1"
+    )
+    monkeypatch.setattr(
+        backend, "_resolve_framework_order", lambda: ("net9.0", "net8.0")
+    )
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.tools.dump_backend.subprocess.run", fake_run
+    )
 
     backend.dump(context, str(tmp_path / "Extracted" / "Dumps"))
 

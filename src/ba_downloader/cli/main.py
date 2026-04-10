@@ -38,7 +38,9 @@ class _StorePlatformAction(argparse.Action):
         _ = parser
         _ = option_string
         if not isinstance(values, str):
-            raise argparse.ArgumentError(self, "Platform must be a single string value.")
+            raise argparse.ArgumentError(
+                self, "Platform must be a single string value."
+            )
         setattr(namespace, self.dest, values)
         namespace.platform_explicit = True
 
@@ -84,12 +86,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(download_parser)
     download_parser.add_argument("--search", "-s", nargs="*", default=[])
 
-    extract_parser = subparsers.add_parser("extract", help="Extract existing raw assets")
+    extract_parser = subparsers.add_parser(
+        "extract", help="Extract existing raw assets"
+    )
     _add_common_options(extract_parser)
 
-    relation_parser = subparsers.add_parser("relation", help="Character relation commands")
-    relation_sub = relation_parser.add_subparsers(dest="relation_command", required=True)
-    relation_build = relation_sub.add_parser("build", help="Build character relation file")
+    relation_parser = subparsers.add_parser(
+        "relation", help="Character relation commands"
+    )
+    relation_sub = relation_parser.add_subparsers(
+        dest="relation_command", required=True
+    )
+    relation_build = relation_sub.add_parser(
+        "build", help="Build character relation file"
+    )
     _add_common_options(relation_build)
 
     return parser
@@ -176,7 +186,9 @@ def _build_relation_builder_factory(
 ) -> Callable[[RuntimeContext], Any]:
     from ba_downloader.infrastructure.extractors.character import CharacterNameRelation
 
-    def relation_builder_factory(active_context: RuntimeContext) -> CharacterNameRelation:
+    def relation_builder_factory(
+        active_context: RuntimeContext,
+    ) -> CharacterNameRelation:
         return CharacterNameRelation(active_context, logger)
 
     return relation_builder_factory

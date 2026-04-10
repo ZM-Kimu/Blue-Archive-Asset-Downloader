@@ -33,12 +33,12 @@ CN_EXPORTER_LOOP_PATTERN = re.compile(
 )
 
 EXPORTER_TEMPLATE_DIR = Path(__file__).with_name("templates")
-EXPORTER_CSPROJ_TEMPLATE_PATH = EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.csproj.template"
+EXPORTER_CSPROJ_TEMPLATE_PATH = (
+    EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.csproj.template"
+)
 EXPORTER_PROGRAM_CS_PATH = EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.Program.cs"
 CN_METADATA_EXPORTER_PROJECT = (
-    Path("third_party")
-    / "cn_metadata_exporter"
-    / "cn_metadata_exporter.csproj"
+    Path("third_party") / "cn_metadata_exporter" / "cn_metadata_exporter.csproj"
 )
 
 
@@ -214,12 +214,13 @@ class CnMetadataDumpBackend(Il2CppDumpBackendPort):
             self.logger,
         )
         if result.returncode != 0:
-            summary = result.stderr.strip() or result.stdout.strip() or (
-                f"Process exited with code {result.returncode}."
+            summary = (
+                result.stderr.strip()
+                or result.stdout.strip()
+                or (f"Process exited with code {result.returncode}.")
             )
             raise CnMetadataDumpError(
-                "Failed to dump CN metadata with cn_metadata_exporter: "
-                f"{summary}"
+                "Failed to dump CN metadata with cn_metadata_exporter: " f"{summary}"
             )
         self.logger.info("Dumped CN metadata successfully.")
 
@@ -264,7 +265,9 @@ class Cpp2ILSourceResolver:
         if self._is_valid_cpp2il_root(cache_root):
             return cache_root
 
-        self.logger.warn("Cpp2IL source is missing. Downloading fallback source package...")
+        self.logger.warn(
+            "Cpp2IL source is missing. Downloading fallback source package..."
+        )
         self._download_to_cache(cache_root)
         if self._is_valid_cpp2il_root(cache_root):
             return cache_root
@@ -333,7 +336,9 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
     ) -> None:
         self.http_client = http_client
         self.logger = logger
-        self.source_resolver = source_resolver or Cpp2ILSourceResolver(http_client, logger)
+        self.source_resolver = source_resolver or Cpp2ILSourceResolver(
+            http_client, logger
+        )
 
     def dump(self, context: RuntimeContext, output_dir: str) -> None:
         base_dir = Path(context.temp_dir)
@@ -425,7 +430,9 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
 
     @staticmethod
     def _ensure_exporter_project(context: RuntimeContext, cpp2il_root: Path) -> Path:
-        export_root = Path(context.work_dir) / ".ba-downloader" / "tools" / EXPORTER_PROJECT_NAME
+        export_root = (
+            Path(context.work_dir) / ".ba-downloader" / "tools" / EXPORTER_PROJECT_NAME
+        )
         export_root.mkdir(parents=True, exist_ok=True)
 
         project_path = export_root / f"{EXPORTER_PROJECT_NAME}.csproj"
@@ -463,9 +470,15 @@ class DumperBackendRegistry:
 
 def build_default_dumper_backend_registry() -> DumperBackendRegistry:
     registry = DumperBackendRegistry()
-    registry.register("cn", lambda http_client, logger: CnMetadataDumpBackend(http_client, logger))
-    registry.register("gl", lambda http_client, logger: LegacyIl2CppDumperBackend(http_client, logger))
-    registry.register("jp", lambda http_client, logger: Cpp2IlDumpCsBackend(http_client, logger))
+    registry.register(
+        "cn", lambda http_client, logger: CnMetadataDumpBackend(http_client, logger)
+    )
+    registry.register(
+        "gl", lambda http_client, logger: LegacyIl2CppDumperBackend(http_client, logger)
+    )
+    registry.register(
+        "jp", lambda http_client, logger: Cpp2IlDumpCsBackend(http_client, logger)
+    )
     return registry
 
 

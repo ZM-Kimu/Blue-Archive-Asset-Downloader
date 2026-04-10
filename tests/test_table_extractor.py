@@ -76,14 +76,16 @@ def _create_flat_data_package(flat_data_dir: Path) -> None:
     )
     (flat_data_dir / "dump_wrapper.py").write_text(
         "def dump_table(table_instance):\n"
-        "    return [{\"kind\": \"excel\"}]\n\n"
-        "def dump_GroundGridFlat(excel_instance, password: bytes = b\"\"):\n"
-        "    return {\"kind\": \"ground_grid\"}\n",
+        '    return [{"kind": "excel"}]\n\n'
+        'def dump_GroundGridFlat(excel_instance, password: bytes = b""):\n'
+        '    return {"kind": "ground_grid"}\n',
         encoding="utf8",
     )
 
 
-def test_table_extractor_loads_generated_flat_data_from_directory(tmp_path: Path) -> None:
+def test_table_extractor_loads_generated_flat_data_from_directory(
+    tmp_path: Path,
+) -> None:
     context = _build_context(tmp_path)
     flat_data_dir = Path(context.extract_dir) / "FlatData"
     _create_flat_data_package(flat_data_dir)
@@ -94,7 +96,9 @@ def test_table_extractor_loads_generated_flat_data_from_directory(tmp_path: Path
     assert extractor.dump_wrapper_lib.__name__.endswith(".dump_wrapper")
 
 
-def test_table_extractor_raises_when_flat_data_directory_is_missing(tmp_path: Path) -> None:
+def test_table_extractor_raises_when_flat_data_directory_is_missing(
+    tmp_path: Path,
+) -> None:
     context = _build_context(tmp_path)
 
     with pytest.raises(FileNotFoundError, match="FlatData directory does not exist"):
@@ -173,7 +177,9 @@ def test_dump_encrypted_table_raises_generated_wrapper_error_on_stop_iteration(
             "WrapperModule",
             (),
             {
-                "dump_table": staticmethod(lambda flat_buffer: (_ for _ in ()).throw(StopIteration())),
+                "dump_table": staticmethod(
+                    lambda flat_buffer: (_ for _ in ()).throw(StopIteration())
+                ),
             },
         )(),
     )
@@ -214,7 +220,9 @@ def test_dump_flatbuffer_payload_raises_malformed_error_on_struct_failure(
             (),
             {
                 "dump_CharacterExcelTable": staticmethod(
-                    lambda flat_buffer: (_ for _ in ()).throw(struct.error("bad offset"))
+                    lambda flat_buffer: (_ for _ in ()).throw(
+                        struct.error("bad offset")
+                    )
                 ),
             },
         )(),
@@ -287,9 +295,7 @@ def test_extract_zip_file_writes_ground_grid_patch_artifact(tmp_path: Path) -> N
         / "GroundGridFlat.json"
     )
     assert output_path.is_file()
-    assert json.loads(output_path.read_text(encoding="utf8")) == {
-        "kind": "ground_grid"
-    }
+    assert json.loads(output_path.read_text(encoding="utf8")) == {"kind": "ground_grid"}
     assert logger.warn_messages == []
     assert logger.error_messages == []
 
@@ -303,7 +309,9 @@ def test_extract_zip_file_writes_ground_stage_raw_payloads(tmp_path: Path) -> No
 
     inner_zip_buffer = BytesIO()
     with ZipFile(inner_zip_buffer, "w") as inner_archive:
-        inner_archive.writestr("1052103_02_s3_02_excavation_p02_n.bytes", b"\xff\x00stage")
+        inner_archive.writestr(
+            "1052103_02_s3_02_excavation_p02_n.bytes", b"\xff\x00stage"
+        )
 
     with ZipFile(table_dir / "TablePatchPack_GroundStage_1.zip", "w") as outer_archive:
         outer_archive.writestr(
@@ -373,7 +381,9 @@ def test_extract_zip_file_skips_ground_stage_entries_with_zlib_errors(
     extractor.extract_zip_file("TablePatchPack_GroundStage_1.zip")
 
     assert logger.error_messages == []
-    assert any("invalid stored block lengths" in message for message in logger.warn_messages)
+    assert any(
+        "invalid stored block lengths" in message for message in logger.warn_messages
+    )
     assert logger.warn_messages[-1] == (
         "Skipped 1 entries while extracting TablePatchPack_GroundStage_1.zip."
     )

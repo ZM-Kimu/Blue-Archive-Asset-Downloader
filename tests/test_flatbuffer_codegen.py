@@ -71,11 +71,15 @@ def test_csparser_normalizes_system_and_flatdata_type_names(tmp_path: Path) -> N
     sample_entry = next(struct for struct in structs if struct.name == "SampleEntry")
     sample_table = next(struct for struct in structs if struct.name == "SampleTable")
 
-    assert [(prop.name, prop.data_type, prop.is_list) for prop in sample_entry.properties] == [
+    assert [
+        (prop.name, prop.data_type, prop.is_list) for prop in sample_entry.properties
+    ] == [
         ("X", "float", False),
         ("AttackType", "AttackType", False),
     ]
-    assert [(prop.name, prop.data_type, prop.is_list) for prop in sample_table.properties] == [
+    assert [
+        (prop.name, prop.data_type, prop.is_list) for prop in sample_table.properties
+    ] == [
         ("OptionalEntry", "SampleEntry", False),
         ("DirectEntry", "SampleEntry", False),
         ("DataList", "SampleEntry", True),

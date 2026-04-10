@@ -14,7 +14,9 @@ def test_settings_normalization_defaults() -> None:
 
 
 def test_settings_normalization_uses_platform_specific_jp_directories() -> None:
-    settings = AppSettings(region="jp", platform="windows", platform_explicit=True).normalized()
+    settings = AppSettings(
+        region="jp", platform="windows", platform_explicit=True
+    ).normalized()
 
     assert settings.temp_dir == "JP_Windows_Temp"
     assert settings.raw_dir == "JP_Windows_RawData"
@@ -24,7 +26,9 @@ def test_settings_normalization_uses_platform_specific_jp_directories() -> None:
 
 
 def test_settings_normalization_keeps_non_jp_default_directories() -> None:
-    settings = AppSettings(region="gl", platform="ios", platform_explicit=True).normalized()
+    settings = AppSettings(
+        region="gl", platform="ios", platform_explicit=True
+    ).normalized()
 
     assert settings.temp_dir == "GLTemp"
     assert settings.raw_dir == "GLRawData"

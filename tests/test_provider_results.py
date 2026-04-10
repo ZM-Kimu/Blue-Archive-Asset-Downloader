@@ -101,7 +101,9 @@ def _text_response(url: str, payload: str) -> HttpResponse:
     )
 
 
-def test_gl_provider_returns_updated_context_when_version_is_missing(monkeypatch) -> None:
+def test_gl_provider_returns_updated_context_when_version_is_missing(
+    monkeypatch,
+) -> None:
     context = RuntimeContext(
         region="gl",
         threads=4,
@@ -276,7 +278,9 @@ def test_gl_provider_warns_when_platform_is_explicitly_ignored() -> None:
 
     GLServer(http_client=client, logger=logger).load_catalog(context)
 
-    assert logger.warn_messages == ["The --platform option only applies to JP and was ignored."]
+    assert logger.warn_messages == [
+        "The --platform option only applies to JP and was ignored."
+    ]
 
 
 def test_cn_provider_builds_assets_without_downloading_apk(
@@ -622,7 +626,9 @@ def test_cn_provider_warns_when_platform_is_explicitly_ignored(
 
     result = CNServer(http_client=client, logger=logger).load_catalog(context)
 
-    assert logger.warn_messages == ["The --platform option only applies to JP and was ignored."]
+    assert logger.warn_messages == [
+        "The --platform option only applies to JP and was ignored."
+    ]
     assert len(result.resources) == 8
 
 
@@ -652,7 +658,9 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
         calls.append(("download", kwargs["transport"]))
         return str(tmp_path / "package.xapk")
 
-    def fake_extract_xapk_file(package_path: str, extract_dest: str, temp_dir: str) -> None:
+    def fake_extract_xapk_file(
+        package_path: str, extract_dest: str, temp_dir: str
+    ) -> None:
         calls.append(("extract", package_path))
         extract_path = Path(extract_dest)
         extract_path.mkdir(parents=True, exist_ok=True)

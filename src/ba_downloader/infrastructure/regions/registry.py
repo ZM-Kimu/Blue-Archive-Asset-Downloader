@@ -21,6 +21,8 @@ class RegionRegistry:
         if region not in self._providers:
             raise KeyError(f"Region '{region}' is not registered.")
         return self._providers[region]
+
+
 DEFAULT_REGION_REGISTRY = RegionRegistry()
 DEFAULT_REGION_REGISTRY.register("cn", CNServer)
 DEFAULT_REGION_REGISTRY.register("gl", GLServer)

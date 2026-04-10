@@ -1,8 +1,10 @@
 from pathlib import Path
 
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.domain.ports.extract import AssetExtractionPort
-from ba_downloader.domain.ports.extract import FlatbufferWorkflowPort
+from ba_downloader.domain.ports.extract import (
+    AssetExtractionPort,
+    FlatbufferWorkflowPort,
+)
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 

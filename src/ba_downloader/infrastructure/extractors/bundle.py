@@ -21,6 +21,7 @@ class BundleExtractor:
         "TextAsset",
         "Mesh",
     ]
+
     def __init__(
         self,
         context: RuntimeContext,
@@ -172,7 +173,9 @@ class BundleExtractor:
     def _extract_font(self, data: Any, extract_folder: str) -> None:
         if not data.m_FontData:
             return
-        file_name = data.m_Name + (".otf" if data.m_FontData[0:4] == b"OTTO" else ".ttf")
+        file_name = data.m_Name + (
+            ".otf" if data.m_FontData[0:4] == b"OTTO" else ".ttf"
+        )
         self.__save("binary", str(Path(extract_folder) / file_name), data.m_FontData)
 
     def _extract_text_asset(self, data: Any, extract_folder: str) -> None:
@@ -217,4 +220,3 @@ class BundleExtractor:
         file_name = f"{obj_type}_{Path(str(name)).name}_{counter[obj_type]}.json"
         counter[obj_type] += 1
         self.__save("json", str(Path(extract_folder) / file_name), parsed)
-

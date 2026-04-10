@@ -57,8 +57,7 @@ class HttpClientPort(Protocol):
         params: Mapping[str, Any] | None = None,
         transport: TransportKind = "default",
         timeout: float = 10.0,
-    ) -> HttpResponse:
-        ...
+    ) -> HttpResponse: ...
 
     def download_to_file(
         self,
@@ -70,8 +69,6 @@ class HttpClientPort(Protocol):
         timeout: float = 300.0,
         progress_callback: Callable[[int], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
-    ) -> DownloadResult:
-        ...
+    ) -> DownloadResult: ...
 
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...

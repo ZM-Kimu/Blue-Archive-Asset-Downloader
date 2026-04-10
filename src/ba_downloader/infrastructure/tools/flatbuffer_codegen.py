@@ -150,12 +150,10 @@ def dump_table(table_instance) -> list:
     WRAPPER_LIST_KV = TemplateString('"%s": [%s],\n')
     """Wrap list prop.\n\nArgs: prop_name, convertion|getter"""
 
-    WRAPPER_FUNC = TemplateString(
-        """
+    WRAPPER_FUNC = TemplateString("""
 def dump_%s(excel_instance, password: bytes = b"") -> dict:
     return {\n%s    }
-"""
-    )
+""")
     """Wrapper func.\n\nArgs: struct_name, dict_items"""
 
     WRAPPER_INT_ENUM = TemplateString("class %s(IntEnum):")
@@ -167,8 +165,7 @@ def dump_%s(excel_instance, password: bytes = b"") -> dict:
     LOCAL_IMPORT = TemplateString("from .%s import %s")
     """From .module import name.\n\nArgs: local_module_name, component_name"""
 
-    FB_BASIC_CLASS = TemplateString(
-        """
+    FB_BASIC_CLASS = TemplateString("""
 import flatbuffers
 from flatbuffers.compat import import_numpy
 np = import_numpy()\n
@@ -182,12 +179,10 @@ class %s:
         return x\n
     def Init(self, buf, pos):
         self._tab = flatbuffers.table.Table(buf, pos)\n
-"""
-    )
+""")
     """FlatBuffer basic class.\n\nArgs: struct_name, struct_name"""
 
-    FB_NON_SCALAR_LIST_CLASS_METHODS = TemplateString(
-        """
+    FB_NON_SCALAR_LIST_CLASS_METHODS = TemplateString("""
     def %s(self, j):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(%d))
         if o != 0:
@@ -207,12 +202,10 @@ class %s:
     def %sIsNone(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(%d))
         return o == 0\n
-"""
-    )
+""")
     """FlatBuffer method for list is a non-scalar type(ptr).\n\nArgs: prop_name, field_index_offset, type_alignment_size, prop_type, prop_type, prop_type, prop_name, field_index_offset, prop_name, field_index_offset"""
 
-    FB_SCALAR_LIST_CLASS_METHODS = TemplateString(
-        """
+    FB_SCALAR_LIST_CLASS_METHODS = TemplateString("""
     def %s(self, j):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(%d))
         if o != 0:
@@ -232,23 +225,19 @@ class %s:
     def %sIsNone(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(%d))
         return o == 0\n
-"""
-    )
+""")
     """FlatBuffer method for list is a scalar type.\n\nArgs: prop_name, field_index_offset, data_type_flag, type_alignment_size, prop_name, field_index_offset, data_type_flag, prop_name, field_index_offset, prop_name, field_index_offset"""
 
-    FB_SCALAR_PROPERTY_CLASS_METHODS = TemplateString(
-        """
+    FB_SCALAR_PROPERTY_CLASS_METHODS = TemplateString("""
     def %s(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(%d))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.%sFlags, o + self._tab.Pos)
         return 0\n
-"""
-    )
+""")
     """FlatBuffer method for scalar type property.\n\nArgs: prop_name, field_index_offset, data_type_flag"""
 
-    FB_STRING_LIST_CLASS_METHODS = TemplateString(
-        """
+    FB_STRING_LIST_CLASS_METHODS = TemplateString("""
     def %s(self, j):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(%d))
         if o != 0:
@@ -263,23 +252,19 @@ class %s:
     def %sIsNone(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(%d))
         return o == 0\n
-"""
-    )
+""")
     """FlatBuffer method for list type is string.\n\nArgs: prop_name, field_index_offset, prop_name, field_index_offset, prop_name, field_index_offset"""
 
-    FB_STRING_PROPERTY_CLASS_METHODS = TemplateString(
-        """
+    FB_STRING_PROPERTY_CLASS_METHODS = TemplateString("""
     def %s(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(%d))
         if o != 0:
             return self._tab.String(o + self._tab.Pos)
         return None\n
-"""
-    )
+""")
     """FlatBuffer method for string type property.\n\nArgs: prop_name, field_index_offset"""
 
-    FB_STRUCT_PROPERTY_CLASS_METHODS = TemplateString(
-        """
+    FB_STRUCT_PROPERTY_CLASS_METHODS = TemplateString("""
     def %s(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(%d))
         if o != 0:
@@ -289,12 +274,10 @@ class %s:
             obj.Init(self._tab.Bytes, x)
             return obj
         return None\n
-"""
-    )
+""")
     """FlatBuffer method for struct type property.\n\nArgs: prop_name, field_index_offset, prop_type, prop_type, prop_type"""
 
-    FB_ISOLATED_PROPERTY_CLASS_METHODS = TemplateString(
-        """
+    FB_ISOLATED_PROPERTY_CLASS_METHODS = TemplateString("""
     def %s(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(%d))
         if o != 0:
@@ -303,38 +286,29 @@ class %s:
             obj.Init(self._tab.Bytes, o + self._tab.Pos)
             return obj
         return None\n
-"""
-    )
+""")
     """FlatBuffer method for non-scalar type property(ptr).\n\nArgs: prop_name, field_index_offset, prop_type, prop_type, prop_type"""
 
-    FB_LIST_AND_NON_SCALAR_PROPERTY_FUNCTION = TemplateString(
-        """
+    FB_LIST_AND_NON_SCALAR_PROPERTY_FUNCTION = TemplateString("""
 def Add%s(builder, %s): builder.PrependUOffsetTRelativeSlot(%d, flatbuffers.number_types.UOffsetTFlags.py_type(%s), 0)
 def Start%sVector(builder, numElems): return builder.StartVector(%d, numElems, %d)\n
-"""
-    )
+""")
     """FlatBuffer function for list and non-scalar property.\n\nArgs: prop_name, prop_name, field_index_in_struct, prop_name, prop_name, element_size, size_alignment"""
 
-    FB_STRING_AND_STRUCT_PROPERTY_FUNCTION = TemplateString(
-        """
+    FB_STRING_AND_STRUCT_PROPERTY_FUNCTION = TemplateString("""
 def Add%s(builder, %s): builder.PrependUOffsetTRelativeSlot(%d, flatbuffers.number_types.UOffsetTFlags.py_type(%s), 0)
-"""
-    )
+""")
     """FlatBuffer function for string property.\n\nArgs: prop_name, prop_name, field_index_in_struct, prop_name"""
 
-    FB_SCALAR_PROPERTY_FUNCTION = TemplateString(
-        """
+    FB_SCALAR_PROPERTY_FUNCTION = TemplateString("""
 def Add%s(builder, %s): builder.Prepend%sSlot(%d, %s, 0)\n
-"""
-    )
+""")
     """FlatBuffer function for scalar property.\n\nArgs: prop_name, prop_name, data_type_flag, field_index_in_struct, prop_name"""
 
-    FB_START_AND_END_FUNCTION = TemplateString(
-        """
+    FB_START_AND_END_FUNCTION = TemplateString("""
 def Start(builder): builder.StartObject(%d)
 def End(builder): return builder.EndObject()\n
-"""
-    )
+""")
     """FlatBuffer basic call function to start and end.\n\nArgs: prop_count"""
 
 
@@ -381,7 +355,9 @@ class CSParser:
         normalized_type = type_name.strip()
         normalized_type = normalized_type.removeprefix("global::")
         normalized_type = normalized_type.removesuffix("?")
-        generic_match = re.fullmatch(r"(?P<outer>[^<]+)<(?P<inner>.+)>", normalized_type)
+        generic_match = re.fullmatch(
+            r"(?P<outer>[^<]+)<(?P<inner>.+)>", normalized_type
+        )
         if generic_match:
             outer_type = generic_match.group("outer").strip()
             inner_type = generic_match.group("inner").strip()
@@ -834,4 +810,3 @@ class CompileToPython:
                     )
                     items += String.INDENT * 2 + func
                 file_handle.write(String.WRAPPER_FUNC(struct_name, items))
-

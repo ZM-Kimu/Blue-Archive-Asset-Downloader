@@ -43,7 +43,9 @@ def test_filter_type_returns_matching_resource_types() -> None:
 
 
 def test_search_name_deduplicates_results() -> None:
-    results = ResourceQueryService.search_name(_build_resource(), ["character", "excel"])
+    results = ResourceQueryService.search_name(
+        _build_resource(), ["character", "excel"]
+    )
 
     assert len(results) == 2
     assert results[0].path == "Bundle/characters.pack"

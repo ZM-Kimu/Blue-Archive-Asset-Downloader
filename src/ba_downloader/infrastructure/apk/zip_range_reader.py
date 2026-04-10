@@ -53,7 +53,9 @@ def read_zip_entries(
     transport: TransportKind = "default",
     timeout: float = 30.0,
 ) -> list[ZipEntry]:
-    file_size = _read_content_length(url, http_client, transport=transport, timeout=timeout)
+    file_size = _read_content_length(
+        url, http_client, transport=transport, timeout=timeout
+    )
     if file_size <= 0:
         raise ZipCentralDirectoryError("ZIP content length must be a positive integer.")
 
@@ -104,7 +106,9 @@ def find_zip_entry(
 
     normalized_name = fallback_name.casefold()
     basename_matches = [
-        entry for entry in entries if Path(entry.path).name.casefold() == normalized_name
+        entry
+        for entry in entries
+        if Path(entry.path).name.casefold() == normalized_name
     ]
     if not basename_matches:
         raise ZipEntryNotFoundError(
@@ -302,12 +306,10 @@ def _parse_central_directory_record(
     record = struct.unpack("<IHHHHHHIIIHHHHHII", data[offset : offset + 46])
     if record[0] != CENTRAL_DIRECTORY_SIGNATURE:
         raise ZipCentralDirectoryError("Invalid central directory signature.")
-    if (
-        record[8] == 0xFFFFFFFF
-        or record[9] == 0xFFFFFFFF
-        or record[16] == 0xFFFFFFFF
-    ):
-        raise UnsupportedZipLayoutError("ZIP64 central directory entries are not supported.")
+    if record[8] == 0xFFFFFFFF or record[9] == 0xFFFFFFFF or record[16] == 0xFFFFFFFF:
+        raise UnsupportedZipLayoutError(
+            "ZIP64 central directory entries are not supported."
+        )
     if record[13] != 0:
         raise UnsupportedZipLayoutError("Multi-disk ZIP entries are not supported.")
 
@@ -316,7 +318,9 @@ def _parse_central_directory_record(
     extra_end = name_end + record[11]
     comment_end = extra_end + record[12]
     if comment_end > len(data):
-        raise ZipCentralDirectoryError("Central directory entry exceeds payload bounds.")
+        raise ZipCentralDirectoryError(
+            "Central directory entry exceeds payload bounds."
+        )
 
     return (
         ZipEntry(

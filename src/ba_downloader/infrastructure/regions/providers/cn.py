@@ -34,9 +34,7 @@ from ba_downloader.infrastructure.regions.providers.common import (
 class CNServer:
     CAPABILITIES = SYNC_AND_RELATION_CAPABILITIES
     APK_MEDIA_SOURCE = "apk_entry"
-    APK_MEDIA_PREFIXES: ClassVar[tuple[str, ...]] = (
-        "assets/video/",
-    )
+    APK_MEDIA_PREFIXES: ClassVar[tuple[str, ...]] = ("assets/video/",)
 
     def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
         self.http_client = http_client
@@ -63,7 +61,10 @@ class CNServer:
 
         self.logger.info("Pulling catalog...")
         resources = self.get_resource_manifest(self.get_server_info(resolved_context))
-        if "all" in resolved_context.resource_type or "media" in resolved_context.resource_type:
+        if (
+            "all" in resolved_context.resource_type
+            or "media" in resolved_context.resource_type
+        ):
             self._append_apk_only_media_assets(resources)
         return build_region_catalog_result(
             self.logger,
@@ -112,7 +113,9 @@ class CNServer:
         try:
             base_url = self._resolve_catalog_root(server_info)
             assets = AssetCollection()
-            loaded_sections = self._load_cn_catalog_sections(server_info, base_url, assets)
+            loaded_sections = self._load_cn_catalog_sections(
+                server_info, base_url, assets
+            )
             if loaded_sections != {"table", "media", "bundle"}:
                 raise FileNotFoundError("Cannot pull the manifest.")
             return assets
@@ -227,7 +230,14 @@ class CNServer:
         existing_paths = {item.path for item in assets}
         try:
             entry_paths = self._list_apk_media_entry_paths(apk_url)
-        except (LookupError, OSError, TypeError, ValueError, KeyError, RuntimeError) as exc:
+        except (
+            LookupError,
+            OSError,
+            TypeError,
+            ValueError,
+            KeyError,
+            RuntimeError,
+        ) as exc:
             self.logger.warn(
                 "Unable to enumerate supplemental CN media from the APK central directory. "
                 f"Continuing without them. Details: {exc}"

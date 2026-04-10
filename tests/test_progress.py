@@ -25,7 +25,9 @@ def test_rich_progress_reporter_uses_fixed_width_description_column() -> None:
     reporter = RichProgressReporter(10, "Verifying Main_11005_005.ogg")
 
     description_column = next(
-        column for column in reporter._progress.columns if isinstance(column, TextColumn)
+        column
+        for column in reporter._progress.columns
+        if isinstance(column, TextColumn)
     )
     table_column = description_column.get_table_column()
 
@@ -36,7 +38,9 @@ def test_rich_progress_reporter_uses_fixed_width_description_column() -> None:
     assert table_column.no_wrap is True
 
 
-def test_rich_progress_reporter_uses_compact_description_column_in_download_mode() -> None:
+def test_rich_progress_reporter_uses_compact_description_column_in_download_mode() -> (
+    None
+):
     reporter = RichProgressReporter(10, "FullPatch_089.zip", download_mode=True)
 
     description_column = next(
@@ -48,8 +52,12 @@ def test_rich_progress_reporter_uses_compact_description_column_in_download_mode
     table_column = description_column.get_table_column()
 
     assert table_column.width == RichProgressReporter.DOWNLOAD_DESCRIPTION_COLUMN_WIDTH
-    assert table_column.min_width == RichProgressReporter.DOWNLOAD_DESCRIPTION_COLUMN_WIDTH
-    assert table_column.max_width == RichProgressReporter.DOWNLOAD_DESCRIPTION_COLUMN_WIDTH
+    assert (
+        table_column.min_width == RichProgressReporter.DOWNLOAD_DESCRIPTION_COLUMN_WIDTH
+    )
+    assert (
+        table_column.max_width == RichProgressReporter.DOWNLOAD_DESCRIPTION_COLUMN_WIDTH
+    )
     assert table_column.overflow == "ellipsis"
     assert table_column.no_wrap is True
 
@@ -59,13 +67,16 @@ def test_rich_progress_reporter_uses_compact_description_column_in_download_mode
     assert bar_column.bar_width == RichProgressReporter.DOWNLOAD_BAR_WIDTH
 
 
-def test_rich_progress_reporter_uses_fixed_width_status_column_in_download_mode() -> None:
+def test_rich_progress_reporter_uses_fixed_width_status_column_in_download_mode() -> (
+    None
+):
     reporter = RichProgressReporter(10, "FullPatch_043.zip", download_mode=True)
 
     file_status_column = next(
         column
         for column in reporter._progress.columns
-        if isinstance(column, TextColumn) and column.text_format == "{task.fields[status]}"
+        if isinstance(column, TextColumn)
+        and column.text_format == "{task.fields[status]}"
     )
     table_column = file_status_column.get_table_column()
 
@@ -101,12 +112,19 @@ def test_rich_progress_reporter_uses_fixed_width_status_column_in_download_mode(
     failed_column = next(
         column
         for column in reporter._progress.columns
-        if isinstance(column, TextColumn) and column.text_format == "{task.fields[failed_status]}"
+        if isinstance(column, TextColumn)
+        and column.text_format == "{task.fields[failed_status]}"
     )
     failed_table_column = failed_column.get_table_column()
 
     assert failed_table_column.width == RichProgressReporter.FAILURE_STATUS_COLUMN_WIDTH
-    assert failed_table_column.min_width == RichProgressReporter.FAILURE_STATUS_COLUMN_WIDTH
-    assert failed_table_column.max_width == RichProgressReporter.FAILURE_STATUS_COLUMN_WIDTH
+    assert (
+        failed_table_column.min_width
+        == RichProgressReporter.FAILURE_STATUS_COLUMN_WIDTH
+    )
+    assert (
+        failed_table_column.max_width
+        == RichProgressReporter.FAILURE_STATUS_COLUMN_WIDTH
+    )
     assert failed_table_column.overflow == "ellipsis"
     assert failed_table_column.no_wrap is True

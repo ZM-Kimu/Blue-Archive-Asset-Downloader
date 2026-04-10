@@ -145,7 +145,9 @@ def test_relation_uses_cn_profile_fallback_fields(
     tmp_path: Path,
 ) -> None:
     _patch_table_extractor_init(monkeypatch)
-    relation = CharacterNameRelation(_build_context(tmp_path, region="cn"), RecordingLogger())
+    relation = CharacterNameRelation(
+        _build_context(tmp_path, region="cn"), RecordingLogger()
+    )
 
     relations = relation._CharacterNameRelation__create_relation_list(
         scenario_db=[],
@@ -187,7 +189,9 @@ def test_relation_applies_cn_gacha_names_and_costume_aliases(
     tmp_path: Path,
 ) -> None:
     _patch_table_extractor_init(monkeypatch)
-    relation = CharacterNameRelation(_build_context(tmp_path, region="cn"), RecordingLogger())
+    relation = CharacterNameRelation(
+        _build_context(tmp_path, region="cn"), RecordingLogger()
+    )
 
     relations = relation._CharacterNameRelation__create_relation_list(
         scenario_db=[],
@@ -205,7 +209,7 @@ def test_relation_applies_cn_gacha_names_and_costume_aliases(
         localize_gacha=[
             {
                 "GachaShopId": 5000200,
-                "SubTitleKr": "日富美（3★）招募概率提升！",
+                "SubTitleKr": "日富美\uff083★\uff09招募概率提升\uff01",
             }
         ],
     )
@@ -220,7 +224,9 @@ def test_relation_merges_scenario_aliases_without_scenario_names(
     tmp_path: Path,
 ) -> None:
     _patch_table_extractor_init(monkeypatch)
-    relation = CharacterNameRelation(_build_context(tmp_path, region="cn"), RecordingLogger())
+    relation = CharacterNameRelation(
+        _build_context(tmp_path, region="cn"), RecordingLogger()
+    )
 
     relations = relation._CharacterNameRelation__create_relation_list(
         scenario_db=[
@@ -248,5 +254,9 @@ def test_relation_merges_scenario_aliases_without_scenario_names(
     )
 
     relation_by_id = {item.character_id: item for item in relations}
-    assert relation_by_id[10003].file_name == {"Hihumi", "HihumiRobber", "Hihumi_Robber"}
+    assert relation_by_id[10003].file_name == {
+        "Hihumi",
+        "HihumiRobber",
+        "Hihumi_Robber",
+    }
     assert 4200835236 not in relation_by_id

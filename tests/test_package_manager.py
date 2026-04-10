@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import re
-from io import BytesIO
 from base64 import b64encode
 from collections import defaultdict
+from io import BytesIO
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -225,7 +225,9 @@ def _expected_ranges(total_size: int, part_size: int) -> list[tuple[int, int]]:
 
 
 def test_resolve_filename_prefers_pureapk_fn_query() -> None:
-    encoded_name = b64encode(b"BlueArchive_v1.66.405117.xapk").decode("ascii").rstrip("=")
+    encoded_name = (
+        b64encode(b"BlueArchive_v1.66.405117.xapk").decode("ascii").rstrip("=")
+    )
 
     file_name = _resolve_filename(
         "",
@@ -265,11 +267,15 @@ def test_download_package_file_uses_redirected_head_url_for_cached_file(
 def test_download_package_file_falls_back_to_pureapk_query_metadata(
     tmp_path: Path,
 ) -> None:
-    encoded_name = b64encode(b"BlueArchive_v1.66.405117.xapk").decode("ascii").rstrip("=")
+    encoded_name = (
+        b64encode(b"BlueArchive_v1.66.405117.xapk").decode("ascii").rstrip("=")
+    )
     payload = _build_zip_bytes()
-    encoded_context = b64encode(
-        f"dev=Yostar&t=xapk&s={len(payload)}&vn=1.66.405117".encode("utf-8")
-    ).decode("ascii").rstrip("=")
+    encoded_context = (
+        b64encode(f"dev=Yostar&t=xapk&s={len(payload)}&vn=1.66.405117".encode())
+        .decode("ascii")
+        .rstrip("=")
+    )
     package_url = "https://download.pureapk.com/b/XAPK/token?" + urlencode(
         {
             "_fn": encoded_name,
@@ -396,7 +402,9 @@ def test_download_package_file_uses_multipart_range_requests(
         str(tmp_path),
     )
 
-    expected_ranges = _expected_ranges(len(payload), package_manager.MULTIPART_PART_BYTES)
+    expected_ranges = _expected_ranges(
+        len(payload), package_manager.MULTIPART_PART_BYTES
+    )
     assert Path(result).read_bytes() == payload
     assert client.download_calls == 0
     assert client.range_calls[0] == (0, 0)
@@ -411,7 +419,9 @@ def test_download_package_file_retries_only_failed_part(
     _configure_multipart_for_tests(monkeypatch)
     payload = _build_zip_bytes(payload=b"b" * 64)
     package_url = "https://download.example.com/archive.xapk"
-    expected_ranges = _expected_ranges(len(payload), package_manager.MULTIPART_PART_BYTES)
+    expected_ranges = _expected_ranges(
+        len(payload), package_manager.MULTIPART_PART_BYTES
+    )
     failed_range = expected_ranges[1]
     client = MultipartRecordingHttpClient(
         head_response=HttpResponse(

@@ -187,7 +187,9 @@ class GLRuntimeAssetPreparer(RuntimeAssetPreparerPort):
         if self._has_runtime_assets(context):
             return
         if not context.version:
-            raise LookupError("GL runtime asset preparation requires a resolved version.")
+            raise LookupError(
+                "GL runtime asset preparation requires a resolved version."
+            )
 
         self.logger.info("Downloading APK to prepare runtime assets...")
         package_path = download_package_file(
@@ -203,7 +205,9 @@ class GLRuntimeAssetPreparer(RuntimeAssetPreparerPort):
             context.temp_dir,
         )
         if not self._has_runtime_assets(context):
-            raise FileNotFoundError("Unable to prepare GL runtime assets from the package.")
+            raise FileNotFoundError(
+                "Unable to prepare GL runtime assets from the package."
+            )
 
     def _has_runtime_assets(self, context: RuntimeContext) -> bool:
         temp_dir = Path(context.temp_dir)

@@ -78,7 +78,9 @@ def build_changelog(base_ref: str, head_ref: str) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate CHANGELOG.md from git history.")
+    parser = argparse.ArgumentParser(
+        description="Generate CHANGELOG.md from git history."
+    )
     parser.add_argument("--base", required=True, help="Base git ref")
     parser.add_argument("--head", required=True, help="Head git ref")
     parser.add_argument("--output", required=True, help="Output changelog path")

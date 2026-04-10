@@ -24,7 +24,9 @@ def test_configure_logging_uses_shared_console_and_custom_highlighter() -> None:
 
 
 def test_log_highlighter_avoids_version_number_highlighting() -> None:
-    message = Text("Downloading package ブルーアーカイブ_v1.67.412528_apkpure.com.xapk...")
+    message = Text(
+        "Downloading package ブルーアーカイブ_v1.67.412528_apkpure.com.xapk..."
+    )
 
     LogMessageHighlighter().highlight(message)
 

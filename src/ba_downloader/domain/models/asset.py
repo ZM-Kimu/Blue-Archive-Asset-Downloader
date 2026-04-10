@@ -84,8 +84,11 @@ class AssetCollection:
     def add_item(self, item: AssetRecord) -> None:
         self.assets.append(item)
 
-    def search(self, attr: str, value: Any, exact_match: bool = False) -> AssetCollection:
+    def search(
+        self, attr: str, value: Any, exact_match: bool = False
+    ) -> AssetCollection:
         filtered = AssetCollection()
+
         def contains_comparator(left: Any, right: Any) -> bool:
             return str(left).lower() in str(right).lower()
 

@@ -9,8 +9,8 @@ import sys
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from io import BytesIO
 from importlib import import_module, invalidate_caches, util
+from io import BytesIO
 from os import path
 from pathlib import Path
 from types import ModuleType
@@ -122,7 +122,9 @@ class TableExtractor:
             submodule_search_locations=[str(flat_data_dir)],
         )
         if spec is None or spec.loader is None:
-            raise ImportError(f"Unable to create FlatData import spec for {flat_data_dir}.")
+            raise ImportError(
+                f"Unable to create FlatData import spec for {flat_data_dir}."
+            )
 
         module = sys.modules.get(package_name)
         if module is None:
@@ -133,7 +135,9 @@ class TableExtractor:
         self.dump_wrapper_lib = import_module(f"{package_name}.dump_wrapper")
         return module
 
-    def _process_bytes_file(self, file_name: str, data: bytes) -> tuple[dict[str, Any], str]:
+    def _process_bytes_file(
+        self, file_name: str, data: bytes
+    ) -> tuple[dict[str, Any], str]:
         flatbuffer_class = self._resolve_flatbuffer_class(file_name)
         normalized_name = flatbuffer_class.__name__
 
@@ -164,7 +168,9 @@ class TableExtractor:
             )
         return flatbuffer_class
 
-    def _dump_encrypted_table(self, flatbuffer_class: Any, data: bytes) -> tuple[dict[str, Any], str]:
+    def _dump_encrypted_table(
+        self, flatbuffer_class: Any, data: bytes
+    ) -> tuple[dict[str, Any], str]:
         try:
             decrypted_data = xor_with_key(flatbuffer_class.__name__, data)
         except (TypeError, ValueError) as exc:
@@ -174,7 +180,10 @@ class TableExtractor:
 
         try:
             flat_buffer = flatbuffer_class.GetRootAs(decrypted_data)
-            return self.dump_wrapper_lib.dump_table(flat_buffer), f"{flatbuffer_class.__name__}.json"
+            return (
+                self.dump_wrapper_lib.dump_table(flat_buffer),
+                f"{flatbuffer_class.__name__}.json",
+            )
         except AttributeError as exc:
             raise GeneratedDumpWrapperError(
                 f"Generated dump wrapper is missing dump_table for {flatbuffer_class.__name__}: {exc}"
@@ -248,7 +257,9 @@ class TableExtractor:
 
             for table in table_list:
                 self._ensure_not_cancelled(should_stop)
-                tables.append(self._read_database_table(db, table, should_stop=should_stop))
+                tables.append(
+                    self._read_database_table(db, table, should_stop=should_stop)
+                )
             return tables
 
     def _read_database_table(
@@ -267,7 +278,9 @@ class TableExtractor:
             self._ensure_not_cancelled(should_stop)
             row_data = []
             for column, value in zip(columns, row, strict=True):
-                row_data.append(self._convert_database_value(schema_name, table_name, column, value))
+                row_data.append(
+                    self._convert_database_value(schema_name, table_name, column, value)
+                )
             table_data.append(row_data)
 
         return DBTable(table_name, columns, table_data)
@@ -320,12 +333,16 @@ class TableExtractor:
     @staticmethod
     def _is_ground_grid_patch_archive(file_name: str) -> bool:
         archive_name = path.basename(file_name)
-        return archive_name.startswith("TablePatchPack_") and "GroundGrid" in archive_name
+        return (
+            archive_name.startswith("TablePatchPack_") and "GroundGrid" in archive_name
+        )
 
     @staticmethod
     def _is_ground_stage_patch_archive(file_name: str) -> bool:
         archive_name = path.basename(file_name)
-        return archive_name.startswith("TablePatchPack_") and "GroundStage" in archive_name
+        return (
+            archive_name.startswith("TablePatchPack_") and "GroundStage" in archive_name
+        )
 
     @classmethod
     def _is_rhythm_beatmap_archive(cls, file_name: str) -> bool:
@@ -465,7 +482,9 @@ class TableExtractor:
         should_stop: Callable[[], bool] | None = None,
     ) -> None:
         archive_name = path.basename(file_name)
-        outer_extract_folder = Path(self.extract_folder) / archive_name.removesuffix(".zip")
+        outer_extract_folder = Path(self.extract_folder) / archive_name.removesuffix(
+            ".zip"
+        )
 
         with ZipFile(path.join(self.table_file_folder, file_name), "r") as archive:
             archive.setpassword(zip_password(archive_name))
@@ -543,7 +562,9 @@ class TableExtractor:
         should_stop: Callable[[], bool] | None = None,
     ) -> None:
         archive_name = path.basename(file_name)
-        outer_extract_folder = Path(self.extract_folder) / archive_name.removesuffix(".zip")
+        outer_extract_folder = Path(self.extract_folder) / archive_name.removesuffix(
+            ".zip"
+        )
 
         with ZipFile(path.join(self.table_file_folder, file_name), "r") as archive:
             archive.setpassword(zip_password(archive_name))

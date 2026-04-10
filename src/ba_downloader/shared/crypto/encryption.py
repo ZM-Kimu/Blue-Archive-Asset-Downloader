@@ -26,6 +26,7 @@ def xxh64_intdigest(data: bytes | str, seed: int = 0) -> int:
     payload = data.encode("utf8") if isinstance(data, str) else data
     return xxhash.xxh64_intdigest(payload, seed)
 
+
 T = TypeVar("T", int, float)
 
 SHORT = Struct("<h")
@@ -354,6 +355,3 @@ class MersenneTwister:
         a = self.genrand_int32() >> 5
         b = self.genrand_int32() >> 6
         return (a * 67108864.0 + b) * (1.0 / 9007199254740992.0)
-
-
-

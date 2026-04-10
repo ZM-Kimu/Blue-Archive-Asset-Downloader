@@ -144,7 +144,13 @@ def test_zip_range_reader_reads_entries_and_extracts_metadata(tmp_path: Path) ->
 
     assert extracted_path == destination
     assert destination.read_bytes() == b"metadata"
-    assert [call["method"] for call in client.calls] == ["HEAD", "GET", "GET", "GET", "GET"]
+    assert [call["method"] for call in client.calls] == [
+        "HEAD",
+        "GET",
+        "GET",
+        "GET",
+        "GET",
+    ]
 
 
 def test_find_zip_entry_raises_when_basename_match_is_ambiguous() -> None:
@@ -171,7 +177,9 @@ def test_find_zip_entry_raises_when_basename_match_is_ambiguous() -> None:
         ),
     ]
 
-    with pytest.raises(ZipEntryNotFoundError, match="Multiple ZIP entries matched basename"):
+    with pytest.raises(
+        ZipEntryNotFoundError, match="Multiple ZIP entries matched basename"
+    ):
         find_zip_entry(
             entries,
             preferred_path="assets/bin/Data/Managed/Metadata/global-metadata.dat",
@@ -230,10 +238,11 @@ def test_cn_runtime_asset_preparer_extracts_metadata_without_full_download(
     metadata_path = Path(context.temp_dir) / "CN_Metadata" / "global-metadata.dat"
     assert metadata_path.read_bytes() == b"metadata"
     assert all(
-        call["method"] == "HEAD" or "Range" in call["headers"]
-        for call in client.calls
+        call["method"] == "HEAD" or "Range" in call["headers"] for call in client.calls
     )
-    assert logger.info_messages == ["Preparing CN metadata from APK central directory..."]
+    assert logger.info_messages == [
+        "Preparing CN metadata from APK central directory..."
+    ]
 
 
 def test_cn_runtime_asset_preparer_raises_when_metadata_entry_is_missing(
@@ -279,7 +288,9 @@ def test_cn_runtime_asset_preparer_raises_when_metadata_basename_is_ambiguous(
         lambda self, server="official": "https://example.invalid/cn.apk",
     )
 
-    with pytest.raises(ZipEntryNotFoundError, match="Multiple ZIP entries matched basename"):
+    with pytest.raises(
+        ZipEntryNotFoundError, match="Multiple ZIP entries matched basename"
+    ):
         preparer.prepare(context)
 
 

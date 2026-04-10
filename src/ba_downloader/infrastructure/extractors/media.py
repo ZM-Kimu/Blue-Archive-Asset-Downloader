@@ -31,4 +31,3 @@ class MediaExtractor:
                 if should_stop is not None and should_stop():
                     raise RuntimeError("Extraction cancelled by user.")
                 media_zip.extract(member, extract_dest, pwd=password)
-

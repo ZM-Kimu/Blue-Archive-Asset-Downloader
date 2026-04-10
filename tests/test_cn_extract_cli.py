@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 

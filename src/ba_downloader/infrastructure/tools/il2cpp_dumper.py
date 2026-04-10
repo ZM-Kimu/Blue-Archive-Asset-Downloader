@@ -105,4 +105,3 @@ class IL2CppDumper:
             )
 
         return None
-

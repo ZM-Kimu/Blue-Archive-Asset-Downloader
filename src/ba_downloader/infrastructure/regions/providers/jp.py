@@ -56,6 +56,8 @@ JP_PLATFORM_PATCH_SEGMENTS: dict[Platform, str] = {
     "android": "Android",
     "ios": "iOS",
 }
+
+
 def _resolve_jp_patch_pack_dir(platform: Platform) -> str:
     segment = JP_PLATFORM_PATCH_SEGMENTS[platform]
     return f"{segment}_PatchPack"
@@ -103,7 +105,10 @@ class JPReleaseResolver:
             for version, download_url in matches
         ]
 
-        return max(candidates, key=lambda item: tuple(int(part) for part in item.version.split(".")))
+        return max(
+            candidates,
+            key=lambda item: tuple(int(part) for part in item.version.split(".")),
+        )
 
     def get_latest_package_info(self) -> APKPackageInfo:
         payload = self.http_client.request(
@@ -189,7 +194,9 @@ class JPBootstrapper:
         if roots:
             return roots[-1] + "/"
 
-        raise LookupError("AddressablesCatalogUrlRoot not found in JP addressables response.")
+        raise LookupError(
+            "AddressablesCatalogUrlRoot not found in JP addressables response."
+        )
 
     def __decode_server_url(self, data: bytes) -> str:
         ciphers = {
@@ -216,7 +223,9 @@ class JPBootstrapper:
                     path.join(dir, file), ["TextAsset"], ["GameMainConfig"], True
                 ):
                     url = self.__decode_server_url(
-                        url_obj[0].read().m_Script.encode(
+                        url_obj[0]
+                        .read()
+                        .m_Script.encode(
                             "utf-8",
                             "surrogateescape",
                         )
@@ -285,10 +294,14 @@ class JPCatalogSourceProvider:
 
 class JPAssetNormalizer:
     @staticmethod
-    def normalize(payload: DecodedJPCatalog, session: BootstrapSession) -> AssetCollection:
+    def normalize(
+        payload: DecodedJPCatalog, session: BootstrapSession
+    ) -> AssetCollection:
         assets = AssetCollection()
         base_url = session.catalog_root.rstrip("/") + "/"
-        bundle_patch_dir = str(session.metadata.get("bundle_patch_dir", "Android_PatchPack"))
+        bundle_patch_dir = str(
+            session.metadata.get("bundle_patch_dir", "Android_PatchPack")
+        )
 
         for table in payload.tables:
             includes = coerce_string_list(table.get("includes", []))
@@ -530,9 +543,13 @@ class JPCatalogDecoder:
 
         for source in sources:
             if source.name == "table":
-                payload.tables.extend(cls.__decode_table_catalog(cls.Reader(source.content)))
+                payload.tables.extend(
+                    cls.__decode_table_catalog(cls.Reader(source.content))
+                )
             elif source.name == "media":
-                payload.media.extend(cls.__decode_media_catalog(cls.Reader(source.content)))
+                payload.media.extend(
+                    cls.__decode_media_catalog(cls.Reader(source.content))
+                )
             elif source.name == "bundle":
                 payload.bundles.extend(cls.__decode_bundle_catalog(source.content))
 
@@ -567,7 +584,9 @@ class JPCatalogDecoder:
 
         manifest = data.read_string_map(cls.__decode_table_manifest)
         if member_count >= 2:
-            for key, obj in data.read_string_map(cls.__decode_table_pack_manifest).items():
+            for key, obj in data.read_string_map(
+                cls.__decode_table_pack_manifest
+            ).items():
                 manifest[key] = obj
 
         assets: list[dict[str, object]] = []
@@ -649,7 +668,11 @@ class JPCatalogDecoder:
         is_changed = data.read_bool()
         is_prologue = data.read_bool()
         is_split_download = data.read_bool()
-        includes = [item for item in data.read_array(lambda reader: reader.read_string()) if item]
+        includes = [
+            item
+            for item in data.read_array(lambda reader: reader.read_string())
+            if item
+        ]
 
         return {
             "name": name,

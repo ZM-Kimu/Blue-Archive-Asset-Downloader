@@ -291,7 +291,9 @@ class ResilientHttpClient(HttpClientPort):
                 )
         except _CancelledDownloadError as exc:
             destination.unlink(missing_ok=True)
-            raise NetworkError(f"Failed to download {url}: download cancelled by user.") from exc
+            raise NetworkError(
+                f"Failed to download {url}: download cancelled by user."
+            ) from exc
         except KeyboardInterrupt:
             destination.unlink(missing_ok=True)
             raise
@@ -339,7 +341,9 @@ class ResilientHttpClient(HttpClientPort):
             )
         except _CancelledDownloadError as exc:
             destination.unlink(missing_ok=True)
-            raise NetworkError(f"Failed to download {url}: download cancelled by user.") from exc
+            raise NetworkError(
+                f"Failed to download {url}: download cancelled by user."
+            ) from exc
         except KeyboardInterrupt:
             destination.unlink(missing_ok=True)
             raise

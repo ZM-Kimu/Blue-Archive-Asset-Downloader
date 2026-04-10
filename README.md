@@ -9,9 +9,9 @@
 ## 主要功能
 
 - **多服务器支持**：可从中国(蔚蓝档案)、国际(Blue Archive)、日本(ブルーアーカイブ)三个服务器下载素材。
-- **资源解开**：在日本服务器中包含几乎完整的支持。
-- **CN 阶段成果**：当前 `download --region cn`、`sync --region cn`、`relation build --region cn` 已可用；`--advanced-search` 仍未开放。
-- **JP 阶段成果**：当前 `download --region jp`、`sync --region jp`、`relation build --region jp` 已可用；`--advanced-search` 仍未开放。
+<!-- - **资源解开**：在日本服务器中包含几乎完整的支持。 -->
+<!-- - **CN 阶段成果**：当前 `download --region cn`、`sync --region cn`、`relation build --region cn` 已可用；`--advanced-search` 仍未开放。 -->
+<!-- - **JP 阶段成果**：当前 `download --region jp`、`sync --region jp`、`relation build --region jp` 已可用；`--advanced-search` 仍未开放。 -->
 
 
 ## 资源类型

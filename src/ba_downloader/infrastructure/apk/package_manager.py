@@ -71,7 +71,11 @@ def download_package_file(
     destination = str(Path(destination_dir) / metadata.file_name)
     content_length = metadata.content_length
 
-    if content_length and Path(destination).exists() and Path(destination).stat().st_size == content_length:
+    if (
+        content_length
+        and Path(destination).exists()
+        and Path(destination).stat().st_size == content_length
+    ):
         try:
             _validate_package_file(destination, expected_size=content_length)
         except PackageArchiveError:
@@ -177,7 +181,8 @@ def _resolve_package_metadata(
 
     return PackageMetadata(
         file_name=head_file_name or _resolve_filename("", package_url),
-        content_length=head_content_length or _resolve_content_length_from_url(package_url),
+        content_length=head_content_length
+        or _resolve_content_length_from_url(package_url),
     )
 
 
@@ -357,8 +362,7 @@ def _download_package_with_parts(
 
 def _build_package_parts(parts_dir: Path, total_size: int) -> list[PackagePart]:
     parts: list[PackagePart] = []
-    index = 0
-    for start in range(0, total_size, MULTIPART_PART_BYTES):
+    for index, start in enumerate(range(0, total_size, MULTIPART_PART_BYTES)):
         end = min(total_size - 1, start + MULTIPART_PART_BYTES - 1)
         parts.append(
             PackagePart(
@@ -368,7 +372,6 @@ def _build_package_parts(parts_dir: Path, total_size: int) -> list[PackagePart]:
                 path=parts_dir / f"part-{index:05d}.bin",
             )
         )
-        index += 1
     return parts
 
 
@@ -382,7 +385,7 @@ def _download_package_part(
     headers: Mapping[str, str] | None,
 ) -> None:
     last_error: Exception | None = None
-    for attempt in range(1, MULTIPART_PART_ATTEMPTS + 1):
+    for _attempt in range(1, MULTIPART_PART_ATTEMPTS + 1):
         part.path.unlink(missing_ok=True)
         try:
             response = http_client.request(

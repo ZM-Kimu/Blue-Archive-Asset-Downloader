@@ -13,8 +13,7 @@ TDecodedContra = TypeVar("TDecodedContra", contravariant=True)
 
 
 class ReleaseResolver(Protocol):
-    def resolve(self, context: RuntimeContext) -> ResolvedRelease:
-        ...
+    def resolve(self, context: RuntimeContext) -> ResolvedRelease: ...
 
 
 class SessionBootstrapper(Protocol):
@@ -22,8 +21,7 @@ class SessionBootstrapper(Protocol):
         self,
         release: ResolvedRelease,
         context: RuntimeContext,
-    ) -> BootstrapSession:
-        ...
+    ) -> BootstrapSession: ...
 
 
 class CatalogSourceProvider(Protocol):
@@ -31,8 +29,7 @@ class CatalogSourceProvider(Protocol):
         self,
         session: BootstrapSession,
         context: RuntimeContext,
-    ) -> list[CatalogSource]:
-        ...
+    ) -> list[CatalogSource]: ...
 
 
 class CatalogDecoder(Protocol, Generic[TDecodedCo]):
@@ -41,8 +38,7 @@ class CatalogDecoder(Protocol, Generic[TDecodedCo]):
         session: BootstrapSession,
         sources: list[CatalogSource],
         context: RuntimeContext,
-    ) -> TDecodedCo:
-        ...
+    ) -> TDecodedCo: ...
 
 
 class AssetNormalizer(Protocol, Generic[TDecodedContra]):
@@ -50,5 +46,4 @@ class AssetNormalizer(Protocol, Generic[TDecodedContra]):
         self,
         payload: TDecodedContra,
         session: BootstrapSession,
-    ) -> AssetCollection:
-        ...
+    ) -> AssetCollection: ...

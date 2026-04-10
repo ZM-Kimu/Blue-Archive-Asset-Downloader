@@ -56,7 +56,9 @@ def build_region_catalog_result(
     )
 
 
-def join_catalog_url(base_url: str, relative_url_factory: Callable[[], str] | str) -> str:
+def join_catalog_url(
+    base_url: str, relative_url_factory: Callable[[], str] | str
+) -> str:
     relative_url = (
         relative_url_factory()
         if callable(relative_url_factory)

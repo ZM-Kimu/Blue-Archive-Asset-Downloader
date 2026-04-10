@@ -184,7 +184,9 @@ def test_extract_service_bootstraps_when_dump_cs_and_flatdata_are_missing(
     [
         (
             "dump",
-            FileNotFoundError("Cannot find binary file or global-metadata file for Cpp2IL backend."),
+            FileNotFoundError(
+                "Cannot find binary file or global-metadata file for Cpp2IL backend."
+            ),
         ),
         (
             "compile",
@@ -210,7 +212,9 @@ def test_extract_service_translates_jp_bootstrap_failures_to_lookup_error(
         RecordingLogger(),
     )
 
-    with pytest.raises(LookupError, match="JP table extract prerequisites were missing") as exc_info:
+    with pytest.raises(
+        LookupError, match="JP table extract prerequisites were missing"
+    ) as exc_info:
         service.run(context)
 
     message = str(exc_info.value)

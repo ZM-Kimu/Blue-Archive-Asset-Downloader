@@ -71,7 +71,9 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         excel = self.__extract_excel()
         self.logger.info("Relating character data...")
         relations = self.__create_relation_list(*excel)
-        self.__create_relation_file(self.context.version, self.context.region, relations)
+        self.__create_relation_file(
+            self.context.version, self.context.region, relations
+        )
 
     def get_excel_resources(self, resource: AssetCollection) -> AssetCollection:
         if not (searched := resource.search("path", "Excel")):
@@ -129,7 +131,10 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             excel_zip.setpassword(zip_password(self.EXCEL_NAME))
             for item_name in excel_zip.namelist():
                 lowered_name = item_name.lower()
-                if lowered_name in self.REQUIRED_BYTES_FILES + self.OPTIONAL_BYTES_FILES:
+                if (
+                    lowered_name
+                    in self.REQUIRED_BYTES_FILES + self.OPTIONAL_BYTES_FILES
+                ):
                     excel_zip.extract(item_name, extract_dir)
 
         extracted_paths: dict[str, Path] = {}
@@ -166,7 +171,9 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         file_name: str,
         payload: Any,
     ) -> list[dict[str, Any]]:
-        if isinstance(payload, list) and all(isinstance(item, dict) for item in payload):
+        if isinstance(payload, list) and all(
+            isinstance(item, dict) for item in payload
+        ):
             return payload
 
         if isinstance(payload, dict):
@@ -359,7 +366,9 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
                 self.__append_names(hash_map, info_character_ids[0], {recruit_names[0]})
                 continue
 
-            for char_id, recruit_name in zip(info_character_ids, recruit_names, strict=False):
+            for char_id, recruit_name in zip(
+                info_character_ids, recruit_names, strict=False
+            ):
                 self.__append_names(hash_map, char_id, {recruit_name})
 
     def __extract_recruit_names(self, subtitle: str) -> list[str]:
@@ -371,10 +380,10 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
 
             normalized = normalized.replace("还可招募", "").strip()
             normalized = re.sub(r"^【[^】]+】", "", normalized).strip()
-            normalized = re.sub(r"招募概率提升[！!]*$", "", normalized).strip()
+            normalized = re.sub(r"招募概率提升[\uFF01!]*$", "", normalized).strip()
             normalized = re.sub(r"^[123]★", "", normalized).strip()
-            normalized = re.sub(r"（[123]★）$", "", normalized).strip()
-            normalized = normalized.strip("！! ")
+            normalized = re.sub(r"\uFF08[123]★\uFF09$", "", normalized).strip()
+            normalized = normalized.strip("\uff01! ")
 
             if normalized:
                 names.append(normalized)
@@ -414,7 +423,9 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             if not isinstance(scene_data, dict):
                 continue
 
-            file_name = self.__split_path_to_name(str(scene_data.get("SmallPortrait", "")))
+            file_name = self.__split_path_to_name(
+                str(scene_data.get("SmallPortrait", ""))
+            )
             name_no_underline = file_name.replace("_", "")
             if not file_name:
                 continue
@@ -447,14 +458,20 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             self.__normalize_lookup_token(name) for name in scenario_names if name
         }
         normalized_file_name = self.__normalize_lookup_token(file_name)
-        normalized_file_name_no_underline = self.__normalize_lookup_token(name_no_underline)
+        normalized_file_name_no_underline = self.__normalize_lookup_token(
+            name_no_underline
+        )
         prefix_candidates: list[CharacterData] = []
 
         for char_data in hash_map.values():
             normalized_names = {
-                self.__normalize_lookup_token(name) for name in (char_data.names or []) if name
+                self.__normalize_lookup_token(name)
+                for name in (char_data.names or [])
+                if name
             }
-            if normalized_scenario_names and normalized_names.intersection(normalized_scenario_names):
+            if normalized_scenario_names and normalized_names.intersection(
+                normalized_scenario_names
+            ):
                 self.__add_file_aliases(char_data, {file_name, name_no_underline})
                 return True
 
@@ -476,7 +493,9 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
                 self.__add_file_aliases(char_data, {file_name, name_no_underline})
                 return True
 
-            dev_prefix = self.__normalize_lookup_token(char_data.dev_name.split("_", 1)[0])
+            dev_prefix = self.__normalize_lookup_token(
+                char_data.dev_name.split("_", 1)[0]
+            )
             if dev_prefix and (
                 normalized_file_name.startswith(dev_prefix)
                 or normalized_file_name_no_underline.startswith(dev_prefix)
@@ -484,7 +503,9 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
                 prefix_candidates.append(char_data)
 
         if len(prefix_candidates) == 1:
-            self.__add_file_aliases(prefix_candidates[0], {file_name, name_no_underline})
+            self.__add_file_aliases(
+                prefix_candidates[0], {file_name, name_no_underline}
+            )
             return True
 
         return False
@@ -544,7 +565,9 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
 
     def verify_relation_file(self, context: RuntimeContext | None = None) -> bool:
         active_context = context or self.context
-        relation_path = active_context.region.upper() + CharacterNameRelation.RELATION_NAME
+        relation_path = (
+            active_context.region.upper() + CharacterNameRelation.RELATION_NAME
+        )
         try:
             with open(relation_path, encoding="utf8") as file_handle:
                 payload = json.load(file_handle)
@@ -561,7 +584,9 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
     ) -> list[str]:
         active_context = context or self.context
         normalized_terms = search_terms or []
-        relation_file = active_context.region.upper() + CharacterNameRelation.RELATION_NAME
+        relation_file = (
+            active_context.region.upper() + CharacterNameRelation.RELATION_NAME
+        )
         try:
             relation = self.__load_relation_file(relation_file, active_context)
             return self.__search_keywords(relation, normalized_terms)
@@ -621,7 +646,9 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         for char in relation.relations:
             file_names = list(char.file_name or [])
             char_names = list(char.names or [])
-            if self.__match_character(char, char_names, file_names, keywords, char_attr):
+            if self.__match_character(
+                char, char_names, file_names, keywords, char_attr
+            ):
                 search_keywords.extend(file_names)
                 if char.dev_name:
                     search_keywords.append(char.dev_name)

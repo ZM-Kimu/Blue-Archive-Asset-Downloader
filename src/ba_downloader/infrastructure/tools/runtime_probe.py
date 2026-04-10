@@ -35,6 +35,3 @@ def is_dotnet_sdk_version_equal(*target_versions: int) -> bool:
     """
     installed = get_installed_dotnet_sdk_major_versions()
     return any(version in installed for version in target_versions)
-
-
-

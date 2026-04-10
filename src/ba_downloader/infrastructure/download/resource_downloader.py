@@ -16,13 +16,13 @@ from math import ceil
 from pathlib import Path
 from threading import Event, Lock
 
+from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.models.asset import (
     AssetCollection,
     AssetRecord,
     AssetType,
     ChecksumSpec,
 )
-from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.http import HttpClientPort
@@ -97,7 +97,10 @@ class ResourceDownloader(ResourceDownloaderPort):
         self._zip_entries_by_url: dict[str, list[ZipEntry]] = {}
         self._force_exit = force_exit or os._exit
         self._wait_policy = build_future_wait_policy(
-            self.logger, self.POLL_INTERVAL_SECONDS, self.INTERRUPT_GRACE_SECONDS, "Downloads"
+            self.logger,
+            self.POLL_INTERVAL_SECONDS,
+            self.INTERRUPT_GRACE_SECONDS,
+            "Downloads",
         )
 
     def verify_and_download(
@@ -149,10 +152,13 @@ class ResourceDownloader(ResourceDownloaderPort):
         future_map: dict[Future[tuple[AssetRecord, bool]], AssetRecord] = {}
 
         try:
-            with self._install_interrupt_handler(stop_event), RichProgressReporter(
-                len(resources),
-                "Verifying assets...",
-            ) as progress:
+            with (
+                self._install_interrupt_handler(stop_event),
+                RichProgressReporter(
+                    len(resources),
+                    "Verifying assets...",
+                ) as progress,
+            ):
                 future_map = {
                     executor.submit(self._verify_resource, resource, context): resource
                     for resource in resources
@@ -179,7 +185,9 @@ class ResourceDownloader(ResourceDownloaderPort):
         *,
         adaptive_state: _AdaptiveDownloadState | None = None,
     ) -> list[AssetRecord]:
-        state = adaptive_state or self._create_adaptive_download_state(resources, context)
+        state = adaptive_state or self._create_adaptive_download_state(
+            resources, context
+        )
         progress_total, download_mode = self._resolve_download_progress(resources)
         stop_event = Event()
         executor = ThreadPoolExecutor(max_workers=state.upper_bound)
@@ -189,11 +197,14 @@ class ResourceDownloader(ResourceDownloaderPort):
         session_state = _DownloadSessionState(total_files=len(resources))
 
         try:
-            with self._install_interrupt_handler(stop_event), RichProgressReporter(
-                progress_total,
-                "Downloading assets...",
-                download_mode=download_mode,
-            ) as progress:
+            with (
+                self._install_interrupt_handler(stop_event),
+                RichProgressReporter(
+                    progress_total,
+                    "Downloading assets...",
+                    download_mode=download_mode,
+                ) as progress,
+            ):
                 loop_context = _DownloadLoopContext(
                     progress=progress,
                     context=context,
@@ -249,7 +260,9 @@ class ResourceDownloader(ResourceDownloaderPort):
         future_map: dict[Future[AssetRecord], AssetRecord],
         stop_event: Event,
     ) -> None:
-        self._update_download_progress_status(loop_context.progress, session_state, state)
+        self._update_download_progress_status(
+            loop_context.progress, session_state, state
+        )
         cancellation_state = CancellationFeedbackState()
 
         while pending_resources or future_map:
@@ -283,7 +296,9 @@ class ResourceDownloader(ResourceDownloaderPort):
                 session_state,
                 stop_event,
             )
-            self._update_adaptive_concurrency(state, successful_downloads, decrease_reason)
+            self._update_adaptive_concurrency(
+                state, successful_downloads, decrease_reason
+            )
             self._finalize_successful_downloads(
                 successful_downloads,
                 loop_context.context,
@@ -293,7 +308,9 @@ class ResourceDownloader(ResourceDownloaderPort):
                 loop_context.download_mode,
             )
             with loop_context.progress_lock:
-                self._update_download_progress_status(loop_context.progress, session_state, state)
+                self._update_download_progress_status(
+                    loop_context.progress, session_state, state
+                )
 
     @staticmethod
     def _resolve_download_progress(resources: list[AssetRecord]) -> tuple[int, bool]:
@@ -529,7 +546,9 @@ class ResourceDownloader(ResourceDownloaderPort):
             return resource, False
         return resource, self._get_validation_error(asset_path, resource) is None
 
-    def _get_validation_error(self, asset_path: Path, resource: AssetRecord) -> str | None:
+    def _get_validation_error(
+        self, asset_path: Path, resource: AssetRecord
+    ) -> str | None:
         if not asset_path.exists():
             return "downloaded file is missing"
 
@@ -568,7 +587,9 @@ class ResourceDownloader(ResourceDownloaderPort):
             return calculate_crc(str(asset_path)) in expected_crc_values
 
         if checksum.algorithm == "md5":
-            return calculate_md5(str(asset_path)).casefold() == normalized_value.casefold()
+            return (
+                calculate_md5(str(asset_path)).casefold() == normalized_value.casefold()
+            )
 
         return False
 
@@ -634,7 +655,9 @@ class ResourceDownloader(ResourceDownloaderPort):
         self._validate_downloaded_resource(asset_path, resource)
         return resource
 
-    def _validate_downloaded_resource(self, asset_path: Path, resource: AssetRecord) -> None:
+    def _validate_downloaded_resource(
+        self, asset_path: Path, resource: AssetRecord
+    ) -> None:
         validation_error = self._get_validation_error(asset_path, resource)
         if validation_error is None:
             return

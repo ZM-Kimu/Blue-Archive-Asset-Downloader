@@ -9,5 +9,4 @@ class ResourceDownloaderPort(Protocol):
         self,
         resources: AssetCollection,
         context: RuntimeContext,
-    ) -> None:
-        ...
+    ) -> None: ...
