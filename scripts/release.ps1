@@ -3,13 +3,14 @@
 [CmdletBinding()]
 param(
     [string]$Version,
-    [string]$BaseRef = "origin/main",
+    [string]$BaseRef,
     [string]$HeadRef = "HEAD",
     [switch]$SkipPreflight,
     [switch]$SkipChangelog,
     [switch]$SkipCommit,
     [switch]$AllowDirtyWorkingTree,
-    [switch]$AllowNonDevBranch,
+    [Alias("AllowNonDevBranch")]
+    [switch]$AllowNonReleaseBranch,
     [switch]$Push,
     [switch]$DryRun,
     [switch]$NonInteractive
@@ -93,9 +94,36 @@ function Test-GitRef {
     return $LASTEXITCODE -eq 0
 }
 
+function Get-PreferredRemote {
+    $upstream = & git rev-parse --abbrev-ref --symbolic-full-name "@{upstream}" 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($upstream)) {
+        $parts = $upstream.Trim().Split("/", 2)
+        if ($parts.Length -ge 2 -and -not [string]::IsNullOrWhiteSpace($parts[0])) {
+            return $parts[0]
+        }
+    }
+
+    if (Test-GitRef -RefName "origin/HEAD" -or Test-GitRef -RefName "origin/main") {
+        return "origin"
+    }
+
+    $remotes = & git remote 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        foreach ($remote in $remotes) {
+            if (-not [string]::IsNullOrWhiteSpace($remote)) {
+                return $remote.Trim()
+            }
+        }
+    }
+
+    throw "Unable to determine the preferred Git remote."
+}
+
 function Get-DefaultBaseRef {
-    if (Test-GitRef -RefName "origin/main") {
-        return "origin/main"
+    $remote = Get-PreferredRemote
+
+    if (Test-GitRef -RefName "$remote/main") {
+        return "$remote/main"
     }
     if (Test-GitRef -RefName "main") {
         return "main"
@@ -103,8 +131,47 @@ function Get-DefaultBaseRef {
     return "HEAD"
 }
 
+function Get-LatestTagRef {
+    $tag = & git describe --tags --abbrev=0 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($tag)) {
+        return $tag.Trim()
+    }
+
+    return $null
+}
+
+function Get-DefaultChangelogBaseRef {
+    $latestTag = Get-LatestTagRef
+    if ($latestTag) {
+        return $latestTag
+    }
+
+    return Get-DefaultBaseRef
+}
+
+function Read-Utf8File {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+}
+
+function Write-Utf8File {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Content
+    )
+
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+}
+
 function Get-ProjectVersion {
-    $content = Get-Content (Join-Path (Get-RepoRoot) "pyproject.toml") -Raw
+    $content = Read-Utf8File (Join-Path (Get-RepoRoot) "pyproject.toml")
     $match = [regex]::Match($content, '(?m)^version = "([^"]+)"\s*$')
     if (-not $match.Success) {
         throw "Unable to locate the project version in pyproject.toml."
@@ -113,7 +180,7 @@ function Get-ProjectVersion {
 }
 
 function Get-ReadmeVersion {
-    $content = Get-Content (Join-Path (Get-RepoRoot) "README.md") -Raw
+    $content = Read-Utf8File (Join-Path (Get-RepoRoot) "README.md")
     $match = [regex]::Match($content, '(?m)^Blue Archive Asset Downloader v([^\r\n]+)\.\s*$')
     if (-not $match.Success) {
         throw "Unable to locate the README version marker."
@@ -128,7 +195,15 @@ function Set-ProjectVersion {
     )
 
     $path = Join-Path (Get-RepoRoot) "pyproject.toml"
-    $content = Get-Content $path -Raw
+    $content = Read-Utf8File $path
+    $currentVersion = [regex]::Match($content, '(?m)^version = "([^"]+)"\s*$')
+    if ($currentVersion.Success -and $currentVersion.Groups[1].Value -eq $NewVersion) {
+        if ($DryRun) {
+            Write-Host "[dry-run] Project version already matches $NewVersion" -ForegroundColor Cyan
+        }
+        return
+    }
+
     $updated = $content -creplace '(?m)^version = "[^"]+"\s*$', "version = `"$NewVersion`""
 
     if ($updated -eq $content) {
@@ -140,7 +215,7 @@ function Set-ProjectVersion {
         return
     }
 
-    Set-Content -Path $path -Value $updated -Encoding utf8
+    Write-Utf8File -Path $path -Content $updated
 }
 
 function Set-ReadmeVersion {
@@ -150,7 +225,15 @@ function Set-ReadmeVersion {
     )
 
     $path = Join-Path (Get-RepoRoot) "README.md"
-    $content = Get-Content $path -Raw
+    $content = Read-Utf8File $path
+    $currentVersion = [regex]::Match($content, '(?m)^Blue Archive Asset Downloader v([^\r\n]+)\.\s*$')
+    if ($currentVersion.Success -and $currentVersion.Groups[1].Value -eq $NewVersion) {
+        if ($DryRun) {
+            Write-Host "[dry-run] README version already matches $NewVersion" -ForegroundColor Cyan
+        }
+        return
+    }
+
     $updated = $content -creplace '(?m)^Blue Archive Asset Downloader v[^\r\n]+\.\s*$', "Blue Archive Asset Downloader v$NewVersion."
 
     if ($updated -eq $content) {
@@ -162,7 +245,7 @@ function Set-ReadmeVersion {
         return
     }
 
-    Set-Content -Path $path -Value $updated -Encoding utf8
+    Write-Utf8File -Path $path -Content $updated
 }
 
 function Invoke-PreflightChecks {
@@ -191,9 +274,31 @@ function Update-Changelog {
     }
 
     Write-Host "Regenerating CHANGELOG.md..." -ForegroundColor Cyan
-    & python $scriptPath --base $FromRef --head $ToRef --output $outputPath
+    & python $scriptPath update --base $FromRef --head $ToRef --output $outputPath
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to regenerate CHANGELOG.md."
+    }
+}
+
+function Finalize-ChangelogRelease {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseVersion
+    )
+
+    $scriptPath = Join-Path $PSScriptRoot "update_changelog.py"
+    $outputPath = Join-Path (Get-RepoRoot) "CHANGELOG.md"
+    $releaseDate = Get-Date -Format "yyyy-MM-dd"
+
+    if ($DryRun) {
+        Write-Host "[dry-run] Would finalize CHANGELOG.md as v$ReleaseVersion on $releaseDate" -ForegroundColor Cyan
+        return
+    }
+
+    Write-Host "Finalizing CHANGELOG.md for v$ReleaseVersion..." -ForegroundColor Cyan
+    & python $scriptPath finalize --version $ReleaseVersion --date $releaseDate --path $outputPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to finalize CHANGELOG.md."
     }
 }
 
@@ -239,14 +344,16 @@ function Push-CurrentBranch {
         [string]$BranchName
     )
 
+    $remote = Get-PreferredRemote
+
     if ($DryRun) {
-        Write-Host "[dry-run] Would push branch '$BranchName' to origin" -ForegroundColor Cyan
+        Write-Host "[dry-run] Would push branch '$BranchName' to $remote" -ForegroundColor Cyan
         return
     }
 
-    & git push origin $BranchName
+    & git push $remote $BranchName
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to push branch '$BranchName' to origin."
+        throw "Failed to push branch '$BranchName' to $remote."
     }
 }
 
@@ -272,10 +379,10 @@ if ($readmeVersion -ne $currentVersion) {
     Write-Warning "README.md version ($readmeVersion) does not match pyproject.toml version ($currentVersion)."
 }
 
-if ($currentBranch -ne "dev") {
-    Write-Warning "Current branch is '$currentBranch'. Release preparation is usually performed on 'dev'."
-    $continueOnCurrentBranch = if ($PSBoundParameters.ContainsKey("AllowNonDevBranch")) {
-        $AllowNonDevBranch.IsPresent
+if ($currentBranch -notmatch '^release\/v[0-9A-Za-z][0-9A-Za-z.\-+]*$') {
+    Write-Warning "Current branch is '$currentBranch'. Release preparation is usually performed on 'release/vX.Y.Z' branches."
+    $continueOnCurrentBranch = if ($PSBoundParameters.ContainsKey("AllowNonReleaseBranch") -or $PSBoundParameters.ContainsKey("AllowNonDevBranch")) {
+        $AllowNonReleaseBranch.IsPresent
     }
     else {
         Read-BooleanValue -Prompt "Continue on the current branch?" -DefaultValue $false
@@ -309,7 +416,7 @@ else {
 
 Assert-VersionFormat -Value $targetVersion
 
-$defaultBaseRef = Get-DefaultBaseRef
+$defaultBaseRef = Get-DefaultChangelogBaseRef
 
 $resolvedBaseRef = if ($PSBoundParameters.ContainsKey("BaseRef")) {
     $BaseRef
@@ -386,6 +493,7 @@ Set-ReadmeVersion -NewVersion $targetVersion
 
 if ($updateChangelog) {
     Update-Changelog -FromRef $resolvedBaseRef -ToRef $resolvedHeadRef
+    Finalize-ChangelogRelease -ReleaseVersion $targetVersion
 }
 
 if ($createCommit) {
@@ -399,6 +507,6 @@ if ($pushBranch) {
 Write-Host ""
 Write-Host "Release preparation completed." -ForegroundColor Green
 Write-Host "Next steps:" -ForegroundColor Green
-Write-Host "  1. Push 'dev' when the release preparation is ready."
-Write-Host "  2. Open a pull request from 'dev' to 'main' manually."
-Write-Host "  3. After the PR is merged into 'main', GitHub Actions will create the tag and GitHub Release."
+Write-Host "  1. Push '$currentBranch' when the release preparation is ready."
+Write-Host "  2. Open a pull request from '$currentBranch' to 'main' manually."
+Write-Host "  3. After the PR is merged into 'main', GitHub Actions will create the tag and GitHub Release from CHANGELOG.md."

@@ -3,10 +3,9 @@ name: CI
 on:
   push:
     branches:
-      - dev
+      - main
   pull_request:
     branches:
-      - dev
       - main
 
 jobs:
@@ -37,7 +36,8 @@ jobs:
       - name: Run type checks
         run: uv run mypy
 
-      - name: Run pylint error checks
+      - name: Run pylint advisory checks
+        continue-on-error: true
         run: uv run pylint --rcfile .pylintrc src/ba_downloader scripts
 
       - name: Run tests

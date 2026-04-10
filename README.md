@@ -38,6 +38,16 @@
 
 ## 先决条件
 
+如果以源码方式运行，建议使用带 submodule 的 clone 流程：
+
+```shell
+git clone --recurse-submodules https://github.com/ZM-Kimu/Blue-Archive-Asset-Downloader
+cd Blue-Archive-Asset-Downloader
+uv sync
+```
+
+- 若本地缺失 `third_party/Cpp2IL`，部分 dumper 流程会尝试自动下载源码。
+
 请确保已安装 Python，并安装必要的库：
 
 ```shell
@@ -179,7 +189,6 @@ ba-downloader download --region jp --platform windows
   
 ## 关于项目
 Blue Archive Asset Downloader v2.0.0.
-
 ✨ 技术支持：Codex ✨
 
 本项目采用 [MIT 许可证](LICENSE)。

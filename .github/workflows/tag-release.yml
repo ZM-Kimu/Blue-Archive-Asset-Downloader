@@ -47,10 +47,18 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Extract release notes from CHANGELOG.md
+        if: ${{ steps.tag.outputs.exists != 'true' }}
+        run: |
+          python scripts/update_changelog.py release-notes \
+            --version "${{ steps.version.outputs.version }}" \
+            --path CHANGELOG.md \
+            --output .release-notes.md
+
       - name: Create GitHub release
         if: ${{ steps.tag.outputs.exists != 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
-          generate_release_notes: true
+          body_path: .release-notes.md

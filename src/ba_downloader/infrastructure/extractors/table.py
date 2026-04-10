@@ -94,6 +94,10 @@ class TableExtractor:
         if should_stop is not None and should_stop():
             raise RuntimeError("Extraction cancelled by user.")
 
+    @staticmethod
+    def _is_generated_stop_iteration(exc: RuntimeError) -> bool:
+        return str(exc) == "generator raised StopIteration"
+
     def _load_flat_data_package(self) -> ModuleType:
         flat_data_dir = Path(self.flat_data_dir)
         init_file = flat_data_dir / "__init__.py"
@@ -192,12 +196,19 @@ class TableExtractor:
             raise GeneratedDumpWrapperError(
                 f"Generated dump wrapper could not resolve a table dump for {flatbuffer_class.__name__}."
             ) from exc
+        except RuntimeError as exc:
+            if self._is_generated_stop_iteration(exc):
+                raise GeneratedDumpWrapperError(
+                    f"Generated dump wrapper could not resolve a table dump for {flatbuffer_class.__name__}."
+                ) from exc
+            raise TableDecryptError(
+                f"xor/decrypt failed for {flatbuffer_class.__name__}: {exc}"
+            ) from exc
         except (
             TypeError,
             ValueError,
             KeyError,
             IndexError,
-            RuntimeError,
             struct.error,
         ) as exc:
             raise TableDecryptError(
@@ -224,12 +235,19 @@ class TableExtractor:
             raise GeneratedDumpWrapperError(
                 f"Generated dump wrapper could not resolve a table dump for {flatbuffer_class.__name__}."
             ) from exc
+        except RuntimeError as exc:
+            if self._is_generated_stop_iteration(exc):
+                raise GeneratedDumpWrapperError(
+                    f"Generated dump wrapper could not resolve a table dump for {flatbuffer_class.__name__}."
+                ) from exc
+            raise MalformedTablePayloadError(
+                f"Malformed flatbuffer payload for {flatbuffer_class.__name__}: {exc}"
+            ) from exc
         except (
             TypeError,
             ValueError,
             KeyError,
             IndexError,
-            RuntimeError,
             struct.error,
         ) as exc:
             raise MalformedTablePayloadError(
