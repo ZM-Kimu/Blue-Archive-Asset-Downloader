@@ -1,4 +1,4 @@
-[build-system]
+﻿[build-system]
 requires = ["hatchling>=1.24.0"]
 build-backend = "hatchling.build"
 
@@ -79,3 +79,4 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 module = ["UnityPy", "pykakasi", "xxhash", "curl_cffi", "curl_cffi.*", "Crypto.*", "flatbuffers", "flatbuffers.*"]
 ignore_missing_imports = true
+
