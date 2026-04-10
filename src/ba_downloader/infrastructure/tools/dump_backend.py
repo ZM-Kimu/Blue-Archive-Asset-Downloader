@@ -3,8 +3,10 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import TextIO
 from zipfile import ZipFile
 
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -25,10 +27,19 @@ CPP2IL_PROJECT = Path("Cpp2IL") / "Cpp2IL.csproj"
 LIBCPP2IL_PROJECT = Path("LibCpp2IL") / "LibCpp2IL.csproj"
 EXPORTER_PROJECT_NAME = "dumpcs_exporter"
 UNITY_VERSION_PATTERN = re.compile(r"(20\d{2}\.\d+\.\d+[a-z]\d+)", re.IGNORECASE)
+CN_EXPORTER_STAGE_PATTERN = re.compile(r"^\[[#\.]+\]\s+\[\d+/\d+\]\s+.+$")
+CN_EXPORTER_LOOP_PATTERN = re.compile(
+    r"^\s+.+\s+\[[#\.]+\]\s+\d{1,3}%\s+\(\d+/\d+,\s+.+\)$"
+)
 
 EXPORTER_TEMPLATE_DIR = Path(__file__).with_name("templates")
 EXPORTER_CSPROJ_TEMPLATE_PATH = EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.csproj.template"
 EXPORTER_PROGRAM_CS_PATH = EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.Program.cs"
+CN_METADATA_EXPORTER_PROJECT = (
+    Path("third_party")
+    / "cn_metadata_exporter"
+    / "cn_metadata_exporter.csproj"
+)
 
 
 def _read_exporter_template(template_path: Path) -> str:
@@ -45,6 +56,94 @@ def _find_first_match(base_dir: Path, file_names: tuple[str, ...]) -> Path | Non
         if matches:
             return matches[0]
     return None
+
+
+class _StreamingProcessResult:
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _classify_cn_exporter_stderr_line(line: str) -> str:
+    if CN_EXPORTER_LOOP_PATTERN.match(line):
+        return "suppress"
+    if CN_EXPORTER_STAGE_PATTERN.match(line):
+        return "info"
+    return "warn"
+
+
+def _forward_process_stream(
+    stream: TextIO | None,
+    logger: LoggerPort,
+    collector: list[str],
+    *,
+    is_stderr: bool = False,
+) -> None:
+    if stream is None:
+        return
+
+    try:
+        for raw_line in iter(stream.readline, ""):
+            line = raw_line.rstrip("\r\n")
+            if not line:
+                continue
+            if not is_stderr:
+                collector.append(line)
+                logger.info(line)
+                continue
+
+            classification = _classify_cn_exporter_stderr_line(line)
+            if classification == "suppress":
+                continue
+            collector.append(line)
+            if classification == "info":
+                logger.info(line)
+            else:
+                logger.warn(line)
+    finally:
+        stream.close()
+
+
+def _run_streaming_process(
+    command: list[str],
+    logger: LoggerPort,
+) -> _StreamingProcessResult:
+    with subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf8",
+        errors="replace",
+        bufsize=1,
+    ) as process:
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        threads = [
+            threading.Thread(
+                target=_forward_process_stream,
+                args=(process.stdout, logger, stdout_lines),
+            ),
+            threading.Thread(
+                target=_forward_process_stream,
+                args=(process.stderr, logger, stderr_lines),
+                kwargs={"is_stderr": True},
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+
+        returncode = process.wait()
+
+        for thread in threads:
+            thread.join()
+
+        return _StreamingProcessResult(
+            returncode=returncode,
+            stdout="\n".join(stdout_lines),
+            stderr="\n".join(stderr_lines),
+        )
 
 
 class LegacyIl2CppDumperBackend(Il2CppDumpBackendPort):
@@ -76,6 +175,71 @@ class LegacyIl2CppDumperBackend(Il2CppDumpBackendPort):
             context.max_retries,
         )
         self.logger.info("Dumped il2cpp binary file successfully.")
+
+
+class CnMetadataDumpError(RuntimeError):
+    """Raised when the CN metadata dump backend fails."""
+
+
+class CnMetadataDumpBackend(Il2CppDumpBackendPort):
+    METADATA_FOLDER = "CN_Metadata"
+    METADATA_NAME = "global-metadata.dat"
+
+    def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
+        self.http_client = http_client
+        self.logger = logger
+
+    def dump(self, context: RuntimeContext, output_dir: str) -> None:
+        _ = self.http_client
+        metadata_path = self._resolve_metadata_path(context)
+        project_path = self._resolve_project_path()
+        dump_cs_path = Path(output_dir) / "dump.cs"
+        dump_cs_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.logger.info("Trying to dump CN metadata...")
+        result = _run_streaming_process(
+            [
+                "dotnet",
+                "run",
+                "--project",
+                str(project_path),
+                "-c",
+                "Release",
+                "--",
+                "--metadata",
+                str(metadata_path.resolve()),
+                "--output",
+                str(dump_cs_path.resolve()),
+            ],
+            self.logger,
+        )
+        if result.returncode != 0:
+            summary = result.stderr.strip() or result.stdout.strip() or (
+                f"Process exited with code {result.returncode}."
+            )
+            raise CnMetadataDumpError(
+                "Failed to dump CN metadata with cn_metadata_exporter: "
+                f"{summary}"
+            )
+        self.logger.info("Dumped CN metadata successfully.")
+
+    @classmethod
+    def _resolve_metadata_path(cls, context: RuntimeContext) -> Path:
+        metadata_path = Path(context.temp_dir) / cls.METADATA_FOLDER / cls.METADATA_NAME
+        if not metadata_path.is_file():
+            raise FileNotFoundError(
+                "Cannot find CN metadata file. Make sure runtime preparation completed successfully.",
+            )
+        return metadata_path
+
+    @staticmethod
+    def _resolve_project_path() -> Path:
+        project_path = (_repo_root() / CN_METADATA_EXPORTER_PROJECT).resolve()
+        if not project_path.is_file():
+            raise FileNotFoundError(
+                f"Cannot find cn_metadata_exporter project: {project_path}.",
+            )
+        return project_path
 
 
 class Cpp2ILSourceResolver:
@@ -299,7 +463,7 @@ class DumperBackendRegistry:
 
 def build_default_dumper_backend_registry() -> DumperBackendRegistry:
     registry = DumperBackendRegistry()
-    registry.register("cn", lambda http_client, logger: LegacyIl2CppDumperBackend(http_client, logger))
+    registry.register("cn", lambda http_client, logger: CnMetadataDumpBackend(http_client, logger))
     registry.register("gl", lambda http_client, logger: LegacyIl2CppDumperBackend(http_client, logger))
     registry.register("jp", lambda http_client, logger: Cpp2IlDumpCsBackend(http_client, logger))
     return registry

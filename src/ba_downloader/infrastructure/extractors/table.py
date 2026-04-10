@@ -6,8 +6,10 @@ import os
 import sqlite3
 import struct
 import sys
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from io import BytesIO
 from importlib import import_module, invalidate_caches, util
 from os import path
 from pathlib import Path
@@ -50,6 +52,9 @@ class ProcessedTableArtifact:
 
 
 class TableExtractor:
+    GROUND_GRID_SCHEMA_NAME = "GroundGridFlat.bytes"
+    RHYTHM_BEATMAP_ARCHIVE_NAME = "RhythmBeatmapData.zip"
+
     def __init__(
         self,
         table_file_folder: str,
@@ -312,6 +317,40 @@ class TableExtractor:
             f"Unsupported entry {file_name} in {archive_name}: no matching table processor."
         )
 
+    @staticmethod
+    def _is_ground_grid_patch_archive(file_name: str) -> bool:
+        archive_name = path.basename(file_name)
+        return archive_name.startswith("TablePatchPack_") and "GroundGrid" in archive_name
+
+    @staticmethod
+    def _is_ground_stage_patch_archive(file_name: str) -> bool:
+        archive_name = path.basename(file_name)
+        return archive_name.startswith("TablePatchPack_") and "GroundStage" in archive_name
+
+    @classmethod
+    def _is_rhythm_beatmap_archive(cls, file_name: str) -> bool:
+        return path.basename(file_name) == cls.RHYTHM_BEATMAP_ARCHIVE_NAME
+
+    @staticmethod
+    def _write_processed_file(
+        extract_folder: Path,
+        processed_file: ProcessedTableArtifact,
+    ) -> None:
+        output_path = extract_folder / processed_file.file_name
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(processed_file.data)
+
+    def _warn_skipped_entry(
+        self,
+        archive_name: str,
+        entry_name: str,
+        warnings: list[str],
+        error: str,
+    ) -> None:
+        warning = f"Skipping {entry_name} in {archive_name}: {error}"
+        self.logger.warn(warning)
+        warnings.append(warning)
+
     def extract_db_file(
         self,
         file_path: str,
@@ -354,36 +393,214 @@ class TableExtractor:
         *,
         should_stop: Callable[[], bool] | None = None,
     ) -> None:
-        zip_extract_folder = path.join(self.extract_folder, file_name.removesuffix(".zip"))
-        os.makedirs(zip_extract_folder, exist_ok=True)
+        archive_name = path.basename(file_name)
         warnings: list[str] = []
 
+        if self._is_rhythm_beatmap_archive(archive_name):
+            self.logger.warn(
+                f"Skipping {archive_name}: beatmap semantic parser is not implemented yet."
+            )
+            return
+
         try:
-            with ZipFile(path.join(self.table_file_folder, file_name), "r") as archive:
-                archive.setpassword(zip_password(path.basename(file_name)))
-                for item_name in archive.namelist():
-                    self._ensure_not_cancelled(should_stop)
-                    self._extract_zip_entry(
-                        archive_name=file_name,
-                        item_name=item_name,
-                        archive=archive,
-                        extract_folder=zip_extract_folder,
-                        warnings=warnings,
-                        should_stop=should_stop,
-                    )
+            if self._is_ground_grid_patch_archive(archive_name):
+                self._extract_ground_grid_patch_archive(
+                    file_name,
+                    warnings=warnings,
+                    should_stop=should_stop,
+                )
+            elif self._is_ground_stage_patch_archive(archive_name):
+                self._extract_ground_stage_patch_archive(
+                    file_name,
+                    warnings=warnings,
+                    should_stop=should_stop,
+                )
+            else:
+                self._extract_standard_zip_archive(
+                    file_name,
+                    warnings=warnings,
+                    should_stop=should_stop,
+                )
         except RuntimeError as exc:
             if str(exc) == "Extraction cancelled by user.":
                 raise
-            self.logger.error(f"Failed to process {file_name}: {exc}")
+            self.logger.error(f"Failed to process {archive_name}: {exc}")
             return
         except (BadZipFile, FileNotFoundError, OSError, ValueError) as exc:
-            self.logger.error(f"Failed to process {file_name}: {exc}")
+            self.logger.error(f"Failed to process {archive_name}: {exc}")
             return
 
         if warnings:
             self.logger.warn(
-                f"Skipped {len(warnings)} entries while extracting {file_name}."
+                f"Skipped {len(warnings)} entries while extracting {archive_name}."
             )
+
+    def _extract_standard_zip_archive(
+        self,
+        file_name: str,
+        *,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
+        archive_name = path.basename(file_name)
+        extract_folder = Path(self.extract_folder) / archive_name.removesuffix(".zip")
+        with ZipFile(path.join(self.table_file_folder, file_name), "r") as archive:
+            archive.setpassword(zip_password(archive_name))
+            for item_name in archive.namelist():
+                self._ensure_not_cancelled(should_stop)
+                self._extract_zip_entry(
+                    archive_name=archive_name,
+                    item_name=item_name,
+                    archive=archive,
+                    extract_folder=extract_folder,
+                    warnings=warnings,
+                    should_stop=should_stop,
+                )
+
+    def _extract_ground_grid_patch_archive(
+        self,
+        file_name: str,
+        *,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
+        archive_name = path.basename(file_name)
+        outer_extract_folder = Path(self.extract_folder) / archive_name.removesuffix(".zip")
+
+        with ZipFile(path.join(self.table_file_folder, file_name), "r") as archive:
+            archive.setpassword(zip_password(archive_name))
+            for item_name in archive.namelist():
+                self._ensure_not_cancelled(should_stop)
+                item_data = archive.read(item_name)
+                try:
+                    self._extract_ground_grid_inner_archive(
+                        archive_name=archive_name,
+                        item_name=item_name,
+                        item_data=item_data,
+                        extract_folder=outer_extract_folder,
+                        warnings=warnings,
+                        should_stop=should_stop,
+                    )
+                except BadZipFile as exc:
+                    self._warn_skipped_entry(
+                        archive_name,
+                        item_name,
+                        warnings,
+                        str(exc),
+                    )
+
+    def _extract_ground_grid_inner_archive(
+        self,
+        *,
+        archive_name: str,
+        item_name: str,
+        item_data: bytes,
+        extract_folder: Path,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
+        with ZipFile(BytesIO(item_data), "r") as inner_archive:
+            inner_archive.setpassword(zip_password(path.basename(item_name)))
+            for inner_item_name in inner_archive.namelist():
+                self._ensure_not_cancelled(should_stop)
+                try:
+                    inner_item_data = inner_archive.read(inner_item_name)
+                except (RuntimeError, OSError, ValueError, zlib.error) as exc:
+                    self._warn_skipped_entry(
+                        archive_name,
+                        f"{item_name}/{inner_item_name}",
+                        warnings,
+                        str(exc),
+                    )
+                    continue
+                try:
+                    processed_file = self._process_zip_file(
+                        archive_name,
+                        self.GROUND_GRID_SCHEMA_NAME,
+                        inner_item_data,
+                        detect_type=True,
+                    )
+                except TableProcessingError as exc:
+                    self._warn_skipped_entry(
+                        archive_name,
+                        f"{item_name}/{inner_item_name}",
+                        warnings,
+                        str(exc),
+                    )
+                    continue
+
+                self._ensure_not_cancelled(should_stop)
+                self._write_processed_file(
+                    extract_folder / Path(item_name).stem,
+                    processed_file,
+                )
+
+    def _extract_ground_stage_patch_archive(
+        self,
+        file_name: str,
+        *,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
+        archive_name = path.basename(file_name)
+        outer_extract_folder = Path(self.extract_folder) / archive_name.removesuffix(".zip")
+
+        with ZipFile(path.join(self.table_file_folder, file_name), "r") as archive:
+            archive.setpassword(zip_password(archive_name))
+            for item_name in archive.namelist():
+                self._ensure_not_cancelled(should_stop)
+                item_data = archive.read(item_name)
+                try:
+                    self._extract_ground_stage_inner_archive(
+                        archive_name=archive_name,
+                        item_name=item_name,
+                        item_data=item_data,
+                        extract_folder=outer_extract_folder,
+                        warnings=warnings,
+                        should_stop=should_stop,
+                    )
+                except BadZipFile as exc:
+                    self._warn_skipped_entry(
+                        archive_name,
+                        item_name,
+                        warnings,
+                        str(exc),
+                    )
+
+        self.logger.info(
+            f"Extracted raw GroundStage payloads from {archive_name}; semantic parser is not implemented yet."
+        )
+
+    def _extract_ground_stage_inner_archive(
+        self,
+        *,
+        archive_name: str,
+        item_name: str,
+        item_data: bytes,
+        extract_folder: Path,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
+        with ZipFile(BytesIO(item_data), "r") as inner_archive:
+            inner_archive.setpassword(zip_password(path.basename(item_name)))
+            for inner_item_name in inner_archive.namelist():
+                self._ensure_not_cancelled(should_stop)
+                try:
+                    inner_item_data = inner_archive.read(inner_item_name)
+                except (RuntimeError, OSError, ValueError, zlib.error) as exc:
+                    self._warn_skipped_entry(
+                        archive_name,
+                        f"{item_name}/{inner_item_name}",
+                        warnings,
+                        str(exc),
+                    )
+                    continue
+
+                self._ensure_not_cancelled(should_stop)
+                self._write_processed_file(
+                    extract_folder / Path(item_name).stem,
+                    ProcessedTableArtifact(inner_item_data, inner_item_name),
+                )
 
     def _extract_zip_entry(
         self,
@@ -391,7 +608,7 @@ class TableExtractor:
         archive_name: str,
         item_name: str,
         archive: ZipFile,
-        extract_folder: str,
+        extract_folder: Path,
         warnings: list[str],
         should_stop: Callable[[], bool] | None = None,
     ) -> None:
@@ -424,14 +641,16 @@ class TableExtractor:
                         item_name,
                     )
             except TableProcessingError as second_error:
-                warning = f"Skipping {item_name} in {archive_name}: {first_error}; fallback failed ({second_error})."
-                self.logger.warn(warning)
-                warnings.append(warning)
+                self._warn_skipped_entry(
+                    archive_name,
+                    item_name,
+                    warnings,
+                    f"{first_error}; fallback failed ({second_error}).",
+                )
                 return
 
         self._ensure_not_cancelled(should_stop)
-        with open(path.join(extract_folder, processed_file.file_name), "wb") as file_handle:
-            file_handle.write(processed_file.data)
+        self._write_processed_file(extract_folder, processed_file)
 
     def extract_table(
         self,

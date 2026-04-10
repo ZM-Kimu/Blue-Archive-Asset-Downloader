@@ -5,6 +5,7 @@ from collections.abc import Callable
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.region import Region
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
+from ba_downloader.infrastructure.regions.providers.cn import CNRuntimeAssetPreparer
 from ba_downloader.infrastructure.regions.providers.gl import GLRuntimeAssetPreparer
 
 
@@ -35,6 +36,6 @@ def build_noop_runtime_preparer(**_: object) -> RuntimeAssetPreparerPort:
 
 
 DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY = RuntimeAssetPreparerRegistry()
-DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.register("cn", build_noop_runtime_preparer)
+DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.register("cn", CNRuntimeAssetPreparer)
 DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.register("gl", GLRuntimeAssetPreparer)
 DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.register("jp", build_noop_runtime_preparer)

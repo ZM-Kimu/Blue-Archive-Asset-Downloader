@@ -8,6 +8,12 @@ from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
 
+SYNC_AND_RELATION_CAPABILITIES = RegionCapabilities(
+    supports_sync=True,
+    supports_advanced_search=False,
+    supports_relation_build=True,
+)
+
 
 def coerce_int(value: object) -> int:
     if isinstance(value, bool):

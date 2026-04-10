@@ -1,6 +1,8 @@
 from ba_downloader.infrastructure.tools.dump_backend import (
     CPP2IL_COMMIT,
     DEFAULT_DUMPER_BACKEND_REGISTRY,
+    CnMetadataDumpBackend,
+    CnMetadataDumpError,
     Cpp2IlDumpCsBackend,
     Cpp2ILSourceResolver,
     DumperBackendRegistry,
@@ -20,6 +22,8 @@ __all__ = [
     "CPP2IL_COMMIT",
     "DEFAULT_DUMPER_BACKEND_REGISTRY",
     "CSParser",
+    "CnMetadataDumpBackend",
+    "CnMetadataDumpError",
     "CompileToPython",
     "Cpp2ILSourceResolver",
     "Cpp2IlDumpCsBackend",

@@ -9,6 +9,7 @@ from typing import Any, ClassVar, Literal
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
+from ba_downloader.infrastructure.logging.runtime import configure_logging
 
 
 class BundleExtractor:
@@ -20,7 +21,6 @@ class BundleExtractor:
         "TextAsset",
         "Mesh",
     ]
-
     def __init__(
         self,
         context: RuntimeContext,
@@ -51,18 +51,27 @@ class BundleExtractor:
         tasks: multiprocessing.Queue,
         context: RuntimeContext,
         extract_types: list[str] | None,
+        error_count: Any | None = None,
     ) -> None:
         """Multi-thread is not allowed in UnityPy. Use multi-process."""
+        configure_logging()
         extractor = BundleExtractor(context)
-        while True:
-            try:
-                bundle_path = tasks.get(timeout=0.1)
-            except Empty:
-                break
-            try:
-                extractor.extract_bundle(bundle_path, extract_types)
-            except (AttributeError, KeyError, OSError, RuntimeError, ValueError) as exc:
-                extractor.logger.error(f"Unexpected error occurred: {exc}")
+        try:
+            while True:
+                try:
+                    bundle_path = tasks.get(timeout=0.1)
+                except Empty:
+                    break
+                try:
+                    extractor.extract_bundle(bundle_path, extract_types)
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    extractor._increment_error_count(error_count)
+                    extractor.logger.error(
+                        f"Failed to extract bundle {bundle_path}: "
+                        f"{extractor._format_exception(exc)}"
+                    )
+        except KeyboardInterrupt:
+            return
 
     def extract_bundle(
         self,
@@ -78,8 +87,29 @@ class BundleExtractor:
         for obj in env.objects:
             try:
                 self._extract_object(obj, counter, conditional)
-            except (AttributeError, KeyError, OSError, RuntimeError, ValueError) as exc:
-                self.logger.error(f"Error while extracting bundle {res_path}: {exc}")
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                self.logger.error(
+                    f"Error while extracting bundle {res_path}: "
+                    f"{self._format_exception(exc)}"
+                )
+
+    @staticmethod
+    def _format_exception(exc: Exception) -> str:
+        detail = str(exc).strip()
+        if detail:
+            return f"{type(exc).__name__}: {detail}"
+        return type(exc).__name__
+
+    @staticmethod
+    def _increment_error_count(error_count: Any | None) -> None:
+        if error_count is None:
+            return
+        get_lock = getattr(error_count, "get_lock", None)
+        if callable(get_lock):
+            with get_lock():
+                error_count.value += 1
+            return
+        error_count.value += 1
 
     @staticmethod
     def _build_extract_filter(

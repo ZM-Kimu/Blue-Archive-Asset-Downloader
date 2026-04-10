@@ -9,6 +9,7 @@ from ba_downloader.application.services.download import DownloadService
 from ba_downloader.application.services.extract import ExtractService
 from ba_downloader.application.services.relation import RelationService
 from ba_downloader.application.services.sync import SyncService
+from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.settings import AppSettings, Platform, Region
 from ba_downloader.domain.ports.http import HttpClientPort
@@ -152,16 +153,21 @@ def _build_cli_runtime_services(context: RuntimeContext) -> _CliRuntimeServices:
         proxy_url=context.proxy_url or None,
         max_retries=context.max_retries,
     )
+    runtime_asset_preparer = _build_runtime_asset_preparer(context, logger, http_client)
+    flatbuffer_workflow = FlatbufferWorkflow(http_client, logger)
     return _CliRuntimeServices(
         logger=logger,
         http_client=http_client,
         provider=_build_provider(context, logger, http_client),
-        runtime_asset_preparer=_build_runtime_asset_preparer(
-            context, logger, http_client
-        ),
+        runtime_asset_preparer=runtime_asset_preparer,
         downloader=ResourceDownloader(http_client, logger),
-        extract_service=ExtractService(AssetExtractionWorkflow(logger)),
-        flatbuffer_workflow=FlatbufferWorkflow(http_client, logger),
+        extract_service=ExtractService(
+            AssetExtractionWorkflow(logger),
+            flatbuffer_workflow,
+            runtime_asset_preparer,
+            logger,
+        ),
+        flatbuffer_workflow=flatbuffer_workflow,
     )
 
 
@@ -232,6 +238,9 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         services.logger.warn("Operation cancelled by user.")
         return 130
+    except (LookupError, NetworkError) as exc:
+        services.logger.error(str(exc) or exc.__class__.__name__)
+        return 1
     finally:
         services.http_client.close()
 

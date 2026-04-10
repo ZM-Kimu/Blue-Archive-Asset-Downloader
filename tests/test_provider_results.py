@@ -4,6 +4,7 @@ from pathlib import Path
 from ba_downloader.domain.models.asset import AssetType
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
+from ba_downloader.infrastructure.apk import ZipEntry
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.regions.providers.cn import CNServer
 from ba_downloader.infrastructure.regions.providers.gl import (
@@ -278,7 +279,9 @@ def test_gl_provider_warns_when_platform_is_explicitly_ignored() -> None:
     assert logger.warn_messages == ["The --platform option only applies to JP and was ignored."]
 
 
-def test_cn_provider_builds_assets_without_downloading_apk() -> None:
+def test_cn_provider_builds_assets_without_downloading_apk(
+    monkeypatch,
+) -> None:
     context = RuntimeContext(
         region="cn",
         threads=4,
@@ -353,6 +356,76 @@ def test_cn_provider_builds_assets_without_downloading_apk() -> None:
     )
     logger = RecordingLogger()
     provider = CNServer(http_client=client, logger=logger)
+    monkeypatch.setattr(
+        CNServer,
+        "get_apk_url",
+        lambda self, server="official": "https://example.invalid/BlueArchive.apk",
+    )
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.regions.providers.cn.read_zip_entries",
+        lambda url, http_client: [
+            ZipEntry(
+                path="assets/video/title.mp4",
+                crc32=0,
+                local_header_offset=0,
+                compressed_size=1,
+                uncompressed_size=1,
+                compression_method=0,
+                file_name_length=1,
+                extra_field_length=0,
+            ),
+            ZipEntry(
+                path="assets/video/title_4nd_1.mp4",
+                crc32=0,
+                local_header_offset=1,
+                compressed_size=1,
+                uncompressed_size=1,
+                compression_method=0,
+                file_name_length=1,
+                extra_field_length=0,
+            ),
+            ZipEntry(
+                path="assets/video/title_4nd_2.mp4",
+                crc32=0,
+                local_header_offset=2,
+                compressed_size=1,
+                uncompressed_size=1,
+                compression_method=0,
+                file_name_length=1,
+                extra_field_length=0,
+            ),
+            ZipEntry(
+                path="assets/video/title_4nd_Ep.mp4",
+                crc32=0,
+                local_header_offset=3,
+                compressed_size=1,
+                uncompressed_size=1,
+                compression_method=0,
+                file_name_length=1,
+                extra_field_length=0,
+            ),
+            ZipEntry(
+                path="assets/video/title_5th_1.mp4",
+                crc32=0,
+                local_header_offset=4,
+                compressed_size=1,
+                uncompressed_size=1,
+                compression_method=0,
+                file_name_length=1,
+                extra_field_length=0,
+            ),
+            ZipEntry(
+                path="assets/aa/catalog.json",
+                crc32=0,
+                local_header_offset=5,
+                compressed_size=1,
+                uncompressed_size=1,
+                compression_method=0,
+                file_name_length=1,
+                extra_field_length=0,
+            ),
+        ],
+    )
 
     result = provider.load_catalog(context)
 
@@ -361,19 +434,40 @@ def test_cn_provider_builds_assets_without_downloading_apk() -> None:
         "Table/Excel.zip",
         "Media/Audio/BGM/title_theme.mp4",
         "Bundle/characters.bundle",
+        "Media/video/title.mp4",
+        "Media/video/title_4nd_1.mp4",
+        "Media/video/title_4nd_2.mp4",
+        "Media/video/title_4nd_Ep.mp4",
+        "Media/video/title_5th_1.mp4",
     ]
     assert [item.asset_type for item in result.resources] == [
         AssetType.table,
         AssetType.media,
         AssetType.bundle,
+        AssetType.media,
+        AssetType.media,
+        AssetType.media,
+        AssetType.media,
+        AssetType.media,
     ]
+    assert result.capabilities.supports_sync is True
+    assert result.capabilities.supports_advanced_search is False
+    assert result.capabilities.supports_relation_build is True
     assert [item.checksum.algorithm for item in result.resources] == [
         "md5",
         "md5",
         "md5",
+        "crc",
+        "crc",
+        "crc",
+        "crc",
+        "crc",
     ]
     assert result.resources[0].metadata["includes"] == ["CharacterExcelTable"]
     assert result.resources[1].metadata["media_type"] == "mp4"
+    assert result.resources[3].metadata["source"] == CNServer.APK_MEDIA_SOURCE
+    assert result.resources[3].metadata["apk_entry_path"] == "assets/video/title.mp4"
+    assert result.resources[3].url == "https://example.invalid/BlueArchive.apk"
     assert client.request_calls[1]["headers"] == {
         "APP-VER": "1.2.3",
         "PLATFORM-ID": "1",
@@ -386,10 +480,12 @@ def test_cn_provider_builds_assets_without_downloading_apk() -> None:
         "Current resource version: 1.2.3",
         "Pulling catalog...",
     ]
-    assert logger.info_messages[-1].startswith("Catalog: 3 items in the catalog")
+    assert logger.info_messages[-1].startswith("Catalog: 8 items in the catalog")
 
 
-def test_cn_provider_warns_when_platform_is_explicitly_ignored() -> None:
+def test_cn_provider_warns_when_platform_is_explicitly_ignored(
+    monkeypatch,
+) -> None:
     context = RuntimeContext(
         region="cn",
         threads=4,
@@ -463,11 +559,71 @@ def test_cn_provider_warns_when_platform_is_explicitly_ignored() -> None:
         }
     )
     logger = RecordingLogger()
+    monkeypatch.setattr(
+        CNServer,
+        "get_apk_url",
+        lambda self, server="official": "https://example.invalid/BlueArchive.apk",
+    )
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.regions.providers.cn.read_zip_entries",
+        lambda url, http_client: [
+            ZipEntry(
+                path="assets/video/title.mp4",
+                crc32=0,
+                local_header_offset=0,
+                compressed_size=1,
+                uncompressed_size=1,
+                compression_method=0,
+                file_name_length=1,
+                extra_field_length=0,
+            ),
+            ZipEntry(
+                path="assets/video/title_4nd_1.mp4",
+                crc32=0,
+                local_header_offset=1,
+                compressed_size=1,
+                uncompressed_size=1,
+                compression_method=0,
+                file_name_length=1,
+                extra_field_length=0,
+            ),
+            ZipEntry(
+                path="assets/video/title_4nd_2.mp4",
+                crc32=0,
+                local_header_offset=2,
+                compressed_size=1,
+                uncompressed_size=1,
+                compression_method=0,
+                file_name_length=1,
+                extra_field_length=0,
+            ),
+            ZipEntry(
+                path="assets/video/title_4nd_Ep.mp4",
+                crc32=0,
+                local_header_offset=3,
+                compressed_size=1,
+                uncompressed_size=1,
+                compression_method=0,
+                file_name_length=1,
+                extra_field_length=0,
+            ),
+            ZipEntry(
+                path="assets/video/title_5th_1.mp4",
+                crc32=0,
+                local_header_offset=4,
+                compressed_size=1,
+                uncompressed_size=1,
+                compression_method=0,
+                file_name_length=1,
+                extra_field_length=0,
+            ),
+        ],
+    )
 
     result = CNServer(http_client=client, logger=logger).load_catalog(context)
 
     assert logger.warn_messages == ["The --platform option only applies to JP and was ignored."]
-    assert len(result.resources) == 3
+    assert len(result.resources) == 8
 
 
 def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(

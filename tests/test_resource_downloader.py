@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from binascii import crc32
 from contextlib import nullcontext
 from pathlib import Path
 from threading import Event
@@ -7,9 +8,11 @@ from typing import Any, ClassVar
 
 import pytest
 
+from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import DownloadResult
+from ba_downloader.infrastructure.apk import ZipEntry
 from ba_downloader.infrastructure.download.resource_downloader import ResourceDownloader
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.shared.crypto.encryption import calculate_crc, calculate_md5
@@ -382,6 +385,44 @@ def test_download_resources_reduces_concurrency_for_timeout_failures(
     assert progress.failed_statuses[-1] == "failed 1"
 
 
+def test_download_resources_treats_network_timeout_as_retryable_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    logger = RecordingLogger()
+    downloader = ResourceDownloader(RecordingHttpClient(), logger)
+    context = _build_context(tmp_path)
+    resources = list(_build_resources("Bundle/a.bundle", "Bundle/b.bundle"))
+    state = downloader._create_adaptive_download_state(resources, context)
+    RecordingProgressReporter.instances.clear()
+
+    def fake_download_resource(resource, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        if resource.path.endswith("a.bundle"):
+            raise NetworkError(
+                "Failed to download https://example.com/Bundle/a.bundle: "
+                "The read operation timed out"
+            )
+        return resource
+
+    monkeypatch.setattr(downloader, "_download_resource", fake_download_resource)
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
+        RecordingProgressReporter,
+    )
+    monkeypatch.setattr(downloader, "_install_interrupt_handler", lambda stop_event: nullcontext())
+
+    failed = downloader._download_resources(resources, context, adaptive_state=state)
+
+    assert [resource.path for resource in failed] == ["Bundle/a.bundle"]
+    assert state.target_concurrency == 1
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+    progress = RecordingProgressReporter.instances[-1]
+    assert progress.statuses[-1] == "1/2 files"
+    assert progress.secondary_statuses[-1] == "conc. 1/2"
+    assert progress.failed_statuses[-1] == "failed 1"
+
+
 def test_retry_rounds_reuse_adaptive_state(monkeypatch, tmp_path: Path) -> None:
     client = RecordingHttpClient()
     logger = RecordingLogger()
@@ -466,6 +507,115 @@ def test_download_resource_accepts_valid_downloaded_file(tmp_path: Path) -> None
 
     assert returned_resource == resource
     assert (Path(context.raw_dir) / resource.path).read_bytes() == payload
+
+
+def test_download_resource_extracts_apk_entry_media_without_download_to_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = RecordingHttpClient()
+    downloader = ResourceDownloader(client, NullLogger())
+    context = _build_context(tmp_path).with_updates(resource_type=("media",))
+    resources = AssetCollection()
+    resources.add(
+        "https://example.invalid/BlueArchive.apk",
+        "Media/video/title.mp4",
+        0,
+        "0",
+        "crc",
+        AssetType.media,
+        {
+            "source": ResourceDownloader.APK_ENTRY_SOURCE,
+            "apk_entry_path": "assets/video/title.mp4",
+            "media_type": "mp4",
+        },
+    )
+    resource = resources[0]
+    zip_entry = ZipEntry(
+        path="assets/video/title.mp4",
+        crc32=crc32(b"title.mp4") & 0xFFFFFFFF,
+        local_header_offset=0,
+        compressed_size=9,
+        uncompressed_size=9,
+        compression_method=0,
+        file_name_length=0,
+        extra_field_length=0,
+    )
+    extracted: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        downloader,
+        "_resolve_apk_zip_entry",
+        lambda _resource: zip_entry,
+    )
+
+    def fake_extract_zip_entry(url, entry, destination, http_client, **kwargs):  # type: ignore[no-untyped-def]
+        _ = (http_client, kwargs)
+        assert entry == zip_entry
+        Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        Path(destination).write_bytes(b"title.mp4")
+        extracted.append((url, str(destination)))
+        return Path(destination)
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.download.resource_downloader.extract_zip_entry",
+        fake_extract_zip_entry,
+    )
+
+    returned_resource = downloader._download_resource(resource, context)
+
+    assert returned_resource == resource
+    assert client.download_calls == []
+    assert extracted == [
+        (
+            "https://example.invalid/BlueArchive.apk",
+            str(Path(context.raw_dir) / "Media/video/title.mp4"),
+        )
+    ]
+
+
+def test_verify_resource_accepts_existing_apk_entry_media(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
+    context = _build_context(tmp_path).with_updates(resource_type=("media",))
+    asset_path = _write_asset_file(context, "Media/video/title.mp4", b"title.mp4")
+    resources = AssetCollection()
+    resources.add(
+        "https://example.invalid/BlueArchive.apk",
+        "Media/video/title.mp4",
+        0,
+        "0",
+        "crc",
+        AssetType.media,
+        {
+            "source": ResourceDownloader.APK_ENTRY_SOURCE,
+            "apk_entry_path": "assets/video/title.mp4",
+            "media_type": "mp4",
+        },
+    )
+    resource = resources[0]
+    zip_entry = ZipEntry(
+        path="assets/video/title.mp4",
+        crc32=calculate_crc(str(asset_path)),
+        local_header_offset=0,
+        compressed_size=asset_path.stat().st_size,
+        uncompressed_size=asset_path.stat().st_size,
+        compression_method=0,
+        file_name_length=0,
+        extra_field_length=0,
+    )
+    monkeypatch.setattr(
+        downloader,
+        "_resolve_apk_zip_entry",
+        lambda _resource: zip_entry,
+    )
+
+    returned_resource, verified = downloader._verify_resource(resource, context)
+
+    assert returned_resource == resource
+    assert verified is True
 
 
 def test_verify_and_download_logs_when_everything_is_already_present(

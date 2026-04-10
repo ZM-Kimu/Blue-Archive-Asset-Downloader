@@ -28,6 +28,11 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         "characterexceltable.bytes",
         "localizecharprofileexceltable.bytes",
     )
+    OPTIONAL_BYTES_FILES = (
+        "costumeexceltable.bytes",
+        "shoprecruitexceltable.bytes",
+        "localizegachashopexceltable.bytes",
+    )
     REQUIRED_RELATION_SOURCES = (
         "ScenarioCharacterNameDBSchema",
         "characterexceltable.bytes",
@@ -73,7 +78,16 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             raise LookupError("Excel not found, advanced search is unavailable now.")
         return searched
 
-    def __extract_excel(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    def __extract_excel(
+        self,
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+    ]:
         scenario_db = self.__extract_scenario_db()
         extracted_paths = self.__extract_excel_bytes_files()
         excel_payloads = self.__load_excel_payloads(extracted_paths)
@@ -85,7 +99,17 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
 
         char_profile = excel_payloads.get("localizecharprofileexceltable.bytes", [])
         char_excel = excel_payloads.get("characterexceltable.bytes", [])
-        return scenario_db, char_profile, char_excel
+        costume_excel = excel_payloads.get("costumeexceltable.bytes", [])
+        shop_recruit = excel_payloads.get("shoprecruitexceltable.bytes", [])
+        localize_gacha = excel_payloads.get("localizegachashopexceltable.bytes", [])
+        return (
+            scenario_db,
+            char_profile,
+            char_excel,
+            costume_excel,
+            shop_recruit,
+            localize_gacha,
+        )
 
     def __extract_scenario_db(self) -> list[dict[str, Any]]:
         tables = self._process_db_file(
@@ -105,11 +129,11 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             excel_zip.setpassword(zip_password(self.EXCEL_NAME))
             for item_name in excel_zip.namelist():
                 lowered_name = item_name.lower()
-                if lowered_name in self.REQUIRED_BYTES_FILES:
+                if lowered_name in self.REQUIRED_BYTES_FILES + self.OPTIONAL_BYTES_FILES:
                     excel_zip.extract(item_name, extract_dir)
 
         extracted_paths: dict[str, Path] = {}
-        for file_name in self.REQUIRED_BYTES_FILES:
+        for file_name in self.REQUIRED_BYTES_FILES + self.OPTIONAL_BYTES_FILES:
             matches = list(extract_dir.rglob(file_name))
             if matches:
                 extracted_paths[file_name] = matches[0]
@@ -129,10 +153,32 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
                         file_handle.read(),
                         detect_type=True,
                     )
-                payloads[file_name] = json.loads(processed.data)
+                payloads[file_name] = self.__normalize_excel_payload(
+                    file_name,
+                    json.loads(processed.data),
+                )
             except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 self.logger.warn(f"Failed to process {file_name}: {exc}")
         return payloads
+
+    @staticmethod
+    def __normalize_excel_payload(
+        file_name: str,
+        payload: Any,
+    ) -> list[dict[str, Any]]:
+        if isinstance(payload, list) and all(isinstance(item, dict) for item in payload):
+            return payload
+
+        if isinstance(payload, dict):
+            data_list = payload.get("DataList")
+            if isinstance(data_list, list) and all(
+                isinstance(item, dict) for item in data_list
+            ):
+                return data_list
+
+        raise TypeError(
+            f"Unexpected payload shape for {file_name}: expected list[dict] or {{'DataList': list[dict]}}."
+        )
 
     def __validate_relation_sources(
         self,
@@ -164,10 +210,16 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         scenario_db: list[dict[str, Any]],
         char_profile: list[dict[str, Any]],
         char_excel: list[dict[str, Any]],
+        costume_excel: list[dict[str, Any]],
+        shop_recruit: list[dict[str, Any]],
+        localize_gacha: list[dict[str, Any]],
     ) -> list[CharacterData]:
         hash_map: dict[int, CharacterData] = {}
         self.__apply_profile_data(hash_map, char_profile)
         self.__apply_excel_data(hash_map, char_excel)
+        if self.context.region == "cn":
+            self.__apply_costume_data(hash_map, costume_excel)
+            self.__apply_cn_recruit_data(hash_map, shop_recruit, localize_gacha)
         self.__apply_scenario_data(hash_map, scenario_db)
         return list(hash_map.values())
 
@@ -181,13 +233,41 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             data = CharacterData(
                 profile.get("CharacterId", 0),
                 names=list(names),
-                cv=profile.get("CharacterVoiceJp", ""),
-                age=self.__str_to_int(profile.get("CharacterAgeJp", "")),
-                height=self.__str_to_int(profile.get("CharHeightJp", "")),
+                cv=self.__first_non_empty(
+                    profile,
+                    "CharacterVoiceJp",
+                    "CharacterVoiceKr",
+                ),
+                age=self.__str_to_int(
+                    self.__first_non_empty(
+                        profile,
+                        "CharacterAgeJp",
+                        "CharacterAgeKr",
+                    )
+                ),
+                height=self.__str_to_int(
+                    self.__first_non_empty(
+                        profile,
+                        "CharHeightJp",
+                        "CharHeightKr",
+                    )
+                ),
                 birthday=profile.get("BirthDay", ""),
-                illustrator=profile.get("IllustratorNameJp", ""),
+                illustrator=self.__first_non_empty(
+                    profile,
+                    "IllustratorNameJp",
+                    "IllustratorNameKr",
+                ),
             )
             hash_map[data.character_id] = data
+
+    @staticmethod
+    def __first_non_empty(payload: dict[str, Any], *keys: str) -> str:
+        for key in keys:
+            value = payload.get(key, "")
+            if value:
+                return str(value)
+        return ""
 
     def __collect_profile_names(self, profile: dict[str, Any]) -> set[str]:
         names: set[str] = set()
@@ -216,6 +296,114 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             data.club_en = excel_entry.get("Club", "")
             hash_map[data.character_id] = data
 
+    def __apply_costume_data(
+        self,
+        hash_map: dict[int, CharacterData],
+        costume_excel: list[dict[str, Any]],
+    ) -> None:
+        for costume in costume_excel:
+            char_id = int(costume.get("CostumeGroupId", 0) or 0)
+            if char_id <= 0:
+                continue
+
+            data = hash_map.get(char_id, CharacterData(char_id))
+            if not data.dev_name:
+                data.dev_name = str(costume.get("DevName", ""))
+            self.__add_file_aliases(data, self.__collect_costume_aliases(costume))
+            hash_map[data.character_id] = data
+
+    def __collect_costume_aliases(self, costume: dict[str, Any]) -> set[str]:
+        aliases: set[str] = set()
+
+        texture_alias = self.__split_path_to_name(str(costume.get("TextureDir", "")))
+        if texture_alias and texture_alias != "Null":
+            aliases.add(texture_alias)
+
+        model_name = str(costume.get("ModelPrefabName", ""))
+        if model_name and not model_name.endswith("_Original"):
+            aliases.add(model_name)
+
+        return aliases
+
+    def __apply_cn_recruit_data(
+        self,
+        hash_map: dict[int, CharacterData],
+        shop_recruit: list[dict[str, Any]],
+        localize_gacha: list[dict[str, Any]],
+    ) -> None:
+        subtitle_by_shop_id = {
+            int(item.get("GachaShopId", 0) or 0): str(item.get("SubTitleKr", ""))
+            for item in localize_gacha
+            if item.get("SubTitleKr")
+        }
+
+        for recruit in shop_recruit:
+            shop_id = int(recruit.get("Id", 0) or 0)
+            subtitle = subtitle_by_shop_id.get(shop_id, "")
+            if not subtitle:
+                continue
+
+            info_character_ids = [
+                int(value)
+                for value in recruit.get("InfoCharacterId", [])
+                if int(value or 0) > 0
+            ]
+            if not info_character_ids:
+                continue
+
+            recruit_names = self.__extract_recruit_names(subtitle)
+            if not recruit_names:
+                continue
+
+            if len(info_character_ids) == 1:
+                self.__append_names(hash_map, info_character_ids[0], {recruit_names[0]})
+                continue
+
+            for char_id, recruit_name in zip(info_character_ids, recruit_names, strict=False):
+                self.__append_names(hash_map, char_id, {recruit_name})
+
+    def __extract_recruit_names(self, subtitle: str) -> list[str]:
+        names: list[str] = []
+        for segment in re.split(r"[/\n]+", subtitle):
+            normalized = segment.strip()
+            if not normalized:
+                continue
+
+            normalized = normalized.replace("还可招募", "").strip()
+            normalized = re.sub(r"^【[^】]+】", "", normalized).strip()
+            normalized = re.sub(r"招募概率提升[！!]*$", "", normalized).strip()
+            normalized = re.sub(r"^[123]★", "", normalized).strip()
+            normalized = re.sub(r"（[123]★）$", "", normalized).strip()
+            normalized = normalized.strip("！! ")
+
+            if normalized:
+                names.append(normalized)
+        return names
+
+    def __append_names(
+        self,
+        hash_map: dict[int, CharacterData],
+        char_id: int,
+        names: set[str],
+    ) -> None:
+        data = hash_map.get(char_id, CharacterData(char_id))
+        merged_names = set(data.names or [])
+        merged_names.update(name for name in names if name)
+        data.names = sorted(merged_names)
+        hash_map[char_id] = data
+
+    @staticmethod
+    def __normalize_lookup_token(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+    def __add_file_aliases(self, char_data: CharacterData, aliases: set[str]) -> None:
+        valid_aliases = {alias for alias in aliases if alias and alias != "Null"}
+        if not valid_aliases:
+            return
+        if char_data.file_name is None:
+            char_data.file_name = set()
+        char_data.file_name.update(valid_aliases)
+
     def __apply_scenario_data(
         self,
         hash_map: dict[int, CharacterData],
@@ -228,74 +416,104 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
 
             file_name = self.__split_path_to_name(str(scene_data.get("SmallPortrait", "")))
             name_no_underline = file_name.replace("_", "")
-            jp_name = str(scene_data.get("NameJP", ""))
-            if not (file_name and jp_name):
+            if not file_name:
                 continue
 
+            scenario_names = self.__collect_scenario_names(scene_data)
             if self.__apply_existing_scenario_mapping(
                 hash_map,
-                scene_data,
+                scenario_names,
                 file_name,
                 name_no_underline,
-                jp_name,
             ):
                 continue
 
             self.__register_unmatched_scenario(
                 hash_map,
                 scene_data,
+                scenario_names,
                 file_name,
                 name_no_underline,
-                jp_name,
             )
 
     def __apply_existing_scenario_mapping(
         self,
         hash_map: dict[int, CharacterData],
-        scene_data: dict[str, Any],
+        scenario_names: set[str],
         file_name: str,
         name_no_underline: str,
-        jp_name: str,
     ) -> bool:
+        normalized_scenario_names = {
+            self.__normalize_lookup_token(name) for name in scenario_names if name
+        }
+        normalized_file_name = self.__normalize_lookup_token(file_name)
+        normalized_file_name_no_underline = self.__normalize_lookup_token(name_no_underline)
+        prefix_candidates: list[CharacterData] = []
+
         for char_data in hash_map.values():
-            char_names = char_data.names or []
-            if not char_data.dev_name:
-                continue
-            if any(jp_name in name.lower() for name in char_names) or char_data.dev_name in file_name:
-                if char_data.file_name:
-                    char_data.file_name.update({file_name, name_no_underline})
-                else:
-                    char_data.file_name = {file_name, name_no_underline}
+            normalized_names = {
+                self.__normalize_lookup_token(name) for name in (char_data.names or []) if name
+            }
+            if normalized_scenario_names and normalized_names.intersection(normalized_scenario_names):
+                self.__add_file_aliases(char_data, {file_name, name_no_underline})
                 return True
+
+            normalized_aliases = {
+                self.__normalize_lookup_token(alias)
+                for alias in (char_data.file_name or set())
+                if alias
+            }
+            if any(
+                normalized_alias
+                and (
+                    normalized_file_name.startswith(normalized_alias)
+                    or normalized_alias.startswith(normalized_file_name)
+                    or normalized_file_name_no_underline.startswith(normalized_alias)
+                    or normalized_alias.startswith(normalized_file_name_no_underline)
+                )
+                for normalized_alias in normalized_aliases
+            ):
+                self.__add_file_aliases(char_data, {file_name, name_no_underline})
+                return True
+
+            dev_prefix = self.__normalize_lookup_token(char_data.dev_name.split("_", 1)[0])
+            if dev_prefix and (
+                normalized_file_name.startswith(dev_prefix)
+                or normalized_file_name_no_underline.startswith(dev_prefix)
+            ):
+                prefix_candidates.append(char_data)
+
+        if len(prefix_candidates) == 1:
+            self.__add_file_aliases(prefix_candidates[0], {file_name, name_no_underline})
+            return True
+
         return False
 
     def __register_unmatched_scenario(
         self,
         hash_map: dict[int, CharacterData],
         scene_data: dict[str, Any],
+        scenario_names: set[str],
         file_name: str,
         name_no_underline: str,
-        jp_name: str,
     ) -> None:
-        if file_name == "Null":
+        if file_name == "Null" or not scenario_names:
             return
         char_id = scene_data.get("CharacterName", 0)
         if not char_id:
             return
 
-        names = self.__collect_scenario_names(scene_data, jp_name)
         normalized_id = -char_id if char_id in hash_map else char_id
         hash_map[normalized_id] = CharacterData(
             normalized_id,
             dev_name=file_name,
-            names=list(names),
+            names=sorted(scenario_names),
             file_name={file_name, name_no_underline},
         )
 
     def __collect_scenario_names(
         self,
         scene_data: dict[str, Any],
-        jp_name: str,
     ) -> set[str]:
         names: set[str] = set()
         for key in scene_data:
@@ -304,8 +522,8 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             name = scene_data.get(key, "")
             if name:
                 names.add(name)
-        if jp_name:
-            names.add(self.__convert_kana_to_hepburn(jp_name))
+            if name and key.lower() == "namejp":
+                names.add(self.__convert_kana_to_hepburn(str(name)))
         return names
 
     def __create_relation_file(

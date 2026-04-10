@@ -51,7 +51,8 @@ powershell -ExecutionPolicy Bypass -File scripts/run-preflight.ps1
 当前 dumper backend 策略：
 
 - `jp`：默认使用 `cpp2il_custom`
-- `gl` / `cn`：保持使用 legacy `Il2CppDumper`
+- `gl`：保持使用 legacy `Il2CppDumper`
+- `cn`：内部使用 metadata-only `cn_metadata_exporter` backend（当前尚未对用户开放）
 
 如果以源码方式运行并希望固定 Cpp2IL 依赖，请使用子模块：
 
@@ -63,6 +64,16 @@ git submodule update --init --recursive
 `pip` 安装场景下如果缺失 `third_party/Cpp2IL`，程序会自动下载固定 commit 的 Cpp2IL 源码到本地工具缓存：
 
 - `./.ba-downloader/tools/`
+
+CN metadata backend 额外依赖仓库内 vendored 的独立 dumper 工程：
+
+- `third_party/cn_metadata_exporter`
+
+该工程当前以源码快照方式纳入仓库，依赖 `third_party/Cpp2IL/LibCpp2IL`，可单独验证：
+
+```shell
+dotnet build third_party/cn_metadata_exporter/cn_metadata_exporter.csproj -c Release
+```
 
 ## 分支与发版
 

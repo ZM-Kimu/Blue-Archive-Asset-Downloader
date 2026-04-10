@@ -12,9 +12,16 @@ from ba_downloader.domain.models.asset import (
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpResponse
 from ba_downloader.domain.services.resource_query import ResourceQueryService
-from ba_downloader.infrastructure.apk.package_manager import _resolve_filename
+from ba_downloader.infrastructure.apk.package_manager import (
+    PackageArchiveError,
+    _resolve_filename,
+)
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
-from ba_downloader.infrastructure.regions.providers.jp import DecodedJPCatalog, JPServer
+from ba_downloader.infrastructure.regions.providers.jp import (
+    DecodedJPCatalog,
+    JPBootstrapper,
+    JPServer,
+)
 
 
 class MemoryPackWriter:
@@ -573,3 +580,77 @@ def test_load_catalog_logs_happy_path_at_info_level(monkeypatch: pytest.MonkeyPa
         "Current resource version: 1.2.3",
         "Catalog: 0 items in the catalog, totaling 0.0GB.",
     ]
+
+
+def test_jp_bootstrap_translates_package_download_validation_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    bootstrapper = JPBootstrapper(RecordingHttpClient({}), NullLogger())
+    context = RuntimeContext(
+        region="jp",
+        threads=4,
+        version="1.2.3",
+        raw_dir="Raw",
+        extract_dir="Extracted",
+        temp_dir=str(tmp_path / "Temp"),
+        extract_while_download=False,
+        resource_type=("bundle",),
+        proxy_url="",
+        max_retries=1,
+        search=(),
+        advanced_search=(),
+        work_dir=str(tmp_path),
+    )
+    release = ResolvedRelease(
+        region="jp",
+        version="1.2.3",
+        package_url="https://download.example.com/archive.xapk",
+    )
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.regions.providers.jp.download_package_file",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            PackageArchiveError("Package archive validation failed for bad.xapk.")
+        ),
+    )
+
+    with pytest.raises(LookupError, match="Downloaded JP package is invalid or incomplete"):
+        bootstrapper.bootstrap(release, context)
+
+
+def test_jp_bootstrap_translates_package_extraction_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    package_path = tmp_path / "broken.xapk"
+    package_path.write_bytes(b"not a zip archive")
+    bootstrapper = JPBootstrapper(RecordingHttpClient({}), NullLogger())
+    context = RuntimeContext(
+        region="jp",
+        threads=4,
+        version="1.2.3",
+        raw_dir="Raw",
+        extract_dir="Extracted",
+        temp_dir=str(tmp_path / "Temp"),
+        extract_while_download=False,
+        resource_type=("bundle",),
+        proxy_url="",
+        max_retries=1,
+        search=(),
+        advanced_search=(),
+        work_dir=str(tmp_path),
+    )
+    release = ResolvedRelease(
+        region="jp",
+        version="1.2.3",
+        package_url="https://download.example.com/archive.xapk",
+    )
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.regions.providers.jp.download_package_file",
+        lambda *args, **kwargs: str(package_path),
+    )
+
+    with pytest.raises(LookupError, match="Downloaded JP package is invalid or incomplete"):
+        bootstrapper.bootstrap(release, context)

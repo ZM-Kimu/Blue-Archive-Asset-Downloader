@@ -98,7 +98,7 @@ class SyncService:
             self.extract_service.run(active_context)
             return active_context
 
-        if active_context.region == "jp":
+        if active_context.region in {"jp", "cn"}:
             self._dump_and_compile(active_context)
             if active_context.search or active_context.advanced_search:
                 resources = self._search_resource(resources, active_context, True)

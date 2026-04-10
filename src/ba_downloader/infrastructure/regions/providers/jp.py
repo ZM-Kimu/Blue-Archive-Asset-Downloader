@@ -24,8 +24,13 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.settings import Platform
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.apk import download_package_file, extract_xapk_file
+from ba_downloader.infrastructure.apk import (
+    PackageArchiveError,
+    download_package_file,
+    extract_xapk_file,
+)
 from ba_downloader.infrastructure.regions.providers.common import (
+    SYNC_AND_RELATION_CAPABILITIES,
     coerce_int,
     coerce_string_list,
 )
@@ -134,17 +139,24 @@ class JPBootstrapper:
             raise LookupError("JP release does not contain a package URL.")
 
         self.logger.info("Downloading APK to retrieve server URL...")
-        apk_path = download_package_file(
-            self.http_client,
-            self.logger,
-            release.package_url,
-            context.temp_dir,
-        )
-        extract_xapk_file(
-            apk_path,
-            self.apk_extract_folder(context),
-            context.temp_dir,
-        )
+        try:
+            apk_path = download_package_file(
+                self.http_client,
+                self.logger,
+                release.package_url,
+                context.temp_dir,
+            )
+            extract_xapk_file(
+                apk_path,
+                self.apk_extract_folder(context),
+                context.temp_dir,
+            )
+        except PackageArchiveError as exc:
+            raise LookupError(
+                "Downloaded JP package is invalid or incomplete. "
+                "Retry may solve the issue, and proxy or network instability may have "
+                f"caused the package to be corrupted. Details: {exc}"
+            ) from exc
         server_url = self.get_server_url(context)
         catalog_root = self._resolve_catalog_root(
             self.http_client.request("GET", server_url).json()
@@ -317,11 +329,7 @@ class JPAssetNormalizer:
 
 
 class JPServer:
-    CAPABILITIES = RegionCapabilities(
-        supports_sync=True,
-        supports_advanced_search=False,
-        supports_relation_build=True,
-    )
+    CAPABILITIES = SYNC_AND_RELATION_CAPABILITIES
 
     def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
         self.http_client = http_client

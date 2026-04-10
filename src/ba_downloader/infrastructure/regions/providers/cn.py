@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from io import BytesIO
+from pathlib import Path
 from typing import ClassVar, Literal
 from urllib.parse import urljoin
 
@@ -15,7 +16,14 @@ from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpClientPort, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
+from ba_downloader.infrastructure.apk import (
+    extract_zip_entry,
+    find_zip_entry,
+    read_zip_entries,
+)
 from ba_downloader.infrastructure.regions.providers.common import (
+    SYNC_AND_RELATION_CAPABILITIES,
     build_region_catalog_result,
     coerce_int,
     join_catalog_url,
@@ -24,10 +32,10 @@ from ba_downloader.infrastructure.regions.providers.common import (
 
 
 class CNServer:
-    CAPABILITIES = RegionCapabilities(
-        supports_sync=True,
-        supports_advanced_search=False,
-        supports_relation_build=False,
+    CAPABILITIES = SYNC_AND_RELATION_CAPABILITIES
+    APK_MEDIA_SOURCE = "apk_entry"
+    APK_MEDIA_PREFIXES: ClassVar[tuple[str, ...]] = (
+        "assets/video/",
     )
 
     def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
@@ -55,6 +63,8 @@ class CNServer:
 
         self.logger.info("Pulling catalog...")
         resources = self.get_resource_manifest(self.get_server_info(resolved_context))
+        if "all" in resolved_context.resource_type or "media" in resolved_context.resource_type:
+            self._append_apk_only_media_assets(resources)
         return build_region_catalog_result(
             self.logger,
             resources=resources,
@@ -204,6 +214,94 @@ class CNServer:
         )
         return response.json()
 
+    def _append_apk_only_media_assets(self, assets: AssetCollection) -> None:
+        try:
+            apk_url = self.get_apk_url()
+        except (LookupError, OSError, TypeError, ValueError, KeyError) as exc:
+            self.logger.warn(
+                "Unable to resolve the CN APK URL for supplemental APK-only media. "
+                f"Continuing without them. Details: {exc}"
+            )
+            return
+
+        existing_paths = {item.path for item in assets}
+        try:
+            entry_paths = self._list_apk_media_entry_paths(apk_url)
+        except (LookupError, OSError, TypeError, ValueError, KeyError, RuntimeError) as exc:
+            self.logger.warn(
+                "Unable to enumerate supplemental CN media from the APK central directory. "
+                f"Continuing without them. Details: {exc}"
+            )
+            return
+
+        for entry_path in entry_paths:
+            asset_path = self._to_media_asset_path(entry_path)
+            if asset_path in existing_paths:
+                continue
+            assets.add(
+                apk_url,
+                asset_path,
+                0,
+                "0",
+                "crc",
+                AssetType.media,
+                {
+                    "media_type": "mp4",
+                    "source": self.APK_MEDIA_SOURCE,
+                    "apk_entry_path": entry_path,
+                },
+            )
+
+    def _list_apk_media_entry_paths(self, apk_url: str) -> list[str]:
+        entries = read_zip_entries(apk_url, self.http_client)
+        selected_paths = [
+            entry.path.replace("\\", "/")
+            for entry in entries
+            if any(
+                entry.path.replace("\\", "/").startswith(prefix)
+                for prefix in self.APK_MEDIA_PREFIXES
+            )
+        ]
+        return sorted(dict.fromkeys(selected_paths))
+
+    @staticmethod
+    def _to_media_asset_path(entry_path: str) -> str:
+        normalized = entry_path.replace("\\", "/")
+        if normalized.startswith("assets/"):
+            normalized = normalized.removeprefix("assets/")
+        return urljoin("Media/", normalized)
+
+
+class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
+    METADATA_ENTRY_PATH = "assets/bin/Data/Managed/Metadata/global-metadata.dat"
+    METADATA_NAME = "global-metadata.dat"
+    METADATA_FOLDER = "CN_Metadata"
+
+    def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
+        self.http_client = http_client
+        self.logger = logger
+
+    def prepare(self, context: RuntimeContext) -> None:
+        metadata_path = self.metadata_output_path(context)
+        if metadata_path.exists():
+            return
+
+        self.logger.info("Preparing CN metadata from APK central directory...")
+        apk_url = CNServer(self.http_client, self.logger).get_apk_url()
+        entries = read_zip_entries(apk_url, self.http_client)
+        entry = find_zip_entry(
+            entries,
+            preferred_path=self.METADATA_ENTRY_PATH,
+            fallback_name=self.METADATA_NAME,
+        )
+        extract_zip_entry(apk_url, entry, metadata_path, self.http_client)
+
+        if not metadata_path.exists():
+            raise FileNotFoundError("Unable to prepare CN metadata from the APK.")
+
+    def metadata_output_path(self, context: RuntimeContext) -> Path:
+        return Path(context.temp_dir) / self.METADATA_FOLDER / self.METADATA_NAME
+
 
 class CNCatalogDecoder:
     MEDIA_TYPES: ClassVar[dict[int, str]] = {
@@ -316,4 +414,4 @@ class CNCatalogDecoder:
         )
 
 
-__all__ = ["CNServer"]
+__all__ = ["CNRuntimeAssetPreparer", "CNServer"]

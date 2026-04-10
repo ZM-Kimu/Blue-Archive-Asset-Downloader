@@ -3,6 +3,8 @@ __pycache__/
 disassembly/
 frida/
 *.apk
+third_party/cn_metadata_exporter/bin/
+third_party/cn_metadata_exporter/obj/
 
 # Distribution / packaging
 .Python

@@ -107,15 +107,23 @@ from enum import IntEnum
 from ba_downloader.shared.crypto.encryption import convert_short, convert_ushort, convert_int, convert_long, convert_float, convert_double, convert_string, convert_uint, convert_ulong, create_key
 import inspect\n
 def dump_table(table_instance) -> list:
-    excel_name = table_instance.__class__.__name__.removesuffix("Table")
     current_module = inspect.getmodule(inspect.currentframe())
+    entries = [table_instance.DataList(j) for j in range(table_instance.DataListLength())]
+    if not any(entry is not None for entry in entries):
+        return []
     dump_func = next(
-        f
-        for n, f in inspect.getmembers(current_module, inspect.isfunction)
-        if n.removeprefix("dump_") == excel_name
+        (
+            getattr(current_module, f"dump_{entry.__class__.__name__}")
+            for entry in entries
+            if entry is not None and hasattr(current_module, f"dump_{entry.__class__.__name__}")
+        ),
+        None,
     )
+    if dump_func is None:
+        raise StopIteration
+    excel_name = table_instance.__class__.__name__.removesuffix("Table")
     password = create_key(excel_name.removesuffix("Excel"))
-    return [dump_func(table_instance.DataList(j), password) for j in range(table_instance.DataListLength())]\n
+    return [dump_func(entry, password) for entry in entries if entry is not None]\n
 """
     """Wrapper basic structure."""
 
@@ -358,7 +366,9 @@ public enum (.{1,128}?) // TypeDefIndex: \d+?
     enum_member = re.compile(r"public const .+? (.+?) = (-?\d+?);")
     """Get member name, value in enum."""
 
-    table_data_type = re.compile(r"public Nullable<(.+?)> DataList\(int j\) { }")
+    table_data_type = re.compile(
+        r"public\s+(.+?)\s+DataList\((?:int|System\.Int32)\s+j\)\s+\{\s*\}"
+    )
 
 
 class CSParser:
@@ -422,7 +432,8 @@ class CSParser:
         if len(prop_name) > 6 and prop_name.endswith("Length"):
             list_name = prop_name.removesuffix("Length")
             re_type_of_list = re.search(
-                f"public (.+?) {list_name}\\(int j\\) {{ }}", prop_data
+                rf"public\s+(.+?)\s+{re.escape(list_name)}\((?:int|System\.Int32)\s+j\)\s+\{{\s*\}}",
+                prop_data,
             )  # Get object type in list.
 
             if re_type_of_list:

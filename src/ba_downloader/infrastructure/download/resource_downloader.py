@@ -22,10 +22,17 @@ from ba_downloader.domain.models.asset import (
     AssetType,
     ChecksumSpec,
 )
+from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.infrastructure.apk import (
+    ZipEntry,
+    extract_zip_entry,
+    find_zip_entry,
+    read_zip_entries,
+)
 from ba_downloader.infrastructure.extractors.bundle import BundleExtractor
 from ba_downloader.infrastructure.extractors.media import MediaExtractor
 from ba_downloader.infrastructure.extractors.table import TableExtractor
@@ -73,6 +80,7 @@ class ResourceDownloader(ResourceDownloaderPort):
     DOWNLOAD_TIMEOUT_SECONDS = 600.0
     POLL_INTERVAL_SECONDS = 0.2
     INTERRUPT_GRACE_SECONDS = 2.0
+    APK_ENTRY_SOURCE = "apk_entry"
 
     def __init__(
         self,
@@ -85,6 +93,8 @@ class ResourceDownloader(ResourceDownloaderPort):
         self.logger = logger
         self._bundle_lock = Lock()
         self._extractor_cache: dict[tuple[str, str, str, str], object] = {}
+        self._zip_entry_cache: dict[tuple[str, str], ZipEntry] = {}
+        self._zip_entries_by_url: dict[str, list[ZipEntry]] = {}
         self._force_exit = force_exit or os._exit
         self._wait_policy = build_future_wait_policy(
             self.logger, self.POLL_INTERVAL_SECONDS, self.INTERRUPT_GRACE_SECONDS, "Downloads"
@@ -322,7 +332,7 @@ class ResourceDownloader(ResourceDownloaderPort):
                 downloaded_item = future.result()
             except CancelledError:
                 continue
-            except (RuntimeError, OSError) as exc:
+            except (NetworkError, RuntimeError, OSError) as exc:
                 if stop_event.is_set() and self._is_cancelled_error(exc):
                     continue
                 session_state.failed_files += 1
@@ -515,18 +525,32 @@ class ResourceDownloader(ResourceDownloaderPort):
         context: RuntimeContext,
     ) -> tuple[AssetRecord, bool]:
         asset_path = Path(context.raw_dir) / resource.path
+        if not asset_path.exists():
+            return resource, False
         return resource, self._get_validation_error(asset_path, resource) is None
 
-    @classmethod
-    def _get_validation_error(cls, asset_path: Path, resource: AssetRecord) -> str | None:
+    def _get_validation_error(self, asset_path: Path, resource: AssetRecord) -> str | None:
         if not asset_path.exists():
             return "downloaded file is missing"
+
+        if self._is_apk_entry_resource(resource):
+            zip_entry = self._resolve_apk_zip_entry(resource)
+            actual_size = asset_path.stat().st_size
+            if actual_size != zip_entry.uncompressed_size:
+                return (
+                    "size mismatch "
+                    f"(expected {zip_entry.uncompressed_size} bytes, got {actual_size} bytes)"
+                )
+            actual_crc = calculate_crc(str(asset_path))
+            if actual_crc != zip_entry.crc32:
+                return "checksum mismatch for crc"
+            return None
 
         actual_size = asset_path.stat().st_size
         if actual_size != resource.size:
             return f"size mismatch (expected {resource.size} bytes, got {actual_size} bytes)"
 
-        if not cls._matches_checksum(asset_path, resource.checksum):
+        if not self._matches_checksum(asset_path, resource.checksum):
             return f"checksum mismatch for {resource.checksum.algorithm}"
 
         return None
@@ -584,6 +608,18 @@ class ResourceDownloader(ResourceDownloaderPort):
     ) -> AssetRecord:
         asset_path = Path(context.raw_dir) / resource.path
         asset_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._is_apk_entry_resource(resource):
+            zip_entry = self._resolve_apk_zip_entry(resource)
+            extract_zip_entry(
+                resource.url,
+                zip_entry,
+                asset_path,
+                self.http_client,
+                timeout=self.DOWNLOAD_TIMEOUT_SECONDS,
+            )
+            self._validate_downloaded_resource(asset_path, resource)
+            return resource
+
         download_result = self.http_client.download_to_file(
             resource.url,
             str(asset_path),
@@ -607,6 +643,33 @@ class ResourceDownloader(ResourceDownloaderPort):
         raise RuntimeError(
             f"post-download validation failed for {resource.path}: {validation_error}"
         )
+
+    @classmethod
+    def _is_apk_entry_resource(cls, resource: AssetRecord) -> bool:
+        return resource.metadata.get("source") == cls.APK_ENTRY_SOURCE
+
+    def _resolve_apk_zip_entry(self, resource: AssetRecord) -> ZipEntry:
+        entry_path = str(resource.metadata.get("apk_entry_path", "")).strip()
+        if not entry_path:
+            raise RuntimeError(f"APK entry metadata is missing for {resource.path}.")
+
+        cache_key = (resource.url, entry_path)
+        cached_entry = self._zip_entry_cache.get(cache_key)
+        if cached_entry is not None:
+            return cached_entry
+
+        entries = self._zip_entries_by_url.get(resource.url)
+        if entries is None:
+            entries = read_zip_entries(resource.url, self.http_client)
+            self._zip_entries_by_url[resource.url] = entries
+
+        zip_entry = find_zip_entry(
+            entries,
+            preferred_path=entry_path,
+            fallback_name=Path(entry_path).name,
+        )
+        self._zip_entry_cache[cache_key] = zip_entry
+        return zip_entry
 
     def _extract_resource(self, resource: AssetRecord, context: RuntimeContext) -> None:
         resource_path = str(Path(context.raw_dir) / resource.path)

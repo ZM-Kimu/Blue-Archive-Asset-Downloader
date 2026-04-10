@@ -10,6 +10,7 @@
 
 - **多服务器支持**：可从中国(蔚蓝档案)、国际(Blue Archive)、日本(ブルーアーカイブ)三个服务器下载素材。
 - **资源解开**：在日本服务器中包含几乎完整的支持。
+- **CN 阶段成果**：当前 `download --region cn`、`sync --region cn`、`relation build --region cn` 已可用；`--advanced-search` 仍未开放。
 - **JP 阶段成果**：当前 `download --region jp`、`sync --region jp`、`relation build --region jp` 已可用；`--advanced-search` 仍未开放。
 
 
@@ -62,7 +63,7 @@ python -m ba_downloader <subcommand> [options]
 - `ba-downloader sync [options]`: 下载并解开全部内容
 - `ba-downloader download [options]`: 下载全部内容
 - `ba-downloader extract [options]`: 解开已下载的内容
-<!-- - `ba-downloader relation build [options]`: 构建角色信息表 -->
+- `ba-downloader relation build [options]`: 构建角色信息表
 
 使用下列命令运行完整下载与提取流程（示例）：
 
@@ -172,14 +173,14 @@ python -m ba_downloader extract --region jp --platform ios
 
 ## TODO
 - `v2.0.1`
-  - **完善CN/GL** - 65%
-  - **Memory Pack** - 30%
-  - 完善 JP 解开 - 40%
+  - 完善三服下载流程（CN / GL / JP）
 - `v2.0.2`
-  - CN metadata 解开 - 75%
+  - 完善 JP 解开（需要密钥，而密钥位于服务器）
+  - 基于 `dump.cs` annotation tree 的 MemoryPack 
+  - CN metadata 解开
 - `v2.0.3`
   - 新 Bundle 解开器
-
+  
 ## 关于项目
 Blue Archive Asset Downloader v2.0.0.
 

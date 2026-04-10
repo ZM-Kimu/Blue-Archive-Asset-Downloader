@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from multiprocessing import Queue, freeze_support
 from pathlib import Path
 from threading import Event
+from typing import Any
 from zipfile import BadZipFile
 
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -50,12 +51,13 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
         freeze_support()
         queue: multiprocessing.queues.Queue[str] = Queue()
+        error_count = multiprocessing.Value("i", 0)
         bundles = [str(bundle_folder / bundle.name) for bundle in bundle_folder.iterdir()]
         for bundle in bundles:
             queue.put(bundle)
 
         stop_event = Event()
-        processes = self._build_bundle_processes(queue, context, len(bundles))
+        processes = self._build_bundle_processes(queue, context, len(bundles), error_count)
 
         try:
             with self._install_interrupt_handler(
@@ -72,12 +74,14 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                     processes=processes,
                     progress=progress,
                     stop_event=stop_event,
+                    error_count=error_count,
                 )
         finally:
             if stop_event.is_set():
                 self._stop_bundle_processes(processes)
             for process in processes:
                 process.join(timeout=self.POLL_INTERVAL_SECONDS)
+            self._finalize_bundle_queue(queue, cancelled=stop_event.is_set())
             if stop_event.is_set():
                 raise KeyboardInterrupt()
 
@@ -121,11 +125,11 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 raise KeyboardInterrupt()
 
     def extract_tables(self, context: RuntimeContext) -> None:
-        extractor = TableExtractor.from_context(context, self.logger)
-        table_folder = Path(extractor.table_file_folder)
+        table_folder = Path(context.raw_dir) / "Table"
         if not table_folder.exists():
             return
 
+        extractor = TableExtractor.from_context(context, self.logger)
         Path(extractor.extract_folder).mkdir(parents=True, exist_ok=True)
         table_files = [
             file_path.name for file_path in table_folder.iterdir() if file_path.is_file()
@@ -184,6 +188,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         queue: multiprocessing.queues.Queue[str],
         context: RuntimeContext,
         bundle_count: int,
+        error_count: Any,
     ) -> list[multiprocessing.Process]:
         process_count = min(
             max(context.threads, 1),
@@ -193,7 +198,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         return [
             multiprocessing.Process(
                 target=BundleExtractor.multiprocess_extract_worker,
-                args=(queue, context, BundleExtractor.MAIN_EXTRACT_TYPES),
+                args=(queue, context, BundleExtractor.MAIN_EXTRACT_TYPES, error_count),
             )
             for _ in range(process_count)
         ]
@@ -211,9 +216,13 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         processes: list[multiprocessing.Process],
         progress: RichProgressReporter,
         stop_event: Event,
+        error_count: Any,
     ) -> None:
         cancellation_state = CancellationFeedbackState()
+        completed_bundles = 0
         while self._has_pending_bundle_work(queue, processes):
+            completed_bundles = max(0, len(bundles) - self._queue_size(queue))
+            progress.set_completed(completed_bundles)
             if stop_event.is_set():
                 self._stop_bundle_processes(processes)
                 emit_cancellation_feedback(
@@ -229,12 +238,18 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 if not self._has_live_processes(processes):
                     break
 
-            progress.set_completed(len(bundles) - self._queue_size(queue))
             stop_event.wait(self.POLL_INTERVAL_SECONDS)
 
-        progress.set_completed(len(bundles))
         if not stop_event.is_set():
-            self.logger.info("Extracted bundles successfully.")
+            progress.set_completed(len(bundles))
+            failure_count = max(0, int(error_count.value))
+            if failure_count:
+                self.logger.warn(
+                    f"Extracted bundles with {failure_count} errors. "
+                    "Check previous log lines for failed bundle paths."
+                )
+            else:
+                self.logger.info("Extracted bundles successfully.")
 
     @staticmethod
     def _queue_size(queue: multiprocessing.queues.Queue[str]) -> int:
@@ -260,6 +275,26 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         for process in processes:
             if process.is_alive():
                 process.kill()
+
+    @staticmethod
+    def _finalize_bundle_queue(
+        queue: multiprocessing.queues.Queue[str],
+        *,
+        cancelled: bool,
+    ) -> None:
+        cancel_join_thread = getattr(queue, "cancel_join_thread", None)
+        close = getattr(queue, "close", None)
+        join_thread = getattr(queue, "join_thread", None)
+
+        if cancelled and callable(cancel_join_thread):
+            cancel_join_thread()
+        if callable(close):
+            close()
+        if not cancelled and callable(join_thread):
+            try:
+                join_thread()
+            except (AssertionError, OSError, RuntimeError, ValueError):
+                return
 
     def _drain_extraction_futures(
         self,

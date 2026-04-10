@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import py_compile
+import sys
+from importlib import util
 from pathlib import Path
 
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -50,7 +52,7 @@ public struct SampleTable : FlatBuffers.IFlatbufferObject // TypeDefIndex: 3
     public System.Nullable`1<FlatData.SampleEntry> OptionalEntry { get; } // Token: 0x17000003
     public FlatBuffers.Offset`1<FlatData.SampleEntry> DirectEntry { get; } // Token: 0x17000004
     public System.Int32 DataListLength { get; } // Token: 0x17000005
-    public Nullable<FlatData.SampleEntry> DataList(int j) { }
+    public System.Nullable`1<FlatData.SampleEntry> DataList(System.Int32 j) { }
 }
 """
 
@@ -103,6 +105,54 @@ def test_flatbuffer_workflow_compile_generates_valid_python_for_normalized_types
     assert "System.Nullable`1" not in sample_table_source
     assert "FlatBuffers.Offset`1" not in sample_table_source
     assert "from .SampleEntry import SampleEntry" in sample_table_source
+    assert "def DataList(self, j):" in sample_table_source
 
     for python_file in flat_data_dir.glob("*.py"):
         py_compile.compile(str(python_file), doraise=True)
+
+
+def test_generated_dump_wrapper_uses_entry_type_and_handles_empty_tables(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path)
+    dumps_dir = Path(context.extract_dir) / "Dumps"
+    dumps_dir.mkdir(parents=True, exist_ok=True)
+    (dumps_dir / "dump.cs").write_text(_sample_dump_cs(), encoding="utf8")
+
+    workflow = FlatbufferWorkflow(DummyHttpClient(), NullLogger())
+    workflow.compile(context)
+
+    dump_wrapper_path = Path(context.extract_dir) / "FlatData" / "dump_wrapper.py"
+    spec = util.spec_from_file_location("generated_dump_wrapper", dump_wrapper_path)
+    assert spec is not None and spec.loader is not None
+    module = util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    class SampleEntry:
+        pass
+
+    class FakeTable:
+        def DataListLength(self) -> int:
+            return 1
+
+        def DataList(self, index: int) -> SampleEntry:
+            assert index == 0
+            return SampleEntry()
+
+    class EmptyTable:
+        def DataListLength(self) -> int:
+            return 0
+
+        def DataList(self, index: int) -> None:
+            raise AssertionError(f"Unexpected index access: {index}")
+
+    module.dump_SampleEntry = lambda entry, password: {  # type: ignore[attr-defined]
+        "row_type": entry.__class__.__name__,
+        "has_password": bool(password),
+    }
+
+    assert module.dump_table(FakeTable()) == [
+        {"row_type": "SampleEntry", "has_password": True}
+    ]
+    assert module.dump_table(EmptyTable()) == []
