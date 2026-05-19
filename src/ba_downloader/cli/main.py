@@ -49,9 +49,33 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--region", "-r", choices=["cn", "gl", "jp"], required=True)
     parser.add_argument("--threads", "-t", type=int, default=20)
     parser.add_argument("--version", "-v", default="")
-    parser.add_argument("--raw-dir", "-rd", default="RawData")
-    parser.add_argument("--extract-dir", "-ed", default="Extracted")
-    parser.add_argument("--temp-dir", "-td", default="Temp")
+    parser.add_argument(
+        "--raw-dir",
+        "-rd",
+        default="RawData",
+        help=(
+            "Raw asset directory. The default logical name is normalized by region "
+            "when unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--extract-dir",
+        "-ed",
+        default="Extracted",
+        help=(
+            "Extracted asset directory. The default logical name is normalized by "
+            "region when unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--temp-dir",
+        "-td",
+        default="Temp",
+        help=(
+            "Temporary asset directory. The default logical name is normalized by "
+            "region when unchanged."
+        ),
+    )
     parser.add_argument(
         "--resource-type",
         "-rt",

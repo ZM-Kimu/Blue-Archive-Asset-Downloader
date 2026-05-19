@@ -129,7 +129,7 @@ def test_default_dumper_policy_maps_regions_to_expected_backends() -> None:
     )
     assert isinstance(
         registry.resolve("gl")(http_client, logger),
-        LegacyIl2CppDumperBackend,
+        Cpp2IlDumpCsBackend,
     )
     assert isinstance(
         registry.resolve("cn")(http_client, logger),

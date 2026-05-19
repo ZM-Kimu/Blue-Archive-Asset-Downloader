@@ -474,7 +474,7 @@ def build_default_dumper_backend_registry() -> DumperBackendRegistry:
         "cn", lambda http_client, logger: CnMetadataDumpBackend(http_client, logger)
     )
     registry.register(
-        "gl", lambda http_client, logger: LegacyIl2CppDumperBackend(http_client, logger)
+        "gl", lambda http_client, logger: Cpp2IlDumpCsBackend(http_client, logger)
     )
     registry.register(
         "jp", lambda http_client, logger: Cpp2IlDumpCsBackend(http_client, logger)

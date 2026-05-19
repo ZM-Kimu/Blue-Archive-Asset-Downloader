@@ -30,9 +30,30 @@ def test_settings_normalization_keeps_non_jp_default_directories() -> None:
         region="gl", platform="ios", platform_explicit=True
     ).normalized()
 
-    assert settings.temp_dir == "GLTemp"
-    assert settings.raw_dir == "GLRawData"
-    assert settings.extract_dir == "GLExtracted"
+    assert settings.temp_dir == "GL_Temp"
+    assert settings.raw_dir == "GL_RawData"
+    assert settings.extract_dir == "GL_Extracted"
+
+
+def test_settings_normalization_uses_underscored_cn_directories() -> None:
+    settings = AppSettings(region="cn").normalized()
+
+    assert settings.temp_dir == "CN_Temp"
+    assert settings.raw_dir == "CN_RawData"
+    assert settings.extract_dir == "CN_Extracted"
+
+
+def test_settings_normalization_preserves_custom_directories() -> None:
+    settings = AppSettings(
+        region="gl",
+        raw_dir="custom_raw",
+        extract_dir="custom_extract",
+        temp_dir="custom_temp",
+    ).normalized()
+
+    assert settings.raw_dir == "custom_raw"
+    assert settings.extract_dir == "custom_extract"
+    assert settings.temp_dir == "custom_temp"
 
 
 def test_runtime_context_copies_normalized_settings() -> None:

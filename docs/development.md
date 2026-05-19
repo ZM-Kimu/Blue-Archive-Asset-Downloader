@@ -51,7 +51,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run-preflight.ps1
 当前 dumper backend 策略：
 
 - `jp`：默认使用 `cpp2il_custom`
-- `gl`：保持使用 legacy `Il2CppDumper`
+- `gl`：默认使用 `cpp2il_custom`
 - `cn`：内部使用 metadata-only `cn_metadata_exporter` backend（当前尚未对用户开放）
 
 如果以源码方式运行并希望固定 Cpp2IL 依赖，请使用子模块：
@@ -74,6 +74,12 @@ CN metadata backend 额外依赖仓库内 vendored 的独立 dumper 工程：
 ```shell
 dotnet build third_party/cn_metadata_exporter/cn_metadata_exporter.csproj -c Release
 ```
+
+## GL 特殊 payload 备注
+
+GL `Table/` 中的 `eliminateRaid` payload 当前已经支持 raw 导出，但尚未实现语义解析。专项分析记录见：
+
+- `docs/gl-eliminate-raid.md`
 
 ## 分支与发版
 
