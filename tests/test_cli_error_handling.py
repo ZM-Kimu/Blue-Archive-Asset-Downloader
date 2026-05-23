@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from ba_downloader.cli.main import main
-from ba_downloader.domain.exceptions import NetworkError
+from ba_downloader.domain.exceptions import DownloadError, NetworkError
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
 
 
@@ -36,6 +36,10 @@ class FailingExtractService:
         (
             NetworkError("temporary failure"),
             "temporary failure",
+        ),
+        (
+            DownloadError("Failed to download 2 files after retries."),
+            "Failed to download 2 files after retries.",
         ),
     ],
 )

@@ -1,5 +1,6 @@
 import json
 import struct
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from ba_downloader.domain.models.asset import (
     AssetCollection,
     BootstrapSession,
+    CatalogSource,
     ResolvedRelease,
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -20,8 +22,13 @@ from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.regions.providers.jp import (
     DecodedJPCatalog,
     JPBootstrapper,
+    JPCatalogDecoder,
     JPServer,
 )
+from ba_downloader.infrastructure.schema.memorypack.generator import (
+    CompileMemoryPackToPython,
+)
+from ba_downloader.infrastructure.schema.memorypack.parser import MemoryPackCSParser
 
 
 class MemoryPackWriter:
@@ -248,6 +255,98 @@ def _build_media_catalog_bytes() -> bytes:
     return writer.to_bytes()
 
 
+def _jp_catalog_memorypack_dump() -> str:
+    return """
+public class TableBundle : MemoryPack.IMemoryPackable`1<TableBundle>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 3853 Token: 0x02000F0D
+{
+    private System.String <Name>k__BackingField; // 0x10 Token: 0x04003730
+    private System.Int64 <Size>k__BackingField; // 0x18 Token: 0x04003731
+    private System.Int64 <Crc>k__BackingField; // 0x20 Token: 0x04003732
+    private System.Boolean <isInbuild>k__BackingField; // 0x28 Token: 0x04003733
+    private System.Boolean <isChanged>k__BackingField; // 0x29 Token: 0x04003734
+    private System.Boolean <IsPrologue>k__BackingField; // 0x2A Token: 0x04003735
+    private System.Boolean <IsSplitDownload>k__BackingField; // 0x2B Token: 0x04003736
+    private System.Collections.Generic.List`1<System.String> <Includes>k__BackingField; // 0x30 Token: 0x04003737
+    public System.String Name { get; set; } // Token: 0x17001174
+    public System.Int64 Size { get; set; } // Token: 0x17001175
+    public System.Int64 Crc { get; set; } // Token: 0x17001176
+    public System.Boolean isInbuild { get; set; } // Token: 0x17001177
+    public System.Boolean isChanged { get; set; } // Token: 0x17001178
+    public System.Boolean IsPrologue { get; set; } // Token: 0x17001179
+    public System.Boolean IsSplitDownload { get; set; } // Token: 0x1700117A
+    public System.Collections.Generic.List`1<System.String> Includes { get; set; } // Token: 0x1700117B
+}
+
+public class TablePatchPack : MemoryPack.IMemoryPackable`1<TablePatchPack>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 3855 Token: 0x02000F0F
+{
+    private System.String <Name>k__BackingField; // 0x10 Token: 0x04003738
+    private System.Int64 <Size>k__BackingField; // 0x18 Token: 0x04003739
+    private System.Int64 <Crc>k__BackingField; // 0x20 Token: 0x0400373A
+    private System.Boolean <IsPrologue>k__BackingField; // 0x28 Token: 0x0400373B
+    private TableBundle[] <BundleFiles>k__BackingField; // 0x30 Token: 0x0400373C
+    public System.String Name { get; set; } // Token: 0x1700117C
+    public System.Int64 Size { get; set; } // Token: 0x1700117D
+    public System.Int64 Crc { get; set; } // Token: 0x1700117E
+    public System.Boolean IsPrologue { get; set; } // Token: 0x1700117F
+    public TableBundle[] BundleFiles { get; set; } // Token: 0x17001180
+}
+
+public class TableCatalog : MemoryPack.IMemoryPackable`1<TableCatalog>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 3857 Token: 0x02000F11
+{
+    private System.Collections.Generic.Dictionary`2<System.String, TableBundle> <Table>k__BackingField; // 0x10 Token: 0x0400373D
+    private System.Collections.Generic.Dictionary`2<System.String, TablePatchPack> <TablePack>k__BackingField; // 0x18 Token: 0x0400373E
+    public System.Collections.Generic.Dictionary`2<System.String, TableBundle> Table { get; set; } // Token: 0x17001181
+    public System.Collections.Generic.Dictionary`2<System.String, TablePatchPack> TablePack { get; set; } // Token: 0x17001182
+}
+
+// Namespace: Media.Service
+public enum MediaType // TypeDefIndex: 9671 Token: 0x020025C8
+{
+    public static const Media.Service.MediaType None; // 0x0 Token: 0x0400B0AB
+    public static const Media.Service.MediaType Audio; // 0x0 Token: 0x0400B0AC
+}
+
+// Namespace: Media.Service
+public class Media : MemoryPack.IMemoryPackable`1<Media.Service.Media>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 9673 Token: 0x020025C9
+{
+    private System.String <Path>k__BackingField; // 0x10 Token: 0x0400B0AF
+    private System.String <FileName>k__BackingField; // 0x18 Token: 0x0400B0B0
+    private System.Int64 <Bytes>k__BackingField; // 0x20 Token: 0x0400B0B1
+    private System.Int64 <Crc>k__BackingField; // 0x28 Token: 0x0400B0B2
+    private System.Boolean <IsPrologue>k__BackingField; // 0x30 Token: 0x0400B0B3
+    private System.Boolean <IsSplitDownload>k__BackingField; // 0x31 Token: 0x0400B0B4
+    private Media.Service.MediaType <MediaType>k__BackingField; // 0x34 Token: 0x0400B0B9
+    public System.String Path { get; set; } // Token: 0x17002B5E
+    public System.String FileName { get; set; } // Token: 0x17002B5F
+    public System.Int64 Bytes { get; set; } // Token: 0x17002B60
+    public System.Int64 Crc { get; set; } // Token: 0x17002B61
+    public System.Boolean IsPrologue { get; set; } // Token: 0x17002B62
+    public System.Boolean IsSplitDownload { get; set; } // Token: 0x17002B63
+    public Media.Service.MediaType MediaType { get; set; } // Token: 0x17002B64
+}
+
+// Namespace: Media.Service
+public class MediaCatalog : MemoryPack.IMemoryPackable`1<Media.Service.MediaCatalog>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 9675 Token: 0x020025CB
+{
+    private System.Collections.Generic.Dictionary`2<System.String, Media.Service.Media> <Table>k__BackingField; // 0x10 Token: 0x0400B0BA
+    public System.Collections.Generic.Dictionary`2<System.String, Media.Service.Media> Table { get; set; } // Token: 0x17002B65
+}
+"""
+
+
+def _create_jp_catalog_memorypack_data(extract_dir) -> None:
+    extract_path = Path(extract_dir)
+    dump_path = extract_path / "Dumps" / "dump.cs"
+    dump_path.parent.mkdir(parents=True, exist_ok=True)
+    dump_path.write_text(_jp_catalog_memorypack_dump(), encoding="utf8")
+    parser = MemoryPackCSParser(str(dump_path))
+    CompileMemoryPackToPython(
+        parser.parse_types(),
+        str(extract_path / "MemoryPackData"),
+        parser.parse_enums(),
+    ).create_schema_files()
+
+
 def test_parse_package_info_prefers_highest_version() -> None:
     payload = (
         b"com.YostarJP.BlueArchive\x00"
@@ -387,6 +486,91 @@ def test_get_resource_manifest_uses_second_root_and_bundle_packing_info() -> Non
         "Bundle/bundle/update.pack",
     }
     assert bundle_items[0].metadata["bundle_files"]
+
+
+def test_jp_catalog_decoder_prefers_generated_memorypack_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    context = RuntimeContext(
+        region="jp",
+        threads=4,
+        version="1.2.3",
+        raw_dir=str(tmp_path / "Raw"),
+        extract_dir=str(tmp_path / "Extracted"),
+        temp_dir=str(tmp_path / "Temp"),
+        extract_while_download=False,
+        resource_type=("table", "media", "bundle"),
+        proxy_url="",
+        max_retries=1,
+        search=(),
+        advanced_search=(),
+        work_dir=str(tmp_path),
+    )
+    _create_jp_catalog_memorypack_data(context.extract_dir)
+    session = BootstrapSession(
+        release=ResolvedRelease(region="jp", version="1.2.3"),
+        server_url="https://example.invalid/server-info.json",
+        catalog_root="https://cdn.example.invalid/catalog-root",
+    )
+    sources = [
+        CatalogSource(
+            name="table",
+            url="https://cdn.example.invalid/TableCatalog.bytes",
+            content=_build_table_catalog_bytes(),
+            content_type="application/octet-stream",
+        ),
+        CatalogSource(
+            name="media",
+            url="https://cdn.example.invalid/MediaCatalog.bytes",
+            content=_build_media_catalog_bytes(),
+            content_type="application/octet-stream",
+        ),
+        CatalogSource(
+            name="bundle",
+            url="https://cdn.example.invalid/BundlePackingInfo.json",
+            content=json.dumps({"FullPatchPacks": [], "UpdatePacks": []}).encode(
+                "utf-8"
+            ),
+            content_type="application/json",
+        ),
+    ]
+
+    def fail_fallback(*args, **kwargs):  # type: ignore[no-untyped-def]
+        _ = (args, kwargs)
+        raise AssertionError("legacy catalog decoder should not be used")
+
+    monkeypatch.setattr(
+        JPCatalogDecoder,
+        "_JPCatalogDecoder__decode_table_catalog",
+        fail_fallback,
+    )
+    monkeypatch.setattr(
+        JPCatalogDecoder,
+        "_JPCatalogDecoder__decode_media_catalog",
+        fail_fallback,
+    )
+
+    payload = JPCatalogDecoder.decode(session, sources, context)
+
+    assert [item["name"] for item in payload.tables] == [
+        "MainTable.bytes",
+        "PackTable.bytes",
+    ]
+    assert payload.tables[0]["includes"] == ["Excel/CharacterExcel.bytes"]
+    assert payload.tables[1]["includes"] == ["Nested.bytes"]
+    assert payload.media == [
+        {
+            "key": "MediaKey",
+            "path": "GameData/Audio/BGM/title_theme.zip",
+            "file_name": "title_theme.zip",
+            "type": 1,
+            "bytes": 55,
+            "crc": 66,
+            "is_prologue": False,
+            "is_split_download": False,
+        }
+    ]
 
 
 def test_search_name_matches_jp_bundle_files_from_patch_pack() -> None:

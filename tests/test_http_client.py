@@ -132,10 +132,16 @@ def test_http_client_browser_request_does_not_retry_programming_errors(
 
 
 class FakeHttpxResponse:
-    def __init__(self, chunks: list[bytes | Exception]) -> None:
+    def __init__(
+        self,
+        chunks: list[bytes | Exception],
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self._chunks = list(chunks)
-        self.status_code = 200
-        self.headers = {"Content-Type": "application/octet-stream"}
+        self.status_code = status_code
+        self.headers = headers or {"Content-Type": "application/octet-stream"}
         self.url = "https://example.com/archive.xapk"
 
     def iter_bytes(self, chunk_size: int | None = None) -> Iterator[bytes]:
@@ -173,13 +179,50 @@ class FakeStreamContext:
 
 
 class FakeHttpxClient:
-    def __init__(self, response: FakeHttpxResponse) -> None:
-        self.response = response
+    def __init__(self, response: FakeHttpxResponse | list[FakeHttpxResponse]) -> None:
+        self.responses = list(response if isinstance(response, list) else [response])
         self.stream_calls: list[dict[str, object]] = []
 
     def stream(self, *args, **kwargs) -> FakeStreamContext:
+        _ = args
         self.stream_calls.append(kwargs)
-        return FakeStreamContext(self.response)
+        return FakeStreamContext(self.responses.pop(0))
+
+    def close(self) -> None:
+        return None
+
+
+class FakeBrowserResponse:
+    def __init__(
+        self,
+        chunks: list[bytes | Exception],
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self._chunks = list(chunks)
+        self.status_code = status_code
+        self.headers = headers or {"Content-Type": "application/octet-stream"}
+        self.url = "https://example.com/archive.xapk"
+        self.closed = False
+
+    def iter_content(self, chunk_size: int | None = None) -> Iterator[bytes]:
+        _ = chunk_size
+        return _ChunkIterator(self._chunks)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeBrowserSession:
+    def __init__(self, responses: list[FakeBrowserResponse]) -> None:
+        self.responses = list(responses)
+        self.get_calls: list[dict[str, object]] = []
+
+    def get(self, *args, **kwargs) -> FakeBrowserResponse:
+        _ = args
+        self.get_calls.append(kwargs)
+        return self.responses.pop(0)
 
     def close(self) -> None:
         return None
@@ -240,6 +283,218 @@ def test_http_client_download_cleans_partial_file_on_cancel(
         )
 
     assert not destination.exists()
+    assert not destination.with_name("archive.bin.part").exists()
+
+
+def test_http_client_download_rejects_short_response_body(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = ResilientHttpClient(max_retries=0)
+    destination = tmp_path / "archive.bin"
+    response = FakeHttpxResponse(
+        [b"abc"],
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Content-Length": "10",
+        },
+    )
+    fake_httpx = FakeHttpxClient(response)
+
+    monkeypatch.setattr(client, "_httpx", fake_httpx)
+
+    with pytest.raises(NetworkError, match="incomplete response body"):
+        client.download_to_file("https://example.com/archive.bin", str(destination))
+
+    assert not destination.exists()
+
+
+def test_http_client_download_resumes_incomplete_full_response(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = ResilientHttpClient(max_retries=1)
+    destination = tmp_path / "archive.bin"
+    fake_httpx = FakeHttpxClient(
+        [
+            FakeHttpxResponse(
+                [b"abc"],
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": "6",
+                },
+            ),
+            FakeHttpxResponse(
+                [b"def"],
+                status_code=206,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": "3",
+                    "Content-Range": "bytes 3-5/6",
+                },
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(client, "_httpx", fake_httpx)
+
+    result = client.download_to_file("https://example.com/archive.bin", str(destination))
+
+    assert result.bytes_written == 6
+    assert destination.read_bytes() == b"abcdef"
+    assert not destination.with_name("archive.bin.part").exists()
+    assert fake_httpx.stream_calls[0]["headers"]["Accept-Encoding"] == "identity"
+    assert "Range" not in fake_httpx.stream_calls[0]["headers"]
+    assert fake_httpx.stream_calls[1]["headers"]["Range"] == "bytes=3-"
+
+
+def test_http_client_browser_download_uses_same_range_resume(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = ResilientHttpClient(max_retries=1)
+    destination = tmp_path / "archive.bin"
+    fake_browser = FakeBrowserSession(
+        [
+            FakeBrowserResponse(
+                [b"abc"],
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": "6",
+                },
+            ),
+            FakeBrowserResponse(
+                [b"def"],
+                status_code=206,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": "3",
+                    "Content-Range": "bytes 3-5/6",
+                },
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(client, "_browser", fake_browser)
+
+    result = client.download_to_file(
+        "https://example.com/archive.bin",
+        str(destination),
+        transport="browser",
+    )
+
+    assert result.bytes_written == 6
+    assert destination.read_bytes() == b"abcdef"
+    assert fake_browser.get_calls[1]["headers"]["Range"] == "bytes=3-"
+
+
+def test_http_client_download_restarts_when_range_is_ignored(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = ResilientHttpClient(max_retries=2)
+    destination = tmp_path / "archive.bin"
+    fake_httpx = FakeHttpxClient(
+        [
+            FakeHttpxResponse(
+                [b"abc"],
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": "6",
+                },
+            ),
+            FakeHttpxResponse(
+                [b"abcdef"],
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": "6",
+                },
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(client, "_httpx", fake_httpx)
+
+    result = client.download_to_file("https://example.com/archive.bin", str(destination))
+
+    assert result.bytes_written == 6
+    assert destination.read_bytes() == b"abcdef"
+    assert not destination.with_name("archive.bin.part").exists()
+    assert fake_httpx.stream_calls[1]["headers"]["Range"] == "bytes=3-"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "headers", "chunks", "match"),
+    [
+        (
+            206,
+            {"Content-Length": "3"},
+            [b"def"],
+            "Missing or invalid Content-Range",
+        ),
+        (
+            206,
+            {
+                "Content-Length": "3",
+                "Content-Range": "bytes 4-6/7",
+            },
+            [b"def"],
+            "Unexpected Content-Range",
+        ),
+        (
+            206,
+            {
+                "Content-Length": "3",
+                "Content-Range": "bytes 3-5/6",
+            },
+            [b"de"],
+            "incomplete response body",
+        ),
+        (
+            416,
+            {"Content-Length": "0"},
+            [],
+            "unexpected HTTP status 416",
+        ),
+    ],
+)
+def test_http_client_download_rejects_invalid_range_resume(
+    monkeypatch,
+    tmp_path: Path,
+    status_code: int,
+    headers: dict[str, str],
+    chunks: list[bytes],
+    match: str,
+) -> None:
+    client = ResilientHttpClient(max_retries=1)
+    destination = tmp_path / "archive.bin"
+    fake_httpx = FakeHttpxClient(
+        [
+            FakeHttpxResponse(
+                [b"abc"],
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": "6",
+                },
+            ),
+            FakeHttpxResponse(
+                chunks,
+                status_code=status_code,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    **headers,
+                },
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(client, "_httpx", fake_httpx)
+
+    with pytest.raises(NetworkError, match=match):
+        client.download_to_file("https://example.com/archive.bin", str(destination))
+
+    assert not destination.exists()
+    assert not destination.with_name("archive.bin.part").exists()
 
 
 def test_http_client_download_fails_after_stall_timeout(

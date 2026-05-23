@@ -34,7 +34,7 @@ class RecordingRuntimeAssetPreparer:
         self.calls.append("prepare")
 
 
-class RecordingFlatbufferWorkflow:
+class RecordingSchemaWorkflow:
     def __init__(
         self,
         calls: list[str],
@@ -58,10 +58,10 @@ class RecordingFlatbufferWorkflow:
         self.calls.append("compile")
         if self.fail_on == "compile" and self.error is not None:
             raise self.error
-        flat_data_dir = Path(context.extract_dir) / "FlatData"
-        flat_data_dir.mkdir(parents=True, exist_ok=True)
-        (flat_data_dir / "__init__.py").write_text("", encoding="utf8")
-        (flat_data_dir / "dump_wrapper.py").write_text("", encoding="utf8")
+        flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+        flatbuffer_data_dir.mkdir(parents=True, exist_ok=True)
+        (flatbuffer_data_dir / "__init__.py").write_text("", encoding="utf8")
+        (flatbuffer_data_dir / "_registry.py").write_text("", encoding="utf8")
 
 
 class RecordingLogger:
@@ -103,11 +103,11 @@ def _create_table_folder(context: RuntimeContext) -> None:
     (table_dir / "Excel.zip").write_bytes(b"placeholder")
 
 
-def _create_flat_data(context: RuntimeContext) -> None:
-    flat_data_dir = Path(context.extract_dir) / "FlatData"
-    flat_data_dir.mkdir(parents=True, exist_ok=True)
-    (flat_data_dir / "__init__.py").write_text("", encoding="utf8")
-    (flat_data_dir / "dump_wrapper.py").write_text("", encoding="utf8")
+def _create_flat_buffer_data(context: RuntimeContext) -> None:
+    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir.mkdir(parents=True, exist_ok=True)
+    (flatbuffer_data_dir / "__init__.py").write_text("", encoding="utf8")
+    (flatbuffer_data_dir / "_registry.py").write_text("", encoding="utf8")
 
 
 def _create_dump_cs(context: RuntimeContext) -> None:
@@ -116,15 +116,17 @@ def _create_dump_cs(context: RuntimeContext) -> None:
     (dump_dir / "dump.cs").write_text("// generated", encoding="utf8")
 
 
-def test_extract_service_skips_bootstrap_when_flatdata_exists(tmp_path: Path) -> None:
+def test_extract_service_skips_bootstrap_when_flatbufferdata_exists(
+    tmp_path: Path,
+) -> None:
     context = _build_context(tmp_path)
     _create_table_folder(context)
-    _create_flat_data(context)
+    _create_flat_buffer_data(context)
     calls: list[str] = []
     extraction_workflow = RecordingExtractionWorkflow()
     service = ExtractService(
         extraction_workflow,
-        RecordingFlatbufferWorkflow(calls),
+        RecordingSchemaWorkflow(calls),
         RecordingRuntimeAssetPreparer(calls),
         RecordingLogger(),
     )
@@ -135,7 +137,7 @@ def test_extract_service_skips_bootstrap_when_flatdata_exists(tmp_path: Path) ->
     assert extraction_workflow.calls == ["extract_tables"]
 
 
-def test_extract_service_compiles_when_dump_cs_exists_but_flatdata_is_missing(
+def test_extract_service_compiles_when_dump_cs_exists_but_flatbufferdata_is_missing(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
@@ -145,7 +147,7 @@ def test_extract_service_compiles_when_dump_cs_exists_but_flatdata_is_missing(
     extraction_workflow = RecordingExtractionWorkflow()
     service = ExtractService(
         extraction_workflow,
-        RecordingFlatbufferWorkflow(calls),
+        RecordingSchemaWorkflow(calls),
         RecordingRuntimeAssetPreparer(calls),
         RecordingLogger(),
     )
@@ -154,10 +156,10 @@ def test_extract_service_compiles_when_dump_cs_exists_but_flatdata_is_missing(
 
     assert calls == ["compile"]
     assert extraction_workflow.calls == ["extract_tables"]
-    assert (Path(context.extract_dir) / "FlatData" / "dump_wrapper.py").is_file()
+    assert (Path(context.extract_dir) / "FlatBufferData" / "_registry.py").is_file()
 
 
-def test_extract_service_bootstraps_when_dump_cs_and_flatdata_are_missing(
+def test_extract_service_bootstraps_when_dump_cs_and_flatbufferdata_are_missing(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
@@ -166,7 +168,7 @@ def test_extract_service_bootstraps_when_dump_cs_and_flatdata_are_missing(
     extraction_workflow = RecordingExtractionWorkflow()
     service = ExtractService(
         extraction_workflow,
-        RecordingFlatbufferWorkflow(calls),
+        RecordingSchemaWorkflow(calls),
         RecordingRuntimeAssetPreparer(calls),
         RecordingLogger(),
     )
@@ -176,7 +178,7 @@ def test_extract_service_bootstraps_when_dump_cs_and_flatdata_are_missing(
     assert calls == ["prepare", "dump", "compile"]
     assert extraction_workflow.calls == ["extract_tables"]
     assert (Path(context.extract_dir) / "Dumps" / "dump.cs").is_file()
-    assert (Path(context.extract_dir) / "FlatData" / "__init__.py").is_file()
+    assert (Path(context.extract_dir) / "FlatBufferData" / "__init__.py").is_file()
 
 
 @pytest.mark.parametrize(
@@ -190,7 +192,7 @@ def test_extract_service_bootstraps_when_dump_cs_and_flatdata_are_missing(
         ),
         (
             "compile",
-            LookupError("Failed to compile FlatData from dump.cs."),
+            LookupError("Failed to compile FlatBufferData from dump.cs."),
         ),
     ],
 )
@@ -207,7 +209,7 @@ def test_extract_service_translates_jp_bootstrap_failures_to_lookup_error(
     calls: list[str] = []
     service = ExtractService(
         RecordingExtractionWorkflow(),
-        RecordingFlatbufferWorkflow(calls, fail_on=fail_on, error=error),
+        RecordingSchemaWorkflow(calls, fail_on=fail_on, error=error),
         RecordingRuntimeAssetPreparer(calls),
         RecordingLogger(),
     )
@@ -231,7 +233,7 @@ def test_extract_service_does_not_bootstrap_when_jp_table_folder_is_missing(
     extraction_workflow = RecordingExtractionWorkflow()
     service = ExtractService(
         extraction_workflow,
-        RecordingFlatbufferWorkflow(calls),
+        RecordingSchemaWorkflow(calls),
         RecordingRuntimeAssetPreparer(calls),
         RecordingLogger(),
     )

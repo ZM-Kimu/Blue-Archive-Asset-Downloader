@@ -178,7 +178,7 @@ See [docs/development.md](docs/development.md) for development, static checks, d
   - Improve the download workflow for all three regions (CN / GL / JP)
 - `v2.0.2`
   - Improve JP extraction (a key is required, and that key is currently on the server side)
-  - MemoryPack support based on a `dump.cs` annotation tree
+  - Continue improving semantic MemoryPack payload parsing based on the `dump.cs` annotation tree
   - CN metadata extraction
 - `v2.0.3`
   - New bundle extractor

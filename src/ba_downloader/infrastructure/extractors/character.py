@@ -49,7 +49,7 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         super().__init__(
             str(Path(context.raw_dir) / "Table"),
             str(Path(context.temp_dir) / "Table"),
-            str(Path(context.extract_dir) / "FlatData"),
+            str(Path(context.extract_dir) / "FlatBufferData"),
             logger=self.logger,
         )
         self.kana_converter = pykakasi.kakasi()

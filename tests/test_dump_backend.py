@@ -9,6 +9,7 @@ import pytest
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
+from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
 from ba_downloader.infrastructure.tools.dump_backend import (
     CPP2IL_COMMIT,
     EXPORTER_CSPROJ_TEMPLATE_PATH,
@@ -20,7 +21,6 @@ from ba_downloader.infrastructure.tools.dump_backend import (
     LegacyIl2CppDumperBackend,
     build_default_dumper_backend_registry,
 )
-from ba_downloader.infrastructure.tools.flatbuffer_workflow import FlatbufferWorkflow
 
 
 class DummyHttpClient:
@@ -137,7 +137,7 @@ def test_default_dumper_policy_maps_regions_to_expected_backends() -> None:
     )
 
 
-def test_flatbuffer_workflow_does_not_fallback_when_jp_backend_fails(
+def test_schema_workflow_does_not_fallback_when_jp_backend_fails(
     tmp_path: Path,
 ) -> None:
     class FailingBackend:
@@ -158,7 +158,7 @@ def test_flatbuffer_workflow_does_not_fallback_when_jp_backend_fails(
                 return lambda http_client, logger: FailingBackend()
             return lambda http_client, logger: ForbiddenBackend()
 
-    workflow = FlatbufferWorkflow(DummyHttpClient(), NullLogger(), Registry())
+    workflow = SchemaWorkflow(DummyHttpClient(), NullLogger(), Registry())
     context = _build_context(tmp_path, region="jp")
 
     with pytest.raises(RuntimeError, match="jp backend failed"):
@@ -367,6 +367,10 @@ def test_cpp2il_backend_logs_framework_retry_as_warning_and_success_as_info(
     ]
     assert logger.info_messages == ["Dumped il2cpp binary file successfully."]
     assert len(run_calls) == 2
+    assert (
+        f"--formatter-output="
+        f"{(tmp_path / 'Extracted' / 'Dumps' / 'memorypack_formatters.json').resolve()}"
+    ) in run_calls[-1]
 
 
 def test_cn_metadata_backend_uses_metadata_only_exporter(
@@ -428,6 +432,15 @@ def test_cn_metadata_backend_uses_metadata_only_exporter(
             str(metadata_path.resolve()),
             "--output",
             str((tmp_path / "Extracted" / "Dumps" / "dump.cs").resolve()),
+            "--formatter-output",
+            str(
+                (
+                    tmp_path
+                    / "Extracted"
+                    / "Dumps"
+                    / "memorypack_formatters.json"
+                ).resolve()
+            ),
         ]
     ]
 

@@ -128,3 +128,83 @@ def test_rich_progress_reporter_uses_fixed_width_status_column_in_download_mode(
     )
     assert failed_table_column.overflow == "ellipsis"
     assert failed_table_column.no_wrap is True
+
+
+def test_rich_progress_reporter_shows_sub_status_in_extract_mode() -> None:
+    reporter = RichProgressReporter(10, "Extracting table files...", extract_mode=True)
+
+    description_column = next(
+        column
+        for column in reporter._progress.columns
+        if isinstance(column, TextColumn)
+        and column.text_format == "[progress.description]{task.description}"
+    )
+    description_table_column = description_column.get_table_column()
+
+    assert (
+        description_table_column.width
+        == RichProgressReporter.EXTRACT_DESCRIPTION_COLUMN_WIDTH
+    )
+    assert (
+        description_table_column.min_width
+        == RichProgressReporter.EXTRACT_DESCRIPTION_COLUMN_WIDTH
+    )
+    assert (
+        description_table_column.max_width
+        == RichProgressReporter.EXTRACT_DESCRIPTION_COLUMN_WIDTH
+    )
+    assert description_table_column.overflow == "ellipsis"
+    assert description_table_column.no_wrap is True
+
+    bar_column = next(
+        column for column in reporter._progress.columns if isinstance(column, BarColumn)
+    )
+    assert bar_column.bar_width == RichProgressReporter.EXTRACT_BAR_WIDTH
+
+    status_column = next(
+        column
+        for column in reporter._progress.columns
+        if isinstance(column, TextColumn)
+        and column.text_format == "{task.fields[status]}"
+    )
+    status_table_column = status_column.get_table_column()
+
+    assert status_table_column.width == RichProgressReporter.EXTRACT_STATUS_COLUMN_WIDTH
+    assert (
+        status_table_column.min_width
+        == RichProgressReporter.EXTRACT_STATUS_COLUMN_WIDTH
+    )
+    assert (
+        status_table_column.max_width
+        == RichProgressReporter.EXTRACT_STATUS_COLUMN_WIDTH
+    )
+    assert status_table_column.overflow == "ellipsis"
+    assert status_table_column.no_wrap is True
+    assert len("9999/9999 files") <= RichProgressReporter.EXTRACT_STATUS_COLUMN_WIDTH
+
+    sub_status_column = next(
+        column
+        for column in reporter._progress.columns
+        if isinstance(column, TextColumn)
+        and column.text_format == "{task.fields[secondary_status]}"
+    )
+    sub_status_table_column = sub_status_column.get_table_column()
+
+    assert (
+        sub_status_table_column.width
+        == RichProgressReporter.EXTRACT_SUB_STATUS_COLUMN_WIDTH
+    )
+    assert (
+        sub_status_table_column.min_width
+        == RichProgressReporter.EXTRACT_SUB_STATUS_COLUMN_WIDTH
+    )
+    assert (
+        sub_status_table_column.max_width
+        == RichProgressReporter.EXTRACT_SUB_STATUS_COLUMN_WIDTH
+    )
+    assert sub_status_table_column.overflow == "ellipsis"
+    assert sub_status_table_column.no_wrap is True
+    assert (
+        len("999/999 entries")
+        <= RichProgressReporter.EXTRACT_SUB_STATUS_COLUMN_WIDTH
+    )

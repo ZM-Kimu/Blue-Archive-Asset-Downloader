@@ -26,14 +26,14 @@
 
 ## 3. 已确认事实
 
-### 3.1 它不是当前 FlatData 表
+### 3.1 它不是当前 FlatBufferData 表
 
-这批 payload 不是当前 `FlatData` 生成类，也不是 `GroundGridFlat` / `GroundNodeLayerFlat` 这类地图网格表。
+这批 payload 不是当前 `FlatBufferData` schema，也不是 `GroundGridFlat` / `GroundNodeLayerFlat` 这类地图网格表。
 
-继续按文件名猜 `FlatData` schema，会得到错误的：
+继续按文件名猜 `FlatBufferData` schema，会得到错误的：
 
 ```text
-generated FlatData class is missing
+generated FlatBufferData schema is missing
 ```
 
 ### 3.2 头部有稳定结构
@@ -135,7 +135,7 @@ generated FlatData class is missing
 高置信度结论：
 
 - `eliminateRaid` 是结构化二进制，不是随机垃圾数据。
-- `eliminateRaid` 不是当前 `FlatData` 表。
+- `eliminateRaid` 不是当前 `FlatBufferData` 表。
 - `SpawnPlayer`、`EndBattle` 等更像 runtime command 名，而不是插件名。
 - 这批内容与 `MX.Logic.Battles.GroundCommand* / GroundCondition*` 体系强相关。
 
@@ -221,7 +221,7 @@ Typed JSON 阶段建议保留以下兜底字段：
 ## 6. 当前不建议做的事情
 
 - 不要把 `eliminateRaid` 强行塞进 `GroundGridFlat`。
-- 不要继续按 zip 文件名去猜 `FlatData` schema。
+- 不要继续按 zip 文件名去猜 `FlatBufferData` schema。
 - 不要在证据不足时直接宣称“这就是标准 MemoryPack 文件”。
 
 ## 7. 建议的下一步

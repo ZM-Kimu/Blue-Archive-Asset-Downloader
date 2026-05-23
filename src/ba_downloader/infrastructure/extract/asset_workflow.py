@@ -75,6 +75,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 RichProgressReporter(
                     len(bundles),
                     "Extracting bundles...",
+                    extract_mode=True,
                 ) as progress,
             ):
                 self._start_bundle_processes(processes)
@@ -117,6 +118,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 RichProgressReporter(
                     len(files),
                     "Extracting media...",
+                    extract_mode=True,
                 ) as progress,
             ):
                 future_map = {
@@ -124,6 +126,10 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                         extractor.extract_zip,
                         zip_path,
                         should_stop=stop_event.is_set,
+                        progress_callback=self._build_sub_progress_callback(
+                            progress,
+                            zip_path,
+                        ),
                     ): zip_path
                     for zip_path in files
                 }
@@ -166,6 +172,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 RichProgressReporter(
                     len(table_files),
                     "Extracting table files...",
+                    extract_mode=True,
                 ) as progress,
             ):
                 future_map = {
@@ -173,6 +180,10 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                         extractor.extract_table,
                         table_file,
                         should_stop=stop_event.is_set,
+                        progress_callback=self._build_sub_progress_callback(
+                            progress,
+                            table_file,
+                        ),
                     ): table_file
                     for table_file in table_files
                 }
@@ -240,9 +251,11 @@ class AssetExtractionWorkflow(AssetExtractionPort):
     ) -> None:
         cancellation_state = CancellationFeedbackState()
         completed_bundles = 0
+        progress.set_status(f"0/{len(bundles)} bundles")
         while self._has_pending_bundle_work(queue, processes):
             completed_bundles = max(0, len(bundles) - self._queue_size(queue))
             progress.set_completed(completed_bundles)
+            progress.set_status(f"{completed_bundles}/{len(bundles)} bundles")
             if stop_event.is_set():
                 self._stop_bundle_processes(processes)
                 emit_cancellation_feedback(
@@ -262,6 +275,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
         if not stop_event.is_set():
             progress.set_completed(len(bundles))
+            progress.set_status(f"{len(bundles)}/{len(bundles)} bundles")
             failure_count = max(0, int(error_count.value))
             if failure_count:
                 self.logger.warn(
@@ -325,6 +339,9 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         operation_name: str,
     ) -> None:
         cancellation_state = CancellationFeedbackState()
+        completed_files = 0
+        total_files = len(future_map)
+        progress.set_status(f"0/{total_files} files")
 
         while pending_futures:
             done_futures, pending_futures = wait_for_operation_futures(
@@ -358,6 +375,19 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 except Exception as exc:  # pylint: disable=broad-exception-caught
                     self.logger.error(f"Failed to extract {file_path}: {exc}")
                 progress.advance()
+                completed_files += 1
+                progress.set_status(f"{completed_files}/{total_files} files")
+
+    @staticmethod
+    def _build_sub_progress_callback(
+        progress: RichProgressReporter,
+        file_path: str,
+    ) -> Callable[[str], None]:
+        def update_progress(status: str) -> None:
+            progress.set_description(f"Extracting {Path(file_path).name}")
+            progress.set_secondary_status(status)
+
+        return update_progress
 
     @staticmethod
     def _is_cancelled_error(exc: Exception) -> bool:

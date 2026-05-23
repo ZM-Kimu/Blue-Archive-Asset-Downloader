@@ -194,6 +194,7 @@ class CnMetadataDumpBackend(Il2CppDumpBackendPort):
         metadata_path = self._resolve_metadata_path(context)
         project_path = self._resolve_project_path()
         dump_cs_path = Path(output_dir) / "dump.cs"
+        formatter_sidecar_path = Path(output_dir) / "memorypack_formatters.json"
         dump_cs_path.parent.mkdir(parents=True, exist_ok=True)
 
         self.logger.info("Trying to dump CN metadata...")
@@ -210,6 +211,8 @@ class CnMetadataDumpBackend(Il2CppDumpBackendPort):
                 str(metadata_path.resolve()),
                 "--output",
                 str(dump_cs_path.resolve()),
+                "--formatter-output",
+                str(formatter_sidecar_path.resolve()),
             ],
             self.logger,
         )
@@ -359,6 +362,7 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
         cpp2il_root = self.source_resolver.resolve(context)
         exporter_project = self._ensure_exporter_project(context, cpp2il_root)
         dump_cs_path = Path(output_dir) / "dump.cs"
+        formatter_sidecar_path = Path(output_dir) / "memorypack_formatters.json"
         dump_cs_path.parent.mkdir(parents=True, exist_ok=True)
 
         frameworks = self._resolve_framework_order()
@@ -382,6 +386,7 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
                         f"--metadata-path={metadata_path.resolve()}",
                         f"--unity-version={unity_version}",
                         f"--output={dump_cs_path.resolve()}",
+                        f"--formatter-output={formatter_sidecar_path.resolve()}",
                     ],
                     capture_output=True,
                     check=True,

@@ -34,7 +34,7 @@
 
 - Windows/Linux
 - Python 3.10 或更高版本
-<!-- - [.NET8/.NET9 SDK](https://dotnet.microsoft.com/download)(提取table或使用高级检索时必须安装；新 dumper backend 优先使用 .NET9)  -->
+- [.NET8/.NET9 SDK](https://dotnet.microsoft.com/download)(提取 table 时必须安装；在下一阶段会将 .NET 视为先决条件)
 
 ## 先决条件
 
@@ -96,23 +96,24 @@ python -m ba_downloader sync --region jp
 
 ## **基本参数**
 **`*`** :**必选的选项**
-| 参数                       | 缩&nbsp;写 | 说明                                                                           | 默认值             | 示例                          |
-| -------------------------- | ---------- | ------------------------------------------------------------------------------ | ------------------ | ----------------------------- |
-| **`--region`**`*`          | `-r`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                       | 无                 | `-r jp`                       |
-| `--threads`                | `-t`       | **同时下载或解压的线程数**                                                     | `20`               | `-t 50`                       |
-| `--version`                | `-v`       | **需要下载的资源版本号**（仅 GL 生效）                                         | 无                 | `-v 1.2.3`                    |
-| `--platform`               | `-p`       | **资源所属平台**：`windows`、`android`、`ios`（仅 JP 生效）                    | `android`          | `-p windows`                  |
-| `--raw-dir`                | `-rd`      | **指定未处理文件的位置**                                                       | `"RawData"`        | `-rd raw_folder`              |
-| `--extract-dir`            | `-ed`      | **指定已提取文件的位置**                                                       | `"Extracted"`      | `-ed output_folder`           |
-| `--temp-dir`               | `-td`      | **指定临时文件的位置**                                                         | `"Temp"`           | `-td temp_dir`                |
-| `--extract-while-download` | `-ewd`     | **是否在下载时便提取文件**（仅 `sync` 可用；较慢，在资源数量较多时酌情使用）   | `False`            | `--extract-while-download`    |
-| `--resource-type`          | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                                | `all`              | `--resource-type media table` |
-| `--proxy`                  | `-px`      | **设置 HTTP 代理**                                                             | 无（使用系统代理） | `-px http://127.0.0.1:8080`   |
-| `--max-retries`            | `-mr`      | **下载失败时的最大重试次数**                                                   | `5`                | `--max-retries 3`             |
-| `--search`                 | `-s`       | **普通检索**，指定需要检索并下载的文件关键词（仅 `sync` 与 `download` 可用）   |
-| `--advanced-search`        | `-as`      | **高级检索**，指定角色关键词（仅 `sync` 可用；当前仅 GL 支持，需要 .NET 环境） |
+| 参数                       | 缩&nbsp;写 | 说明                                                                         | 默认值             | 示例                          |
+| -------------------------- | ---------- | ---------------------------------------------------------------------------- | ------------------ | ----------------------------- |
+| **`--region`**`*`          | `-r`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                     | 无                 | `-r jp`                       |
+| `--threads`                | `-t`       | **同时下载或解压的线程数**                                                   | `20`               | `-t 50`                       |
+| `--version`                | `-v`       | **需要下载的资源版本号**（仅 GL 生效）                                       | 无                 | `-v 1.2.3`                    |
+| `--platform`               | `-p`       | **资源所属平台**：`windows`、`android`、`ios`（仅 JP 生效）                  | `android`          | `-p windows`                  |
+| `--raw-dir`                | `-rd`      | **指定未处理文件的位置**                                                     | `"RawData"`        | `-rd raw_folder`              |
+| `--extract-dir`            | `-ed`      | **指定已提取文件的位置**                                                     | `"Extracted"`      | `-ed output_folder`           |
+| `--temp-dir`               | `-td`      | **指定临时文件的位置**                                                       | `"Temp"`           | `-td temp_dir`                |
+| `--extract-while-download` | `-ewd`     | **是否在下载时便提取文件**（仅 `sync` 可用；较慢，在资源数量较多时酌情使用） | `False`            | `--extract-while-download`    |
+| `--resource-type`          | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                              | `all`              | `--resource-type media table` |
+| `--proxy`                  | `-px`      | **设置 HTTP 代理**                                                           | 无（使用系统代理） | `-px http://127.0.0.1:8080`   |
+| `--max-retries`            | `-mr`      | **下载失败时的最大重试次数**                                                 | `5`                | `--max-retries 3`             |
+| `--search`                 | `-s`       | **普通检索**，指定需要检索并下载的文件关键词（仅 `sync` 与 `download` 可用） |
 
-**(CN服务器目前不支持高级检索)高级检索支持的检索条件：**
+<!-- | `--advanced-search`        | `-as`      | **高级检索**，指定角色关键词（仅 `sync` 可用；当前仅 GL 支持，需要 .NET 环境） | -->
+
+<!-- **(CN服务器目前不支持高级检索)高级检索支持的检索条件：**
 - `[*]` **角色名称**
 - `cv` **声优**
 - `age` **年龄**
@@ -134,7 +135,7 @@ python -m ba_downloader sync --region jp
   > sync
   >```sh
   >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ ibuki
-  >```
+  >``` -->
 
   <!--
   > japan
@@ -142,7 +143,7 @@ python -m ba_downloader sync --region jp
   >ba-downloader sync --region jp -as yume 百合園セイア 호시노 cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
   >```
   -->
-
+- 高级检索目前暂不可用，仅能使用普通检索：
   > package name only
   >```sh
   >ba-downloader sync --region jp -s aris ch0070 shiroko
@@ -182,13 +183,15 @@ ba-downloader download --region jp --platform windows
   - 完善三服下载流程（CN / GL / JP）
 - `v2.0.2`
   - 完善 JP 解开（需要密钥，而密钥位于服务器）
-  - 基于 `dump.cs` annotation tree 的 MemoryPack 
+  - 继续完善基于 `dump.cs` annotation tree 的 MemoryPack payload 语义解析
+  - ~flatbufer & memorypack 可复用的特性
   - CN metadata 解开
 - `v2.0.3`
   - 新 Bundle 解开器
   
 ## 关于项目
 Blue Archive Asset Downloader v2.0.0.
+
 ✨ 技术支持：Codex ✨
 
 本项目采用 [MIT 许可证](LICENSE)。

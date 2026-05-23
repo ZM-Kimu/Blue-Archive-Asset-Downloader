@@ -75,6 +75,42 @@ CN metadata backend 额外依赖仓库内 vendored 的独立 dumper 工程：
 dotnet build third_party/cn_metadata_exporter/cn_metadata_exporter.csproj -c Release
 ```
 
+## FlatBuffer 与 MemoryPack schema 说明
+
+`SchemaWorkflow.compile()` 会从 `dump.cs` 中生成两类运行时 schema：
+
+- `FlatBufferData`：FlatBuffer descriptor-first schema registry。Table 解析直接加载 `_registry.py`，通过 generic reader/exporter 解码 payload；旧 `FlatData/dump_wrapper.py` 不再是运行时依赖，旧内部别名 `CSParser` / `CompileToPython` 已移除。
+- `MemoryPackData`：实验性的 MemoryPack annotation schema。JP catalog decoder 在该 registry 可用时会优先使用 generic `MemoryPackReader`，registry 缺失或解码失败时回退到现有专用 decoder；该流程仍不影响 FlatBuffer table 解析主路径。
+
+- FlatBuffer 输出目录：`<Extracted>/FlatBufferData`
+- MemoryPack 输出目录：`<Extracted>/MemoryPackData`
+- MemoryPack formatter sidecar：`<Extracted>/Dumps/memorypack_formatters.json`。该文件记录可追踪的 formatter 元数据；若 formatter 布局仍为 unresolved，DB BLOB 解码会保留 raw fallback，而不会假装语义解析成功。
+- 产物形态：每个 MemoryPack 类型一个 dataclass module，字段使用 `typing.Annotated`
+- 类型表达：`dump.cs` 中的 C# enum 会生成 Python `IntEnum`；可解析的 schema 引用会写成真实类型引用，例如 `dict[str, Media] | None`
+- 循环引用：生成器会保留 annotation 中的类型名，并对循环 import 使用 `TYPE_CHECKING` fallback，确保生成模块可导入
+- 当前用途：JP catalog MemoryPack payload 的优先解码路径，以及后续 MemoryPack payload inspect / typed JSON 导出的 schema 基础
+
+FlatBuffer schema 生成失败会中断 compile；MemoryPack schema 生成失败只会记录 warning 并继续原有流程。
+
+### Table payload 路由策略
+
+当前 table payload 解包仍采用“已验证来源优先”的阶段性策略：
+
+- 通用 `ExcelDB.db` 与 `.bytes` payload 继续走 `FlatBufferData` registry。
+- CN 三类 DAO SQLite BLOB 使用 CN 专用 MemoryPack DAO 路由。
+- GL script / boss / eliminateRaid / beatmap 等暂按已确认的 raw 导出或专用解析路径处理。
+
+在各区服格式尚未全部可语义解包前，不做未验证的统一格式猜测。后续当 CN / GL / JP 的 table payload 语义覆盖足够完整时，再将这些来源特定规则收敛为统一 payload router，并以统一路由作为唯一入口。
+
+内部模块按职责拆分：
+
+- FlatBuffer：`ba_downloader.infrastructure.schema.flatbuffer`
+- MemoryPack：`ba_downloader.infrastructure.schema.memorypack`
+- 共享能力：`ba_downloader.infrastructure.schema.common`
+- dump / IL2CPP / runtime probe 等外部工具仍位于 `ba_downloader.infrastructure.tools`
+
+旧的 schema 内部入口 `ba_downloader.infrastructure.tools.flatbuffer_*`、`ba_downloader.infrastructure.tools.memorypack_*`、`CSParser`、`CompileToPython`、`GeneratedDumpWrapperError` 均不再支持；内部调用请迁移到 `ba_downloader.infrastructure.schema.*`。
+
 ## GL 特殊 payload 备注
 
 GL `Table/` 中的 `eliminateRaid` payload 当前已经支持 raw 导出，但尚未实现语义解析。专项分析记录见：

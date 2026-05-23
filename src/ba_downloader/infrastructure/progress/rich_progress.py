@@ -25,6 +25,10 @@ class RichProgressReporter(ProgressReporterPort):
     FILE_STATUS_COLUMN_WIDTH = 14
     CONCURRENCY_STATUS_COLUMN_WIDTH = 11
     FAILURE_STATUS_COLUMN_WIDTH = 10
+    EXTRACT_DESCRIPTION_COLUMN_WIDTH = 30
+    EXTRACT_BAR_WIDTH = 24
+    EXTRACT_STATUS_COLUMN_WIDTH = 18
+    EXTRACT_SUB_STATUS_COLUMN_WIDTH = 18
 
     def __init__(
         self,
@@ -32,12 +36,14 @@ class RichProgressReporter(ProgressReporterPort):
         description: str,
         *,
         download_mode: bool = False,
+        extract_mode: bool = False,
     ) -> None:
-        description_width = (
-            self.DOWNLOAD_DESCRIPTION_COLUMN_WIDTH
-            if download_mode
-            else self.DESCRIPTION_COLUMN_WIDTH
-        )
+        if download_mode:
+            description_width = self.DOWNLOAD_DESCRIPTION_COLUMN_WIDTH
+        elif extract_mode:
+            description_width = self.EXTRACT_DESCRIPTION_COLUMN_WIDTH
+        else:
+            description_width = self.DESCRIPTION_COLUMN_WIDTH
         columns = [
             SpinnerColumn(),
             TextColumn(
@@ -91,6 +97,37 @@ class RichProgressReporter(ProgressReporterPort):
                     ),
                     DownloadColumn(),
                     TransferSpeedColumn(),
+                    TimeRemainingColumn(),
+                ]
+            )
+        elif extract_mode:
+            columns.extend(
+                [
+                    BarColumn(bar_width=self.EXTRACT_BAR_WIDTH),
+                    TaskProgressColumn(),
+                    TextColumn(
+                        "{task.fields[status]}",
+                        table_column=Column(
+                            width=self.EXTRACT_STATUS_COLUMN_WIDTH,
+                            min_width=self.EXTRACT_STATUS_COLUMN_WIDTH,
+                            max_width=self.EXTRACT_STATUS_COLUMN_WIDTH,
+                            justify="right",
+                            no_wrap=True,
+                            overflow="ellipsis",
+                        ),
+                    ),
+                    TextColumn(
+                        "{task.fields[secondary_status]}",
+                        table_column=Column(
+                            width=self.EXTRACT_SUB_STATUS_COLUMN_WIDTH,
+                            min_width=self.EXTRACT_SUB_STATUS_COLUMN_WIDTH,
+                            max_width=self.EXTRACT_SUB_STATUS_COLUMN_WIDTH,
+                            justify="right",
+                            no_wrap=True,
+                            overflow="ellipsis",
+                        ),
+                    ),
+                    TimeElapsedColumn(),
                     TimeRemainingColumn(),
                 ]
             )
