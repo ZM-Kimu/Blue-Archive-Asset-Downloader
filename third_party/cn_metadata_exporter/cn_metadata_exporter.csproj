@@ -6,6 +6,6 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Cpp2IL\LibCpp2IL\LibCpp2IL.csproj" />
+    <ProjectReference Include="..\Cpp2IL\LibCpp2IL\LibCpp2IL.csproj" SetTargetFramework="TargetFramework=net9.0" />
   </ItemGroup>
 </Project>

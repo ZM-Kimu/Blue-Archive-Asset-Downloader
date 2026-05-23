@@ -19,7 +19,7 @@ from ba_downloader.infrastructure.tools.runtime_probe import (
     get_installed_dotnet_sdk_major_versions,
 )
 
-CPP2IL_COMMIT = "10db0e546fab83ec67380046f1088b62c7b38ea5"
+CPP2IL_COMMIT = "6af99f218501529af84202243aedb7089f5307dc"
 CPP2IL_ARCHIVE_URL = (
     f"https://github.com/SamboyCoding/Cpp2IL/archive/{CPP2IL_COMMIT}.zip"
 )
