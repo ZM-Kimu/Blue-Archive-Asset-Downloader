@@ -420,6 +420,18 @@ def test_memorypack_codegen_keeps_cyclic_schema_references_importable(
     assert _load_generated_module(output_dir, "NodeB").NodeB.__name__ == "NodeB"
 
 
+def test_memorypack_package_exports_reader_api() -> None:
+    from ba_downloader.infrastructure.schema.memorypack import (
+        MemoryPackReader as PackageMemoryPackReader,
+    )
+    from ba_downloader.infrastructure.schema.memorypack import (
+        MemoryPackSchemaRegistry as PackageMemoryPackSchemaRegistry,
+    )
+
+    assert PackageMemoryPackReader is MemoryPackReader
+    assert PackageMemoryPackSchemaRegistry is MemoryPackSchemaRegistry
+
+
 def test_memorypack_reader_decodes_basic_schema_payload() -> None:
     @MemoryPackReader.schema
     class TableBundle:

@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from ba_downloader.domain.exceptions import NetworkError
+from ba_downloader.infrastructure.http import client as http_client_module
 from ba_downloader.infrastructure.http.client import (
     DEFAULT_DOWNLOAD_TIMEOUT,
     DOWNLOAD_READ_POLL_TIMEOUT,
@@ -131,6 +132,18 @@ def test_http_client_browser_request_does_not_retry_programming_errors(
     assert attempts["count"] == 1
 
 
+def test_http_resume_state_machine_is_separated_from_client() -> None:
+    assert hasattr(http_client_module, "DownloadResumeSession")
+    concentrated_methods = {
+        "_download_with_resume",
+        "_prepare_download_segment",
+        "_is_download_complete",
+        "_parse_content_range",
+    }
+
+    assert not concentrated_methods.intersection(ResilientHttpClient.__dict__)
+
+
 class FakeHttpxResponse:
     def __init__(
         self,
@@ -246,7 +259,7 @@ def test_http_client_download_tolerates_short_read_timeouts(
 
     monkeypatch.setattr(client, "_httpx", fake_httpx)
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.http.client.monotonic", lambda: next(time_points)
+        "ba_downloader.infrastructure.http.resume.monotonic", lambda: next(time_points)
     )
 
     result = client.download_to_file(
@@ -514,7 +527,7 @@ def test_http_client_download_fails_after_stall_timeout(
 
     monkeypatch.setattr(client, "_httpx", fake_httpx)
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.http.client.monotonic", lambda: next(time_points)
+        "ba_downloader.infrastructure.http.resume.monotonic", lambda: next(time_points)
     )
 
     with pytest.raises(NetworkError, match="read operation timed out"):

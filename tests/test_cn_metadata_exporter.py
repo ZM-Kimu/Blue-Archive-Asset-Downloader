@@ -26,6 +26,51 @@ RESOLVED_MODELS_SOURCE = (
     / "Models"
     / "ResolvedExportModels.cs"
 )
+RESOLUTION_DIR = (
+    REPO_ROOT
+    / "third_party"
+    / "cn_metadata_exporter"
+    / "Resolution"
+)
+EXPORTER_PROJECT = (
+    REPO_ROOT
+    / "third_party"
+    / "cn_metadata_exporter"
+    / "cn_metadata_exporter.csproj"
+)
+COMPLEXITY_EXEMPT_RESOLVERS = {
+    "YldaRelationshipResolver.cs",
+    "YldaTypeResolver.cs",
+}
+
+
+def _meaningful_csharp_lines(source: str) -> int:
+    return sum(
+        1
+        for line in source.splitlines()
+        if (stripped := line.strip())
+        and not stripped.startswith("//")
+        and stripped not in {"{", "}", "};"}
+    )
+
+
+def _approximate_csharp_decisions(source: str) -> int:
+    decision_markers = (
+        " if ",
+        " else if ",
+        " switch",
+        " case ",
+        " when ",
+        " foreach ",
+        " for ",
+        " while ",
+        " catch ",
+        " ? ",
+        " && ",
+        " || ",
+        "=>",
+    )
+    return sum(source.count(marker) for marker in decision_markers)
 
 
 def test_flatbuffer_type_recovery_maps_known_cn_metadata_gaps(tmp_path: Path) -> None:
@@ -168,6 +213,45 @@ Equal(
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_cn_metadata_exporter_project_builds_with_resolution_helpers() -> None:
+    result = subprocess.run(
+        [
+            "dotnet",
+            "build",
+            str(EXPORTER_PROJECT),
+            "-c",
+            "Release",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_cn_metadata_exporter_resolution_helpers_stay_focused() -> None:
+    oversized_helpers: list[str] = []
+
+    for source_path in sorted(RESOLUTION_DIR.glob("Ylda*Resolver.cs")):
+        if source_path.name in COMPLEXITY_EXEMPT_RESOLVERS:
+            continue
+
+        source = source_path.read_text(encoding="utf-8")
+        meaningful_lines = _meaningful_csharp_lines(source)
+        approximate_decisions = _approximate_csharp_decisions(source)
+        if meaningful_lines > 1300 or approximate_decisions > 450:
+            oversized_helpers.append(
+                f"{source_path.name}: {meaningful_lines} meaningful LOC, "
+                f"{approximate_decisions} approximate decisions"
+            )
+
+    assert not oversized_helpers, "\n".join(oversized_helpers)
 
 
 def test_memorypack_formatter_sidecar_writer_exports_known_cn_dao_layouts(

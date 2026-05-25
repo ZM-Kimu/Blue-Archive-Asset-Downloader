@@ -102,6 +102,21 @@ FlatBuffer schema 生成失败会中断 compile；MemoryPack schema 生成失败
 
 在各区服格式尚未全部可语义解包前，不做未验证的统一格式猜测。后续当 CN / GL / JP 的 table payload 语义覆盖足够完整时，再将这些来源特定规则收敛为统一 payload router，并以统一路由作为唯一入口。
 
+## 架构边界与复杂度预算
+
+当前仓库允许内部 Python API 进行 breaking change，但 CLI 命令、核心参数、默认输出目录默认保持稳定。较大的重构应先补架构或行为测试，再拆实现。
+
+依赖方向原则：
+
+- `application` 负责编排 use case，不承载格式解析细节。
+- `download` 只负责下载、校验和下载进度，不直接依赖 table/media/bundle extractor。
+- `extract` 负责编排资源提取，具体格式导出放在 `extractors`。
+- `extractors` 可以使用 `schema` codec，但不应反向被 `schema` 或 `download` 依赖。
+- `regions` 只负责区服 release/catalog 获取和 asset normalization，schema codec 与 Unity 读取细节应逐步迁出。
+- `schema` 只负责 dump schema、generated registry 与 binary reader/exporter，不直接驱动下载或提取流程。
+
+复杂度守门在 `tests/test_architecture_complexity.py` 中维护。默认不为历史热点保留 allowlist；如确需临时放行，必须在对应减熵阶段结束时同步收紧预算或移除放行项。
+
 内部模块按职责拆分：
 
 - FlatBuffer：`ba_downloader.infrastructure.schema.flatbuffer`

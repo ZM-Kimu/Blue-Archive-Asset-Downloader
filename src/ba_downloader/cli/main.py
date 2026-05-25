@@ -175,7 +175,10 @@ def _build_runtime_asset_preparer(
 
 def _build_cli_runtime_services(context: RuntimeContext) -> _CliRuntimeServices:
     from ba_downloader.infrastructure.download import ResourceDownloader
-    from ba_downloader.infrastructure.extract import AssetExtractionWorkflow
+    from ba_downloader.infrastructure.extract import (
+        AssetExtractionWorkflow,
+        ImmediateResourceExtractor,
+    )
     from ba_downloader.infrastructure.http import ResilientHttpClient
     from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
     from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
@@ -187,12 +190,17 @@ def _build_cli_runtime_services(context: RuntimeContext) -> _CliRuntimeServices:
     )
     runtime_asset_preparer = _build_runtime_asset_preparer(context, logger, http_client)
     schema_workflow = SchemaWorkflow(http_client, logger)
+    immediate_extractor = ImmediateResourceExtractor(logger)
     return _CliRuntimeServices(
         logger=logger,
         http_client=http_client,
         provider=_build_provider(context, logger, http_client),
         runtime_asset_preparer=runtime_asset_preparer,
-        downloader=ResourceDownloader(http_client, logger),
+        downloader=ResourceDownloader(
+            http_client,
+            logger,
+            immediate_extraction_handler=immediate_extractor,
+        ),
         extract_service=ExtractService(
             AssetExtractionWorkflow(logger),
             schema_workflow,
