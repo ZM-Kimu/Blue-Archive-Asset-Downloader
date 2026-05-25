@@ -88,20 +88,20 @@ python -m ba_downloader sync --region jp
 ## **Basic Parameters**
 **`*`** : **required option**
 
-| Parameter                  | Short Form | Description                                                                    | Default            | Example                       |
-| -------------------------- | ---------- | ------------------------------------------------------------------------------ | ------------------ | ----------------------------- |
-| **`--region`**`*`          | `-r`       | **Server region**: `cn` (China), `gl` (Global), `jp` (Japan)                   | None               | `-r jp`                       |
-| `--threads`                | `-t`       | **Number of concurrent download or extraction workers**                        | `20`               | `-t 50`                       |
-| `--version`                | `-v`       | **Resource version to download** (currently effective for GL only)             | None               | `-v 1.2.3`                    |
-| `--platform`               | `-p`       | **Resource platform**: `windows`, `android`, `ios` (effective for JP only)     | `android`          | `-p windows`                  |
-| `--raw-dir`                | `-rd`      | **Directory for raw downloaded files**                                         | `"RawData"`        | `-rd raw_folder`              |
-| `--extract-dir`            | `-ed`      | **Directory for extracted output**                                             | `"Extracted"`      | `-ed output_folder`           |
-| `--temp-dir`               | `-td`      | **Directory for temporary files**                                              | `"Temp"`           | `-td temp_dir`                |
-| `--extract-while-download` | `-ewd`     | **Extract files while downloading** (available only for `sync`; use carefully for large resource sets) | `False`            | `--extract-while-download`    |
-| `--resource-type`          | `-rt`      | **Resource types**: `table`, `media`, `bundle`, `all`                          | `all`              | `--resource-type media table` |
-| `--proxy`                  | `-px`      | **HTTP proxy**                                                                 | None (system proxy) | `-px http://127.0.0.1:8080`   |
-| `--max-retries`            | `-mr`      | **Maximum retry count for failed downloads**                                   | `5`                | `--max-retries 3`             |
-| `--search`                 | `-s`       | **Basic search**: keywords used to filter files for download (`sync` and `download` only) |
+| Parameter                  | Short Form | Description                                                                                                                   | Default             | Example                       |
+| -------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------- | ----------------------------- |
+| **`--region`**`*`          | `-r`       | **Server region**: `cn` (China), `gl` (Global), `jp` (Japan)                                                                  | None                | `-r jp`                       |
+| `--threads`                | `-t`       | **Number of concurrent download or extraction workers**                                                                       | `20`                | `-t 50`                       |
+| `--version`                | `-v`       | **Resource version to download** (currently effective for GL only)                                                            | None                | `-v 1.2.3`                    |
+| `--platform`               | `-p`       | **Resource platform**: `windows`, `android`, `ios` (effective for JP only)                                                    | `android`           | `-p windows`                  |
+| `--raw-dir`                | `-rd`      | **Directory for raw downloaded files**                                                                                        | `"RawData"`         | `-rd raw_folder`              |
+| `--extract-dir`            | `-ed`      | **Directory for extracted output**                                                                                            | `"Extracted"`       | `-ed output_folder`           |
+| `--temp-dir`               | `-td`      | **Directory for temporary files**                                                                                             | `"Temp"`            | `-td temp_dir`                |
+| `--extract-while-download` | `-ewd`     | **Extract files while downloading** (available only for `sync`; use carefully for large resource sets)                        | `False`             | `--extract-while-download`    |
+| `--resource-type`          | `-rt`      | **Resource types**: `table`, `media`, `bundle`, `all`                                                                         | `all`               | `--resource-type media table` |
+| `--proxy`                  | `-px`      | **HTTP proxy**                                                                                                                | None (system proxy) | `-px http://127.0.0.1:8080`   |
+| `--max-retries`            | `-mr`      | **Maximum retry count for failed downloads**                                                                                  | `5`                 | `--max-retries 3`             |
+| `--search`                 | `-s`       | **Basic search**: keywords used to filter files for download (`sync` and `download` only)                                     |
 | `--advanced-search`        | `-as`      | **Advanced search**: character-oriented filters (`sync` only; currently supported by GL only and requires a .NET environment) |
 
 **(Advanced search is currently unsupported on CN) Supported advanced-search fields:**

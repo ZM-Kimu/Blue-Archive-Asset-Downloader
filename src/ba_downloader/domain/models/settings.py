@@ -46,12 +46,13 @@ class AppSettings:
             if temp_dir == "Temp":
                 temp_dir = f"{platform_prefix}{temp_dir}"
         else:
+            region_prefix = f"{region.upper()}_"
             if raw_dir == "RawData":
-                raw_dir = f"{region.upper()}{raw_dir}"
+                raw_dir = f"{region_prefix}{raw_dir}"
             if extract_dir == "Extracted":
-                extract_dir = f"{region.upper()}{extract_dir}"
+                extract_dir = f"{region_prefix}{extract_dir}"
             if temp_dir == "Temp":
-                temp_dir = f"{region.upper()}{temp_dir}"
+                temp_dir = f"{region_prefix}{temp_dir}"
 
         resource_type = tuple(r.lower() for r in self.resource_type)
         if not resource_type or "all" in resource_type:

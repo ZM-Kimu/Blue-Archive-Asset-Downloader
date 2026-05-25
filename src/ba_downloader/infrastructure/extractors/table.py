@@ -53,7 +53,42 @@ class ProcessedTableArtifact:
 
 class TableExtractor:
     GROUND_GRID_SCHEMA_NAME = "GroundGridFlat.bytes"
+    GROUND_NODE_LAYER_SCHEMA_NAME = "GroundNodeLayerFlat.bytes"
     RHYTHM_BEATMAP_ARCHIVE_NAME = "RhythmBeatmapData.zip"
+    GL_GROUND_ARCHIVE_PREFIXES = ("sb_", "rb_", "rd_", "db_", "c_sb_")
+    GL_C_SB_RAW_SCRIPT_KEYWORDS = (
+        "destroyhyakkiyakomatsuri",
+        "wildhuntstreet",
+        "expresstrain",
+        "hyakkiyakomatsuri",
+        "hyakkiyakomoviestreet",
+        "hyakkiyakonorthtown",
+    )
+    GL_RAW_SCRIPT_TEST_PREFIXES = (
+        "basementtest",
+        "character_resource_",
+        "charactertest",
+        "ch0265test",
+        "chesedscenariotest",
+        "combattest_",
+        "damagetest_",
+        "effectcountlimittest_",
+        "groundpassivetest",
+        "holdtest",
+        "hovercrafttest",
+        "hyakkiyako",
+        "newyearpathvisualtest",
+        "np186test",
+        "npctest",
+        "overridetest_",
+        "playground_obstacleset_",
+        "raidtest",
+    )
+    GL_RAW_SCRIPT_TEST_ARCHIVE_NAMES = (
+        "camerarotatetest.zip",
+        "changelooktargettest.zip",
+        "ch0265test2.zip",
+    )
 
     def __init__(
         self,
@@ -363,6 +398,66 @@ class TableExtractor:
         )
 
     @classmethod
+    def _is_gl_ground_archive(cls, file_name: str) -> bool:
+        archive_name = path.basename(file_name)
+        lower_name = archive_name.lower()
+        return lower_name.endswith(".zip") and lower_name.startswith(
+            cls.GL_GROUND_ARCHIVE_PREFIXES
+        )
+
+    @classmethod
+    def _is_gl_c_sb_raw_script_archive(cls, file_name: str) -> bool:
+        archive_name = path.basename(file_name).lower()
+        return archive_name.endswith(".zip") and archive_name.startswith(
+            "c_sb_"
+        ) and any(keyword in archive_name for keyword in cls.GL_C_SB_RAW_SCRIPT_KEYWORDS)
+
+    @classmethod
+    def _resolve_gl_ground_schema_name(cls, archive_name: str) -> str:
+        if "_nodelayer" in archive_name.lower():
+            return cls.GROUND_NODE_LAYER_SCHEMA_NAME
+        return cls.GROUND_GRID_SCHEMA_NAME
+
+    @staticmethod
+    def _is_gl_numeric_stage_archive(file_name: str) -> bool:
+        archive_name = path.basename(file_name).lower()
+        return (
+            archive_name.endswith(".zip")
+            and archive_name[:1].isdigit()
+            and "eliminateraid" not in archive_name
+        )
+
+    @staticmethod
+    def _is_gl_eliminate_raid_archive(file_name: str) -> bool:
+        archive_name = path.basename(file_name).lower()
+        return archive_name.endswith(".zip") and "eliminateraid" in archive_name
+
+    @staticmethod
+    def _is_gl_enemy_boss_script_archive(file_name: str) -> bool:
+        archive_name = path.basename(file_name).lower()
+        return (
+            archive_name.endswith(".zip")
+            and archive_name.startswith("en")
+            and len(archive_name) >= 6
+            and archive_name[2:6].isdigit()
+        )
+
+    @staticmethod
+    def _is_mgs_logic_ground_archive(file_name: str) -> bool:
+        return path.basename(file_name) == "MGSLogicGroundData.zip"
+
+    @classmethod
+    def _is_gl_raw_script_test_archive(cls, file_name: str) -> bool:
+        archive_name = path.basename(file_name).lower()
+        return (
+            archive_name.startswith(cls.GL_RAW_SCRIPT_TEST_PREFIXES)
+            or "obstest" in archive_name
+            or "timelinetest" in archive_name
+            or "emojitest" in archive_name
+            or archive_name in cls.GL_RAW_SCRIPT_TEST_ARCHIVE_NAMES
+        )
+
+    @classmethod
     def _is_rhythm_beatmap_archive(cls, file_name: str) -> bool:
         return path.basename(file_name) == cls.RHYTHM_BEATMAP_ARCHIVE_NAME
 
@@ -446,6 +541,64 @@ class TableExtractor:
                 )
             elif self._is_ground_stage_patch_archive(archive_name):
                 self._extract_ground_stage_patch_archive(
+                    file_name,
+                    warnings=warnings,
+                    should_stop=should_stop,
+                )
+            elif self._is_gl_c_sb_raw_script_archive(archive_name):
+                self._extract_raw_zip_archive(
+                    file_name,
+                    warnings=warnings,
+                    should_stop=should_stop,
+                    info_message=(
+                        f"Extracted raw GL C_sb script payloads from {archive_name}; "
+                        "semantic parser is not implemented yet."
+                    ),
+                )
+            elif self._is_gl_ground_archive(archive_name):
+                self._extract_gl_ground_archive(
+                    file_name,
+                    warnings=warnings,
+                    should_stop=should_stop,
+                )
+            elif self._is_gl_eliminate_raid_archive(archive_name):
+                self._extract_raw_zip_archive(
+                    file_name,
+                    warnings=warnings,
+                    should_stop=should_stop,
+                    info_message=(
+                        f"Extracted raw GL eliminateRaid payloads from {archive_name}; "
+                        "semantic parser is not implemented yet."
+                    ),
+                )
+            elif self._is_gl_enemy_boss_script_archive(archive_name):
+                self._extract_raw_zip_archive(
+                    file_name,
+                    warnings=warnings,
+                    should_stop=should_stop,
+                    info_message=(
+                        f"Extracted raw GL boss script payloads from {archive_name}; "
+                        "semantic parser is not implemented yet."
+                    ),
+                )
+            elif self._is_gl_raw_script_test_archive(archive_name):
+                self._extract_raw_zip_archive(
+                    file_name,
+                    warnings=warnings,
+                    should_stop=should_stop,
+                    info_message=(
+                        f"Extracted raw GL script/test payloads from {archive_name}; "
+                        "semantic parser is not implemented yet."
+                    ),
+                )
+            elif self._is_gl_numeric_stage_archive(archive_name):
+                self._extract_gl_numeric_stage_archive(
+                    file_name,
+                    warnings=warnings,
+                    should_stop=should_stop,
+                )
+            elif self._is_mgs_logic_ground_archive(archive_name):
+                self._extract_mgs_logic_ground_archive(
                     file_name,
                     warnings=warnings,
                     should_stop=should_stop,
@@ -609,6 +762,162 @@ class TableExtractor:
         self.logger.info(
             f"Extracted raw GroundStage payloads from {archive_name}; semantic parser is not implemented yet."
         )
+
+    def _extract_gl_ground_archive(
+        self,
+        file_name: str,
+        *,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
+        archive_name = path.basename(file_name)
+        schema_name = self._resolve_gl_ground_schema_name(archive_name)
+        extract_folder = Path(self.extract_folder) / archive_name.removesuffix(".zip")
+
+        with ZipFile(path.join(self.table_file_folder, file_name), "r") as archive:
+            archive.setpassword(zip_password(archive_name))
+            for item_name in archive.namelist():
+                self._ensure_not_cancelled(should_stop)
+                try:
+                    item_data = archive.read(item_name)
+                except (RuntimeError, OSError, ValueError, zlib.error) as exc:
+                    self._warn_skipped_entry(
+                        archive_name,
+                        item_name,
+                        warnings,
+                        str(exc),
+                    )
+                    continue
+
+                try:
+                    processed_file = self._process_zip_file(
+                        archive_name,
+                        schema_name,
+                        item_data,
+                        detect_type=True,
+                    )
+                except TableProcessingError as exc:
+                    self._warn_skipped_entry(
+                        archive_name,
+                        item_name,
+                        warnings,
+                        str(exc),
+                    )
+                    continue
+
+                self._ensure_not_cancelled(should_stop)
+                self._write_processed_file(extract_folder, processed_file)
+
+    def _extract_gl_numeric_stage_archive(
+        self,
+        file_name: str,
+        *,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
+        archive_name = path.basename(file_name)
+        extract_folder = Path(self.extract_folder) / archive_name.removesuffix(".zip")
+
+        with ZipFile(path.join(self.table_file_folder, file_name), "r") as archive:
+            archive.setpassword(zip_password(archive_name))
+            for item_name in archive.namelist():
+                self._ensure_not_cancelled(should_stop)
+                try:
+                    item_data = archive.read(item_name)
+                except (RuntimeError, OSError, ValueError, zlib.error) as exc:
+                    self._warn_skipped_entry(
+                        archive_name,
+                        item_name,
+                        warnings,
+                        str(exc),
+                    )
+                    continue
+
+                self._write_processed_file(
+                    extract_folder,
+                    ProcessedTableArtifact(
+                        data=item_data,
+                        file_name=path.basename(item_name),
+                    ),
+                )
+
+    def _extract_mgs_logic_ground_archive(
+        self,
+        file_name: str,
+        *,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
+        archive_name = path.basename(file_name)
+        extract_folder = Path(self.extract_folder) / archive_name.removesuffix(".zip")
+
+        with ZipFile(path.join(self.table_file_folder, file_name), "r") as archive:
+            archive.setpassword(zip_password(archive_name))
+            for item_name in archive.namelist():
+                self._ensure_not_cancelled(should_stop)
+                try:
+                    item_data = archive.read(item_name)
+                except (RuntimeError, OSError, ValueError, zlib.error) as exc:
+                    self._warn_skipped_entry(
+                        archive_name,
+                        item_name,
+                        warnings,
+                        str(exc),
+                    )
+                    continue
+
+                try:
+                    processed_file = self._process_zip_file(
+                        archive_name,
+                        self.GROUND_GRID_SCHEMA_NAME,
+                        item_data,
+                        detect_type=True,
+                    )
+                except TableProcessingError:
+                    processed_file = ProcessedTableArtifact(
+                        data=item_data,
+                        file_name=path.basename(item_name),
+                    )
+
+                self._ensure_not_cancelled(should_stop)
+                self._write_processed_file(extract_folder, processed_file)
+
+    def _extract_raw_zip_archive(
+        self,
+        file_name: str,
+        *,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None = None,
+        info_message: str | None = None,
+    ) -> None:
+        archive_name = path.basename(file_name)
+        extract_folder = Path(self.extract_folder) / archive_name.removesuffix(".zip")
+
+        with ZipFile(path.join(self.table_file_folder, file_name), "r") as archive:
+            archive.setpassword(zip_password(archive_name))
+            for item_name in archive.namelist():
+                self._ensure_not_cancelled(should_stop)
+                try:
+                    item_data = archive.read(item_name)
+                except (RuntimeError, OSError, ValueError, zlib.error) as exc:
+                    self._warn_skipped_entry(
+                        archive_name,
+                        item_name,
+                        warnings,
+                        str(exc),
+                    )
+                    continue
+
+                self._write_processed_file(
+                    extract_folder,
+                    ProcessedTableArtifact(
+                        data=item_data,
+                        file_name=path.basename(item_name),
+                    ),
+                )
+
+        if info_message:
+            self.logger.info(info_message)
 
     def _extract_ground_stage_inner_archive(
         self,

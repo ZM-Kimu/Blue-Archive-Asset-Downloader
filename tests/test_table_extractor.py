@@ -13,6 +13,7 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.extractors.table import (
     GeneratedDumpWrapperError,
     MalformedTablePayloadError,
+    ProcessedTableArtifact,
     TableDecryptError,
     TableExtractor,
     UnsupportedSchemaError,
@@ -57,7 +58,8 @@ def _create_flat_data_package(flat_data_dir: Path) -> None:
     flat_data_dir.mkdir(parents=True, exist_ok=True)
     (flat_data_dir / "__init__.py").write_text(
         "from .CharacterExcelTable import CharacterExcelTable\n"
-        "from .GroundGridFlat import GroundGridFlat\n",
+        "from .GroundGridFlat import GroundGridFlat\n"
+        "from .GroundNodeLayerFlat import GroundNodeLayerFlat\n",
         encoding="utf8",
     )
     (flat_data_dir / "CharacterExcelTable.py").write_text(
@@ -74,11 +76,20 @@ def _create_flat_data_package(flat_data_dir: Path) -> None:
         "        return cls()\n",
         encoding="utf8",
     )
+    (flat_data_dir / "GroundNodeLayerFlat.py").write_text(
+        "class GroundNodeLayerFlat:\n"
+        "    @classmethod\n"
+        "    def GetRootAs(cls, data):\n"
+        "        return cls()\n",
+        encoding="utf8",
+    )
     (flat_data_dir / "dump_wrapper.py").write_text(
         "def dump_table(table_instance):\n"
         '    return [{"kind": "excel"}]\n\n'
         'def dump_GroundGridFlat(excel_instance, password: bytes = b""):\n'
-        '    return {"kind": "ground_grid"}\n',
+        '    return {"kind": "ground_grid"}\n\n'
+        'def dump_GroundNodeLayerFlat(excel_instance, password: bytes = b""):\n'
+        '    return {"kind": "ground_node_layer"}\n',
         encoding="utf8",
     )
 
@@ -342,6 +353,484 @@ def test_extract_zip_file_writes_ground_stage_raw_payloads(tmp_path: Path) -> No
     assert logger.info_messages == [
         "Extracted raw GroundStage payloads from TablePatchPack_GroundStage_1.zip; semantic parser is not implemented yet."
     ]
+
+
+def test_extract_zip_file_writes_gl_battle_stage_artifact(tmp_path: Path) -> None:
+    context = _build_context(tmp_path)
+    flat_data_dir = Path(context.extract_dir) / "FlatData"
+    _create_flat_data_package(flat_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+
+    with ZipFile(table_dir / "sb_02_desertcity_p01_e.zip", "w") as archive:
+        archive.writestr("sb_02_desertcity_p01_e.bytes", b"\xff\x00grid")
+
+    logger = RecordingLogger()
+    extractor = TableExtractor(
+        str(table_dir),
+        str(Path(context.extract_dir)),
+        str(flat_data_dir),
+        logger=logger,
+    )
+
+    extractor.extract_zip_file("sb_02_desertcity_p01_e.zip")
+
+    output_path = (
+        Path(context.extract_dir)
+        / "sb_02_desertcity_p01_e"
+        / "GroundGridFlat.json"
+    )
+    assert output_path.is_file()
+    assert json.loads(output_path.read_text(encoding="utf8")) == {"kind": "ground_grid"}
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+
+
+def test_extract_zip_file_writes_gl_battle_stage_nodelayer_artifact(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path)
+    flat_data_dir = Path(context.extract_dir) / "FlatData"
+    _create_flat_data_package(flat_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+
+    with ZipFile(table_dir / "sb_02_desertcity_p01_e_nodelayer.zip", "w") as archive:
+        archive.writestr("sb_02_desertcity_p01_e_nodelayer.bytes", b"\xff\x00node")
+
+    logger = RecordingLogger()
+    extractor = TableExtractor(
+        str(table_dir),
+        str(Path(context.extract_dir)),
+        str(flat_data_dir),
+        logger=logger,
+    )
+
+    extractor.extract_zip_file("sb_02_desertcity_p01_e_nodelayer.zip")
+
+    output_path = (
+        Path(context.extract_dir)
+        / "sb_02_desertcity_p01_e_nodelayer"
+        / "GroundNodeLayerFlat.json"
+    )
+    assert output_path.is_file()
+    assert json.loads(output_path.read_text(encoding="utf8")) == {
+        "kind": "ground_node_layer"
+    }
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+
+
+@pytest.mark.parametrize(
+    ("archive_name", "entry_name", "payload", "expected_file_name", "expected_json"),
+    [
+        (
+            "rb_03_hod_p01.zip",
+            "rb_03_hod_p01.bytes",
+            b"\xff\x00grid",
+            "GroundGridFlat.json",
+            {"kind": "ground_grid"},
+        ),
+        (
+            "rb_03_hieronymus_p01_d_scenario.zip",
+            "rb_03_hieronymus_p01_d_scenario.bytes",
+            b"\xff\x00grid",
+            "GroundGridFlat.json",
+            {"kind": "ground_grid"},
+        ),
+        (
+            "rd_02_EN0011_p01_d_01_nodelayer.zip",
+            "rd_02_en0011_p01_d_01_nodelayer.bytes",
+            b"\xff\x00node",
+            "GroundNodeLayerFlat.json",
+            {"kind": "ground_node_layer"},
+        ),
+        (
+            "db_02_beachstage_01_nodelayer.zip",
+            "db_02_beachstage_01_nodelayer.bytes",
+            b"\xff\x00node",
+            "GroundNodeLayerFlat.json",
+            {"kind": "ground_node_layer"},
+        ),
+    ],
+)
+def test_extract_zip_file_writes_additional_gl_ground_artifacts(
+    tmp_path: Path,
+    archive_name: str,
+    entry_name: str,
+    payload: bytes,
+    expected_file_name: str,
+    expected_json: dict[str, str],
+) -> None:
+    context = _build_context(tmp_path)
+    flat_data_dir = Path(context.extract_dir) / "FlatData"
+    _create_flat_data_package(flat_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+
+    with ZipFile(table_dir / archive_name, "w") as archive:
+        archive.writestr(entry_name, payload)
+
+    logger = RecordingLogger()
+    extractor = TableExtractor(
+        str(table_dir),
+        str(Path(context.extract_dir)),
+        str(flat_data_dir),
+        logger=logger,
+    )
+
+    extractor.extract_zip_file(archive_name)
+
+    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / expected_file_name
+    assert output_path.is_file()
+    assert json.loads(output_path.read_text(encoding="utf8")) == expected_json
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+
+
+def test_extract_zip_file_writes_c_sb_hyakkiyakomatsuri_raw_artifact(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path)
+    flat_data_dir = Path(context.extract_dir) / "FlatData"
+    _create_flat_data_package(flat_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+
+    archive_name = "C_sb_01_hyakkiyakomatsuri_p02_Little.zip"
+    entry_name = "c_sb_01_hyakkiyakomatsuri_p02_little.bytes"
+    payload = b"\x06\xfc\xff\xffbattle"
+    with ZipFile(table_dir / archive_name, "w") as archive:
+        archive.writestr(entry_name, payload)
+
+    logger = RecordingLogger()
+    extractor = TableExtractor(
+        str(table_dir),
+        str(Path(context.extract_dir)),
+        str(flat_data_dir),
+        logger=logger,
+    )
+
+    extractor.extract_zip_file(archive_name)
+
+    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    assert output_path.is_file()
+    assert output_path.read_bytes() == payload
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+    assert logger.info_messages == [
+        "Extracted raw GL C_sb script payloads from "
+        "C_sb_01_hyakkiyakomatsuri_p02_Little.zip; "
+        "semantic parser is not implemented yet."
+    ]
+
+
+@pytest.mark.parametrize(
+    "archive_name,entry_name",
+    [
+        (
+            "C_sb_01_destroyhyakkiyakomatsuri_p01_Many.zip",
+            "c_sb_01_destroyhyakkiyakomatsuri_p01_many.bytes",
+        ),
+        (
+            "C_sb_01_wildhuntstreet_p02_Many.zip",
+            "c_sb_01_wildhuntstreet_p02_many.bytes",
+        ),
+        (
+            "C_sb_03_expresstrain_p01_Little.zip",
+            "c_sb_03_expresstrain_p01_little.bytes",
+        ),
+        (
+            "C_sb_01_hyakkiyakomoviestreet_p01_Many.zip",
+            "c_sb_01_hyakkiyakomoviestreet_p01_many.bytes",
+        ),
+    ],
+)
+def test_extract_zip_file_writes_c_sb_script_raw_payloads(
+    tmp_path: Path,
+    archive_name: str,
+    entry_name: str,
+) -> None:
+    context = _build_context(tmp_path)
+    flat_data_dir = Path(context.extract_dir) / "FlatData"
+    _create_flat_data_package(flat_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = b"\x06\xfc\xff\xffbattle"
+    with ZipFile(table_dir / archive_name, "w") as archive:
+        archive.writestr(entry_name, payload)
+
+    logger = RecordingLogger()
+    extractor = TableExtractor(
+        str(table_dir),
+        str(Path(context.extract_dir)),
+        str(flat_data_dir),
+        logger=logger,
+    )
+
+    extractor.extract_zip_file(archive_name)
+
+    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    assert output_path.is_file()
+    assert output_path.read_bytes() == payload
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+    assert logger.info_messages == [
+        "Extracted raw GL C_sb script payloads from "
+        f"{archive_name}; "
+        "semantic parser is not implemented yet."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("archive_name", "entry_name"),
+    [
+        (
+            "1041104_03_s3_boss_02_desertcity_p01_d.zip",
+            "1041104_03_s3_boss_02_desertcity_p01_d.bytes",
+        ),
+        (
+            "1052101_01_s2_02_deserttrack_p01_n.zip",
+            "1052101_01_s2_02_deserttrack_p01_n.bytes",
+        ),
+    ],
+)
+def test_extract_zip_file_writes_gl_numeric_stage_raw_payloads(
+    tmp_path: Path,
+    archive_name: str,
+    entry_name: str,
+) -> None:
+    context = _build_context(tmp_path)
+    flat_data_dir = Path(context.extract_dir) / "FlatData"
+    _create_flat_data_package(flat_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = b"\x06\xfc\xff\xffbattle"
+    with ZipFile(table_dir / archive_name, "w") as archive:
+        archive.writestr(entry_name, payload)
+
+    logger = RecordingLogger()
+    extractor = TableExtractor(
+        str(table_dir),
+        str(Path(context.extract_dir)),
+        str(flat_data_dir),
+        logger=logger,
+    )
+
+    extractor.extract_zip_file(archive_name)
+
+    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    assert output_path.is_file()
+    assert output_path.read_bytes() == payload
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+
+
+def test_extract_zip_file_writes_gl_eliminate_raid_raw_payloads(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path)
+    flat_data_dir = Path(context.extract_dir) / "FlatData"
+    _create_flat_data_package(flat_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+
+    archive_name = "6062106_eliminateRaid_perorozilla_outdoor_light_insane_start2phase.zip"
+    entry_name = "6062106_eliminateraid_perorozilla_outdoor_light_insane_start2phase.bytes"
+    payload = b"\x06\xfc\xff\xffbattle"
+    with ZipFile(table_dir / archive_name, "w") as archive:
+        archive.writestr(entry_name, payload)
+
+    logger = RecordingLogger()
+    extractor = TableExtractor(
+        str(table_dir),
+        str(Path(context.extract_dir)),
+        str(flat_data_dir),
+        logger=logger,
+    )
+
+    extractor.extract_zip_file(archive_name)
+
+    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    assert output_path.is_file()
+    assert output_path.read_bytes() == payload
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+    assert logger.info_messages == [
+        "Extracted raw GL eliminateRaid payloads from "
+        "6062106_eliminateRaid_perorozilla_outdoor_light_insane_start2phase.zip; "
+        "semantic parser is not implemented yet."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("archive_name", "entry_name"),
+    [
+        ("EN0006_Eliminate_LightArmor_Hard.zip", "en0006_eliminate_lightarmor_hard.bytes"),
+        ("EN0006_VeryHard.zip", "en0006_veryhard.bytes"),
+        ("EN0013_Torment_3Phase.zip", "en0013_torment_3phase.bytes"),
+    ],
+)
+def test_extract_zip_file_writes_gl_enemy_boss_script_raw_payloads(
+    tmp_path: Path,
+    archive_name: str,
+    entry_name: str,
+) -> None:
+    context = _build_context(tmp_path)
+    flat_data_dir = Path(context.extract_dir) / "FlatData"
+    _create_flat_data_package(flat_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = b"\x06\xfc\xff\xffbattle"
+    with ZipFile(table_dir / archive_name, "w") as archive:
+        archive.writestr(entry_name, payload)
+
+    logger = RecordingLogger()
+    extractor = TableExtractor(
+        str(table_dir),
+        str(Path(context.extract_dir)),
+        str(flat_data_dir),
+        logger=logger,
+    )
+
+    extractor.extract_zip_file(archive_name)
+
+    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    assert output_path.is_file()
+    assert output_path.read_bytes() == payload
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+    assert logger.info_messages == [
+        f"Extracted raw GL boss script payloads from {archive_name}; semantic parser is not implemented yet."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("archive_name", "entry_name"),
+    [
+        ("DamageTest_Street_LightArmor.zip", "damagetest_street_lightarmor.bytes"),
+        ("character_resource_video_03.zip", "character_resource_video_03.bytes"),
+        ("chesedscenariotest.zip", "chesedscenariotest.bytes"),
+        ("CH0265Test.zip", "ch0265test.bytes"),
+        ("BaseMentTest.zip", "basementtest.bytes"),
+        ("combattest_hod01.zip", "combattest_hod01.bytes"),
+        ("EffectCountLimitTest_Limit.zip", "effectcountlimittest_limit.bytes"),
+        ("EmojiTest.zip", "emojitest.bytes"),
+        ("AriusStreet_p01_n_Many_ObsTest.zip", "ariusstreet_p01_n_many_obstest.bytes"),
+        ("colourtimelinetest.zip", "colourtimelinetest.bytes"),
+        ("CameraRotateTest.zip", "camerarotatetest.bytes"),
+        ("ChangeLookTargetTest.zip", "changelooktargettest.bytes"),
+        ("GroundPassiveTest01.zip", "groundpassivetest01.bytes"),
+        ("HoldTest.zip", "holdtest.bytes"),
+        ("HoverCraftTest.zip", "hovercrafttest.bytes"),
+        ("hyakkiyako.zip", "hyakkiyako.bytes"),
+        ("newyearpathvisualtest_p01.zip", "newyearpathvisualtest_p01.bytes"),
+        ("NP186Test.zip", "np186test.bytes"),
+        ("NPCTEST.zip", "npctest.bytes"),
+        ("OverrideTest_Normal.zip", "overridetest_normal.bytes"),
+        ("playground_obstacleset_little.zip", "playground_obstacleset_little.bytes"),
+        ("RaidTest.zip", "raidtest.bytes"),
+        ("9970_WorldEmojiTest.zip", "9970_worldemojitest.bytes"),
+        ("CH0265Test2.zip", "ch0265test2.bytes"),
+    ],
+)
+def test_extract_zip_file_writes_gl_script_test_raw_payloads(
+    tmp_path: Path,
+    archive_name: str,
+    entry_name: str,
+) -> None:
+    context = _build_context(tmp_path)
+    flat_data_dir = Path(context.extract_dir) / "FlatData"
+    _create_flat_data_package(flat_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = b"\x06\xfc\xff\xffbattle"
+    with ZipFile(table_dir / archive_name, "w") as archive:
+        archive.writestr(entry_name, payload)
+
+    logger = RecordingLogger()
+    extractor = TableExtractor(
+        str(table_dir),
+        str(Path(context.extract_dir)),
+        str(flat_data_dir),
+        logger=logger,
+    )
+
+    extractor.extract_zip_file(archive_name)
+
+    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    assert output_path.is_file()
+    assert output_path.read_bytes() == payload
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+    assert logger.info_messages == [
+        f"Extracted raw GL script/test payloads from {archive_name}; semantic parser is not implemented yet."
+    ]
+
+
+def test_extract_zip_file_writes_mgs_logic_ground_mixed_artifacts(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path)
+    flat_data_dir = Path(context.extract_dir) / "FlatData"
+    _create_flat_data_package(flat_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+
+    with ZipFile(table_dir / "MGSLogicGroundData.zip", "w") as archive:
+        archive.writestr("logicground_free.bytes", b"\xff\x00grid")
+        archive.writestr("logicground_hard.bytes", b"\xff\x00bad-grid")
+
+    logger = RecordingLogger()
+    extractor = TableExtractor(
+        str(table_dir),
+        str(Path(context.extract_dir)),
+        str(flat_data_dir),
+        logger=logger,
+    )
+
+    original_process_zip_file = extractor._process_zip_file
+
+    def fake_process_zip_file(
+        archive_name: str,
+        file_name: str,
+        file_data: bytes,
+        *,
+        detect_type: bool = False,
+    ) -> ProcessedTableArtifact:
+        if file_data == b"\xff\x00bad-grid":
+            raise UnsupportedSchemaError("grid parser failed")
+        return original_process_zip_file(
+            archive_name,
+            file_name,
+            file_data,
+            detect_type=detect_type,
+        )
+
+    extractor._process_zip_file = fake_process_zip_file  # type: ignore[method-assign]
+
+    extractor.extract_zip_file("MGSLogicGroundData.zip")
+
+    grid_output = (
+        Path(context.extract_dir)
+        / "MGSLogicGroundData"
+        / "GroundGridFlat.json"
+    )
+    raw_output = (
+        Path(context.extract_dir)
+        / "MGSLogicGroundData"
+        / "logicground_hard.bytes"
+    )
+    assert grid_output.is_file()
+    assert json.loads(grid_output.read_text(encoding="utf8")) == {"kind": "ground_grid"}
+    assert raw_output.is_file()
+    assert raw_output.read_bytes() == b"\xff\x00bad-grid"
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
 
 
 def test_extract_zip_file_skips_ground_stage_entries_with_zlib_errors(

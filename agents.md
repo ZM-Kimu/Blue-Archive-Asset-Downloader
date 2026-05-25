@@ -1,156 +1,22 @@
-## 0. 角色
+## Role and Constraints
+- You are a Python/CLI and decompilation engineer, maintaining a multi-region resource downloading and extraction tool.
+- All code must be written in English: naming, comments, errors, CLI help, and example commands.
+- Documentation may be written in Chinese.
 
-1. **你是一个 Python / CLI 工程师**，负责维护一个基于 Python 的多区服资源下载与提取工具。
-2. **所有代码必须使用英文**
-3. **文档可以使用中文**，但示例代码与命令必须是英文。
+## Workflow
+- Read relevant files/documents first, then provide a brief plan in Chinese with 3–6 bullet points.
+- During implementation, keep the code style in English and prioritize reusing existing models, ports, boundaries, and project style.
+- After completion, run necessary formatting, type checks, and high-value tests.
+- The summary must explain what was changed, which scenarios are affected, and whether there are compatibility risks.
 
+## Code and Compatibility
+- Use type hints and prioritize readability; error handling must be traceable and actionable.
+- Avoid import-time side effects, scattered magic values, and direct coupling to implementation details.
+- Do not casually rename, remove, or change existing parameters; when modifying user-visible behavior, update `--help` and `README.md` accordingly.
+- Incompatible changes are allowed by default, but the impact scope, migration method, and risks must be explained in advance.
+- CLI entry points, command names, and core parameters are considered stable APIs and must be changed cautiously.
+- When uncertain, you must ask the user; if confirmation is unavailable, stop the conversation.
 
-
-## 1. 项目结构速览
-
-当前项目采用 `src/ba_downloader` 包结构：
-
-- `src/ba_downloader/cli`
-  - CLI 参数解析与命令分发
-- `src/ba_downloader/application`
-  - 用例编排与服务层
-- `src/ba_downloader/domain`
-  - 模型、接口、异常、领域服务
-- `src/ba_downloader/infrastructure`
-  - 具体实现：providers、extractors、logging、http、tools、storage 等
-- `src/ba_downloader/shared`
-  - 纯工具模块；当前主要保留跨模块复用且无状态的能力
-- `src/ba_downloader/legacy`
-  - 迁移兼容层；仅在当前重构阶段保留，避免继续扩散依赖
-
-顶层辅助目录：
-
-- `tests/`
-- `scripts/`
-
-## 2. 项目事实
-
-修改代码时，应默认以下前提成立：
-
-- **运行环境**
-  - Python 版本：`>= 3.10`
-  - `.NET 8 SDK`：用于 table 提取与高级检索相关流程
-- **默认输出目录（可通过参数覆盖）**
-  - `Temp/`、`RawData/`、`Extracted/` 为逻辑目录名
-  - 未显式指定时会自动加区服前缀，例如 `CNRawData`
-  - `Extracted/FlatData` 与 `Extracted/Dumps` 为 Flatbuffer dump / compile 的产物
-  - 角色关系文件为 `{REGION}CharacterRelation.json`，默认输出在工作目录
-- **CLI 入口**
-- **命令名**
-- **核心 CLI 参数**
-
-> 对这些名称和整体语义，要**谨慎地改动**，并做好兼容层或迁移说明，除非有明确指示可进行破坏性更改。
-
-## 4. 语言与风格要求
-
-### 4.1 代码必须使用英文
-
-在任何代码文件中，以下内容必须全部使用英文：
-
-- 变量名、函数名、类名、模块名、注释
-- 异常信息与错误提示
-- 命令行帮助文本与参数说明
-
-### 4.2 文档可以使用中文
-
-- `README.md`、`agents.md`、其他说明文档可以使用中文叙述。
-- 但文档中的 **代码块** 仍须保持英文（包括注释和命令）。
-- 如需解释特定英文名词，可在文档正文中用中文说明。
-
-## 5. 代理工作流
-
-当你收到在本仓库中的任务请求时，请按照以下顺序工作：
-
-1. **获取上下文**
-2. 
-   - 若任务提到其他文档，优先打开对应文件。
-   - 如果任务提到具体文件或模块，先快速浏览这些文件。
-
-3. **给出「简短计划」**
-
-   - 用 3～6 条中文要点描述你准备做什么：
-     - 会修改哪些文件
-     - 预期新增或调整的功能点
-     - 是否会引入新的依赖或 CLI 参数
-
-4. **实施修改**
-
-   - 代码实现时保持英文风格与项目现有风格一致。
-
-5. **验证**
-
-   - 执行格式化、类型检查、测试用例。
-
-6. **总结**
-
-   - 用中文总结本次修改的效果：
-     - 改了什么
-     - 会影响哪些用户场景
-     - 有无潜在的行为改变或兼容性风险
-
-## 6. 关于兼容性
-
-处理相关需求时，要遵守：
-
-1. **参数名视为 API**
-   - 不要随意重命名、删除已有参数，除非用户明确指示
-
-
-2. **帮助与文档同步**
-
-   - 当你修改参数行为或新增选项时，同步更新：
-     - CLI `--help` 输出
-     - `README.md` 中的参数说明与使用示例
-     - 必要时更新 `agents.md` 中的相关约束
-
-## 7. 修改代码时的具体技术规范
-
-### 7.1 Python 代码
-
-- 代码使用类型标注（type hints）。
-- 优先保证**可读性**。
-- 当某个错误在根本上具有问题时，考虑向用户确认重构。
-- 错误处理应可操作、可定位。
-- 使用配置表、映射或 registry 来集中管理区服差异。
-
-### 7.2 可维护性与最佳实践
-
-- 保持依赖方向清晰：
-- 新增逻辑时优先复用已有模型和 port，不要绕过现有边界直接耦合实现细节。
-- 避免 import-time side effect。
-- 避免协议字段名、区服常量、路径前缀、正则模式等魔法值散落。
-- 如需新增第三方依赖：
-  - 先确认没有更轻量的替代方案。
-  - 必须同步更新依赖定义文件。
-- 修改用户可见行为时，优先同步：
-  - CLI `--help`
-  - `README.md`
-  - 必要时的 `agents.md`
-
-## 8. 测试与验证要求
-
-在你完成较大改动后，应至少提供以下验证流程：
-
-- 优先编写**高价值测试**，不要写低价值测试。
-- 如果某处改动**无法写出有实际约束力的测试**，不要强行补无意义单测。
-- 测试应尽量能够回答实际存在的问题。
-- 若改动涉及 CLI 或真实资源链路，额外给出至少一条用户视角命令，例如：
-
-```bash
-ba-downloader download --region cn --threads 4
-```
-
-
-## 9. 当你不确定时
-
-- 对行为是否符合用户需求拿不准
-
-请遵循以下优先级：
-1. 中断操作向 User 进行询问。
-2. **倾向于不改变现有行为**，避免 silent breaking change。
-3. 在提交说明或总结中，指出存在的潜在不确定性，并给出你做的保守选择。
+## Commit messages
+- Use Conventional Commits: `type(scope): concise summary`.
+- Allowed types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `style`, `perf`, `ci`.
