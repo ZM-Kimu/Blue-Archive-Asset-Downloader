@@ -8,6 +8,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from multiprocessing import Queue, freeze_support
 from pathlib import Path
+from queue import Empty
 from threading import Event
 from typing import Any
 from zipfile import BadZipFile
@@ -15,7 +16,10 @@ from zipfile import BadZipFile
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import AssetExtractionPort
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.extractors.bundle import BundleExtractor
+from ba_downloader.infrastructure.extractors.bundle import (
+    BundleExtractor,
+    BundleLogEvent,
+)
 from ba_downloader.infrastructure.extractors.media import MediaExtractor
 from ba_downloader.infrastructure.extractors.table import TableExtractor
 from ba_downloader.infrastructure.progress.rich_progress import RichProgressReporter
@@ -54,6 +58,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
         freeze_support()
         queue: multiprocessing.queues.Queue[str] = Queue()
+        log_event_queue: multiprocessing.queues.Queue[BundleLogEvent] = Queue()
         error_count = multiprocessing.Value("i", 0)
         bundles = [
             str(bundle_folder / bundle.name) for bundle in bundle_folder.iterdir()
@@ -63,7 +68,11 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
         stop_event = Event()
         processes = self._build_bundle_processes(
-            queue, context, len(bundles), error_count
+            queue,
+            context,
+            len(bundles),
+            error_count,
+            log_event_queue,
         )
 
         try:
@@ -86,13 +95,19 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                     progress=progress,
                     stop_event=stop_event,
                     error_count=error_count,
+                    log_events=log_event_queue,
                 )
         finally:
             if stop_event.is_set():
                 self._stop_bundle_processes(processes)
             for process in processes:
                 process.join(timeout=self.POLL_INTERVAL_SECONDS)
+            self._drain_bundle_log_events(log_event_queue)
             self._finalize_bundle_queue(queue, cancelled=stop_event.is_set())
+            self._finalize_bundle_queue(
+                log_event_queue,
+                cancelled=stop_event.is_set(),
+            )
             if stop_event.is_set():
                 raise KeyboardInterrupt()
 
@@ -220,6 +235,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         context: RuntimeContext,
         bundle_count: int,
         error_count: Any,
+        log_events: multiprocessing.queues.Queue[BundleLogEvent],
     ) -> list[multiprocessing.Process]:
         process_count = min(
             max(context.threads, 1),
@@ -229,7 +245,13 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         return [
             multiprocessing.Process(
                 target=BundleExtractor.multiprocess_extract_worker,
-                args=(queue, context, BundleExtractor.MAIN_EXTRACT_TYPES, error_count),
+                args=(
+                    queue,
+                    context,
+                    BundleExtractor.MAIN_EXTRACT_TYPES,
+                    error_count,
+                    log_events,
+                ),
             )
             for _ in range(process_count)
         ]
@@ -248,11 +270,13 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         progress: RichProgressReporter,
         stop_event: Event,
         error_count: Any,
+        log_events: multiprocessing.queues.Queue[BundleLogEvent],
     ) -> None:
         cancellation_state = CancellationFeedbackState()
         completed_bundles = 0
         progress.set_status(f"0/{len(bundles)} bundles")
         while self._has_pending_bundle_work(queue, processes):
+            self._drain_bundle_log_events(log_events)
             completed_bundles = max(0, len(bundles) - self._queue_size(queue))
             progress.set_completed(completed_bundles)
             progress.set_status(f"{completed_bundles}/{len(bundles)} bundles")
@@ -273,6 +297,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
             stop_event.wait(self.POLL_INTERVAL_SECONDS)
 
+        self._drain_bundle_log_events(log_events)
         if not stop_event.is_set():
             progress.set_completed(len(bundles))
             progress.set_status(f"{len(bundles)}/{len(bundles)} bundles")
@@ -284,6 +309,23 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 )
             else:
                 self.logger.info("Extracted bundles successfully.")
+        self._drain_bundle_log_events(log_events)
+
+    def _drain_bundle_log_events(
+        self,
+        log_events: multiprocessing.queues.Queue[BundleLogEvent],
+    ) -> None:
+        while True:
+            try:
+                event = log_events.get_nowait()
+            except Empty:
+                return
+            if event.level == "info":
+                self.logger.info(event.message)
+            elif event.level == "warn":
+                self.logger.warn(event.message)
+            else:
+                self.logger.error(event.message)
 
     @staticmethod
     def _queue_size(queue: multiprocessing.queues.Queue[str]) -> int:
@@ -312,7 +354,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
     @staticmethod
     def _finalize_bundle_queue(
-        queue: multiprocessing.queues.Queue[str],
+        queue: multiprocessing.queues.Queue[Any],
         *,
         cancelled: bool,
     ) -> None:

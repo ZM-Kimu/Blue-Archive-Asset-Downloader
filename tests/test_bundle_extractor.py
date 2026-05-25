@@ -8,6 +8,7 @@ from typing import Any
 import UnityPy
 
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.infrastructure.extractors import bundle as bundle_module
 from ba_downloader.infrastructure.extractors.bundle import BundleExtractor
 
 
@@ -263,3 +264,72 @@ def test_worker_does_not_count_skipped_mesh_as_bundle_error(
     )
 
     assert error_count.value == 0
+
+
+def test_worker_uses_log_event_queue_without_configuring_console_logging(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path)
+    _patch_unitypy_load(
+        monkeypatch,
+        [FakeObject("Mesh", FakeMesh("mesh_a", False))],
+    )
+    tasks: Queue[str] = Queue()
+    tasks.put("sample.bundle")
+    log_events: Queue[Any] = Queue()
+    error_count = SimpleNamespace(value=0)
+    configure_calls: list[None] = []
+    monkeypatch.setattr(
+        bundle_module,
+        "configure_logging",
+        lambda: configure_calls.append(None),
+    )
+
+    BundleExtractor.multiprocess_extract_worker(
+        tasks,
+        context,
+        ["Mesh"],
+        error_count,
+        log_events,
+    )
+
+    assert configure_calls == []
+    assert error_count.value == 0
+    event = log_events.get_nowait()
+    assert event.level == "warn"
+    assert event.message == (
+        "Exported 0 meshes and skipped 1 meshes while extracting sample.bundle: "
+        "UnityPy returned non-OBJ mesh data. Examples: mesh_a"
+    )
+
+
+def test_worker_sends_bundle_errors_to_log_event_queue(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path)
+    monkeypatch.setattr(
+        UnityPy,
+        "load",
+        lambda _bundle_path: (_ for _ in ()).throw(ValueError("broken bundle")),
+    )
+    tasks: Queue[str] = Queue()
+    tasks.put("bad.bundle")
+    log_events: Queue[Any] = Queue()
+    error_count = SimpleNamespace(value=0)
+
+    BundleExtractor.multiprocess_extract_worker(
+        tasks,
+        context,
+        ["Mesh"],
+        error_count,
+        log_events,
+    )
+
+    assert error_count.value == 1
+    event = log_events.get_nowait()
+    assert event.level == "error"
+    assert event.message == (
+        "Failed to extract bundle bad.bundle: ValueError: broken bundle"
+    )

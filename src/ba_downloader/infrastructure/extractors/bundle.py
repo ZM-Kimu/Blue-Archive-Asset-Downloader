@@ -12,6 +12,28 @@ from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
 from ba_downloader.infrastructure.logging.runtime import configure_logging
 
+BundleLogLevel = Literal["info", "warn", "error"]
+
+
+@dataclass(frozen=True, slots=True)
+class BundleLogEvent:
+    level: BundleLogLevel
+    message: str
+
+
+class BundleEventQueueLogger(LoggerPort):
+    def __init__(self, events: Any) -> None:
+        self._events = events
+
+    def info(self, message: str) -> None:
+        self._events.put(BundleLogEvent("info", message))
+
+    def warn(self, message: str) -> None:
+        self._events.put(BundleLogEvent("warn", message))
+
+    def error(self, message: str) -> None:
+        self._events.put(BundleLogEvent("error", message))
+
 
 @dataclass(slots=True)
 class BundleMeshExportStats:
@@ -83,10 +105,15 @@ class BundleExtractor:
         context: RuntimeContext,
         extract_types: list[str] | None,
         error_count: Any | None = None,
+        log_events: Any | None = None,
     ) -> None:
         """Multi-thread is not allowed in UnityPy. Use multi-process."""
-        configure_logging()
-        extractor = BundleExtractor(context)
+        if log_events is None:
+            configure_logging()
+            logger: LoggerPort | None = None
+        else:
+            logger = BundleEventQueueLogger(log_events)
+        extractor = BundleExtractor(context, logger)
         try:
             while True:
                 try:

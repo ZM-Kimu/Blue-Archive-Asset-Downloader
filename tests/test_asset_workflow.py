@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from queue import Queue
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.extract.asset_workflow import AssetExtractionWorkflow
+from ba_downloader.infrastructure.extractors.bundle import BundleLogEvent
 
 
 class RecordingLogger:
@@ -74,6 +77,15 @@ class RecordingProgressReporter:
 
     def stop(self) -> None:
         return None
+
+
+class FakeStopEvent:
+    def is_set(self) -> bool:
+        return False
+
+    def wait(self, timeout: float) -> bool:
+        _ = timeout
+        return False
 
 
 def _build_context(tmp_path: Path, resource_type: tuple[str, ...]) -> RuntimeContext:
@@ -176,3 +188,43 @@ def test_table_extraction_uses_extract_progress_mode(
     assert progress.statuses == ["0/1 files", "1/1 files"]
     assert progress.secondary_statuses == ["1/1 entries"]
     assert progress.advances == [1]
+
+
+def test_drain_bundle_log_events_routes_events_to_parent_logger() -> None:
+    logger = RecordingLogger()
+    events: Queue[BundleLogEvent] = Queue()
+    events.put(BundleLogEvent("info", "info message"))
+    events.put(BundleLogEvent("warn", "warn message"))
+    events.put(BundleLogEvent("error", "error message"))
+
+    AssetExtractionWorkflow(logger)._drain_bundle_log_events(events)
+
+    assert logger.info_messages == ["info message"]
+    assert logger.warn_messages == ["warn message"]
+    assert logger.error_messages == ["error message"]
+
+
+def test_bundle_monitor_drains_log_events_while_progress_is_active(
+    tmp_path: Path,
+) -> None:
+    logger = RecordingLogger()
+    workflow = AssetExtractionWorkflow(logger)
+    task_queue: Queue[str] = Queue()
+    log_events: Queue[BundleLogEvent] = Queue()
+    log_events.put(BundleLogEvent("warn", "skipped mesh"))
+    progress = RecordingProgressReporter(1, "Extracting bundles...", extract_mode=True)
+    error_count = SimpleNamespace(value=0)
+
+    workflow._monitor_bundle_extraction(
+        queue=task_queue,
+        bundles=[str(tmp_path / "sample.bundle")],
+        processes=[],
+        progress=progress,
+        stop_event=FakeStopEvent(),
+        error_count=error_count,
+        log_events=log_events,
+    )
+
+    assert logger.warn_messages == ["skipped mesh"]
+    assert logger.info_messages == ["Extracted bundles successfully."]
+    assert progress.statuses[-1] == "1/1 bundles"
