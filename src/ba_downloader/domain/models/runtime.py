@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from ba_downloader.domain.models.settings import AppSettings, Platform, Region
+from ba_downloader.domain.models.region import Platform, Region
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,27 +23,6 @@ class RuntimeContext:
     work_dir: str
     platform: Platform = "android"
     platform_explicit: bool = False
-
-    @classmethod
-    def from_settings(cls, settings: AppSettings) -> RuntimeContext:
-        normalized = settings.normalized()
-        return cls(
-            region=normalized.region,
-            threads=normalized.threads,
-            version=normalized.version,
-            raw_dir=normalized.raw_dir,
-            extract_dir=normalized.extract_dir,
-            temp_dir=normalized.temp_dir,
-            extract_while_download=normalized.extract_while_download,
-            resource_type=normalized.resource_type,
-            proxy_url=normalized.proxy_url,
-            max_retries=normalized.max_retries,
-            search=normalized.search,
-            advanced_search=normalized.advanced_search,
-            work_dir=normalized.work_dir,
-            platform=normalized.platform,
-            platform_explicit=normalized.platform_explicit,
-        )
 
     @property
     def proxy(self) -> dict[str, str] | None:

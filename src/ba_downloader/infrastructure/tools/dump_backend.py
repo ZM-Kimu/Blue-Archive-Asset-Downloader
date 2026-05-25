@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import TextIO
 from zipfile import ZipFile
 
+from ba_downloader.domain.models.region import Region
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import Il2CppDumpBackendPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.domain.ports.region import Region
 from ba_downloader.infrastructure.tools.runtime_probe import (
     get_installed_dotnet_sdk_major_versions,
 )

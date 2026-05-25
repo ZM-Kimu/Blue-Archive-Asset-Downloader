@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.infrastructure.extractors.character import CharacterNameRelation
+from ba_downloader.infrastructure.extraction.character.relation import (
+    CharacterNameRelation,
+)
 
 
 class RecordingLogger:
@@ -57,7 +59,7 @@ def _patch_table_extractor_init(monkeypatch: pytest.MonkeyPatch) -> None:
         self.logger = logger
 
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.extractors.table.TableExtractor.__init__",
+        "ba_downloader.infrastructure.extraction.table.extractor.TableExtractor.__init__",
         fake_init,
     )
 

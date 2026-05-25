@@ -1,30 +1,20 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Any, cast
 
-from ba_downloader.application.services.download import DownloadService
-from ba_downloader.application.services.extract import ExtractService
-from ba_downloader.application.services.relation import RelationService
-from ba_downloader.application.services.sync import SyncService
+from ba_downloader.application.config import AppSettings
+from ba_downloader.application.use_cases.build_relation import BuildRelationUseCase
+from ba_downloader.application.use_cases.download_assets import DownloadAssetsUseCase
+from ba_downloader.application.use_cases.sync_assets import SyncAssetsUseCase
+from ba_downloader.bootstrap.container import (
+    CliRuntimeServices,
+    build_cli_runtime_services,
+)
 from ba_downloader.domain.exceptions import DownloadError, NetworkError
+from ba_downloader.domain.models.region import Platform, Region
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.domain.models.settings import AppSettings, Platform, Region
-from ba_downloader.domain.ports.http import HttpClientPort
-from ba_downloader.domain.ports.logging import LoggerPort
-
-
-@dataclass(frozen=True, slots=True)
-class _CliRuntimeServices:
-    logger: LoggerPort
-    http_client: HttpClientPort
-    provider: Any
-    runtime_asset_preparer: Any
-    downloader: Any
-    extract_service: ExtractService
-    schema_workflow: Any
 
 
 class _StorePlatformAction(argparse.Action):
@@ -146,105 +136,28 @@ def runtime_context_from_namespace(args: argparse.Namespace) -> RuntimeContext:
         platform=cast(Platform, getattr(args, "platform", "android")),
         platform_explicit=getattr(args, "platform_explicit", False),
     )
-    return RuntimeContext.from_settings(settings)
-
-
-def _build_provider(
-    context: RuntimeContext,
-    logger: LoggerPort,
-    http_client: HttpClientPort,
-):
-    from ba_downloader.infrastructure.regions.registry import DEFAULT_REGION_REGISTRY
-
-    provider_factory = DEFAULT_REGION_REGISTRY.resolve(context.region)
-    return provider_factory(http_client=http_client, logger=logger)
-
-
-def _build_runtime_asset_preparer(
-    context: RuntimeContext,
-    logger: LoggerPort,
-    http_client: HttpClientPort,
-):
-    from ba_downloader.infrastructure.runtime import (
-        DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY,
-    )
-
-    preparer_factory = DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.resolve(context.region)
-    return preparer_factory(http_client=http_client, logger=logger)
-
-
-def _build_cli_runtime_services(context: RuntimeContext) -> _CliRuntimeServices:
-    from ba_downloader.infrastructure.download import ResourceDownloader
-    from ba_downloader.infrastructure.extract import (
-        AssetExtractionWorkflow,
-        ImmediateResourceExtractor,
-    )
-    from ba_downloader.infrastructure.http import ResilientHttpClient
-    from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
-    from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
-
-    logger = ConsoleLogger()
-    http_client = ResilientHttpClient(
-        proxy_url=context.proxy_url or None,
-        max_retries=context.max_retries,
-    )
-    runtime_asset_preparer = _build_runtime_asset_preparer(context, logger, http_client)
-    schema_workflow = SchemaWorkflow(http_client, logger)
-    immediate_extractor = ImmediateResourceExtractor(logger)
-    return _CliRuntimeServices(
-        logger=logger,
-        http_client=http_client,
-        provider=_build_provider(context, logger, http_client),
-        runtime_asset_preparer=runtime_asset_preparer,
-        downloader=ResourceDownloader(
-            http_client,
-            logger,
-            immediate_extraction_handler=immediate_extractor,
-        ),
-        extract_service=ExtractService(
-            AssetExtractionWorkflow(logger),
-            schema_workflow,
-            runtime_asset_preparer,
-            logger,
-        ),
-        schema_workflow=schema_workflow,
-    )
-
-
-def _build_relation_builder_factory(
-    logger: LoggerPort,
-) -> Callable[[RuntimeContext], Any]:
-    from ba_downloader.infrastructure.extractors.character import CharacterNameRelation
-
-    def relation_builder_factory(
-        active_context: RuntimeContext,
-    ) -> CharacterNameRelation:
-        return CharacterNameRelation(active_context, logger)
-
-    return relation_builder_factory
+    return settings.to_runtime_context()
 
 
 def _run_command(
     args: argparse.Namespace,
     context: RuntimeContext,
-    services: _CliRuntimeServices,
+    services: CliRuntimeServices,
 ) -> int:
-    relation_builder_factory = _build_relation_builder_factory(services.logger)
-
     if args.command == "sync":
-        SyncService(
+        SyncAssetsUseCase(
             services.provider,
             services.downloader,
             services.extract_service,
             services.schema_workflow,
             services.runtime_asset_preparer,
-            relation_builder_factory,
+            services.relation_builder_factory,
             services.logger,
         ).run(context)
         return 0
 
     if args.command == "download":
-        DownloadService(services.provider, services.downloader).run(context)
+        DownloadAssetsUseCase(services.provider, services.downloader).run(context)
         return 0
 
     if args.command == "extract":
@@ -252,12 +165,12 @@ def _run_command(
         return 0
 
     if args.command == "relation" and args.relation_command == "build":
-        RelationService(
+        BuildRelationUseCase(
             services.provider,
             services.downloader,
             services.schema_workflow,
             services.runtime_asset_preparer,
-            relation_builder_factory,
+            services.relation_builder_factory,
         ).build(context)
         return 0
 
@@ -271,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     configure_logging()
     context = runtime_context_from_namespace(args)
-    services = _build_cli_runtime_services(context)
+    services = build_cli_runtime_services(context)
 
     try:
         command_result = _run_command(args, context, services)

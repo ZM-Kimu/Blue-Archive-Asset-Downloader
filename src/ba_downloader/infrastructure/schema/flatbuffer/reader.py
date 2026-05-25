@@ -19,9 +19,7 @@ from typing import (
 import flatbuffers
 
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
-from ba_downloader.infrastructure.schema.flatbuffer.descriptors import FlatBufferField
-from ba_downloader.infrastructure.schema.flatbuffer.parser import FlatBufferCSParser
-from ba_downloader.shared.crypto.encryption import (
+from ba_downloader.infrastructure.schema.crypto import (
     convert_double,
     convert_float,
     convert_int,
@@ -32,6 +30,8 @@ from ba_downloader.shared.crypto.encryption import (
     convert_ulong,
     convert_ushort,
 )
+from ba_downloader.infrastructure.schema.flatbuffer.descriptors import FlatBufferField
+from ba_downloader.infrastructure.schema.flatbuffer.parser import FlatBufferCSParser
 
 LOGGER = ConsoleLogger()
 

@@ -13,10 +13,10 @@ from ba_downloader.domain.exceptions import DownloadError, NetworkError
 from ba_downloader.domain.models.asset import AssetCollection, AssetRecord, AssetType
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import DownloadResult
-from ba_downloader.infrastructure.apk import ZipEntry
 from ba_downloader.infrastructure.download.resource_downloader import ResourceDownloader
+from ba_downloader.infrastructure.files.checksum import calculate_crc, calculate_md5
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
-from ba_downloader.shared.crypto.encryption import calculate_crc, calculate_md5
+from ba_downloader.infrastructure.packages import ZipEntry
 
 
 class RecordingHttpClient:
@@ -149,7 +149,7 @@ def test_download_module_does_not_import_extractors_directly() -> None:
         if (
             isinstance(node, ast.ImportFrom)
             and node.module is not None
-            and node.module.startswith("ba_downloader.infrastructure.extractors")
+            and node.module.startswith("ba_downloader.infrastructure.extraction")
         ):
             violations.append(node.module)
 

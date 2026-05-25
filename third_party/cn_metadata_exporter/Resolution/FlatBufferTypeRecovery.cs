@@ -1,4 +1,4 @@
-namespace YldaDumpCsExporter;
+namespace CnMetadataExporter;
 
 internal static class FlatBufferTypeRecovery
 {

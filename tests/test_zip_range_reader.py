@@ -10,7 +10,7 @@ import pytest
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpResponse
-from ba_downloader.infrastructure.apk import (
+from ba_downloader.infrastructure.packages import (
     UnsupportedZipLayoutError,
     ZipCentralDirectoryError,
     ZipEntry,
@@ -19,9 +19,9 @@ from ba_downloader.infrastructure.apk import (
     find_zip_entry,
     read_zip_entries,
 )
-from ba_downloader.infrastructure.regions.providers.cn import (
+from ba_downloader.infrastructure.regions.cn.provider import (
+    CNRegionProvider,
     CNRuntimeAssetPreparer,
-    CNServer,
 )
 
 
@@ -228,7 +228,7 @@ def test_cn_runtime_asset_preparer_extracts_metadata_without_full_download(
     preparer = CNRuntimeAssetPreparer(client, logger)
 
     monkeypatch.setattr(
-        CNServer,
+        CNRegionProvider,
         "get_apk_url",
         lambda self, server="official": "https://example.invalid/cn.apk",
     )
@@ -259,7 +259,7 @@ def test_cn_runtime_asset_preparer_raises_when_metadata_entry_is_missing(
     context = _build_context(tmp_path)
 
     monkeypatch.setattr(
-        CNServer,
+        CNRegionProvider,
         "get_apk_url",
         lambda self, server="official": "https://example.invalid/cn.apk",
     )
@@ -283,7 +283,7 @@ def test_cn_runtime_asset_preparer_raises_when_metadata_basename_is_ambiguous(
     context = _build_context(tmp_path)
 
     monkeypatch.setattr(
-        CNServer,
+        CNRegionProvider,
         "get_apk_url",
         lambda self, server="official": "https://example.invalid/cn.apk",
     )
@@ -314,7 +314,7 @@ def test_cn_runtime_asset_preparer_raises_for_zip64_layout(
     context = _build_context(tmp_path)
 
     monkeypatch.setattr(
-        CNServer,
+        CNRegionProvider,
         "get_apk_url",
         lambda self, server="official": "https://example.invalid/cn.apk",
     )

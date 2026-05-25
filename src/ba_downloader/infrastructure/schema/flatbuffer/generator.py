@@ -11,7 +11,7 @@ from ba_downloader.infrastructure.schema.common.codegen import (
     resolve_unique_python_name,
     write_text_file,
 )
-from ba_downloader.infrastructure.schema.common.support import make_valid_identifier
+from ba_downloader.infrastructure.schema.common.identifiers import make_valid_identifier
 from ba_downloader.infrastructure.schema.flatbuffer.descriptors import (
     FlatBufferEnumDescriptor,
     FlatBufferTypeDescriptor,

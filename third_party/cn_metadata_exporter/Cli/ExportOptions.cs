@@ -1,4 +1,4 @@
-namespace YldaDumpCsExporter;
+namespace CnMetadataExporter;
 
 internal abstract record CliCommand(bool Profile);
 
@@ -35,7 +35,7 @@ internal static class ExportOptions
         var methodAddressPlaceholders = false;
         string? restoredMetadataOutputPath = null;
         string? formatterOutputPath = null;
-        var keyConstant = YldaMetadataRestorer.DefaultKeyConstant;
+        var keyConstant = MetadataRestorer.DefaultKeyConstant;
         var profile = false;
 
         for (var i = 0; i < args.Length; i++)

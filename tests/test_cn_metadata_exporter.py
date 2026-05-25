@@ -39,8 +39,8 @@ EXPORTER_PROJECT = (
     / "cn_metadata_exporter.csproj"
 )
 COMPLEXITY_EXEMPT_RESOLVERS = {
-    "YldaRelationshipResolver.cs",
-    "YldaTypeResolver.cs",
+    "RelationshipResolver.cs",
+    "TypeResolver.cs",
 }
 
 
@@ -96,7 +96,7 @@ def test_flatbuffer_type_recovery_maps_known_cn_metadata_gaps(tmp_path: Path) ->
     )
     (project_dir / "Program.cs").write_text(
         """
-using YldaDumpCsExporter;
+using CnMetadataExporter;
 
 static void Equal(string? actual, string? expected, string caseName)
 {
@@ -238,7 +238,7 @@ def test_cn_metadata_exporter_project_builds_with_resolution_helpers() -> None:
 def test_cn_metadata_exporter_resolution_helpers_stay_focused() -> None:
     oversized_helpers: list[str] = []
 
-    for source_path in sorted(RESOLUTION_DIR.glob("Ylda*Resolver.cs")):
+    for source_path in sorted(RESOLUTION_DIR.glob("*Resolver.cs")):
         if source_path.name in COMPLEXITY_EXEMPT_RESOLVERS:
             continue
 
@@ -288,7 +288,7 @@ def test_memorypack_formatter_sidecar_writer_exports_known_cn_dao_layouts(
     (project_dir / "Program.cs").write_text(
         f"""
 using System.Text.Json;
-using YldaDumpCsExporter;
+using CnMetadataExporter;
 
 static ResolvedExportMethodModel Deserialize(uint token)
     => new(token, "Deserialize", "void", ["public", "virtual"], ExportMemberAccessibility.Public, 9, []);

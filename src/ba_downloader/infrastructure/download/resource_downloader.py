@@ -22,12 +22,6 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.apk import (
-    ZipEntry,
-    extract_zip_entry,
-    find_zip_entry,
-    read_zip_entries,
-)
 from ba_downloader.infrastructure.download.adaptive import (
     AdaptiveDownloadState,
     classify_download_failure,
@@ -39,13 +33,19 @@ from ba_downloader.infrastructure.download.loop import (
     DownloadLoopContext,
     ResourceDownloadLoop,
 )
+from ba_downloader.infrastructure.files.checksum import calculate_crc, calculate_md5
+from ba_downloader.infrastructure.packages import (
+    ZipEntry,
+    extract_zip_entry,
+    find_zip_entry,
+    read_zip_entries,
+)
 from ba_downloader.infrastructure.progress.rich_progress import RichProgressReporter
 from ba_downloader.infrastructure.runtime.interrupts import (
     build_future_wait_policy,
     cancel_pending_futures,
     install_interrupt_handler,
 )
-from ba_downloader.shared.crypto.encryption import calculate_crc, calculate_md5
 
 _AdaptiveDownloadState = AdaptiveDownloadState
 

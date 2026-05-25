@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace YldaDumpCsExporter;
+namespace CnMetadataExporter;
 
 internal sealed class ExportProfiler
 {

@@ -11,7 +11,7 @@ import flatbuffers
 import pytest
 
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.infrastructure.extractors.table import (
+from ba_downloader.infrastructure.extraction.table.extractor import (
     FlatBufferExportError,
     MalformedTablePayloadError,
     ProcessedTableArtifact,
@@ -19,7 +19,7 @@ from ba_downloader.infrastructure.extractors.table import (
     TableExtractor,
     UnsupportedSchemaError,
 )
-from ba_downloader.infrastructure.extractors.table_payload_router import (
+from ba_downloader.infrastructure.extraction.table.payload_router import (
     TablePayloadCodec,
     TablePayloadRouter,
 )

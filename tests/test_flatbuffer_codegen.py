@@ -12,6 +12,7 @@ import flatbuffers
 import pytest
 
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.infrastructure.schema.crypto import convert_int, create_key
 from ba_downloader.infrastructure.schema.flatbuffer import (
     reader as flatbuffer_reader_module,
 )
@@ -22,7 +23,6 @@ from ba_downloader.infrastructure.schema.flatbuffer.generator import (
 from ba_downloader.infrastructure.schema.flatbuffer.parser import FlatBufferCSParser
 from ba_downloader.infrastructure.schema.flatbuffer.reader import FlatBufferReader
 from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
-from ba_downloader.shared.crypto.encryption import convert_int, create_key
 
 
 class DummyHttpClient:

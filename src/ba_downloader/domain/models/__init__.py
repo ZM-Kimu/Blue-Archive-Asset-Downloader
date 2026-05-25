@@ -10,7 +10,11 @@ from ba_downloader.domain.models.asset import (
 )
 from ba_downloader.domain.models.character import CharacterData, CharacterRelation
 from ba_downloader.domain.models.database import DBColumn, DBTable, SQLiteDataType
-from ba_downloader.domain.models.region_catalog import RegionCatalogResult
+from ba_downloader.domain.models.region import Platform, Region
+from ba_downloader.domain.models.region_catalog import (
+    DecodedJPCatalog,
+    RegionCatalogResult,
+)
 from ba_downloader.domain.models.runtime import RuntimeContext
 
 __all__ = [
@@ -24,6 +28,9 @@ __all__ = [
     "ChecksumSpec",
     "DBColumn",
     "DBTable",
+    "DecodedJPCatalog",
+    "Platform",
+    "Region",
     "RegionCapabilities",
     "RegionCatalogResult",
     "ResolvedRelease",

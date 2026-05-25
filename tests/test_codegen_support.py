@@ -1,4 +1,4 @@
-from ba_downloader.infrastructure.schema.common.support import make_valid_identifier
+from ba_downloader.infrastructure.schema.common.identifiers import make_valid_identifier
 
 
 def test_make_valid_identifier_normalizes_python_invalid_names() -> None:

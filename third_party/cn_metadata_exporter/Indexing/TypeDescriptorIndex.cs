@@ -1,4 +1,4 @@
-namespace YldaDumpCsExporter;
+namespace CnMetadataExporter;
 
 internal sealed record TypeDescriptorIndex(
     Dictionary<int, MethodDefinition[]> MethodsByType,

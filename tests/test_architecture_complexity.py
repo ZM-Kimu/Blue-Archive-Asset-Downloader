@@ -31,7 +31,7 @@ CSHARP_LOC_ALLOWLIST: dict[Path, int] = {}
 CSHARP_DECISION_ALLOWLIST: dict[Path, int] = {}
 
 FORBIDDEN_INFRA_EDGES = {
-    ("infrastructure.download", "infrastructure.extractors"),
+    ("infrastructure.download", "infrastructure.extraction"),
     ("infrastructure.regions", "infrastructure.schema"),
     ("infrastructure.regions", "infrastructure.unity"),
 }
@@ -58,6 +58,13 @@ def _infra_layer(module_name: str) -> str:
     parts = module_name.split(".")
     if len(parts) >= 3 and parts[:2] == ["ba_downloader", "infrastructure"]:
         return ".".join(parts[1:3])
+    return ""
+
+
+def _top_layer(module_name: str) -> str:
+    parts = module_name.split(".")
+    if len(parts) >= 2 and parts[0] == "ba_downloader":
+        return parts[1]
     return ""
 
 
@@ -174,6 +181,21 @@ def test_new_infrastructure_cross_edges_do_not_bypass_boundaries() -> None:
             edge = (source_layer, target_layer)
             module_edge = (source_module, target_module)
             if edge in FORBIDDEN_INFRA_EDGES and module_edge not in INFRA_EDGE_ALLOWLIST:
+                violations.append(f"{source_module} -> {target_module}")
+
+    assert not violations, "\n".join(violations)
+
+
+def test_infrastructure_does_not_depend_on_application_layer() -> None:
+    violations: list[str] = []
+    for file_path in PYTHON_SOURCE_ROOT.rglob("*.py"):
+        if "__pycache__" in file_path.parts:
+            continue
+        source_module = _module_name(file_path)
+        if _top_layer(source_module) != "infrastructure":
+            continue
+        for target_module in _internal_imports(file_path):
+            if _top_layer(target_module) == "application":
                 violations.append(f"{source_module} -> {target_module}")
 
     assert not violations, "\n".join(violations)

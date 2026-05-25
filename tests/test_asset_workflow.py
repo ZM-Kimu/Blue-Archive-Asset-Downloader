@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from typing import Any, ClassVar
 
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.infrastructure.extract.asset_workflow import AssetExtractionWorkflow
-from ba_downloader.infrastructure.extractors.bundle import BundleLogEvent
+from ba_downloader.infrastructure.extraction.bundle.exporter import BundleLogEvent
+from ba_downloader.infrastructure.extraction.workflow import AssetExtractionWorkflow
 
 
 class RecordingLogger:
@@ -127,11 +127,11 @@ def test_media_extraction_uses_extract_progress_mode(
 
     RecordingProgressReporter.instances = []
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.extract.asset_workflow.RichProgressReporter",
+        "ba_downloader.infrastructure.extraction.workflow.RichProgressReporter",
         RecordingProgressReporter,
     )
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.extract.asset_workflow.MediaExtractor",
+        "ba_downloader.infrastructure.extraction.workflow.MediaExtractor",
         FakeMediaExtractor,
     )
 
@@ -173,11 +173,11 @@ def test_table_extraction_uses_extract_progress_mode(
 
     RecordingProgressReporter.instances = []
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.extract.asset_workflow.RichProgressReporter",
+        "ba_downloader.infrastructure.extraction.workflow.RichProgressReporter",
         RecordingProgressReporter,
     )
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.extract.asset_workflow.TableExtractor",
+        "ba_downloader.infrastructure.extraction.workflow.TableExtractor",
         FakeTableExtractor,
     )
 

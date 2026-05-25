@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ba_downloader.infrastructure.extractors.table_archives import (
+from ba_downloader.infrastructure.extraction.table.archives import (
     TableArchiveClassifier,
     TableArchiveKind,
 )

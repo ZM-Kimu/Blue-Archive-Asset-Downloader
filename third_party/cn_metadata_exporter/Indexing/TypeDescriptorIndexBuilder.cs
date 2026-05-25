@@ -1,4 +1,4 @@
-namespace YldaDumpCsExporter;
+namespace CnMetadataExporter;
 
 internal sealed class TypeDescriptorIndexBuilder
 {
@@ -116,7 +116,7 @@ internal sealed class TypeDescriptorIndexBuilder
 
         foreach (var method in methods)
         {
-            if (!hasExplicitInterfaces && YldaResolutionUtilities.ExplicitInterfacePrefix(method.Name) is not null)
+            if (!hasExplicitInterfaces && ResolutionUtilities.ExplicitInterfacePrefix(method.Name) is not null)
                 hasExplicitInterfaces = true;
 
             if (!hasFlatBufferAssignOrRoot &&
@@ -134,7 +134,7 @@ internal sealed class TypeDescriptorIndexBuilder
             if (!hasCollectionLikeMembers)
             {
                 if ((method.Name.StartsWith("get_", StringComparison.Ordinal) || method.Name.StartsWith("set_", StringComparison.Ordinal)) &&
-                    YldaResolutionUtilities.TrySingularizeCollectionName(method.Name[4..], out _))
+                    ResolutionUtilities.TrySingularizeCollectionName(method.Name[4..], out _))
                 {
                     hasCollectionLikeMembers = true;
                 }
@@ -151,9 +151,9 @@ internal sealed class TypeDescriptorIndexBuilder
         {
             foreach (var field in fields)
             {
-                if ((YldaResolutionUtilities.BackingFieldPropertyName(field.Name) is { } backing &&
-                     YldaResolutionUtilities.TrySingularizeCollectionName(backing, out _)) ||
-                    YldaResolutionUtilities.TrySingularizeCollectionName(field.Name, out _))
+                if ((ResolutionUtilities.BackingFieldPropertyName(field.Name) is { } backing &&
+                     ResolutionUtilities.TrySingularizeCollectionName(backing, out _)) ||
+                    ResolutionUtilities.TrySingularizeCollectionName(field.Name, out _))
                 {
                     hasCollectionLikeMembers = true;
                     break;
@@ -165,7 +165,7 @@ internal sealed class TypeDescriptorIndexBuilder
         {
             foreach (var property in properties)
             {
-                if (YldaResolutionUtilities.TrySingularizeCollectionName(property.Name, out _))
+                if (ResolutionUtilities.TrySingularizeCollectionName(property.Name, out _))
                 {
                     hasCollectionLikeMembers = true;
                     break;
@@ -174,7 +174,7 @@ internal sealed class TypeDescriptorIndexBuilder
         }
 
         var isTableLike = type.FullName.EndsWith("Table", StringComparison.Ordinal);
-        var isKnownLocalInferenceType = YldaResolutionConstants.LocalInferenceTypeNames.Contains(type.FullName);
+        var isKnownLocalInferenceType = ResolutionConstants.LocalInferenceTypeNames.Contains(type.FullName);
         var requiresLocalTypeInference =
             hasExplicitInterfaces ||
             hasFlatBufferAssignOrRoot ||

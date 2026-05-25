@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
 
-namespace YldaDumpCsExporter;
+namespace CnMetadataExporter;
 
 internal static class MemoryPackFormatterSidecarWriter
 {

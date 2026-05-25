@@ -13,7 +13,7 @@ from ba_downloader.infrastructure.schema.common.codegen import (
     tuple_literal,
     write_text_file,
 )
-from ba_downloader.infrastructure.schema.common.support import make_valid_identifier
+from ba_downloader.infrastructure.schema.common.identifiers import make_valid_identifier
 from ba_downloader.infrastructure.schema.memorypack.descriptors import (
     MemoryPackEnumDescriptor,
     MemoryPackTypeDescriptor,

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ba_downloader.domain.models.asset import AssetRecord, AssetType, ChecksumSpec
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.infrastructure.extract.immediate import ImmediateResourceExtractor
+from ba_downloader.infrastructure.extraction.immediate import ImmediateResourceExtractor
 
 
 class NullLogger:
