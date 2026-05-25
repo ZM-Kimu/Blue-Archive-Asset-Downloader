@@ -1,5 +1,4 @@
 from keyword import kwlist
-from typing import Any
 
 
 def make_valid_identifier(variable_name: str) -> str:
@@ -10,11 +9,3 @@ def make_valid_identifier(variable_name: str) -> str:
     if variable_name in kwlist:
         variable_name = f"{variable_name}_"
     return variable_name
-
-
-class TemplateString:
-    def __init__(self, template: str) -> None:
-        self.template = template
-
-    def __call__(self, *args: Any) -> str:
-        return self.template % args

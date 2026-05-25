@@ -10,6 +10,10 @@ class NetworkError(BAError):
     """Network failure while fetching remote content."""
 
 
+class DownloadError(BAError):
+    """Download workflow failed to complete all requested resources."""
+
+
 class DecodeError(BAError):
     """Resource decoding failure."""
 

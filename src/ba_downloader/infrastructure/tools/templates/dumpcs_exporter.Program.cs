@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using AssetRipper.Primitives;
 using LibCpp2IL;
@@ -49,6 +50,9 @@ internal static class Program
                 foreach (var type in types.Where(t => t.DeclaringType is null))
                     WriteType(writer, type, 0);
             }
+
+            if (!string.IsNullOrWhiteSpace(options.FormatterOutputPath))
+                WriteMemoryPackFormatterSidecar(metadata, options.FormatterOutputPath);
 
             Console.WriteLine($"dump.cs exported to {outputPath}");
             return 0;
@@ -233,6 +237,87 @@ internal static class Program
         return string.Join(" ", parts.Where(p => !string.IsNullOrWhiteSpace(p)));
     }
 
+    private static void WriteMemoryPackFormatterSidecar(
+        Il2CppMetadata metadata,
+        string formatterOutputPath)
+    {
+        var formatters = new List<Dictionary<string, object?>>();
+        foreach (var type in EnumerateTypes(metadata))
+        {
+            var baseTypeName = CleanTypeName(type.BaseType?.ToString() ?? string.Empty);
+            var targetType = ExtractGenericArgument(
+                baseTypeName,
+                "MemoryPack.MemoryPackFormatter");
+            if (string.IsNullOrWhiteSpace(targetType))
+                continue;
+
+            var deserializeMethod = (type.Methods ?? [])
+                .FirstOrDefault(method => method.Name == "Deserialize");
+            formatters.Add(new Dictionary<string, object?>
+            {
+                ["target_type"] = targetType,
+                ["kind"] = "unresolved",
+                ["formatter_type"] = BuildFullTypeName(type),
+                ["formatter_token"] = $"0x{type.Token:X8}",
+                ["method_token"] = deserializeMethod is null ? "" : $"0x{deserializeMethod.token:X8}",
+                ["method_rva"] = deserializeMethod is null ? "" : $"0x{deserializeMethod.Rva:X}",
+                ["members"] = Array.Empty<object>(),
+                ["union_tags"] = new Dictionary<string, string>(),
+                ["reason"] = "Formatter method body analysis is not implemented by dumpcs_exporter.",
+            });
+        }
+
+        var outputPath = Path.GetFullPath(formatterOutputPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(
+            outputPath,
+            JsonSerializer.Serialize(new { version = 1, formatters }, options),
+            new UTF8Encoding(false));
+    }
+
+    private static IEnumerable<Il2CppTypeDefinition> EnumerateTypes(
+        Il2CppMetadata metadata)
+    {
+        foreach (var image in metadata.imageDefinitions)
+        {
+            foreach (var type in image.Types ?? [])
+            {
+                foreach (var item in EnumerateTypeTree(type))
+                    yield return item;
+            }
+        }
+    }
+
+    private static IEnumerable<Il2CppTypeDefinition> EnumerateTypeTree(
+        Il2CppTypeDefinition type)
+    {
+        yield return type;
+        foreach (var nestedType in type.NestedTypes ?? [])
+        {
+            foreach (var item in EnumerateTypeTree(nestedType))
+                yield return item;
+        }
+    }
+
+    private static string BuildFullTypeName(Il2CppTypeDefinition type)
+    {
+        var typeName = BuildTypeName(type);
+        if (string.IsNullOrWhiteSpace(type.Namespace))
+            return typeName;
+        return $"{type.Namespace}.{typeName}";
+    }
+
+    private static string ExtractGenericArgument(string value, string genericTypeName)
+    {
+        var prefix = genericTypeName + "<";
+        if (!value.StartsWith(prefix, StringComparison.Ordinal))
+            return string.Empty;
+        if (!value.EndsWith(">", StringComparison.Ordinal))
+            return string.Empty;
+        return value[prefix.Length..^1];
+    }
+
     private static string BuildMethodName(Il2CppMethodDefinition method)
     {
         var methodName = SanitizeIdentifier(method.Name ?? "Method");
@@ -334,6 +419,7 @@ internal static class Program
         string? binaryPath = null;
         string? metadataPath = null;
         string? outputPath = null;
+        string? formatterOutputPath = null;
         string? unityVersion = null;
 
         foreach (var arg in args)
@@ -344,6 +430,8 @@ internal static class Program
                 metadataPath = arg["--metadata-path=".Length..].Trim('"');
             else if (arg.StartsWith("--output=", StringComparison.OrdinalIgnoreCase))
                 outputPath = arg["--output=".Length..].Trim('"');
+            else if (arg.StartsWith("--formatter-output=", StringComparison.OrdinalIgnoreCase))
+                formatterOutputPath = arg["--formatter-output=".Length..].Trim('"');
             else if (arg.StartsWith("--unity-version=", StringComparison.OrdinalIgnoreCase))
                 unityVersion = arg["--unity-version=".Length..].Trim('"');
         }
@@ -351,18 +439,24 @@ internal static class Program
         if (string.IsNullOrWhiteSpace(binaryPath) || string.IsNullOrWhiteSpace(metadataPath) || string.IsNullOrWhiteSpace(outputPath))
             return null;
 
-        return new Options(binaryPath, metadataPath, outputPath, unityVersion ?? string.Empty);
+        return new Options(
+            binaryPath,
+            metadataPath,
+            outputPath,
+            formatterOutputPath ?? string.Empty,
+            unityVersion ?? string.Empty);
     }
 
     private static void PrintUsage()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  dotnet run --project dumpcs_exporter -- --binary-path=<path> --metadata-path=<path> --unity-version=<version> --output=<path>");
+        Console.WriteLine("  dotnet run --project dumpcs_exporter -- --binary-path=<path> --metadata-path=<path> --unity-version=<version> --output=<path> [--formatter-output=<path>]");
     }
 
     private sealed record Options(
         string BinaryPath,
         string MetadataPath,
         string OutputPath,
+        string FormatterOutputPath,
         string UnityVersion);
 }

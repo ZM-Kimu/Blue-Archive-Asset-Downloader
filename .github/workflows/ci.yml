@@ -29,6 +29,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
       - name: Set up uv
         uses: astral-sh/setup-uv@v4
 

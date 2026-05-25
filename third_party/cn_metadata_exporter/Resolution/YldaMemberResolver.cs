@@ -6,6 +6,7 @@ internal sealed class YldaMemberResolver
     private readonly YldaTypeResolver _typeResolver;
     private readonly YldaRelationshipResolver _relationshipResolver;
     private readonly TypeDescriptorIndex _descriptors;
+    private readonly HashSet<string> _typeFullNames;
     private readonly string? _futureInterfaceTypeName;
     private readonly string? _futureValueCallbackTypeName;
     private readonly string? _futureCallbackTypeName;
@@ -66,6 +67,7 @@ internal sealed class YldaMemberResolver
         _typeResolver = typeResolver;
         _relationshipResolver = relationshipResolver;
         _descriptors = descriptors;
+        _typeFullNames = model.Types.Select(item => item.FullName).ToHashSet(StringComparer.Ordinal);
         _futureInterfaceTypeName = TryFindTypeFullName("IFuture`1");
         _futureValueCallbackTypeName = TryFindTypeFullName("FutureValueCallback`1");
         _futureCallbackTypeName = TryFindTypeFullName("FutureCallback`1");
@@ -1300,22 +1302,17 @@ internal sealed class YldaMemberResolver
         var offsetType = $"FlatBuffers.Offset<{type.FullName}>";
         var nullableByteSegmentType = "System.Nullable<System.ArraySegment<System.Byte>>";
         var byteArrayType = "System.Byte[]";
-        var elementType = type.Name.EndsWith("Table", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(type.Namespace)
-            ? $"{type.Namespace}.{type.Name[..^"Table".Length]}"
-            : null;
+        var vectorMemberNames = properties
+            .Select(property => property.DisplayName)
+            .Where(name => name.EndsWith("Length", StringComparison.Ordinal))
+            .Select(name => name[..^"Length".Length])
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        static bool IsWeakFlatBufferType(string typeName)
-            => string.IsNullOrWhiteSpace(typeName) ||
-               typeName.StartsWith("Type_0x", StringComparison.Ordinal) ||
-               string.Equals(typeName, "int", StringComparison.Ordinal) ||
-               string.Equals(typeName, "long", StringComparison.Ordinal) ||
-               string.Equals(typeName, "float", StringComparison.Ordinal) ||
-               string.Equals(typeName, "System.Int32", StringComparison.Ordinal) ||
-               string.Equals(typeName, "System.Int64", StringComparison.Ordinal) ||
-               string.Equals(typeName, "System.Single", StringComparison.Ordinal);
+        string? MemberElementType(string memberName)
+            => FlatBufferTypeRecovery.ResolveMemberElementType(type.FullName, memberName, _typeFullNames);
 
-        static string PreferFlatBufferType(string currentType, string desiredType)
-            => IsWeakFlatBufferType(currentType) ? desiredType : currentType;
+        string PreferFlatBufferType(string currentType, string desiredType)
+            => FlatBufferTypeRecovery.PreferFlatBufferType(currentType, desiredType, _typeFullNames);
 
         static HashSet<string> BuildOrdinalIgnoreCaseSet(params string[] values)
             => new(values, StringComparer.OrdinalIgnoreCase);
@@ -1363,17 +1360,21 @@ internal sealed class YldaMemberResolver
                 return offsetType;
             }
 
-            if (!string.IsNullOrWhiteSpace(elementType) &&
+            if (MemberElementType("DataList") is { } dataListElementType &&
                 string.Equals(methodName, "CreateDataListVector", StringComparison.Ordinal) &&
                 string.Equals(parameterName, "data", StringComparison.Ordinal))
             {
-                return $"FlatBuffers.Offset<{elementType}>[]";
+                return $"FlatBuffers.Offset<{dataListElementType}>[]";
             }
 
-            if (methodName.EndsWith("Vector", StringComparison.Ordinal) &&
+            if (methodName.StartsWith("Create", StringComparison.Ordinal) &&
+                methodName.EndsWith("Vector", StringComparison.Ordinal) &&
                 string.Equals(parameterName, "data", StringComparison.Ordinal))
             {
                 var memberStem = methodName["Create".Length..^"Vector".Length];
+                if (MemberElementType(memberStem) is { } vectorElementType)
+                    return $"FlatBuffers.Offset<{vectorElementType}>[]";
+
                 if (vectorLongMembers.Contains(memberStem))
                     return "System.Int64[]";
             }
@@ -1383,6 +1384,23 @@ internal sealed class YldaMemberResolver
                 var memberStem = methodName["Add".Length..];
                 if (scalarLongMembers.Contains(memberStem))
                     return "System.Int64";
+
+                if (!vectorMemberNames.Contains(memberStem) &&
+                    MemberElementType(memberStem) is { } memberElementType)
+                {
+                    return $"FlatBuffers.Offset<{memberElementType}>";
+                }
+            }
+
+            if (string.Equals(methodName, $"Create{type.Name}", StringComparison.Ordinal) &&
+                parameterName.EndsWith("Offset", StringComparison.Ordinal))
+            {
+                var memberStem = parameterName[..^"Offset".Length];
+                if (!vectorMemberNames.Contains(memberStem) &&
+                    MemberElementType(memberStem) is { } memberElementType)
+                {
+                    return $"FlatBuffers.Offset<{memberElementType}>";
+                }
             }
 
             return type.FullName switch
@@ -1417,6 +1435,11 @@ internal sealed class YldaMemberResolver
         {
             if (scalarLongMembers.Contains(property.DisplayName))
                 return property with { TypeName = PreferFlatBufferType(property.TypeName, "System.Int64") };
+            if (!property.DisplayName.EndsWith("Length", StringComparison.Ordinal) &&
+                MemberElementType(property.DisplayName) is { } memberElementType)
+            {
+                return property with { TypeName = PreferFlatBufferType(property.TypeName, $"System.Nullable<{memberElementType}>") };
+            }
 
             return property;
         }).ToArray();
@@ -1429,10 +1452,10 @@ internal sealed class YldaMemberResolver
             {
                 desiredReturnType = offsetType;
             }
-            else if (!string.IsNullOrWhiteSpace(elementType) &&
+            else if (MemberElementType("DataList") is { } dataListElementType &&
                      string.Equals(method.DisplayName, "DataList", StringComparison.Ordinal))
             {
-                desiredReturnType = $"System.Nullable<{elementType}>";
+                desiredReturnType = $"System.Nullable<{dataListElementType}>";
             }
             else if (method.DisplayName.StartsWith("Get", StringComparison.Ordinal) &&
                      method.DisplayName.EndsWith("Bytes", StringComparison.Ordinal))
@@ -1445,6 +1468,15 @@ internal sealed class YldaMemberResolver
                       (scalarLongMembers.Contains(getterTarget) || vectorLongMembers.Contains(getterTarget))))
             {
                 desiredReturnType = "System.Int64";
+            }
+            else
+            {
+                var memberName = StripGetPrefix(method.DisplayName) ?? method.DisplayName;
+                if (!memberName.EndsWith("Length", StringComparison.Ordinal) &&
+                    MemberElementType(memberName) is { } memberElementType)
+                {
+                    desiredReturnType = $"System.Nullable<{memberElementType}>";
+                }
             }
 
             var adjustedParameters = method.Parameters.Select(parameter =>

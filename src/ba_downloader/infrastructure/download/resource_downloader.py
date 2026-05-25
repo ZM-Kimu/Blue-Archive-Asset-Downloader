@@ -16,7 +16,7 @@ from math import ceil
 from pathlib import Path
 from threading import Event, Lock
 
-from ba_downloader.domain.exceptions import NetworkError
+from ba_downloader.domain.exceptions import DownloadError, NetworkError
 from ba_downloader.domain.models.asset import (
     AssetCollection,
     AssetRecord,
@@ -136,7 +136,12 @@ class ResourceDownloader(ResourceDownloaderPort):
             attempt += 1
 
         if pending:
-            self.logger.error(f"Failed to download {len(pending)} files after retries.")
+            failure_message = f"Failed to download {len(pending)} files after retries."
+            failed_paths = ", ".join(resource.path for resource in pending[:5])
+            if len(pending) > 5:
+                failed_paths = f"{failed_paths}, ..."
+            self.logger.error(failure_message)
+            raise DownloadError(f"{failure_message} Failed resources: {failed_paths}")
         else:
             self.logger.info("All files have been downloaded to your computer.")
 
@@ -510,6 +515,11 @@ class ResourceDownloader(ResourceDownloaderPort):
         if any(
             marker in message
             for marker in ("connection", "reset", "aborted", "broken pipe")
+        ):
+            return "connection"
+        if any(
+            marker in message
+            for marker in ("incomplete response body", "partial", "size mismatch")
         ):
             return "connection"
         return "other"

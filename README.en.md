@@ -34,7 +34,7 @@ The downloader supports these resource categories:
 
 - Windows/Linux
 - Python 3.10 or later
-<!-- - [.NET 8/.NET 9 SDK](https://dotnet.microsoft.com/download) (required for table extraction or advanced search; the new dumper backend prefers .NET 9) -->
+- [.NET10 SDK](https://dotnet.microsoft.com/download) (required for table extraction)
 
 ## Prerequisites
 
@@ -178,7 +178,7 @@ See [docs/development.md](docs/development.md) for development, static checks, d
   - Improve the download workflow for all three regions (CN / GL / JP)
 - `v2.0.2`
   - Improve JP extraction (a key is required, and that key is currently on the server side)
-  - MemoryPack support based on a `dump.cs` annotation tree
+  - Continue improving semantic MemoryPack payload parsing based on the `dump.cs` annotation tree
   - CN metadata extraction
 - `v2.0.3`
   - New bundle extractor

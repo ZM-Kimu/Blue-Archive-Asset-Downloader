@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from ba_downloader.domain.exceptions import NetworkError
+from ba_downloader.domain.exceptions import DownloadError, NetworkError
 from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import DownloadResult
@@ -268,6 +268,8 @@ def test_handle_interrupt_closes_client_and_force_exits_on_second_interrupt(
         ("Received 403 Forbidden", "throttled"),
         ("Connection reset by peer", "connection"),
         ("Broken pipe while writing response", "connection"),
+        ("incomplete response body", "connection"),
+        ("size mismatch (expected 10 bytes, got 3 bytes)", "connection"),
         ("unexpected checksum mismatch", "other"),
     ],
 )
@@ -711,14 +713,15 @@ def test_verify_and_download_retries_failed_downloads_before_logging_success(
     assert not logger.error_messages
 
 
-def test_verify_and_download_does_not_log_success_when_retries_are_exhausted(
+def test_verify_and_download_raises_when_retries_are_exhausted(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     logger = RecordingLogger()
     downloader = ResourceDownloader(RecordingHttpClient(), logger)
     context = _build_context(tmp_path)
-    pending_resources = list(_build_resources("Bundle/a.bundle"))
+    resources = _build_resources("Bundle/a.bundle", "Media/b.zip")
+    pending_resources = list(resources)
 
     monkeypatch.setattr(
         downloader,
@@ -731,12 +734,16 @@ def test_verify_and_download_does_not_log_success_when_retries_are_exhausted(
         lambda *_args, **_kwargs: pending_resources,
     )
 
-    downloader.verify_and_download(_build_resources("Bundle/a.bundle"), context)
+    with pytest.raises(DownloadError) as exc_info:
+        downloader.verify_and_download(resources, context)
 
     assert (
         "All files have been downloaded to your computer." not in logger.info_messages
     )
-    assert logger.error_messages[-1] == "Failed to download 1 files after retries."
+    assert logger.error_messages[-1] == "Failed to download 2 files after retries."
+    assert "Failed to download 2 files after retries." in str(exc_info.value)
+    assert "Bundle/a.bundle" in str(exc_info.value)
+    assert "Media/b.zip" in str(exc_info.value)
 
 
 def test_download_resources_does_not_extract_when_post_download_validation_fails(

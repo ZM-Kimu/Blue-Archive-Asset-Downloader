@@ -10,6 +10,7 @@ internal sealed record ExportCommand(
     PrivateMemberKinds PrivateMembers,
     bool MethodAddressPlaceholders,
     string? RestoredMetadataOutputPath,
+    string? FormatterOutputPath,
     uint KeyConstant,
     bool Profile) : CliCommand(Profile);
 
@@ -21,7 +22,7 @@ internal static class ExportOptions
     public static void PrintUsage()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  cn_metadata_exporter [--metadata PATH] [--output PATH] [--image DLL] [--type-filter TEXT] [--private-members all|none|fields,properties,events,methods] [--method-address-placeholders] [--restored-output PATH] [--key-constant 0xD96603C0] [--profile]");
+        Console.WriteLine("  cn_metadata_exporter [--metadata PATH] [--output PATH] [--image DLL] [--type-filter TEXT] [--private-members all|none|fields,properties,events,methods] [--method-address-placeholders] [--restored-output PATH] [--formatter-output PATH] [--key-constant 0xD96603C0] [--profile]");
     }
 
     private static ExportCommand ParseExport(string[] args)
@@ -33,6 +34,7 @@ internal static class ExportOptions
         var privateMembers = PrivateMemberKinds.All;
         var methodAddressPlaceholders = false;
         string? restoredMetadataOutputPath = null;
+        string? formatterOutputPath = null;
         var keyConstant = YldaMetadataRestorer.DefaultKeyConstant;
         var profile = false;
 
@@ -62,6 +64,9 @@ internal static class ExportOptions
                 case "--restored-metadata-output":
                     restoredMetadataOutputPath = RequireValue(args, ref i);
                     break;
+                case "--formatter-output":
+                    formatterOutputPath = RequireValue(args, ref i);
+                    break;
                 case "--key-constant":
                     keyConstant = ParseUInt32(RequireValue(args, ref i));
                     break;
@@ -86,6 +91,7 @@ internal static class ExportOptions
             privateMembers,
             methodAddressPlaceholders,
             restoredMetadataOutputPath is null ? null : Path.GetFullPath(restoredMetadataOutputPath),
+            formatterOutputPath is null ? null : Path.GetFullPath(formatterOutputPath),
             keyConstant,
             profile);
     }

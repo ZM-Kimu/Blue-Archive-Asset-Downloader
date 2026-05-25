@@ -5,8 +5,10 @@ import re
 import struct
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import IntEnum
 from io import BytesIO
 from os import path
+from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urljoin
 
@@ -33,6 +35,10 @@ from ba_downloader.infrastructure.regions.providers.common import (
     SYNC_AND_RELATION_CAPABILITIES,
     coerce_int,
     coerce_string_list,
+)
+from ba_downloader.infrastructure.schema.memorypack.reader import (
+    MemoryPackReader,
+    MemoryPackSchemaRegistry,
 )
 from ba_downloader.infrastructure.unity import UnityAssetReader
 from ba_downloader.shared.crypto.encryption import convert_string, create_key
@@ -538,22 +544,212 @@ class JPCatalogDecoder:
         sources: list[CatalogSource],
         context: RuntimeContext,
     ) -> DecodedJPCatalog:
-        _ = (session, context)
+        _ = session
+        memorypack_registry = cls.__load_memorypack_registry(context)
         payload = DecodedJPCatalog(tables=[], media=[], bundles=[])
 
         for source in sources:
             if source.name == "table":
-                payload.tables.extend(
-                    cls.__decode_table_catalog(cls.Reader(source.content))
+                table_assets = cls.__try_decode_table_catalog_with_memorypack(
+                    source.content,
+                    memorypack_registry,
                 )
+                if table_assets is None:
+                    table_assets = cls.__decode_table_catalog(
+                        cls.Reader(source.content)
+                    )
+                payload.tables.extend(table_assets)
             elif source.name == "media":
-                payload.media.extend(
-                    cls.__decode_media_catalog(cls.Reader(source.content))
+                media_assets = cls.__try_decode_media_catalog_with_memorypack(
+                    source.content,
+                    memorypack_registry,
                 )
+                if media_assets is None:
+                    media_assets = cls.__decode_media_catalog(
+                        cls.Reader(source.content)
+                    )
+                payload.media.extend(media_assets)
             elif source.name == "bundle":
                 payload.bundles.extend(cls.__decode_bundle_catalog(source.content))
 
         return payload
+
+    @classmethod
+    def __load_memorypack_registry(
+        cls,
+        context: RuntimeContext,
+    ) -> MemoryPackSchemaRegistry | None:
+        memorypack_data_dir = Path(context.extract_dir) / "MemoryPackData"
+        if not (
+            memorypack_data_dir.is_dir()
+            and (memorypack_data_dir / "__init__.py").is_file()
+            and (memorypack_data_dir / "_registry.py").is_file()
+        ):
+            return None
+
+        try:
+            return MemoryPackSchemaRegistry.from_directory(memorypack_data_dir)
+        except (FileNotFoundError, ImportError, AttributeError, TypeError, ValueError):
+            return None
+
+    @classmethod
+    def __try_decode_table_catalog_with_memorypack(
+        cls,
+        raw_data: bytes,
+        registry: MemoryPackSchemaRegistry | None,
+    ) -> list[dict[str, object]] | None:
+        if registry is None:
+            return None
+        schema_type = registry.resolve_type("TableCatalog")
+        if schema_type is None:
+            return None
+
+        try:
+            catalog = MemoryPackReader(raw_data).read_object(schema_type)
+        except (EOFError, KeyError, TypeError, ValueError, AttributeError):
+            return None
+        if catalog is None:
+            return []
+
+        return cls.__table_catalog_to_assets(catalog)
+
+    @classmethod
+    def __try_decode_media_catalog_with_memorypack(
+        cls,
+        raw_data: bytes,
+        registry: MemoryPackSchemaRegistry | None,
+    ) -> list[dict[str, object]] | None:
+        if registry is None:
+            return None
+        schema_type = registry.resolve_type("Media.Service.MediaCatalog")
+        if schema_type is None:
+            schema_type = registry.resolve_type("MediaCatalog")
+        if schema_type is None:
+            return None
+
+        try:
+            catalog = MemoryPackReader(raw_data).read_object(schema_type)
+        except (EOFError, KeyError, TypeError, ValueError, AttributeError):
+            return None
+        if catalog is None:
+            return []
+
+        return cls.__media_catalog_to_assets(catalog)
+
+    @classmethod
+    def __table_catalog_to_assets(cls, catalog: Any) -> list[dict[str, object]]:
+        assets: list[dict[str, object]] = []
+        table_manifest = cls.__dict_field(catalog, "Table")
+        table_pack_manifest = cls.__dict_field(catalog, "TablePack")
+
+        for key, bundle in table_manifest.items():
+            asset = cls.__table_bundle_to_dict(bundle)
+            asset["key"] = key
+            assets.append(asset)
+
+        for key, pack in table_pack_manifest.items():
+            asset = cls.__table_patch_pack_to_dict(pack)
+            asset["key"] = key
+            assets.append(asset)
+
+        return assets
+
+    @classmethod
+    def __media_catalog_to_assets(cls, catalog: Any) -> list[dict[str, object]]:
+        assets: list[dict[str, object]] = []
+        for key, media in cls.__dict_field(catalog, "Table").items():
+            asset = cls.__media_to_dict(media)
+            asset["key"] = key
+            asset["path"] = str(asset["path"]).replace("\\", "/")
+            assets.append(asset)
+        return assets
+
+    @classmethod
+    def __table_bundle_to_dict(cls, bundle: Any) -> dict[str, object]:
+        includes = [
+            str(item)
+            for item in cls.__list_field(bundle, "Includes")
+            if item is not None and str(item)
+        ]
+        return {
+            "name": cls.__string_field(bundle, "Name"),
+            "size": cls.__int_field(bundle, "Size"),
+            "crc": cls.__int_field(bundle, "Crc"),
+            "is_in_build": cls.__bool_field(bundle, "isInbuild"),
+            "is_changed": cls.__bool_field(bundle, "isChanged"),
+            "is_prologue": cls.__bool_field(bundle, "IsPrologue"),
+            "is_split_download": cls.__bool_field(bundle, "IsSplitDownload"),
+            "includes": includes,
+        }
+
+    @classmethod
+    def __table_patch_pack_to_dict(cls, pack: Any) -> dict[str, object]:
+        bundle_files = [
+            cls.__table_bundle_to_dict(bundle)
+            for bundle in cls.__list_field(pack, "BundleFiles")
+        ]
+        return {
+            "name": cls.__string_field(pack, "Name"),
+            "size": cls.__int_field(pack, "Size"),
+            "crc": cls.__int_field(pack, "Crc"),
+            "is_in_build": False,
+            "is_changed": False,
+            "is_prologue": cls.__bool_field(pack, "IsPrologue"),
+            "is_split_download": False,
+            "includes": [str(bundle["name"]) for bundle in bundle_files],
+            "bundle_files": bundle_files,
+        }
+
+    @classmethod
+    def __media_to_dict(cls, media: Any) -> dict[str, object]:
+        return {
+            "path": cls.__string_field(media, "Path"),
+            "file_name": cls.__string_field(media, "FileName"),
+            "type": cls.__enum_or_int_field(media, "MediaType"),
+            "bytes": cls.__int_field(media, "Bytes"),
+            "crc": cls.__int_field(media, "Crc"),
+            "is_prologue": cls.__bool_field(media, "IsPrologue"),
+            "is_split_download": cls.__bool_field(media, "IsSplitDownload"),
+        }
+
+    @staticmethod
+    def __dict_field(source: Any, field_name: str) -> dict[str, Any]:
+        value = getattr(source, field_name, None)
+        if isinstance(value, dict):
+            return value
+        return {}
+
+    @staticmethod
+    def __list_field(source: Any, field_name: str) -> list[Any]:
+        value = getattr(source, field_name, None)
+        if isinstance(value, list):
+            return value
+        return []
+
+    @staticmethod
+    def __string_field(source: Any, field_name: str) -> str:
+        value = getattr(source, field_name, None)
+        return "" if value is None else str(value)
+
+    @staticmethod
+    def __int_field(source: Any, field_name: str) -> int:
+        value = getattr(source, field_name, 0)
+        if value is None:
+            return 0
+        return int(value)
+
+    @staticmethod
+    def __bool_field(source: Any, field_name: str) -> bool:
+        return bool(getattr(source, field_name, False))
+
+    @staticmethod
+    def __enum_or_int_field(source: Any, field_name: str) -> int:
+        value = getattr(source, field_name, 0)
+        if isinstance(value, IntEnum):
+            return int(value)
+        if value is None:
+            return 0
+        return int(value)
 
     @classmethod
     def __decode_media_catalog(

@@ -30,6 +30,14 @@ internal static class Program
 
         var exporter = new YldaDumpExporter(artifact, command.PrivateMembers, command.MethodAddressPlaceholders);
         profiler.Measure("emit", () => exporter.Export(command.OutputPath, command.ImageFilter, command.TypeFilter));
+        if (!string.IsNullOrWhiteSpace(command.FormatterOutputPath))
+        {
+            profiler.Measure(
+                "emit memorypack formatter sidecar",
+                () => MemoryPackFormatterSidecarWriter.Write(
+                    artifact,
+                    command.FormatterOutputPath));
+        }
         if (usedProtectedRestore)
             Console.Error.WriteLine("Detected protected metadata and applied restore flow.");
         profiler.Print(Console.Error, "direct-export");

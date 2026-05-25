@@ -4,7 +4,7 @@ from ba_downloader.application.services.extract import ExtractService
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
-from ba_downloader.domain.ports.extract import FlatbufferWorkflowPort
+from ba_downloader.domain.ports.extract import SchemaWorkflowPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
 from ba_downloader.domain.ports.relation import RelationBuilderPort
@@ -18,7 +18,7 @@ class SyncService:
         provider: RegionProvider,
         downloader: ResourceDownloaderPort,
         extract_service: ExtractService,
-        flatbuffer_workflow: FlatbufferWorkflowPort,
+        schema_workflow: SchemaWorkflowPort,
         runtime_asset_preparer: RuntimeAssetPreparerPort,
         relation_builder_factory: Callable[[RuntimeContext], RelationBuilderPort],
         logger: LoggerPort,
@@ -26,15 +26,15 @@ class SyncService:
         self.provider = provider
         self.downloader = downloader
         self.extract_service = extract_service
-        self.flatbuffer_workflow = flatbuffer_workflow
+        self.schema_workflow = schema_workflow
         self.runtime_asset_preparer = runtime_asset_preparer
         self.relation_builder_factory = relation_builder_factory
         self.logger = logger
 
     def _dump_and_compile(self, context: RuntimeContext) -> None:
         self.runtime_asset_preparer.prepare(context)
-        self.flatbuffer_workflow.dump(context)
-        self.flatbuffer_workflow.compile(context)
+        self.schema_workflow.dump(context)
+        self.schema_workflow.compile(context)
 
     def _search_resource(
         self,

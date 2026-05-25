@@ -983,8 +983,11 @@ internal sealed class YldaTypeResolver
 
         if (isTableLike)
         {
-            var companionTypeName = type.FullName[..^"Table".Length];
-            if (_typeFullNames.Contains(companionTypeName))
+            var companionTypeName = FlatBufferTypeRecovery.ResolveMemberElementType(
+                type.FullName,
+                "DataList",
+                _typeFullNames);
+            if (companionTypeName is not null)
             {
                 foreach (var method in methodRows)
                 {
@@ -995,6 +998,27 @@ internal sealed class YldaTypeResolver
                     if (method.Name == "CreateDataListVector" && methodParams.Count >= 2 && methodParams[1].Name == "data")
                         Remember(methodParams[1].TypeIndex, companionTypeName + "[]");
                 }
+            }
+        }
+
+        foreach (var method in methodRows)
+        {
+            var methodParams = GetMethodParameters(method);
+            if (methodParams.Count == 1 &&
+                methodParams[0].Name is "j" or "index" &&
+                FlatBufferTypeRecovery.ResolveMemberElementType(type.FullName, method.Name, _typeFullNames) is { } knownElementType)
+            {
+                Remember(method.ReturnTypeIndex, knownElementType);
+            }
+
+            if (method.Name.StartsWith("Create", StringComparison.Ordinal) &&
+                method.Name.EndsWith("Vector", StringComparison.Ordinal) &&
+                methodParams.Count >= 2 &&
+                methodParams[1].Name == "data")
+            {
+                var vectorName = method.Name["Create".Length..^"Vector".Length];
+                if (FlatBufferTypeRecovery.ResolveMemberElementType(type.FullName, vectorName, _typeFullNames) is { } knownVectorElementType)
+                    Remember(methodParams[1].TypeIndex, knownVectorElementType + "[]");
             }
         }
 

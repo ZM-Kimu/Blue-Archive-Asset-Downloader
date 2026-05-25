@@ -9,7 +9,7 @@ from ba_downloader.application.services.download import DownloadService
 from ba_downloader.application.services.extract import ExtractService
 from ba_downloader.application.services.relation import RelationService
 from ba_downloader.application.services.sync import SyncService
-from ba_downloader.domain.exceptions import NetworkError
+from ba_downloader.domain.exceptions import DownloadError, NetworkError
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.settings import AppSettings, Platform, Region
 from ba_downloader.domain.ports.http import HttpClientPort
@@ -24,7 +24,7 @@ class _CliRuntimeServices:
     runtime_asset_preparer: Any
     downloader: Any
     extract_service: ExtractService
-    flatbuffer_workflow: Any
+    schema_workflow: Any
 
 
 class _StorePlatformAction(argparse.Action):
@@ -178,9 +178,7 @@ def _build_cli_runtime_services(context: RuntimeContext) -> _CliRuntimeServices:
     from ba_downloader.infrastructure.extract import AssetExtractionWorkflow
     from ba_downloader.infrastructure.http import ResilientHttpClient
     from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
-    from ba_downloader.infrastructure.tools.flatbuffer_workflow import (
-        FlatbufferWorkflow,
-    )
+    from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
 
     logger = ConsoleLogger()
     http_client = ResilientHttpClient(
@@ -188,7 +186,7 @@ def _build_cli_runtime_services(context: RuntimeContext) -> _CliRuntimeServices:
         max_retries=context.max_retries,
     )
     runtime_asset_preparer = _build_runtime_asset_preparer(context, logger, http_client)
-    flatbuffer_workflow = FlatbufferWorkflow(http_client, logger)
+    schema_workflow = SchemaWorkflow(http_client, logger)
     return _CliRuntimeServices(
         logger=logger,
         http_client=http_client,
@@ -197,11 +195,11 @@ def _build_cli_runtime_services(context: RuntimeContext) -> _CliRuntimeServices:
         downloader=ResourceDownloader(http_client, logger),
         extract_service=ExtractService(
             AssetExtractionWorkflow(logger),
-            flatbuffer_workflow,
+            schema_workflow,
             runtime_asset_preparer,
             logger,
         ),
-        flatbuffer_workflow=flatbuffer_workflow,
+        schema_workflow=schema_workflow,
     )
 
 
@@ -230,7 +228,7 @@ def _run_command(
             services.provider,
             services.downloader,
             services.extract_service,
-            services.flatbuffer_workflow,
+            services.schema_workflow,
             services.runtime_asset_preparer,
             relation_builder_factory,
             services.logger,
@@ -249,7 +247,7 @@ def _run_command(
         RelationService(
             services.provider,
             services.downloader,
-            services.flatbuffer_workflow,
+            services.schema_workflow,
             services.runtime_asset_preparer,
             relation_builder_factory,
         ).build(context)
@@ -274,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         services.logger.warn("Operation cancelled by user.")
         return 130
-    except (LookupError, NetworkError) as exc:
+    except (LookupError, DownloadError, NetworkError) as exc:
         services.logger.error(str(exc) or exc.__class__.__name__)
         return 1
     finally:
