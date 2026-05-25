@@ -14,7 +14,6 @@ from ba_downloader.domain.ports.extract import Il2CppDumpBackendPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import Region
-from ba_downloader.infrastructure.tools.il2cpp_dumper import IL2CppDumper
 from ba_downloader.infrastructure.tools.runtime_probe import (
     get_installed_dotnet_sdk_major_versions,
 )
@@ -144,37 +143,6 @@ def _run_streaming_process(
             stdout="\n".join(stdout_lines),
             stderr="\n".join(stderr_lines),
         )
-
-
-class LegacyIl2CppDumperBackend(Il2CppDumpBackendPort):
-    IL2CPP_NAME = "libil2cpp.so"
-    METADATA_NAME = "global-metadata.dat"
-
-    def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
-        self.http_client = http_client
-        self.logger = logger
-
-    def dump(self, context: RuntimeContext, output_dir: str) -> None:
-        dumper = IL2CppDumper()
-        self.logger.info("Downloading il2cpp-dumper...")
-        dumper.get_il2cpp_dumper(self.http_client, context.temp_dir)
-
-        base_dir = Path(context.temp_dir)
-        il2cpp_path = _find_first_match(base_dir, (self.IL2CPP_NAME,))
-        metadata_path = _find_first_match(base_dir, (self.METADATA_NAME,))
-        if not (il2cpp_path and metadata_path):
-            raise FileNotFoundError(
-                "Cannot find il2cpp binary file or global-metadata file. Make sure they exist.",
-            )
-
-        self.logger.info("Trying to dump il2cpp...")
-        dumper.dump_il2cpp(
-            output_dir,
-            str(il2cpp_path.resolve()),
-            str(metadata_path.resolve()),
-            context.max_retries,
-        )
-        self.logger.info("Dumped il2cpp binary file successfully.")
 
 
 class CnMetadataDumpError(RuntimeError):
@@ -360,47 +328,44 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
             )
 
         cpp2il_root = self.source_resolver.resolve(context)
-        exporter_project = self._ensure_exporter_project(context, cpp2il_root)
         dump_cs_path = Path(output_dir) / "dump.cs"
         formatter_sidecar_path = Path(output_dir) / "memorypack_formatters.json"
         dump_cs_path.parent.mkdir(parents=True, exist_ok=True)
 
-        frameworks = self._resolve_framework_order()
-        errors: list[str] = []
-        for index, framework in enumerate(frameworks):
-            if index > 0:
-                self.logger.warn(
-                    f"Retrying Cpp2IL exporter with framework {framework}.",
-                )
-            try:
-                subprocess.run(
-                    [
-                        "dotnet",
-                        "run",
-                        "--project",
-                        str(exporter_project),
-                        "--framework",
-                        framework,
-                        "--",
-                        f"--binary-path={binary_path.resolve()}",
-                        f"--metadata-path={metadata_path.resolve()}",
-                        f"--unity-version={unity_version}",
-                        f"--output={dump_cs_path.resolve()}",
-                        f"--formatter-output={formatter_sidecar_path.resolve()}",
-                    ],
-                    capture_output=True,
-                    check=True,
-                    text=True,
-                    encoding="utf8",
-                )
-                self.logger.info("Dumped il2cpp binary file successfully.")
-                return
-            except subprocess.CalledProcessError as exc:
-                errors.append(exc.stderr.strip() or str(exc))
-
-        raise RuntimeError(
-            "Failed to dump il2cpp with Cpp2IL backend: " + " | ".join(errors),
+        framework = self._resolve_framework()
+        exporter_project = self._ensure_exporter_project(
+            context,
+            cpp2il_root,
+            framework,
         )
+        try:
+            subprocess.run(
+                [
+                    "dotnet",
+                    "run",
+                    "--project",
+                    str(exporter_project),
+                    "--framework",
+                    framework,
+                    "--",
+                    f"--binary-path={binary_path.resolve()}",
+                    f"--metadata-path={metadata_path.resolve()}",
+                    f"--unity-version={unity_version}",
+                    f"--output={dump_cs_path.resolve()}",
+                    f"--formatter-output={formatter_sidecar_path.resolve()}",
+                ],
+                capture_output=True,
+                check=True,
+                text=True,
+                encoding="utf8",
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                "Failed to dump il2cpp with Cpp2IL backend: "
+                f"{exc.stderr.strip() or exc}",
+            ) from exc
+
+        self.logger.info("Dumped il2cpp binary file successfully.")
 
     def _resolve_unity_version(self, context: RuntimeContext, temp_dir: Path) -> str:
         import os
@@ -420,21 +385,20 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
         return ""
 
     @staticmethod
-    def _resolve_framework_order() -> tuple[str, ...]:
+    def _resolve_framework() -> str:
         installed = get_installed_dotnet_sdk_major_versions()
-        frameworks: list[str] = []
-        if 9 in installed:
-            frameworks.append("net9.0")
-        if 8 in installed:
-            frameworks.append("net8.0")
-        if not frameworks:
+        if 10 not in installed:
             raise FileNotFoundError(
-                "Error: .NET 9 or .NET 8 SDK is required for the Cpp2IL dumper backend.",
+                "Error: .NET 10 SDK is required for the Cpp2IL dumper backend.",
             )
-        return tuple(frameworks)
+        return "net10.0"
 
     @staticmethod
-    def _ensure_exporter_project(context: RuntimeContext, cpp2il_root: Path) -> Path:
+    def _ensure_exporter_project(
+        context: RuntimeContext,
+        cpp2il_root: Path,
+        target_framework: str,
+    ) -> Path:
         export_root = (
             Path(context.work_dir) / ".ba-downloader" / "tools" / EXPORTER_PROJECT_NAME
         )
@@ -446,7 +410,8 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
 
         project_path.write_text(
             _read_exporter_template(EXPORTER_CSPROJ_TEMPLATE_PATH).format(
-                libcpp2il_reference=libcpp2il_reference
+                libcpp2il_reference=libcpp2il_reference,
+                target_framework=target_framework,
             ),
             encoding="utf8",
         )

@@ -18,7 +18,6 @@ from ba_downloader.infrastructure.tools.dump_backend import (
     CnMetadataDumpError,
     Cpp2IlDumpCsBackend,
     Cpp2ILSourceResolver,
-    LegacyIl2CppDumperBackend,
     build_default_dumper_backend_registry,
 )
 
@@ -166,35 +165,46 @@ def test_schema_workflow_does_not_fallback_when_jp_backend_fails(
     assert ForbiddenBackend.called is False
 
 
-def test_cpp2il_framework_selection_prefers_net9(
+def test_cpp2il_framework_selection_requires_net10(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.tools.dump_backend.get_installed_dotnet_sdk_major_versions",
+        lambda: {8, 9, 10},
+    )
+    assert Cpp2IlDumpCsBackend._resolve_framework() == "net10.0"
+
+
+def test_cpp2il_framework_selection_rejects_older_dotnet_versions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "ba_downloader.infrastructure.tools.dump_backend.get_installed_dotnet_sdk_major_versions",
         lambda: {8, 9},
     )
-    assert Cpp2IlDumpCsBackend._resolve_framework_order() == ("net9.0", "net8.0")
+    with pytest.raises(FileNotFoundError, match=r"\.NET 10 SDK"):
+        Cpp2IlDumpCsBackend._resolve_framework()
 
 
-def test_cpp2il_framework_selection_uses_net8_when_only_net8_available(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.tools.dump_backend.get_installed_dotnet_sdk_major_versions",
-        lambda: {8},
-    )
-    assert Cpp2IlDumpCsBackend._resolve_framework_order() == ("net8.0",)
+def test_tools_package_does_not_export_legacy_il2cpp_dumper() -> None:
+    from ba_downloader.infrastructure import tools
+
+    assert "IL2CppDumper" not in tools.__all__
+    assert "LegacyIl2CppDumperBackend" not in tools.__all__
+    assert not hasattr(tools, "IL2CppDumper")
+    assert not hasattr(tools, "LegacyIl2CppDumperBackend")
 
 
-def test_cpp2il_framework_selection_raises_without_supported_dotnet(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.tools.dump_backend.get_installed_dotnet_sdk_major_versions",
-        lambda: {7},
-    )
-    with pytest.raises(FileNotFoundError, match=r"NET 9 or \.NET 8"):
-        Cpp2IlDumpCsBackend._resolve_framework_order()
+def test_dump_backend_module_does_not_export_legacy_il2cpp_dumper() -> None:
+    from ba_downloader.infrastructure.tools import dump_backend
+
+    assert not hasattr(dump_backend, "IL2CppDumper")
+    assert not hasattr(dump_backend, "LegacyIl2CppDumperBackend")
+
+
+def test_legacy_il2cpp_dumper_module_is_removed() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        __import__("ba_downloader.infrastructure.tools.il2cpp_dumper")
 
 
 def test_cpp2il_source_resolver_prefers_submodule_path(
@@ -265,18 +275,26 @@ def test_cpp2il_source_resolver_downloads_and_reuses_cache(
     assert len(http_client.download_calls) == 1
 
 
-def test_cpp2il_exporter_project_is_generated_from_template_files(
+def test_cpp2il_exporter_project_targets_selected_framework(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="jp")
     cpp2il_root = tmp_path / "Cpp2IL"
     _create_cpp2il_tree(cpp2il_root)
 
-    project_path = Cpp2IlDumpCsBackend._ensure_exporter_project(context, cpp2il_root)
+    project_path = Cpp2IlDumpCsBackend._ensure_exporter_project(
+        context,
+        cpp2il_root,
+        "net10.0",
+    )
 
+    project_text = project_path.read_text(encoding="utf8")
     assert EXPORTER_CSPROJ_TEMPLATE_PATH.exists()
     assert EXPORTER_PROGRAM_CS_PATH.exists()
-    assert "LibCpp2IL.csproj" in project_path.read_text(encoding="utf8")
+    assert "<TargetFramework>net10.0</TargetFramework>" in project_text
+    assert "<TargetFrameworks>" not in project_text
+    assert "LibCpp2IL.csproj" in project_text
+    assert 'SetTargetFramework="TargetFramework=net10.0"' in project_text
     assert (
         (project_path.parent / "Program.cs")
         .read_text(encoding="utf8")
@@ -284,41 +302,7 @@ def test_cpp2il_exporter_project_is_generated_from_template_files(
     )
 
 
-def test_legacy_backend_logs_success_at_info_level(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    class FakeDumper:
-        def get_il2cpp_dumper(self, http_client, temp_dir):  # type: ignore[no-untyped-def]
-            _ = (http_client, temp_dir)
-
-        def dump_il2cpp(self, output_dir, il2cpp_path, metadata_path, max_retries):  # type: ignore[no-untyped-def]
-            _ = (output_dir, il2cpp_path, metadata_path, max_retries)
-
-    context = _build_context(tmp_path, region="gl")
-    temp_dir = Path(context.temp_dir)
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    (temp_dir / "libil2cpp.so").write_bytes(b"binary")
-    (temp_dir / "global-metadata.dat").write_bytes(b"metadata")
-    logger = RecordingLogger()
-    backend = LegacyIl2CppDumperBackend(DummyHttpClient(), logger)
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.tools.dump_backend.IL2CppDumper",
-        lambda: FakeDumper(),
-    )
-
-    backend.dump(context, str(tmp_path / "Extracted" / "Dumps"))
-
-    assert logger.info_messages == [
-        "Downloading il2cpp-dumper...",
-        "Trying to dump il2cpp...",
-        "Dumped il2cpp binary file successfully.",
-    ]
-    assert logger.warn_messages == []
-
-
-def test_cpp2il_backend_logs_framework_retry_as_warning_and_success_as_info(
+def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -332,29 +316,35 @@ def test_cpp2il_backend_logs_framework_retry_as_warning_and_success_as_info(
     exporter_project = tmp_path / "DumpCsExporter.csproj"
     exporter_project.write_text("<Project />", encoding="utf8")
     run_calls: list[list[str]] = []
+    ensure_calls: list[str] = []
 
     def fake_run(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
         _ = kwargs
         run_calls.append(command)
-        if len(run_calls) == 1:
-            raise subprocess.CalledProcessError(
-                1,
-                command,
-                stderr="net9 failed",
-            )
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(
         backend.source_resolver, "resolve", lambda _context: tmp_path / "Cpp2IL"
     )
+
+    def fake_ensure_exporter_project(
+        _context: RuntimeContext,
+        _cpp2il_root: Path,
+        framework: str,
+    ) -> Path:
+        ensure_calls.append(framework)
+        return exporter_project
+
     monkeypatch.setattr(
-        backend, "_ensure_exporter_project", lambda *_args, **_kwargs: exporter_project
+        backend,
+        "_ensure_exporter_project",
+        fake_ensure_exporter_project,
     )
     monkeypatch.setattr(
         backend, "_resolve_unity_version", lambda *_args, **_kwargs: "2021.3.36f1"
     )
     monkeypatch.setattr(
-        backend, "_resolve_framework_order", lambda: ("net9.0", "net8.0")
+        backend, "_resolve_framework", lambda: "net10.0"
     )
     monkeypatch.setattr(
         "ba_downloader.infrastructure.tools.dump_backend.subprocess.run", fake_run
@@ -362,11 +352,12 @@ def test_cpp2il_backend_logs_framework_retry_as_warning_and_success_as_info(
 
     backend.dump(context, str(tmp_path / "Extracted" / "Dumps"))
 
-    assert logger.warn_messages == [
-        "Retrying Cpp2IL exporter with framework net8.0.",
-    ]
+    assert logger.warn_messages == []
     assert logger.info_messages == ["Dumped il2cpp binary file successfully."]
-    assert len(run_calls) == 2
+    assert ensure_calls == ["net10.0"]
+    assert len(run_calls) == 1
+    assert "--framework" in run_calls[0]
+    assert "net10.0" in run_calls[0]
     assert (
         f"--formatter-output="
         f"{(tmp_path / 'Extracted' / 'Dumps' / 'memorypack_formatters.json').resolve()}"

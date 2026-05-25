@@ -34,7 +34,7 @@ The downloader supports these resource categories:
 
 - Windows/Linux
 - Python 3.10 or later
-<!-- - [.NET 8/.NET 9 SDK](https://dotnet.microsoft.com/download) (required for table extraction or advanced search; the new dumper backend prefers .NET 9) -->
+- [.NET10 SDK](https://dotnet.microsoft.com/download) (required for table extraction)
 
 ## Prerequisites
 

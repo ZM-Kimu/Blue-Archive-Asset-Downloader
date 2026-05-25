@@ -34,7 +34,7 @@
 
 - Windows/Linux
 - Python 3.10 或更高版本
-- [.NET8/.NET9 SDK](https://dotnet.microsoft.com/download)(提取 table 时必须安装；在下一阶段会将 .NET 视为先决条件)
+- [.NET10 SDK](https://dotnet.microsoft.com/download)(提取 table 时必须安装)
 
 ## 先决条件
 

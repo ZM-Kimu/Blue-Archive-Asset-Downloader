@@ -1,11 +1,11 @@
 # 开发与维护说明
 
-本文档面向仓库维护者，不面向普通使用者。
+本文档面向仓库维护者。
 
 ## 开发环境
 
 - Python 3.10 或更高版本
-- `.NET 8` 或 `.NET 9` SDK
+- `.NET10 SDK`
 - `uv`（推荐）
 
 初始化开发环境：
@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run-preflight.ps1
 
 - `jp`：默认使用 `cpp2il_custom`
 - `gl`：默认使用 `cpp2il_custom`
-- `cn`：内部使用 metadata-only `cn_metadata_exporter` backend（当前尚未对用户开放）
+- `cn`：内部使用 metadata-only `cn_metadata_exporter`
 
 如果以源码方式运行并希望固定 Cpp2IL 依赖，请使用子模块：
 

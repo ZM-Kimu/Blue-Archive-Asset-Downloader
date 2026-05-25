@@ -28,7 +28,7 @@ def is_dotnet_sdk_version_equal(*target_versions: int) -> bool:
     """Checks if the installed .NET SDK major version matches the specified target version.
 
     Args:
-        target_versions (int): Major versions to check against (e.g. 8 for .NET 8.x.x).
+        target_versions (int): Major versions to check against (e.g. 10 for .NET 10.x.x).
 
     Returns:
         bool: Is or not installed specified sdk version.
