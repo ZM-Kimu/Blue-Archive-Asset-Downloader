@@ -56,17 +56,15 @@ def test_settings_normalization_preserves_custom_directories() -> None:
 
 
 def test_runtime_context_copies_normalized_settings() -> None:
-    runtime_context = (
-        AppSettings(
-            region="gl",
-            threads=8,
-            raw_dir="RawData",
-            extract_dir="Extracted",
-            temp_dir="Temp",
-            resource_type=("media",),
-            max_retries=2,
-        ).to_runtime_context()
-    )
+    runtime_context = AppSettings(
+        region="gl",
+        threads=8,
+        raw_dir="RawData",
+        extract_dir="Extracted",
+        temp_dir="Temp",
+        resource_type=("media",),
+        max_retries=2,
+    ).to_runtime_context()
 
     assert runtime_context.region == "gl"
     assert runtime_context.threads == 8

@@ -1,4 +1,5 @@
 import importlib
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ FORBIDDEN_IMPORTS = (
     "ba_downloader.infrastructure.runtime.registry",
     "ba_downloader.infrastructure.schema.common.support",
     "ba_downloader.infrastructure.services",
+    "ba_downloader.shared",
     "ba_downloader.shared.crypto",
     "ba_downloader.shared.misc.template_utils",
     "ba_downloader.domain.models.resource",
@@ -65,3 +67,13 @@ def test_removed_internal_packages_do_not_provide_shims() -> None:
     for module_name in removed_modules:
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module(module_name)
+
+
+def test_removed_shared_namespace_has_no_source_shim() -> None:
+    assert not Path("src/ba_downloader/shared/__init__.py").exists()
+
+    spec = importlib.util.find_spec("ba_downloader.shared")
+    if spec is None:
+        return
+
+    assert spec.origin is None

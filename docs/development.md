@@ -141,7 +141,7 @@ FlatBuffer schema 生成失败会中断 compile；MemoryPack schema 生成失败
 - `ba_downloader.infrastructure.regions.providers.*` -> `ba_downloader.infrastructure.regions.<region>.provider`
 - `ba_downloader.infrastructure.extractors.*` / `ba_downloader.infrastructure.extract.*` -> `ba_downloader.infrastructure.extraction.*`
 - `ba_downloader.infrastructure.apk.*` -> `ba_downloader.infrastructure.packages.*`
-- `ba_downloader.shared.crypto.encryption` -> `ba_downloader.infrastructure.schema.crypto` 或 `ba_downloader.infrastructure.files.checksum`
+- 旧 `ba_downloader.shared` 命名空间已移除；checksum 放在 `ba_downloader.infrastructure.files.checksum`，schema/table crypto 放在对应 infrastructure 模块。
 
 ## GL 特殊 payload 备注
 

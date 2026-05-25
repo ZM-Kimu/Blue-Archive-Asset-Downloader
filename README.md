@@ -175,9 +175,6 @@ ba-downloader download --region jp --platform windows
 - Bundle文件的提取基于UnityPy，如希望更加详细的内容请使用[AssetRipper](https://github.com/AssetRipper/AssetRipper)或[AssetStudio](https://github.com/Perfare/AssetStudio)
 <!-- - JP 当前支持 `download --region jp`、`sync --region jp`、`relation build --region jp`；JP `--advanced-search` 仍暂不可用。 -->
 
-## 维护说明
-开发、静态检查、dumper backend、子模块与发版流程请参阅 [docs/development.md](docs/development.md)。
-
 ## TODO
 - `v2.0.1`
   - 完善三服下载流程（CN / GL / JP）

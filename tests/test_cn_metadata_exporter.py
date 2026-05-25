@@ -26,17 +26,9 @@ RESOLVED_MODELS_SOURCE = (
     / "Models"
     / "ResolvedExportModels.cs"
 )
-RESOLUTION_DIR = (
-    REPO_ROOT
-    / "third_party"
-    / "cn_metadata_exporter"
-    / "Resolution"
-)
+RESOLUTION_DIR = REPO_ROOT / "third_party" / "cn_metadata_exporter" / "Resolution"
 EXPORTER_PROJECT = (
-    REPO_ROOT
-    / "third_party"
-    / "cn_metadata_exporter"
-    / "cn_metadata_exporter.csproj"
+    REPO_ROOT / "third_party" / "cn_metadata_exporter" / "cn_metadata_exporter.csproj"
 )
 COMPLEXITY_EXEMPT_RESOLVERS = {
     "RelationshipResolver.cs",
@@ -280,11 +272,7 @@ def test_memorypack_formatter_sidecar_writer_exports_known_cn_dao_layouts(
         encoding="utf-8",
     )
     sidecar_path = project_dir / "memorypack_formatters.json"
-    escaped_sidecar_path = (
-        str(sidecar_path)
-        .replace("\\", "\\\\")
-        .replace('"', '\\"')
-    )
+    escaped_sidecar_path = str(sidecar_path).replace("\\", "\\\\").replace('"', '\\"')
     (project_dir / "Program.cs").write_text(
         f"""
 using System.Text.Json;

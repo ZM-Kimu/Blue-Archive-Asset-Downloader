@@ -180,7 +180,10 @@ def test_new_infrastructure_cross_edges_do_not_bypass_boundaries() -> None:
             target_layer = _infra_layer(target_module)
             edge = (source_layer, target_layer)
             module_edge = (source_module, target_module)
-            if edge in FORBIDDEN_INFRA_EDGES and module_edge not in INFRA_EDGE_ALLOWLIST:
+            if (
+                edge in FORBIDDEN_INFRA_EDGES
+                and module_edge not in INFRA_EDGE_ALLOWLIST
+            ):
                 violations.append(f"{source_module} -> {target_module}")
 
     assert not violations, "\n".join(violations)

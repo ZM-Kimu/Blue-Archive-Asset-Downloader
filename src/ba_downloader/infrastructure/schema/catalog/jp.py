@@ -1,76 +1,29 @@
 from __future__ import annotations
 
 import json
-import struct
 from collections.abc import Callable, Mapping
 from enum import IntEnum
-from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from ba_downloader.domain.models.asset import BootstrapSession, CatalogSource
 from ba_downloader.domain.models.region_catalog import DecodedJPCatalog
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.infrastructure.schema.memorypack.cursor import MemoryPackCursor
 from ba_downloader.infrastructure.schema.memorypack.reader import (
     MemoryPackReader,
     MemoryPackSchemaRegistry,
 )
 
-NULL_OBJECT_HEADER = 255
-NULL_COLLECTION_HEADER = -1
-
 
 class JPCatalogDecoder:
-    class Reader:
+    class CatalogReader(MemoryPackCursor):
         def __init__(self, initial_bytes: bytes) -> None:
-            self.io = BytesIO(initial_bytes)
-
-        def _read_exact(self, size: int) -> bytes:
-            data = self.io.read(size)
-            if len(data) != size:
-                raise EOFError("Unexpected end of MemoryPack stream.")
-            return data
-
-        def read_int32(self) -> int:
-            return struct.unpack("<i", self._read_exact(4))[0]
-
-        def read_int64(self) -> int:
-            return struct.unpack("<q", self._read_exact(8))[0]
-
-        def read_uint8(self) -> int:
-            return struct.unpack("<B", self._read_exact(1))[0]
-
-        def read_bool(self) -> bool:
-            return struct.unpack("<?", self._read_exact(1))[0]
-
-        def read_object_header(self) -> int | None:
-            header = self.read_uint8()
-            if header == NULL_OBJECT_HEADER:
-                return None
-            return header
-
-        def read_collection_header(self) -> int | None:
-            length = self.read_int32()
-            if length == NULL_COLLECTION_HEADER:
-                return None
-            return length
-
-        def read_string(self) -> str | None:
-            length = self.read_collection_header()
-            if length is None:
-                return None
-            if length == 0:
-                return ""
-            if length > 0:
-                return self._read_exact(length * 2).decode("utf-16-le")
-
-            utf8_length = ~length
-            self.read_int32()
-            return self._read_exact(utf8_length).decode("utf-8")
+            super().__init__(initial_bytes)
 
         def read_array(
             self,
-            item_reader: Callable[[JPCatalogDecoder.Reader], Any],
+            item_reader: Callable[[JPCatalogDecoder.CatalogReader], Any],
         ) -> list[Any]:
             length = self.read_collection_header()
             if length is None:
@@ -79,7 +32,10 @@ class JPCatalogDecoder:
 
         def read_string_map(
             self,
-            value_reader: Callable[[JPCatalogDecoder.Reader], dict[str, object]],
+            value_reader: Callable[
+                [JPCatalogDecoder.CatalogReader],
+                dict[str, object],
+            ],
         ) -> dict[str, dict[str, object]]:
             length = self.read_collection_header()
             if length is None:
@@ -111,7 +67,9 @@ class JPCatalogDecoder:
                     memorypack_registry,
                 )
                 if table_assets is None:
-                    table_assets = cls.__decode_table_catalog(cls.Reader(source.content))
+                    table_assets = cls.__decode_table_catalog(
+                        cls.CatalogReader(source.content)
+                    )
                 payload.tables.extend(table_assets)
             elif source.name == "media":
                 media_assets = cls.__try_decode_media_catalog_with_memorypack(
@@ -119,7 +77,9 @@ class JPCatalogDecoder:
                     memorypack_registry,
                 )
                 if media_assets is None:
-                    media_assets = cls.__decode_media_catalog(cls.Reader(source.content))
+                    media_assets = cls.__decode_media_catalog(
+                        cls.CatalogReader(source.content)
+                    )
                 payload.media.extend(media_assets)
             elif source.name == "bundle":
                 payload.bundles.extend(cls.__decode_bundle_catalog(source.content))
@@ -306,7 +266,7 @@ class JPCatalogDecoder:
     @classmethod
     def __decode_media_catalog(
         cls,
-        data: Reader,
+        data: CatalogReader,
     ) -> list[dict[str, object]]:
         member_count = data.read_object_header()
         if member_count is None or member_count < 1:
@@ -324,7 +284,7 @@ class JPCatalogDecoder:
     @classmethod
     def __decode_table_catalog(
         cls,
-        data: Reader,
+        data: CatalogReader,
     ) -> list[dict[str, object]]:
         member_count = data.read_object_header()
         if member_count is None or member_count < 1:
@@ -376,7 +336,7 @@ class JPCatalogDecoder:
     @classmethod
     def __decode_media_manifest(
         cls,
-        data: Reader,
+        data: CatalogReader,
     ) -> dict[str, object]:
         member_count = data.read_object_header()
         if member_count is None or member_count < 7:
@@ -403,7 +363,7 @@ class JPCatalogDecoder:
     @classmethod
     def __decode_table_manifest(
         cls,
-        data: Reader,
+        data: CatalogReader,
     ) -> dict[str, object]:
         member_count = data.read_object_header()
         if member_count is None or member_count < 8:
@@ -417,7 +377,9 @@ class JPCatalogDecoder:
         is_prologue = data.read_bool()
         is_split_download = data.read_bool()
         includes = [
-            item for item in data.read_array(lambda reader: reader.read_string()) if item
+            item
+            for item in data.read_array(lambda reader: reader.read_string())
+            if item
         ]
 
         return {
@@ -434,7 +396,7 @@ class JPCatalogDecoder:
     @classmethod
     def __decode_table_pack_manifest(
         cls,
-        data: Reader,
+        data: CatalogReader,
     ) -> dict[str, object]:
         member_count = data.read_object_header()
         if member_count is None or member_count < 5:

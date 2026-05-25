@@ -82,8 +82,7 @@ class MemoryPackFormatterRegistry:
         union_tags: dict[int, str] | None = None
         if isinstance(raw_tags, dict):
             union_tags = {
-                int(tag): str(target_type)
-                for tag, target_type in raw_tags.items()
+                int(tag): str(target_type) for tag, target_type in raw_tags.items()
             }
         return MemoryPackFormatterDescriptor(
             target_type=str(data.get("target_type", "")),

@@ -205,6 +205,5 @@ def test_rich_progress_reporter_shows_sub_status_in_extract_mode() -> None:
     assert sub_status_table_column.overflow == "ellipsis"
     assert sub_status_table_column.no_wrap is True
     assert (
-        len("999/999 entries")
-        <= RichProgressReporter.EXTRACT_SUB_STATUS_COLUMN_WIDTH
+        len("999/999 entries") <= RichProgressReporter.EXTRACT_SUB_STATUS_COLUMN_WIDTH
     )

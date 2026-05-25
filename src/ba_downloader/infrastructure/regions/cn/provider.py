@@ -51,7 +51,9 @@ class CNRegionProvider:
 
     def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
         if context.version:
-            self.logger.warn("Specifying a version is not allowed with CNRegionProvider.")
+            self.logger.warn(
+                "Specifying a version is not allowed with CNRegionProvider."
+            )
         warn_if_platform_ignored(context, self.logger)
 
         self.logger.info("Automatically fetching latest version...")

@@ -63,6 +63,8 @@ DEFAULT_DOWNLOAD_TIMEOUT = 600.0
 DOWNLOAD_READ_POLL_TIMEOUT = 1.0
 DOWNLOAD_CHUNK_SIZE = 64 * 1024
 CONNECT_TIMEOUT_CAP = 20.0
+
+
 class ResilientHttpClient(HttpClientPort):
     def __init__(self, *, proxy_url: str | None = None, max_retries: int = 5) -> None:
         self.proxy_url = proxy_url

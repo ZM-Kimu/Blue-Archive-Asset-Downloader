@@ -141,7 +141,9 @@ class RecordingLogger:
 
 
 def test_download_module_does_not_import_extractors_directly() -> None:
-    module_path = Path("src/ba_downloader/infrastructure/download/resource_downloader.py")
+    module_path = Path(
+        "src/ba_downloader/infrastructure/download/resource_downloader.py"
+    )
     tree = ast.parse(module_path.read_text(encoding="utf-8"))
     violations: list[str] = []
 

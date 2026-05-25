@@ -241,7 +241,9 @@ class ResourceDownloadLoop:
         progress.set_secondary_status(
             _build_download_concurrency_status(session_state.total_files, state)
         )
-        progress.set_failed_status(_build_download_failed_status(session_state.failed_files))
+        progress.set_failed_status(
+            _build_download_failed_status(session_state.failed_files)
+        )
 
     @staticmethod
     def _is_cancelled_error(exc: Exception) -> bool:

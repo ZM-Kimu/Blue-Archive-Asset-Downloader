@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, TypeVar
+
+
+class FullNameItem(Protocol):
+    @property
+    def full_name(self) -> str: ...
+
+
+T = TypeVar("T", bound=FullNameItem)
 
 
 def resolve_unique_python_name(
@@ -53,6 +62,106 @@ def import_names(python_name: str, current_python_name: str) -> frozenset[str]:
     if python_name == current_python_name:
         return frozenset()
     return frozenset({python_name})
+
+
+def build_python_name_maps(
+    descriptors: list[Any],
+    enums: list[Any],
+    *,
+    descriptor_key: Callable[[Any], str],
+    enum_key: Callable[[Any], str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    used_names: dict[str, int] = {}
+    type_names: dict[str, str] = {}
+    enum_names: dict[str, str] = {}
+    for enum in enums:
+        enum_names[enum_key(enum)] = resolve_unique_python_name(
+            enum.python_name,
+            enum.type_def_index,
+            used_names,
+        )
+    for descriptor in descriptors:
+        type_names[descriptor_key(descriptor)] = resolve_unique_python_name(
+            descriptor.python_name,
+            descriptor.type_def_index,
+            used_names,
+        )
+    return type_names, enum_names
+
+
+def build_refs(
+    items: list[T],
+    python_names: dict[str, str],
+    item_key: Callable[[T], str],
+) -> dict[str, tuple[str, T]]:
+    refs: dict[str, tuple[str, T]] = {}
+    for item in items:
+        python_name = python_names[item_key(item)]
+        refs[item.full_name] = (python_name, item)
+    return refs
+
+
+def build_cyclic_imports(
+    descriptors: list[Any],
+    type_python_names: dict[str, str],
+    *,
+    descriptor_key: Callable[[Any], str],
+    collect_imports: Callable[[Any, str], set[str]],
+) -> set[tuple[str, str]]:
+    graph: dict[str, set[str]] = {
+        python_name: set() for python_name in type_python_names.values()
+    }
+    all_type_names = set(type_python_names.values())
+    for descriptor in descriptors:
+        source_name = type_python_names[descriptor_key(descriptor)]
+        graph[source_name].update(
+            collect_imports(descriptor, source_name) & all_type_names
+        )
+
+    cyclic_imports: set[tuple[str, str]] = set()
+    for source_name, targets in graph.items():
+        for target_name in targets:
+            if graph_has_path(graph, target_name, source_name):
+                cyclic_imports.add((source_name, target_name))
+    return cyclic_imports
+
+
+def resolve_reference(
+    cs_type: str,
+    current_namespace: str,
+    refs: dict[str, tuple[str, Any]],
+    simple_refs: dict[str, tuple[str, Any]],
+) -> tuple[str, Any] | None:
+    candidates = [cs_type]
+    if "." not in cs_type and current_namespace:
+        candidates.insert(0, f"{current_namespace}.{cs_type}")
+    for candidate in candidates:
+        if candidate in refs:
+            return refs[candidate]
+    if "." not in cs_type:
+        return simple_refs.get(cs_type)
+    return None
+
+
+def render_relative_imports(
+    imports: list[str],
+    cyclic_imports: set[tuple[str, str]],
+    current_python_name: str,
+) -> tuple[list[str], list[str], str]:
+    runtime_imports = [
+        import_name
+        for import_name in imports
+        if (current_python_name, import_name) not in cyclic_imports
+    ]
+    type_checking_imports = [
+        import_name
+        for import_name in imports
+        if (current_python_name, import_name) in cyclic_imports
+    ]
+    typing_import = "from typing import Annotated, Any"
+    if type_checking_imports:
+        typing_import = "from typing import Annotated, Any, TYPE_CHECKING"
+    return runtime_imports, type_checking_imports, typing_import
 
 
 def write_text_file(output_dir: str | Path, file_name: str, content: str) -> None:

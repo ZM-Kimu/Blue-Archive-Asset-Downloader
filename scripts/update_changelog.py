@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 from collections import OrderedDict
 from collections.abc import Sequence
 from datetime import date
@@ -230,16 +229,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = _build_parser()
-    argv_list = list(argv) if argv is not None else sys.argv[1:]
-
-    if argv_list and argv_list[0] not in {
-        "update",
-        "finalize",
-        "release-notes",
-    }:
-        argv_list = ["update", *argv_list]
-
-    return parser.parse_args(argv_list)
+    return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -59,7 +59,9 @@ class JPRegionProvider:
 
     def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
         if context.version:
-            self.logger.warn("Specifying a version is not allowed with JPRegionProvider.")
+            self.logger.warn(
+                "Specifying a version is not allowed with JPRegionProvider."
+            )
 
         self.logger.info("Automatically fetching latest package info...")
         assets, resolved_context = self.pipeline.load(context)

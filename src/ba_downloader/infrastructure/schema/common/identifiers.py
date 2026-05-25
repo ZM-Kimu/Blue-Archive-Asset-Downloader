@@ -1,4 +1,4 @@
-from keyword import kwlist
+from keyword import iskeyword
 
 
 def make_valid_identifier(variable_name: str) -> str:
@@ -6,6 +6,6 @@ def make_valid_identifier(variable_name: str) -> str:
         return "_"
     if variable_name[0].isdigit():
         variable_name = "_" + variable_name
-    if variable_name in kwlist:
+    if iskeyword(variable_name):
         variable_name = f"{variable_name}_"
     return variable_name

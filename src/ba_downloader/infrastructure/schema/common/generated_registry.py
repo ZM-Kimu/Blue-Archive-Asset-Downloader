@@ -77,7 +77,9 @@ class GeneratedSchemaRegistry:
         }
 
 
-def load_generated_registry_module(package_dir: Path, package_prefix: str) -> ModuleType:
+def load_generated_registry_module(
+    package_dir: Path, package_prefix: str
+) -> ModuleType:
     init_file = package_dir / "__init__.py"
     registry_file = package_dir / "_registry.py"
     if not package_dir.is_dir():
@@ -102,7 +104,9 @@ def load_generated_registry_module(package_dir: Path, package_prefix: str) -> Mo
         submodule_search_locations=[str(package_dir)],
     )
     if spec is None or spec.loader is None:
-        raise ImportError(f"Unable to create generated schema import spec for {package_dir}.")
+        raise ImportError(
+            f"Unable to create generated schema import spec for {package_dir}."
+        )
 
     module = sys.modules.get(package_name)
     if module is None:

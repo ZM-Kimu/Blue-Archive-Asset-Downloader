@@ -11,13 +11,15 @@ import pytest
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpResponse
 from ba_downloader.infrastructure.packages import (
-    UnsupportedZipLayoutError,
-    ZipCentralDirectoryError,
     ZipEntry,
-    ZipEntryNotFoundError,
     extract_zip_entry,
     find_zip_entry,
     read_zip_entries,
+)
+from ba_downloader.infrastructure.packages.zip_range_reader import (
+    UnsupportedZipLayoutError,
+    ZipCentralDirectoryError,
+    ZipEntryNotFoundError,
 )
 from ba_downloader.infrastructure.regions.cn.provider import (
     CNRegionProvider,

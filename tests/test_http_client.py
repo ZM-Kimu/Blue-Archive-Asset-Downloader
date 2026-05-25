@@ -351,7 +351,9 @@ def test_http_client_download_resumes_incomplete_full_response(
 
     monkeypatch.setattr(client, "_httpx", fake_httpx)
 
-    result = client.download_to_file("https://example.com/archive.bin", str(destination))
+    result = client.download_to_file(
+        "https://example.com/archive.bin", str(destination)
+    )
 
     assert result.bytes_written == 6
     assert destination.read_bytes() == b"abcdef"
@@ -428,7 +430,9 @@ def test_http_client_download_restarts_when_range_is_ignored(
 
     monkeypatch.setattr(client, "_httpx", fake_httpx)
 
-    result = client.download_to_file("https://example.com/archive.bin", str(destination))
+    result = client.download_to_file(
+        "https://example.com/archive.bin", str(destination)
+    )
 
     assert result.bytes_written == 6
     assert destination.read_bytes() == b"abcdef"
