@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ba_downloader.infrastructure.schema.common.support import make_valid_identifier
+from ba_downloader.infrastructure.schema.common.identifiers import make_valid_identifier
 
 
 @dataclass(frozen=True, slots=True)

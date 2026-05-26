@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from binascii import crc32
 from contextlib import nullcontext
 from pathlib import Path
@@ -9,13 +10,13 @@ from typing import Any, ClassVar
 import pytest
 
 from ba_downloader.domain.exceptions import DownloadError, NetworkError
-from ba_downloader.domain.models.asset import AssetCollection, AssetType
+from ba_downloader.domain.models.asset import AssetCollection, AssetRecord, AssetType
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import DownloadResult
-from ba_downloader.infrastructure.apk import ZipEntry
 from ba_downloader.infrastructure.download.resource_downloader import ResourceDownloader
+from ba_downloader.infrastructure.files.checksum import calculate_crc, calculate_md5
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
-from ba_downloader.shared.crypto.encryption import calculate_crc, calculate_md5
+from ba_downloader.infrastructure.packages import ZipEntry
 
 
 class RecordingHttpClient:
@@ -137,6 +138,24 @@ class RecordingLogger:
 
     def error(self, message: str) -> None:
         self.error_messages.append(message)
+
+
+def test_download_module_does_not_import_extractors_directly() -> None:
+    module_path = Path(
+        "src/ba_downloader/infrastructure/download/resource_downloader.py"
+    )
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    violations: list[str] = []
+
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module is not None
+            and node.module.startswith("ba_downloader.infrastructure.extraction")
+        ):
+            violations.append(node.module)
+
+    assert not violations
 
 
 def _build_context(tmp_path: Path) -> RuntimeContext:
@@ -752,10 +771,16 @@ def test_download_resources_does_not_extract_when_post_download_validation_fails
 ) -> None:
     logger = RecordingLogger()
     client = RecordingHttpClient(payloads=[b"short"])
-    downloader = ResourceDownloader(client, logger)
     context = _build_context(tmp_path).with_updates(extract_while_download=True)
     resources = list(_build_resources("Bundle/a.bundle"))
     extract_calls: list[str] = []
+    downloader = ResourceDownloader(
+        client,
+        logger,
+        immediate_extraction_handler=lambda resource, _context: extract_calls.append(
+            resource.path
+        ),
+    )
     RecordingProgressReporter.instances.clear()
 
     monkeypatch.setattr(
@@ -765,12 +790,6 @@ def test_download_resources_does_not_extract_when_post_download_validation_fails
     monkeypatch.setattr(
         downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
     )
-    monkeypatch.setattr(
-        downloader,
-        "_extract_resource",
-        lambda resource, _context: extract_calls.append(resource.path),
-    )
-
     failed = downloader._download_resources(resources, context)
 
     assert [resource.path for resource in failed] == ["Bundle/a.bundle"]
@@ -782,105 +801,80 @@ def test_download_resources_does_not_extract_when_post_download_validation_fails
     assert logger.error_messages == []
 
 
-def test_extract_resource_reuses_media_extractor_instances(
+def test_download_resources_uses_injected_immediate_extraction_handler(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    payload = b"validated!"
+    client = RecordingHttpClient(payloads=[payload])
+    context = _build_context(tmp_path).with_updates(extract_while_download=True)
+    resource = next(
+        iter(_build_checked_resources(tmp_path, "Bundle/a.bundle", payload=payload))
+    )
+    extraction_calls: list[tuple[str, str]] = []
+    RecordingProgressReporter.instances.clear()
+
+    def extract_immediately(
+        downloaded_resource: AssetRecord,
+        active_context: RuntimeContext,
+    ) -> None:
+        assert downloaded_resource == resource
+        asset_path = Path(active_context.raw_dir) / resource.path
+        assert asset_path.read_bytes() == payload
+        extraction_calls.append((resource.path, active_context.raw_dir))
+
+    downloader = ResourceDownloader(
+        client,
+        NullLogger(),
+        immediate_extraction_handler=extract_immediately,
+    )
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
+        RecordingProgressReporter,
+    )
+    monkeypatch.setattr(
+        downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
+    )
+
+    failed = downloader._download_resources([resource], context)
+
+    assert failed == []
+    assert extraction_calls == [(resource.path, context.raw_dir)]
+
+
+def test_download_resources_skips_immediate_extraction_when_context_disables_it(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    init_count = {"value": 0}
-
-    class FakeMediaExtractor:
-        def __init__(self, extract_dir: str) -> None:
-            _ = extract_dir
-            init_count["value"] += 1
-
-        def extract_zip(self, file_path: str) -> None:
-            _ = file_path
+    payload = b"validated!"
+    client = RecordingHttpClient(payloads=[payload])
+    context = _build_context(tmp_path)
+    resource = next(
+        iter(_build_checked_resources(tmp_path, "Bundle/a.bundle", payload=payload))
+    )
+    extraction_calls: list[str] = []
+    downloader = ResourceDownloader(
+        client,
+        NullLogger(),
+        immediate_extraction_handler=lambda downloaded, _context: extraction_calls.append(
+            downloaded.path
+        ),
+    )
+    RecordingProgressReporter.instances.clear()
 
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.download.resource_downloader.MediaExtractor",
-        FakeMediaExtractor,
+        "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
+        RecordingProgressReporter,
     )
-
-    downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
-    context = _build_context(tmp_path).with_updates(resource_type=("media",))
-    resources = AssetCollection()
-    resources.add(
-        "https://example.com/Media/a.zip",
-        "Media/a.zip",
-        10,
-        "deadbeef",
-        "md5",
-        AssetType.media,
-    )
-    resources.add(
-        "https://example.com/Media/b.zip",
-        "Media/b.zip",
-        10,
-        "deadbeef",
-        "md5",
-        AssetType.media,
-    )
-    resource_one = resources[0]
-    resource_two = resources[1]
-
-    downloader._extract_resource(resource_one, context)
-    downloader._extract_resource(resource_two, context)
-
-    assert init_count["value"] == 1
-
-
-def test_extract_resource_reuses_table_extractor_instances(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    init_count = {"value": 0}
-
-    class FakeTableExtractor:
-        @classmethod
-        def from_context(
-            cls,
-            context: RuntimeContext,
-            logger: NullLogger,
-        ) -> FakeTableExtractor:
-            _ = (context, logger)
-            init_count["value"] += 1
-            return cls()
-
-        def extract_table(self, file_path: str) -> bool:
-            _ = file_path
-            return True
-
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.download.resource_downloader.TableExtractor",
-        FakeTableExtractor,
+        downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
     )
 
-    downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
-    context = _build_context(tmp_path).with_updates(resource_type=("table",))
-    resources = AssetCollection()
-    resources.add(
-        "https://example.com/Table/a.bytes",
-        "Table/a.bytes",
-        10,
-        "deadbeef",
-        "md5",
-        AssetType.table,
-    )
-    resources.add(
-        "https://example.com/Table/b.bytes",
-        "Table/b.bytes",
-        10,
-        "deadbeef",
-        "md5",
-        AssetType.table,
-    )
-    resource_one = resources[0]
-    resource_two = resources[1]
+    failed = downloader._download_resources([resource], context)
 
-    downloader._extract_resource(resource_one, context)
-    downloader._extract_resource(resource_two, context)
-
-    assert init_count["value"] == 1
+    assert failed == []
+    assert extraction_calls == []
 
 
 def test_verify_resource_accepts_jp_crc_decimal_strings(tmp_path: Path) -> None:

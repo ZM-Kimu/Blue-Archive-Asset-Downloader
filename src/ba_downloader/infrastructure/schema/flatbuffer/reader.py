@@ -19,9 +19,7 @@ from typing import (
 import flatbuffers
 
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
-from ba_downloader.infrastructure.schema.flatbuffer.descriptors import FlatBufferField
-from ba_downloader.infrastructure.schema.flatbuffer.parser import FlatBufferCSParser
-from ba_downloader.shared.crypto.encryption import (
+from ba_downloader.infrastructure.schema.crypto import (
     convert_double,
     convert_float,
     convert_int,
@@ -32,6 +30,8 @@ from ba_downloader.shared.crypto.encryption import (
     convert_ulong,
     convert_ushort,
 )
+from ba_downloader.infrastructure.schema.flatbuffer.descriptors import FlatBufferField
+from ba_downloader.infrastructure.schema.flatbuffer.parser import FlatBufferCSParser
 
 LOGGER = ConsoleLogger()
 
@@ -102,7 +102,9 @@ class FlatBufferReader:
             return cls
         return make_dataclass(cls)
 
-    def read_root(self, schema_type: type[Any], *, password: bytes = b"") -> dict[str, Any]:
+    def read_root(
+        self, schema_type: type[Any], *, password: bytes = b""
+    ) -> dict[str, Any]:
         root_pos = flatbuffers.encode.Get(flatbuffers.packer.uoffset, self.payload, 0)
         root_table = flatbuffers.table.Table(self.payload, root_pos)
         return self.read_object(schema_type, root_table, password=password)
@@ -231,10 +233,13 @@ class FlatBufferReader:
         if object_type := self._schema_type(item_annotation):
             values: list[Any] = []
             for index in range(length):
-                item_pos = vector_start + flatbuffers.number_types.UOffsetTFlags.py_type(
-                    index * 4
+                item_pos = (
+                    vector_start
+                    + flatbuffers.number_types.UOffsetTFlags.py_type(index * 4)
                 )
-                child_table = flatbuffers.table.Table(table.Bytes, table.Indirect(item_pos))
+                child_table = flatbuffers.table.Table(
+                    table.Bytes, table.Indirect(item_pos)
+                )
                 values.append(
                     self.read_object(object_type, child_table, password=password)
                 )
@@ -265,7 +270,9 @@ class FlatBufferReader:
 
     @staticmethod
     def _field_offset(table: flatbuffers.table.Table, index: int) -> int:
-        return flatbuffers.number_types.UOffsetTFlags.py_type(table.Offset(4 + index * 2))
+        return flatbuffers.number_types.UOffsetTFlags.py_type(
+            table.Offset(4 + index * 2)
+        )
 
     @classmethod
     def _default_value(cls, normalized: str, annotation: Any) -> Any:
@@ -400,7 +407,9 @@ class FlatBufferReader:
     @classmethod
     def _schema_type(cls, annotation: Any) -> type[Any] | None:
         object_type = cls._object_type(annotation)
-        if isinstance(object_type, type) and hasattr(object_type, "__flatbuffer_type__"):
+        if isinstance(object_type, type) and hasattr(
+            object_type, "__flatbuffer_type__"
+        ):
             return object_type
         return None
 

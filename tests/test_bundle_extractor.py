@@ -8,8 +8,8 @@ from typing import Any
 import UnityPy
 
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.infrastructure.extractors import bundle as bundle_module
-from ba_downloader.infrastructure.extractors.bundle import BundleExtractor
+from ba_downloader.infrastructure.extraction.bundle import exporter as bundle_module
+from ba_downloader.infrastructure.extraction.bundle.exporter import BundleExtractor
 
 
 class RecordingLogger:

@@ -79,8 +79,8 @@ def test_schema_workflow_no_longer_uses_flatbuffer_only_naming() -> None:
 
 
 def test_table_extractor_no_longer_uses_flat_data_dir_name() -> None:
-    from ba_downloader.infrastructure.extractors import table
-    from ba_downloader.infrastructure.extractors.table import TableExtractor
+    from ba_downloader.infrastructure.extraction import table
+    from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
 
     signature = inspect.signature(TableExtractor)
 
@@ -140,5 +140,7 @@ def test_generated_schema_registry_loads_class_and_module_name_registries(
         registry_values_are_module_names=True,
     )
 
-    assert module_registry.types["Media.Service.MediaCatalog"].__name__ == "MediaCatalog"
+    assert (
+        module_registry.types["Media.Service.MediaCatalog"].__name__ == "MediaCatalog"
+    )
     assert module_registry.resolve_type("MediaCatalog").__name__ == "MediaCatalog"

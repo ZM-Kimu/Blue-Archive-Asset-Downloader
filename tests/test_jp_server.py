@@ -1,3 +1,4 @@
+import ast
 import json
 import struct
 from pathlib import Path
@@ -5,30 +6,55 @@ from typing import Any
 
 import pytest
 
+import ba_downloader.infrastructure.regions.jp.provider as jp_provider_module
 from ba_downloader.domain.models.asset import (
     AssetCollection,
     BootstrapSession,
     CatalogSource,
     ResolvedRelease,
 )
+from ba_downloader.domain.models.region_catalog import DecodedJPCatalog
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpResponse
 from ba_downloader.domain.services.resource_query import ResourceQueryService
-from ba_downloader.infrastructure.apk.package_manager import (
+from ba_downloader.infrastructure.logging.console_logger import NullLogger
+from ba_downloader.infrastructure.packages.android_package import (
     PackageArchiveError,
     _resolve_filename,
 )
-from ba_downloader.infrastructure.logging.console_logger import NullLogger
-from ba_downloader.infrastructure.regions.providers.jp import (
-    DecodedJPCatalog,
+from ba_downloader.infrastructure.regions.jp.provider import (
     JPBootstrapper,
-    JPCatalogDecoder,
-    JPServer,
+    JPRegionProvider,
 )
+from ba_downloader.infrastructure.schema.catalog.jp import JPCatalogDecoder
 from ba_downloader.infrastructure.schema.memorypack.generator import (
     CompileMemoryPackToPython,
 )
 from ba_downloader.infrastructure.schema.memorypack.parser import MemoryPackCSParser
+
+
+def test_jp_provider_facade_does_not_import_catalog_decode_or_unity_readers() -> None:
+    source_path = Path(jp_provider_module.__file__)
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    forbidden_imports = {
+        "ba_downloader.infrastructure.schema.memorypack.reader",
+        "ba_downloader.infrastructure.unity",
+    }
+    imported_modules: set[str] = set()
+    imported_names: set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_modules.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imported_modules.add(node.module)
+            imported_names.update(alias.name for alias in node.names)
+
+    assert forbidden_imports.isdisjoint(imported_modules)
+    assert "MemoryPackReader" not in imported_names
+    assert "UnityAssetReader" not in imported_names
 
 
 class MemoryPackWriter:
@@ -137,6 +163,10 @@ class RecordingLogger:
 
     def error(self, message: str) -> None:
         self.error_messages.append(message)
+
+
+def _jp_provider(client: RecordingHttpClient, logger: Any) -> JPRegionProvider:
+    return JPRegionProvider(client, logger, JPCatalogDecoder())
 
 
 def _write_table_bundle(writer: MemoryPackWriter, bundle: dict[str, Any]) -> None:
@@ -357,7 +387,7 @@ def test_parse_package_info_prefers_highest_version() -> None:
         b"https://download.pureapk.com/b/XAPK/latest-build.xapk\x00"
     )
 
-    package_info = JPServer.parse_package_info(payload)
+    package_info = JPRegionProvider.parse_package_info(payload)
 
     assert package_info.version == "1.66.405117"
     assert package_info.download_url == (
@@ -367,7 +397,7 @@ def test_parse_package_info_prefers_highest_version() -> None:
 
 def test_parse_package_info_raises_for_invalid_payload() -> None:
     with pytest.raises(LookupError, match="PureAPK"):
-        JPServer.parse_package_info(b"invalid payload")
+        JPRegionProvider.parse_package_info(b"invalid payload")
 
 
 def test_resolve_filename_falls_back_to_url() -> None:
@@ -462,7 +492,7 @@ def test_get_resource_manifest_uses_second_root_and_bundle_packing_info() -> Non
         ),
     }
     client = RecordingHttpClient(responses)
-    provider = JPServer(client, NullLogger())
+    provider = _jp_provider(client, NullLogger())
 
     resources = provider.get_resource_manifest(server_url)
 
@@ -636,7 +666,7 @@ def test_search_name_matches_jp_bundle_files_from_patch_pack() -> None:
             ),
         }
     )
-    provider = JPServer(client, NullLogger())
+    provider = _jp_provider(client, NullLogger())
 
     resources = provider.get_resource_manifest(server_url)
     filtered = ResourceQueryService.search_name(resources, ["character.bundle"])
@@ -706,7 +736,7 @@ def test_jp_catalog_source_provider_uses_selected_platform_for_bundle_manifest(
             ),
         }
     )
-    provider = JPServer(client, NullLogger())
+    provider = _jp_provider(client, NullLogger())
 
     provider.catalog_source_provider.fetch(session, context)
 
@@ -752,7 +782,7 @@ def test_jp_asset_normalizer_uses_platform_specific_bundle_urls(
             }
         ],
     )
-    provider = JPServer(RecordingHttpClient({}), NullLogger())
+    provider = _jp_provider(RecordingHttpClient({}), NullLogger())
 
     assets = provider.asset_normalizer.normalize(payload, session)
 
@@ -764,7 +794,7 @@ def test_load_catalog_logs_happy_path_at_info_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     logger = RecordingLogger()
-    provider = JPServer(RecordingHttpClient({}), logger)
+    provider = _jp_provider(RecordingHttpClient({}), logger)
     context = RuntimeContext(
         region="jp",
         threads=4,
@@ -825,7 +855,7 @@ def test_jp_bootstrap_translates_package_download_validation_errors(
     )
 
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.providers.jp.download_package_file",
+        "ba_downloader.infrastructure.regions.jp.bootstrapper.download_package_file",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             PackageArchiveError("Package archive validation failed for bad.xapk.")
         ),
@@ -866,7 +896,7 @@ def test_jp_bootstrap_translates_package_extraction_errors(
     )
 
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.providers.jp.download_package_file",
+        "ba_downloader.infrastructure.regions.jp.bootstrapper.download_package_file",
         lambda *args, **kwargs: str(package_path),
     )
 

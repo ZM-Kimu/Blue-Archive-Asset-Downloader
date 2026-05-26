@@ -39,29 +39,32 @@ cn_metadata_exporter/
     Program.cs
     ExportOptions.cs
     ExportProfiler.cs
+  Application/
+    ResolvedExportArtifactBuilder.cs
   Indexing/
     TypeDescriptorIndex.cs
     TypeDescriptorIndexBuilder.cs
     TypeNameLookup.cs
-    YldaTypeIndexBuilder.cs
-    YldaRelationshipIndexBuilder.cs
-    YldaMemberIndexBuilder.cs
-    ResolvedExportArtifactBuilder.cs
+    TypeIndexBuilder.cs
+    RelationshipIndexBuilder.cs
+    MemberIndexBuilder.cs
   Exporting/
-    YldaDumpExporter.cs
-    YldaDumpExporter.Writers.cs
+    DumpExporter.cs
+    DumpExporter.Writers.cs
   Metadata/
-    YldaMetadataLayout.cs
-    YldaMetadataReader.cs
-    YldaMetadataRestorer.cs
+    MetadataLayout.cs
+    MetadataReader.cs
+    MetadataRestorer.cs
   Models/
-    Models.cs
+    MetadataModels.cs
+    ResolutionModels.cs
+    ResolvedExportModels.cs
   Resolution/
-    YldaMemberResolver.cs
-    YldaRelationshipResolver.cs
-    YldaResolutionConstants.cs
-    YldaResolutionUtilities.cs
-    YldaTypeResolver.cs
+    MemberResolver.cs
+    RelationshipResolver.cs
+    ResolutionConstants.cs
+    ResolutionUtilities.cs
+    TypeResolver.cs
   README.md
   cn_metadata_exporter.csproj
 ```
@@ -69,6 +72,7 @@ cn_metadata_exporter/
 Responsibilities:
 
 - `Cli/`: process entry and argument parsing
+- `Application/`: export orchestration over parsed metadata and resolved indexes
 - `Metadata/`: protected-buffer restore and metadata layout decoding
 - `Indexing/`: one-time cold-path descriptor and artifact builders
 - `Resolution/`: type-name recovery, relationship resolution, and member-signature reconstruction
@@ -85,8 +89,8 @@ dotnet build cn_metadata_exporter\cn_metadata_exporter.csproj -c Release
 
 ```powershell
 dotnet run --project cn_metadata_exporter\cn_metadata_exporter.csproj -c Release -- `
-  --metadata "F:\cn_metadata\assets\bin\Data\Managed\Metadata\global-metadata.dat" `
-  --output "C:\Users\Win10\Desktop\test_ba\artifacts\exports\cn_dump_cs_from_csharp_full.cs" `
+  --metadata "path\to\your\global-metadata.dat" `
+  --output "path\to\your\cn_dump_cs_from_csharp_full.cs" `
   --profile
 ```
 
@@ -94,9 +98,9 @@ Persist the restored metadata buffer:
 
 ```powershell
 dotnet run --project cn_metadata_exporter\cn_metadata_exporter.csproj -c Release -- `
-  --metadata "F:\cn_metadata\assets\bin\Data\Managed\Metadata\global-metadata.dat" `
-  --restored-output "C:\Users\Win10\Desktop\test_ba\artifacts\metadata\tmp_cn_restored_from_csharp.dat" `
-  --output "C:\Users\Win10\Desktop\test_ba\artifacts\exports\cn_dump_cs_from_csharp_full.cs"
+  --metadata "path\to\your\global-metadata.dat" `
+  --restored-output "path\to\your\tmp_cn_restored_from_csharp.dat" `
+  --output "path\to\your\cn_dump_cs_from_csharp_full.cs"
 ```
 
 Show help:
@@ -109,7 +113,7 @@ Export a subset:
 
 ```powershell
 dotnet run --project cn_metadata_exporter\cn_metadata_exporter.csproj -c Release -- `
-  --metadata "F:\cn_metadata\assets\bin\Data\Managed\Metadata\global-metadata.dat" `
+  --metadata "path\to\your\global-metadata.dat" `
   --image "BlueArchive.dll" `
   --type-filter "ServerInfo" `
   --private-members none
@@ -119,8 +123,8 @@ Emit reference-shaped placeholder method addresses:
 
 ```powershell
 dotnet run --project cn_metadata_exporter\cn_metadata_exporter.csproj -c Release -- `
-  --metadata "F:\cn_metadata\assets\bin\Data\Managed\Metadata\global-metadata.dat" `
-  --output "C:\Users\Win10\Desktop\test_ba\artifacts\exports\cn_dump_with_placeholders.cs" `
+  --metadata "path\to\your\global-metadata.dat" `
+  --output "path\to\your\cn_dump_with_placeholders.cs" `
   --method-address-placeholders
 ```
 

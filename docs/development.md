@@ -102,14 +102,46 @@ FlatBuffer schema 生成失败会中断 compile；MemoryPack schema 生成失败
 
 在各区服格式尚未全部可语义解包前，不做未验证的统一格式猜测。后续当 CN / GL / JP 的 table payload 语义覆盖足够完整时，再将这些来源特定规则收敛为统一 payload router，并以统一路由作为唯一入口。
 
+## 架构边界与复杂度预算
+
+当前仓库允许内部 Python API 进行 breaking change，但 CLI 命令、核心参数、默认输出目录默认保持稳定。较大的重构应先补架构或行为测试，再拆实现。
+
+依赖方向原则：
+
+- `bootstrap` 负责 CLI runtime 装配、region registry、runtime preparer registry；除 CLI 入口外，不应由业务模块反向依赖。
+- `application.use_cases` 负责编排 use case，不承载格式解析细节。
+- `domain` 只放稳定值对象、端口和无外部依赖的领域服务，例如 `domain.services.catalog_pipeline`。
+- `download` 只负责下载、校验和下载进度，不直接依赖 table/media/bundle extractor。
+- `infrastructure.extraction` 负责编排和格式导出，按 `bundle` / `media` / `table` / `character` 子包拆分。
+- `infrastructure.packages` 负责 APK / XAPK / ZIP range IO，不承载区服 catalog 语义。
+- `regions` 只负责区服 release/catalog 获取和 asset normalization；schema codec 与 Unity 读取细节不得放回 provider facade。
+- `schema` 只负责 dump schema、generated registry 与 binary reader/exporter，不直接驱动下载或提取流程。
+
+复杂度守门在 `tests/test_architecture_complexity.py` 中维护。默认不为历史热点保留 allowlist；如确需临时放行，必须在对应减熵阶段结束时同步收紧预算或移除放行项。
+
 内部模块按职责拆分：
 
+- CLI 装配：`ba_downloader.bootstrap`
+- Use cases：`ba_downloader.application.use_cases`
+- Region providers：`ba_downloader.infrastructure.regions.cn|gl|jp`
+- Extraction：`ba_downloader.infrastructure.extraction`
+- APK / XAPK / ZIP IO：`ba_downloader.infrastructure.packages`
+- File checksum：`ba_downloader.infrastructure.files.checksum`
 - FlatBuffer：`ba_downloader.infrastructure.schema.flatbuffer`
 - MemoryPack：`ba_downloader.infrastructure.schema.memorypack`
 - 共享能力：`ba_downloader.infrastructure.schema.common`
 - dump / IL2CPP / runtime probe 等外部工具仍位于 `ba_downloader.infrastructure.tools`
 
 旧的 schema 内部入口 `ba_downloader.infrastructure.tools.flatbuffer_*`、`ba_downloader.infrastructure.tools.memorypack_*`、`CSParser`、`CompileToPython`、`GeneratedDumpWrapperError` 均不再支持；内部调用请迁移到 `ba_downloader.infrastructure.schema.*`。
+
+旧的内部路径不提供 shim，包括：
+
+- `ba_downloader.application.services.*` -> `ba_downloader.application.use_cases.*`
+- `ba_downloader.application.catalog_pipeline` -> `ba_downloader.domain.services.catalog_pipeline`
+- `ba_downloader.infrastructure.regions.providers.*` -> `ba_downloader.infrastructure.regions.<region>.provider`
+- `ba_downloader.infrastructure.extractors.*` / `ba_downloader.infrastructure.extract.*` -> `ba_downloader.infrastructure.extraction.*`
+- `ba_downloader.infrastructure.apk.*` -> `ba_downloader.infrastructure.packages.*`
+- 旧 `ba_downloader.shared` 命名空间已移除；checksum 放在 `ba_downloader.infrastructure.files.checksum`，schema/table crypto 放在对应 infrastructure 模块。
 
 ## GL 特殊 payload 备注
 

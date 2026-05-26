@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import py_compile
-import sys
 from dataclasses import is_dataclass
 from enum import IntEnum
-from importlib import util
 from pathlib import Path
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
@@ -12,6 +10,7 @@ import flatbuffers
 import pytest
 
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.infrastructure.schema.crypto import convert_int, create_key
 from ba_downloader.infrastructure.schema.flatbuffer import (
     reader as flatbuffer_reader_module,
 )
@@ -22,7 +21,7 @@ from ba_downloader.infrastructure.schema.flatbuffer.generator import (
 from ba_downloader.infrastructure.schema.flatbuffer.parser import FlatBufferCSParser
 from ba_downloader.infrastructure.schema.flatbuffer.reader import FlatBufferReader
 from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
-from ba_downloader.shared.crypto.encryption import convert_int, create_key
+from generated_modules import load_generated_module
 
 
 class DummyHttpClient:
@@ -241,30 +240,12 @@ def _write_dump(tmp_path: Path, content: str) -> Path:
 
 
 def _load_generated_module(package_dir: Path, module_name: str) -> Any:
-    package_name = f"generated_flatbuffer_{abs(hash(str(package_dir)))}"
-    if package_name not in sys.modules:
-        package_spec = util.spec_from_file_location(
-            package_name,
-            package_dir / "__init__.py",
-            submodule_search_locations=[str(package_dir)],
-        )
-        assert package_spec is not None and package_spec.loader is not None
-        package = util.module_from_spec(package_spec)
-        sys.modules[package_name] = package
-        package_spec.loader.exec_module(package)
-
-    spec = util.spec_from_file_location(
-        f"{package_name}.{module_name}",
-        package_dir / f"{module_name}.py",
-    )
-    assert spec is not None and spec.loader is not None
-    module = util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_generated_module(package_dir, module_name, "generated_flatbuffer")
 
 
-def _build_sample_entry(builder: flatbuffers.Builder, name: str, attack_type: int) -> int:
+def _build_sample_entry(
+    builder: flatbuffers.Builder, name: str, attack_type: int
+) -> int:
     name_offset = builder.CreateString(name)
     builder.StartObject(3)
     builder.PrependUOffsetTRelativeSlot(2, name_offset, 0)
@@ -350,11 +331,15 @@ def test_flatbuffer_parser_reads_descriptors_and_implicit_enums(tmp_path: Path) 
     enums = parser.parse_enums()
     descriptors = parser.parse_types()
 
-    assert [(enum.name, enum.underlying_type, enum.type_def_index) for enum in enums] == [
+    assert [
+        (enum.name, enum.underlying_type, enum.type_def_index) for enum in enums
+    ] == [
         ("AttackType", "System.Int32", 1),
         ("ProductionStep", "System.Int32", 2),
     ]
-    assert [(member.name, member.value, member.token) for member in enums[1].members] == [
+    assert [
+        (member.name, member.value, member.token) for member in enums[1].members
+    ] == [
         ("ToDo", 0, "0x04000005"),
         ("Doing", 1, "0x04000006"),
     ]
@@ -439,7 +424,10 @@ def test_flatbuffer_codegen_creates_importable_schema_registry(
     assert issubclass(attack_type_module.AttackType, IntEnum)
     assert attack_type_module.AttackType.Special.value == 7
     assert registry_module.FLATBUFFER_TYPES["SampleTable"] is table_module.SampleTable
-    assert registry_module.FLATBUFFER_ENUMS["FlatData.AttackType"] is attack_type_module.AttackType
+    assert (
+        registry_module.FLATBUFFER_ENUMS["FlatData.AttackType"]
+        is attack_type_module.AttackType
+    )
 
     hints = get_type_hints(
         table_module.SampleTable,
@@ -518,14 +506,20 @@ def test_flatbuffer_codegen_preserves_cn_recovered_flatdata_references(
         globalns=animator_module.__dict__,
         include_extras=True,
     )
-    assert get_args(get_args(animator_hints["DataList"])[0])[0] is animator_module.AniStateData
+    assert (
+        get_args(get_args(animator_hints["DataList"])[0])[0]
+        is animator_module.AniStateData
+    )
 
     blend_hints = get_type_hints(
         animation_blend_module.AnimationBlendTable,
         globalns=animation_blend_module.__dict__,
         include_extras=True,
     )
-    assert get_args(get_args(blend_hints["DataList"])[0])[0] is animation_blend_module.BlendData
+    assert (
+        get_args(get_args(blend_hints["DataList"])[0])[0]
+        is animation_blend_module.BlendData
+    )
 
     ground_grid_hints = get_type_hints(
         ground_grid_module.GroundGridFlat,
@@ -695,4 +689,6 @@ def test_schema_workflow_warns_when_memorypack_codegen_fails(
     SchemaWorkflow(DummyHttpClient(), logger).compile(context)
 
     assert (Path(context.extract_dir) / "FlatBufferData" / "SampleEntry.py").is_file()
-    assert any("MemoryPackData generation failed" in item for item in logger.warn_messages)
+    assert any(
+        "MemoryPackData generation failed" in item for item in logger.warn_messages
+    )

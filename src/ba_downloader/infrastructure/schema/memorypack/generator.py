@@ -4,16 +4,19 @@ import os
 from typing import Any
 
 from ba_downloader.infrastructure.schema.common.codegen import (
+    build_cyclic_imports,
+    build_python_name_maps,
+    build_refs,
     build_simple_refs,
     escape_string,
-    graph_has_path,
     import_names,
-    resolve_unique_python_name,
+    render_relative_imports,
+    resolve_reference,
     string_or_none,
     tuple_literal,
     write_text_file,
 )
-from ba_downloader.infrastructure.schema.common.support import make_valid_identifier
+from ba_downloader.infrastructure.schema.common.identifiers import make_valid_identifier
 from ba_downloader.infrastructure.schema.memorypack.descriptors import (
     MemoryPackEnumDescriptor,
     MemoryPackTypeDescriptor,
@@ -51,44 +54,20 @@ class CompileMemoryPackToPython:
             self._create_type_file(descriptor, python_name)
 
     def _build_python_name_maps(self) -> tuple[dict[str, str], dict[str, str]]:
-        used_names: dict[str, int] = {}
-        type_names: dict[str, str] = {}
-        enum_names: dict[str, str] = {}
-        for enum in self.enums:
-            enum_names[self._enum_key(enum)] = self._resolve_unique_python_name(
-                enum.python_name,
-                enum.type_def_index,
-                used_names,
-            )
-        for descriptor in self.descriptors:
-            type_names[self._descriptor_key(descriptor)] = self._resolve_unique_python_name(
-                descriptor.python_name,
-                descriptor.type_def_index,
-                used_names,
-            )
-        return type_names, enum_names
-
-    @staticmethod
-    def _resolve_unique_python_name(
-        base_name: str,
-        type_def_index: int,
-        used_names: dict[str, int],
-    ) -> str:
-        return resolve_unique_python_name(base_name, type_def_index, used_names)
+        return build_python_name_maps(
+            self.descriptors,
+            self.enums,
+            descriptor_key=self._descriptor_key,
+            enum_key=self._enum_key,
+        )
 
     def _build_type_refs(self) -> dict[str, tuple[str, MemoryPackTypeDescriptor]]:
-        refs: dict[str, tuple[str, MemoryPackTypeDescriptor]] = {}
-        for descriptor in self.descriptors:
-            python_name = self.type_python_names[self._descriptor_key(descriptor)]
-            refs[descriptor.full_name] = (python_name, descriptor)
-        return refs
+        return build_refs(
+            self.descriptors, self.type_python_names, self._descriptor_key
+        )
 
     def _build_enum_refs(self) -> dict[str, tuple[str, MemoryPackEnumDescriptor]]:
-        refs: dict[str, tuple[str, MemoryPackEnumDescriptor]] = {}
-        for enum in self.enums:
-            python_name = self.enum_python_names[self._enum_key(enum)]
-            refs[enum.full_name] = (python_name, enum)
-        return refs
+        return build_refs(self.enums, self.enum_python_names, self._enum_key)
 
     @staticmethod
     def _build_simple_refs(
@@ -97,34 +76,26 @@ class CompileMemoryPackToPython:
         return build_simple_refs(refs)
 
     def _build_cyclic_type_imports(self) -> set[tuple[str, str]]:
-        graph: dict[str, set[str]] = {
-            python_name: set() for python_name in self.type_python_names.values()
-        }
-        type_python_names = set(self.type_python_names.values())
-        for descriptor in self.descriptors:
-            source_name = self.type_python_names[self._descriptor_key(descriptor)]
+        def collect_imports(
+            descriptor: MemoryPackTypeDescriptor,
+            source_name: str,
+        ) -> set[str]:
+            imports: set[str] = set()
             for member in descriptor.members:
                 render = self._render_python_type(
                     member.cs_type,
                     descriptor.namespace,
                     source_name,
                 )
-                graph[source_name].update(render.imports & type_python_names)
+                imports.update(render.imports)
+            return imports
 
-        cyclic_imports: set[tuple[str, str]] = set()
-        for source_name, targets in graph.items():
-            for target_name in targets:
-                if self._graph_has_path(graph, target_name, source_name):
-                    cyclic_imports.add((source_name, target_name))
-        return cyclic_imports
-
-    @staticmethod
-    def _graph_has_path(
-        graph: dict[str, set[str]],
-        start_name: str,
-        target_name: str,
-    ) -> bool:
-        return graph_has_path(graph, start_name, target_name)
+        return build_cyclic_imports(
+            self.descriptors,
+            self.type_python_names,
+            descriptor_key=self._descriptor_key,
+            collect_imports=collect_imports,
+        )
 
     @staticmethod
     def _descriptor_key(descriptor: MemoryPackTypeDescriptor) -> str:
@@ -213,7 +184,9 @@ class CompileMemoryPackToPython:
             lines.append("    pass")
         for member in enum.members:
             lines.append(f"    {make_valid_identifier(member.name)} = {member.value}")
-        lines.extend(["", f"{python_name}.__memorypack_enum__ = __memorypack_enum__", ""])
+        lines.extend(
+            ["", f"{python_name}.__memorypack_enum__ = __memorypack_enum__", ""]
+        )
         self._write_file(f"{python_name}.py", "\n".join(lines))
 
     def _create_type_file(
@@ -239,19 +212,11 @@ class CompileMemoryPackToPython:
                 for import_name in render.imports
             }
         )
-        runtime_imports = [
-            import_name
-            for import_name in imports
-            if (python_name, import_name) not in self.cyclic_type_imports
-        ]
-        type_checking_imports = [
-            import_name
-            for import_name in imports
-            if (python_name, import_name) in self.cyclic_type_imports
-        ]
-        typing_import = "from typing import Annotated, Any"
-        if type_checking_imports:
-            typing_import = "from typing import Annotated, Any, TYPE_CHECKING"
+        runtime_imports, type_checking_imports, typing_import = render_relative_imports(
+            imports,
+            self.cyclic_type_imports,
+            python_name,
+        )
         lines = [
             "from __future__ import annotations",
             "",
@@ -276,7 +241,9 @@ class CompileMemoryPackToPython:
                 for import_name in type_checking_imports
             )
             lines.append("else:")
-            lines.extend(f"    {import_name} = Any" for import_name in type_checking_imports)
+            lines.extend(
+                f"    {import_name} = Any" for import_name in type_checking_imports
+            )
         lines.extend(
             [
                 "",
@@ -433,31 +400,24 @@ class CompileMemoryPackToPython:
         cs_type: str,
         current_namespace: str,
     ) -> tuple[str, MemoryPackEnumDescriptor] | None:
-        return self._resolve_reference(cs_type, current_namespace, self.enum_refs, self.simple_enum_refs)
+        return resolve_reference(
+            cs_type,
+            current_namespace,
+            self.enum_refs,
+            self.simple_enum_refs,
+        )
 
     def _resolve_type_reference(
         self,
         cs_type: str,
         current_namespace: str,
     ) -> tuple[str, MemoryPackTypeDescriptor] | None:
-        return self._resolve_reference(cs_type, current_namespace, self.type_refs, self.simple_type_refs)
-
-    @staticmethod
-    def _resolve_reference(
-        cs_type: str,
-        current_namespace: str,
-        refs: dict[str, tuple[str, Any]],
-        simple_refs: dict[str, tuple[str, Any]],
-    ) -> tuple[str, Any] | None:
-        candidates = [cs_type]
-        if "." not in cs_type and current_namespace:
-            candidates.insert(0, f"{current_namespace}.{cs_type}")
-        for candidate in candidates:
-            if candidate in refs:
-                return refs[candidate]
-        if "." not in cs_type:
-            return simple_refs.get(cs_type)
-        return None
+        return resolve_reference(
+            cs_type,
+            current_namespace,
+            self.type_refs,
+            self.simple_type_refs,
+        )
 
     @staticmethod
     def _ensure_optional(annotation: str) -> str:

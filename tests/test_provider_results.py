@@ -4,12 +4,12 @@ from pathlib import Path
 from ba_downloader.domain.models.asset import AssetType
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
-from ba_downloader.infrastructure.apk import ZipEntry
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
-from ba_downloader.infrastructure.regions.providers.cn import CNServer
-from ba_downloader.infrastructure.regions.providers.gl import (
+from ba_downloader.infrastructure.packages import ZipEntry
+from ba_downloader.infrastructure.regions.cn.provider import CNRegionProvider
+from ba_downloader.infrastructure.regions.gl.provider import (
+    GLRegionProvider,
     GLRuntimeAssetPreparer,
-    GLServer,
 )
 
 
@@ -122,12 +122,12 @@ def test_gl_provider_returns_updated_context_when_version_is_missing(
     server_url = "https://example.invalid/catalog.json"
     client = RecordingHttpClient(
         {
-            ("GET", GLServer.UPTODOWN_URL): _text_response(
-                GLServer.UPTODOWN_URL,
+            ("GET", GLRegionProvider.UPTODOWN_URL): _text_response(
+                GLRegionProvider.UPTODOWN_URL,
                 "Blue Archive Global 1.2.3",
             ),
-            ("POST", GLServer.CATALOG_URL): _json_response(
-                GLServer.CATALOG_URL,
+            ("POST", GLRegionProvider.CATALOG_URL): _json_response(
+                GLRegionProvider.CATALOG_URL,
                 {"patch": {"resource_path": server_url}},
             ),
             ("GET", server_url): _json_response(
@@ -158,7 +158,7 @@ def test_gl_provider_returns_updated_context_when_version_is_missing(
         }
     )
     logger = RecordingLogger()
-    provider = GLServer(http_client=client, logger=logger)
+    provider = GLRegionProvider(http_client=client, logger=logger)
 
     result = provider.load_catalog(context)
 
@@ -203,20 +203,20 @@ def test_gl_provider_uses_explicit_version_without_fetching_latest() -> None:
     server_url = "https://example.invalid/catalog.json"
     client = RecordingHttpClient(
         {
-            ("POST", GLServer.CATALOG_URL): _json_response(
-                GLServer.CATALOG_URL,
+            ("POST", GLRegionProvider.CATALOG_URL): _json_response(
+                GLRegionProvider.CATALOG_URL,
                 {"patch": {"resource_path": server_url}},
             ),
             ("GET", server_url): _json_response(server_url, {"resources": []}),
         }
     )
-    provider = GLServer(http_client=client, logger=NullLogger())
+    provider = GLRegionProvider(http_client=client, logger=NullLogger())
 
     result = provider.load_catalog(context)
 
     assert result.context.version == "9.9.9"
     assert [call["url"] for call in client.request_calls] == [
-        GLServer.CATALOG_URL,
+        GLRegionProvider.CATALOG_URL,
         server_url,
     ]
     assert client.download_calls == []
@@ -243,8 +243,8 @@ def test_gl_provider_warns_when_platform_is_explicitly_ignored() -> None:
     server_url = "https://example.invalid/catalog.json"
     client = RecordingHttpClient(
         {
-            ("POST", GLServer.CATALOG_URL): _json_response(
-                GLServer.CATALOG_URL,
+            ("POST", GLRegionProvider.CATALOG_URL): _json_response(
+                GLRegionProvider.CATALOG_URL,
                 {"patch": {"resource_path": server_url}},
             ),
             ("GET", server_url): _json_response(
@@ -276,7 +276,7 @@ def test_gl_provider_warns_when_platform_is_explicitly_ignored() -> None:
     )
     logger = RecordingLogger()
 
-    GLServer(http_client=client, logger=logger).load_catalog(context)
+    GLRegionProvider(http_client=client, logger=logger).load_catalog(context)
 
     assert logger.warn_messages == [
         "The --platform option only applies to JP and was ignored."
@@ -359,14 +359,14 @@ def test_cn_provider_builds_assets_without_downloading_apk(
         }
     )
     logger = RecordingLogger()
-    provider = CNServer(http_client=client, logger=logger)
+    provider = CNRegionProvider(http_client=client, logger=logger)
     monkeypatch.setattr(
-        CNServer,
+        CNRegionProvider,
         "get_apk_url",
         lambda self, server="official": "https://example.invalid/BlueArchive.apk",
     )
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.providers.cn.read_zip_entries",
+        "ba_downloader.infrastructure.regions.cn.provider.read_zip_entries",
         lambda url, http_client: [
             ZipEntry(
                 path="assets/video/title.mp4",
@@ -469,7 +469,7 @@ def test_cn_provider_builds_assets_without_downloading_apk(
     ]
     assert result.resources[0].metadata["includes"] == ["CharacterExcelTable"]
     assert result.resources[1].metadata["media_type"] == "mp4"
-    assert result.resources[3].metadata["source"] == CNServer.APK_MEDIA_SOURCE
+    assert result.resources[3].metadata["source"] == CNRegionProvider.APK_MEDIA_SOURCE
     assert result.resources[3].metadata["apk_entry_path"] == "assets/video/title.mp4"
     assert result.resources[3].url == "https://example.invalid/BlueArchive.apk"
     assert client.request_calls[1]["headers"] == {
@@ -564,12 +564,12 @@ def test_cn_provider_warns_when_platform_is_explicitly_ignored(
     )
     logger = RecordingLogger()
     monkeypatch.setattr(
-        CNServer,
+        CNRegionProvider,
         "get_apk_url",
         lambda self, server="official": "https://example.invalid/BlueArchive.apk",
     )
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.providers.cn.read_zip_entries",
+        "ba_downloader.infrastructure.regions.cn.provider.read_zip_entries",
         lambda url, http_client: [
             ZipEntry(
                 path="assets/video/title.mp4",
@@ -624,7 +624,7 @@ def test_cn_provider_warns_when_platform_is_explicitly_ignored(
         ],
     )
 
-    result = CNServer(http_client=client, logger=logger).load_catalog(context)
+    result = CNRegionProvider(http_client=client, logger=logger).load_catalog(context)
 
     assert logger.warn_messages == [
         "The --platform option only applies to JP and was ignored."
@@ -668,11 +668,11 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
         (extract_path / "global-metadata.dat").write_bytes(b"metadata")
 
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.providers.gl.download_package_file",
+        "ba_downloader.infrastructure.regions.gl.provider.download_package_file",
         fake_download_package_file,
     )
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.providers.gl.extract_xapk_file",
+        "ba_downloader.infrastructure.regions.gl.provider.extract_xapk_file",
         fake_extract_xapk_file,
     )
 

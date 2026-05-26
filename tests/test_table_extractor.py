@@ -11,7 +11,7 @@ import flatbuffers
 import pytest
 
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.infrastructure.extractors.table import (
+from ba_downloader.infrastructure.extraction.table.extractor import (
     FlatBufferExportError,
     MalformedTablePayloadError,
     ProcessedTableArtifact,
@@ -19,7 +19,7 @@ from ba_downloader.infrastructure.extractors.table import (
     TableExtractor,
     UnsupportedSchemaError,
 )
-from ba_downloader.infrastructure.extractors.table_payload_router import (
+from ba_downloader.infrastructure.extraction.table.payload_router import (
     TablePayloadCodec,
     TablePayloadRouter,
 )
@@ -201,7 +201,9 @@ def test_table_extractor_raises_when_flat_buffer_data_directory_is_missing(
 ) -> None:
     context = _build_context(tmp_path)
 
-    with pytest.raises(FileNotFoundError, match="FlatBufferData directory does not exist"):
+    with pytest.raises(
+        FileNotFoundError, match="FlatBufferData directory does not exist"
+    ):
         TableExtractor.from_context(context)
 
 
@@ -244,9 +246,7 @@ def test_extract_db_file_decodes_cn_memorypack_blob_with_formatter_sidecar(
 
     assert extractor.extract_db_file("LevelSkillDataDBSchema.db")
 
-    output_path = (
-        Path(context.extract_dir) / "LevelSkillDataDBSchema" / "Enemy.json"
-    )
+    output_path = Path(context.extract_dir) / "LevelSkillDataDBSchema" / "Enemy.json"
     rows = json.loads(output_path.read_text(encoding="utf8"))
     assert rows == [
         {
@@ -321,9 +321,7 @@ def test_extract_db_file_prefers_full_skill_visual_formatter_sidecar(
     assert extractor.extract_db_file("SkillVisualEffectDataDBSchema.db")
 
     output_path = (
-        Path(context.extract_dir)
-        / "SkillVisualEffectDataDBSchema"
-        / "Challenge.json"
+        Path(context.extract_dir) / "SkillVisualEffectDataDBSchema" / "Challenge.json"
     )
     rows = json.loads(output_path.read_text(encoding="utf8"))
     decoded = rows[0]["Bytes"]
@@ -374,9 +372,7 @@ def test_extract_db_file_deduplicates_cn_memorypack_fallback_warnings(
     assert extractor.extract_db_file("LogicEffectDataDBSchema.db")
 
     output_path = (
-        Path(context.extract_dir)
-        / "LogicEffectDataDBSchema"
-        / "LogicEffect_PC.json"
+        Path(context.extract_dir) / "LogicEffectDataDBSchema" / "LogicEffect_PC.json"
     )
     rows = json.loads(output_path.read_text(encoding="utf8"))
     assert rows[0]["Bytes"]["__memorypack_error__"] == (
@@ -398,30 +394,44 @@ def test_extract_db_file_deduplicates_cn_memorypack_fallback_warnings(
         "MemoryPack partial decode failed for MX.GameData.DAO.Battle.LogicEffectDAO: "
         "Unexpected end of MemoryPack payload."
     ]
-    assert all("FlatBufferData schema is missing" not in message for message in logger.warn_messages)
+    assert all(
+        "FlatBufferData schema is missing" not in message
+        for message in logger.warn_messages
+    )
 
 
 def test_table_payload_router_routes_known_cn_dao_blob_sources() -> None:
     router = TablePayloadRouter()
 
-    assert router.resolve_database_blob(
-        "LevelSkillDataDBSchema.db",
-        "Enemy",
-        "Bytes",
-    ).root_type == "MX.GameData.DAO.Battle.SkillLogicDAO"
-    assert router.resolve_database_blob(
-        "LogicEffectDataDBSchema.db",
-        "LogicEffect_PC",
-        "Bytes",
-    ).root_type == "MX.GameData.DAO.Battle.LogicEffectDAO"
-    assert router.resolve_database_blob(
-        "SkillVisualEffectDataDBSchema.db",
-        "Challenge",
-        "Bytes",
-    ).root_type == "MX.AppData.DAO.Battle.SkillVisualDAO"
+    assert (
+        router.resolve_database_blob(
+            "LevelSkillDataDBSchema.db",
+            "Enemy",
+            "Bytes",
+        ).root_type
+        == "MX.GameData.DAO.Battle.SkillLogicDAO"
+    )
+    assert (
+        router.resolve_database_blob(
+            "LogicEffectDataDBSchema.db",
+            "LogicEffect_PC",
+            "Bytes",
+        ).root_type
+        == "MX.GameData.DAO.Battle.LogicEffectDAO"
+    )
+    assert (
+        router.resolve_database_blob(
+            "SkillVisualEffectDataDBSchema.db",
+            "Challenge",
+            "Bytes",
+        ).root_type
+        == "MX.AppData.DAO.Battle.SkillVisualDAO"
+    )
 
 
-def test_table_payload_router_keeps_excel_and_unknown_blobs_on_flatbuffer_path() -> None:
+def test_table_payload_router_keeps_excel_and_unknown_blobs_on_flatbuffer_path() -> (
+    None
+):
     router = TablePayloadRouter()
 
     assert (
@@ -475,9 +485,7 @@ def test_extract_db_file_partially_decodes_skill_visual_blob_without_formatter_s
     assert extractor.extract_db_file("SkillVisualEffectDataDBSchema.db")
 
     output_path = (
-        Path(context.extract_dir)
-        / "SkillVisualEffectDataDBSchema"
-        / "Challenge.json"
+        Path(context.extract_dir) / "SkillVisualEffectDataDBSchema" / "Challenge.json"
     )
     rows = json.loads(output_path.read_text(encoding="utf8"))
     decoded = rows[0]["Bytes"]
@@ -505,10 +513,13 @@ def test_extract_db_file_keeps_partial_memorypack_decode_out_of_warning_log(
     flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
     _create_flat_buffer_data_package(flatbuffer_data_dir)
     table_dir = Path(context.raw_dir) / "Table"
-    partial_payload = _skill_visual_payload(
-        "Buff_AttackPower_Ally_10s_150_Ratio_SkillVisual01",
-        "EventChallenge_Buff_StatChange_AttackPower_Ally_10s_150_Ratio",
-    ) + b"\x01"
+    partial_payload = (
+        _skill_visual_payload(
+            "Buff_AttackPower_Ally_10s_150_Ratio_SkillVisual01",
+            "EventChallenge_Buff_StatChange_AttackPower_Ally_10s_150_Ratio",
+        )
+        + b"\x01"
+    )
     _create_blob_database(
         table_dir,
         "SkillVisualEffectDataDBSchema.db",
@@ -532,9 +543,7 @@ def test_extract_db_file_keeps_partial_memorypack_decode_out_of_warning_log(
     assert extractor.extract_db_file("SkillVisualEffectDataDBSchema.db")
 
     output_path = (
-        Path(context.extract_dir)
-        / "SkillVisualEffectDataDBSchema"
-        / "Challenge.json"
+        Path(context.extract_dir) / "SkillVisualEffectDataDBSchema" / "Challenge.json"
     )
     rows = json.loads(output_path.read_text(encoding="utf8"))
     decoded = rows[0]["Bytes"]
@@ -639,7 +648,9 @@ def test_extract_zip_file_writes_excel_artifact(tmp_path: Path) -> None:
     table_dir = Path(context.raw_dir) / "Table"
     table_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(table_dir / "Excel.zip", "w") as archive:
-        archive.writestr("CharacterExcelTable.bytes", _build_character_excel_table_payload())
+        archive.writestr(
+            "CharacterExcelTable.bytes", _build_character_excel_table_payload()
+        )
 
     logger = RecordingLogger()
     extractor = TableExtractor(
@@ -715,7 +726,9 @@ def test_extract_zip_file_writes_raw_sidecar_entries(
 
     extractor.extract_zip_file(archive_name)
 
-    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    output_path = (
+        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    )
     assert output_path.read_bytes() == payload
     assert logger.warn_messages == []
     assert logger.error_messages == []
@@ -730,7 +743,9 @@ def test_extract_zip_file_writes_ground_grid_patch_artifact(tmp_path: Path) -> N
 
     inner_zip_buffer = BytesIO()
     with ZipFile(inner_zip_buffer, "w") as inner_archive:
-        inner_archive.writestr("sb_02_trainroof_p01_d.bytes", _build_empty_flatbuffer_payload())
+        inner_archive.writestr(
+            "sb_02_trainroof_p01_d.bytes", _build_empty_flatbuffer_payload()
+        )
 
     with ZipFile(table_dir / "TablePatchPack_GroundGrid_11.zip", "w") as outer_archive:
         outer_archive.writestr(
@@ -841,7 +856,9 @@ def test_extract_zip_file_writes_gl_battle_stage_artifact(tmp_path: Path) -> Non
     table_dir.mkdir(parents=True, exist_ok=True)
 
     with ZipFile(table_dir / "sb_02_desertcity_p01_e.zip", "w") as archive:
-        archive.writestr("sb_02_desertcity_p01_e.bytes", _build_empty_flatbuffer_payload())
+        archive.writestr(
+            "sb_02_desertcity_p01_e.bytes", _build_empty_flatbuffer_payload()
+        )
 
     logger = RecordingLogger()
     extractor = TableExtractor(
@@ -854,9 +871,7 @@ def test_extract_zip_file_writes_gl_battle_stage_artifact(tmp_path: Path) -> Non
     extractor.extract_zip_file("sb_02_desertcity_p01_e.zip")
 
     output_path = (
-        Path(context.extract_dir)
-        / "sb_02_desertcity_p01_e"
-        / "GroundGridFlat.json"
+        Path(context.extract_dir) / "sb_02_desertcity_p01_e" / "GroundGridFlat.json"
     )
     assert output_path.is_file()
     assert json.loads(output_path.read_text(encoding="utf8")) == {}
@@ -874,7 +889,9 @@ def test_extract_zip_file_writes_gl_battle_stage_nodelayer_artifact(
     table_dir.mkdir(parents=True, exist_ok=True)
 
     with ZipFile(table_dir / "sb_02_desertcity_p01_e_nodelayer.zip", "w") as archive:
-        archive.writestr("sb_02_desertcity_p01_e_nodelayer.bytes", _build_empty_flatbuffer_payload())
+        archive.writestr(
+            "sb_02_desertcity_p01_e_nodelayer.bytes", _build_empty_flatbuffer_payload()
+        )
 
     logger = RecordingLogger()
     extractor = TableExtractor(
@@ -957,7 +974,11 @@ def test_extract_zip_file_writes_additional_gl_ground_artifacts(
 
     extractor.extract_zip_file(archive_name)
 
-    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / expected_file_name
+    output_path = (
+        Path(context.extract_dir)
+        / archive_name.removesuffix(".zip")
+        / expected_file_name
+    )
     assert output_path.is_file()
     assert json.loads(output_path.read_text(encoding="utf8")) == expected_json
     assert logger.warn_messages == []
@@ -989,7 +1010,9 @@ def test_extract_zip_file_writes_c_sb_hyakkiyakomatsuri_raw_artifact(
 
     extractor.extract_zip_file(archive_name)
 
-    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    output_path = (
+        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
     assert logger.warn_messages == []
@@ -1051,7 +1074,9 @@ def test_extract_zip_file_writes_c_sb_script_raw_payloads(
 
     extractor.extract_zip_file(archive_name)
 
-    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    output_path = (
+        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
     assert logger.warn_messages == []
@@ -1097,7 +1122,9 @@ def test_extract_zip_file_writes_gl_numeric_stage_raw_payloads(
 
     extractor.extract_zip_file(archive_name)
 
-    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    output_path = (
+        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
     assert logger.warn_messages == []
@@ -1113,8 +1140,12 @@ def test_extract_zip_file_writes_gl_eliminate_raid_raw_payloads(
     table_dir = Path(context.raw_dir) / "Table"
     table_dir.mkdir(parents=True, exist_ok=True)
 
-    archive_name = "6062106_eliminateRaid_perorozilla_outdoor_light_insane_start2phase.zip"
-    entry_name = "6062106_eliminateraid_perorozilla_outdoor_light_insane_start2phase.bytes"
+    archive_name = (
+        "6062106_eliminateRaid_perorozilla_outdoor_light_insane_start2phase.zip"
+    )
+    entry_name = (
+        "6062106_eliminateraid_perorozilla_outdoor_light_insane_start2phase.bytes"
+    )
     payload = b"\x06\xfc\xff\xffbattle"
     with ZipFile(table_dir / archive_name, "w") as archive:
         archive.writestr(entry_name, payload)
@@ -1129,7 +1160,9 @@ def test_extract_zip_file_writes_gl_eliminate_raid_raw_payloads(
 
     extractor.extract_zip_file(archive_name)
 
-    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    output_path = (
+        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
     assert logger.warn_messages == []
@@ -1140,7 +1173,10 @@ def test_extract_zip_file_writes_gl_eliminate_raid_raw_payloads(
 @pytest.mark.parametrize(
     ("archive_name", "entry_name"),
     [
-        ("EN0006_Eliminate_LightArmor_Hard.zip", "en0006_eliminate_lightarmor_hard.bytes"),
+        (
+            "EN0006_Eliminate_LightArmor_Hard.zip",
+            "en0006_eliminate_lightarmor_hard.bytes",
+        ),
         ("EN0006_VeryHard.zip", "en0006_veryhard.bytes"),
         ("EN0013_Torment_3Phase.zip", "en0013_torment_3phase.bytes"),
     ],
@@ -1170,7 +1206,9 @@ def test_extract_zip_file_writes_gl_enemy_boss_script_raw_payloads(
 
     extractor.extract_zip_file(archive_name)
 
-    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    output_path = (
+        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
     assert logger.warn_messages == []
@@ -1232,7 +1270,9 @@ def test_extract_zip_file_writes_gl_script_test_raw_payloads(
 
     extractor.extract_zip_file(archive_name)
 
-    output_path = Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    output_path = (
+        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+    )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
     assert logger.warn_messages == []
@@ -1284,14 +1324,10 @@ def test_extract_zip_file_writes_mgs_logic_ground_mixed_artifacts(
     extractor.extract_zip_file("MGSLogicGroundData.zip")
 
     grid_output = (
-        Path(context.extract_dir)
-        / "MGSLogicGroundData"
-        / "GroundGridFlat.json"
+        Path(context.extract_dir) / "MGSLogicGroundData" / "GroundGridFlat.json"
     )
     raw_output = (
-        Path(context.extract_dir)
-        / "MGSLogicGroundData"
-        / "logicground_hard.bytes"
+        Path(context.extract_dir) / "MGSLogicGroundData" / "logicground_hard.bytes"
     )
     assert grid_output.is_file()
     assert json.loads(grid_output.read_text(encoding="utf8")) == {}

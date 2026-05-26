@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ba_downloader.application.services.sync import SyncService
+from ba_downloader.application.use_cases.sync_assets import SyncAssetsUseCase
 from ba_downloader.domain.exceptions import DownloadError
 from ba_downloader.domain.models.asset import (
     AssetCollection,
@@ -41,7 +41,7 @@ class FailingDownloader:
         raise DownloadError("download incomplete")
 
 
-class RecordingExtractService:
+class RecordingExtractAssetsUseCase:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
@@ -141,10 +141,10 @@ def _build_catalog(context: RuntimeContext) -> RegionCatalogResult:
 def test_sync_does_not_extract_after_download_failure(tmp_path: Path) -> None:
     context = _build_context(tmp_path)
     downloader = FailingDownloader()
-    extract_service = RecordingExtractService()
+    extract_service = RecordingExtractAssetsUseCase()
     schema_workflow = RecordingSchemaWorkflow()
     runtime_asset_preparer = RecordingRuntimeAssetPreparer()
-    service = SyncService(
+    service = SyncAssetsUseCase(
         StaticProvider(_build_catalog(context)),
         downloader,
         extract_service,  # type: ignore[arg-type]

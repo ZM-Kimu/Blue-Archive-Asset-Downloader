@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ba_downloader.application.services.extract import ExtractService
+from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
 from ba_downloader.domain.models.runtime import RuntimeContext
 
 
@@ -124,7 +124,7 @@ def test_extract_service_skips_bootstrap_when_flatbufferdata_exists(
     _create_flat_buffer_data(context)
     calls: list[str] = []
     extraction_workflow = RecordingExtractionWorkflow()
-    service = ExtractService(
+    service = ExtractAssetsUseCase(
         extraction_workflow,
         RecordingSchemaWorkflow(calls),
         RecordingRuntimeAssetPreparer(calls),
@@ -145,7 +145,7 @@ def test_extract_service_compiles_when_dump_cs_exists_but_flatbufferdata_is_miss
     _create_dump_cs(context)
     calls: list[str] = []
     extraction_workflow = RecordingExtractionWorkflow()
-    service = ExtractService(
+    service = ExtractAssetsUseCase(
         extraction_workflow,
         RecordingSchemaWorkflow(calls),
         RecordingRuntimeAssetPreparer(calls),
@@ -166,7 +166,7 @@ def test_extract_service_bootstraps_when_dump_cs_and_flatbufferdata_are_missing(
     _create_table_folder(context)
     calls: list[str] = []
     extraction_workflow = RecordingExtractionWorkflow()
-    service = ExtractService(
+    service = ExtractAssetsUseCase(
         extraction_workflow,
         RecordingSchemaWorkflow(calls),
         RecordingRuntimeAssetPreparer(calls),
@@ -207,7 +207,7 @@ def test_extract_service_translates_jp_bootstrap_failures_to_lookup_error(
         _create_dump_cs(context)
 
     calls: list[str] = []
-    service = ExtractService(
+    service = ExtractAssetsUseCase(
         RecordingExtractionWorkflow(),
         RecordingSchemaWorkflow(calls, fail_on=fail_on, error=error),
         RecordingRuntimeAssetPreparer(calls),
@@ -231,7 +231,7 @@ def test_extract_service_does_not_bootstrap_when_jp_table_folder_is_missing(
     context = _build_context(tmp_path)
     calls: list[str] = []
     extraction_workflow = RecordingExtractionWorkflow()
-    service = ExtractService(
+    service = ExtractAssetsUseCase(
         extraction_workflow,
         RecordingSchemaWorkflow(calls),
         RecordingRuntimeAssetPreparer(calls),

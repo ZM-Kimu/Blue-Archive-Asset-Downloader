@@ -4,7 +4,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.infrastructure.extractors.media import MediaExtractor
+from ba_downloader.infrastructure.extraction.media.exporter import MediaExtractor
 
 
 def _build_context(tmp_path: Path) -> RuntimeContext:

@@ -10,14 +10,17 @@ from ba_downloader.infrastructure.schema.common.csharp import (
     strip_generic_arity,
     strip_member_type_modifiers,
 )
+from ba_downloader.infrastructure.schema.common.parser import (
+    NULL_TOKEN,
+    iter_dump_blocks,
+    parse_enum_member_rows,
+)
 from ba_downloader.infrastructure.schema.flatbuffer.descriptors import (
     FlatBufferEnumDescriptor,
     FlatBufferEnumMemberDescriptor,
     FlatBufferFieldDescriptor,
     FlatBufferTypeDescriptor,
 )
-
-NULL_TOKEN = ""
 
 
 class FlatBufferCSParser:
@@ -64,9 +67,7 @@ class FlatBufferCSParser:
         r"(?P<name>[A-Za-z_][\w]*)\((?:int|System\.Int32)\s+j\)\s*"
         r"\{\s*\}(?:\s*//.*?Token:\s*(?P<token>0x[0-9A-Fa-f]+))?"
     )
-    ENUM_VALUE_PATTERN = re.compile(
-        r"^\s*public\s+(?P<type>.+?)\s+value__;\s*//"
-    )
+    ENUM_VALUE_PATTERN = re.compile(r"^\s*public\s+(?P<type>.+?)\s+value__;\s*//")
     ENUM_MEMBER_PATTERN = re.compile(
         r"^\s*public\s+(?:static\s+)?const\s+"
         r"(?P<type>.+?)\s+"
@@ -81,58 +82,37 @@ class FlatBufferCSParser:
 
     def parse_types(self) -> list[FlatBufferTypeDescriptor]:
         descriptors: list[FlatBufferTypeDescriptor] = []
-        namespace = ""
-        lines = self.data.splitlines()
-        index = 0
-        while index < len(lines):
-            line = lines[index]
-            if namespace_match := self.NAMESPACE_PATTERN.match(line):
-                namespace = namespace_match.group("namespace").strip()
-                if namespace == "-":
-                    namespace = ""
-                index += 1
-                continue
-
-            type_match = self.TYPE_PATTERN.match(line)
-            if (
-                type_match is None
-                or "FlatBuffers.IFlatbufferObject" not in type_match.group("bases")
-            ):
-                index += 1
-                continue
-
-            body_lines, next_index = self._collect_type_body(lines, index)
+        for block in iter_dump_blocks(
+            self.data,
+            namespace_pattern=self.NAMESPACE_PATTERN,
+            header_pattern=self.TYPE_PATTERN,
+            include_header=lambda match, _line: "FlatBuffers.IFlatbufferObject"
+            in match.group("bases"),
+        ):
             descriptors.append(
-                self._build_type_descriptor(namespace, type_match, body_lines)
+                self._build_type_descriptor(
+                    block.namespace,
+                    block.header_match,
+                    block.body_lines,
+                )
             )
-            index = next_index
 
         return descriptors
 
     def parse_enums(self) -> list[FlatBufferEnumDescriptor]:
         descriptors: list[FlatBufferEnumDescriptor] = []
-        namespace = ""
-        lines = self.data.splitlines()
-        index = 0
-        while index < len(lines):
-            line = lines[index]
-            if namespace_match := self.NAMESPACE_PATTERN.match(line):
-                namespace = namespace_match.group("namespace").strip()
-                if namespace == "-":
-                    namespace = ""
-                index += 1
-                continue
-
-            enum_match = self.ENUM_PATTERN.match(line)
-            if enum_match is None:
-                index += 1
-                continue
-
-            body_lines, next_index = self._collect_type_body(lines, index)
+        for block in iter_dump_blocks(
+            self.data,
+            namespace_pattern=self.NAMESPACE_PATTERN,
+            header_pattern=self.ENUM_PATTERN,
+        ):
             descriptors.append(
-                self._build_enum_descriptor(namespace, enum_match, body_lines)
+                self._build_enum_descriptor(
+                    block.namespace,
+                    block.header_match,
+                    block.body_lines,
+                )
             )
-            index = next_index
 
         return descriptors
 
@@ -141,24 +121,6 @@ class FlatBufferCSParser:
 
     def parse_enum(self) -> list[FlatBufferEnumDescriptor]:
         return self.parse_enums()
-
-    @staticmethod
-    def _collect_type_body(lines: list[str], start_index: int) -> tuple[list[str], int]:
-        body_lines: list[str] = []
-        depth = 0
-        started = False
-        index = start_index
-        while index < len(lines):
-            line = lines[index]
-            body_lines.append(line)
-            depth += line.count("{")
-            if "{" in line:
-                started = True
-            depth -= line.count("}")
-            index += 1
-            if started and depth <= 0:
-                break
-        return body_lines, index
 
     def _build_type_descriptor(
         self,
@@ -184,30 +146,20 @@ class FlatBufferCSParser:
         enum_match: re.Match[str],
         body_lines: list[str],
     ) -> FlatBufferEnumDescriptor:
-        underlying_type = "System.Int32"
-        members: list[FlatBufferEnumMemberDescriptor] = []
-        next_value = 0
-        for line in body_lines:
-            if value_match := cls.ENUM_VALUE_PATTERN.match(line):
-                underlying_type = cls._strip_member_type_modifiers(
-                    value_match.group("type")
-                )
-                continue
-
-            member_match = cls.ENUM_MEMBER_PATTERN.match(line)
-            if member_match is None:
-                continue
-
-            value_text = member_match.group("value")
-            value = int(value_text) if value_text is not None else next_value
-            members.append(
-                FlatBufferEnumMemberDescriptor(
-                    name=member_match.group("name"),
-                    value=value,
-                    token=member_match.group("token") or NULL_TOKEN,
-                )
+        underlying_type, member_rows = parse_enum_member_rows(
+            body_lines,
+            enum_value_pattern=cls.ENUM_VALUE_PATTERN,
+            enum_member_pattern=cls.ENUM_MEMBER_PATTERN,
+            normalize_underlying_type=cls._strip_member_type_modifiers,
+        )
+        members = [
+            FlatBufferEnumMemberDescriptor(
+                name=row.name,
+                value=row.value,
+                token=row.token,
             )
-            next_value = value + 1
+            for row in member_rows
+        ]
 
         original_name = enum_match.group("name")
         return FlatBufferEnumDescriptor(
@@ -253,8 +205,7 @@ class FlatBufferCSParser:
                             name=list_name,
                             cs_type=cs_type,
                             python_type=cls.to_python_type(cs_type, is_vector=True),
-                            member_token=property_match.group("token")
-                            or method_token,
+                            member_token=property_match.group("token") or method_token,
                             is_vector=True,
                         )
                     )

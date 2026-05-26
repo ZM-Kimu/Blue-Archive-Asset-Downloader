@@ -1,4 +1,6 @@
-namespace YldaDumpCsExporter;
+using CnMetadataExporter.Application;
+
+namespace CnMetadataExporter;
 
 internal static class Program
 {
@@ -23,12 +25,12 @@ internal static class Program
         var metadataBuffer = ReadAndRestoreMetadata(command.MetadataPath, command.RestoredMetadataOutputPath, command.KeyConstant, profiler, progress, out var usedProtectedRestore);
 
         progress.Stage("parse metadata", 1, 2);
-        var metadata = profiler.Measure("parse", () => YldaMetadataReader.Load(metadataBuffer));
+        var metadata = profiler.Measure("parse", () => MetadataReader.Load(metadataBuffer));
         progress.Stage("build resolved artifact", 2, 2);
         var artifact = profiler.Measure("build resolved artifact", () => new ResolvedExportArtifactBuilder(metadata, profiler, progress).Build());
         progress.Complete();
 
-        var exporter = new YldaDumpExporter(artifact, command.PrivateMembers, command.MethodAddressPlaceholders);
+        var exporter = new DumpExporter(artifact, command.PrivateMembers, command.MethodAddressPlaceholders);
         profiler.Measure("emit", () => exporter.Export(command.OutputPath, command.ImageFilter, command.TypeFilter));
         if (!string.IsNullOrWhiteSpace(command.FormatterOutputPath))
         {
@@ -59,11 +61,11 @@ internal static class Program
         progress.Stage("restore metadata", 2, 2);
         metadataBuffer = profiler.Measure("restore", () =>
         {
-            if (!YldaMetadataRestorer.LooksProtected(metadataBuffer))
+            if (!MetadataRestorer.LooksProtected(metadataBuffer))
                 return metadataBuffer;
 
             restoredWasProtected = true;
-            return YldaMetadataRestorer.Restore(metadataBuffer, keyConstant);
+            return MetadataRestorer.Restore(metadataBuffer, keyConstant);
         });
 
         if (!string.IsNullOrWhiteSpace(restoredOutputPath))

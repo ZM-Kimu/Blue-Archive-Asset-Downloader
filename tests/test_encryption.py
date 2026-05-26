@@ -4,7 +4,7 @@ import hashlib
 from pathlib import Path
 from zlib import crc32
 
-from ba_downloader.shared.crypto.encryption import calculate_crc, calculate_md5
+from ba_downloader.infrastructure.files.checksum import calculate_crc, calculate_md5
 
 
 def test_calculate_md5_streaming_matches_hashlib(tmp_path: Path) -> None:

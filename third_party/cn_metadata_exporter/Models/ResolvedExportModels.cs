@@ -1,4 +1,4 @@
-namespace YldaDumpCsExporter;
+namespace CnMetadataExporter;
 
 [Flags]
 internal enum PrivateMemberKinds

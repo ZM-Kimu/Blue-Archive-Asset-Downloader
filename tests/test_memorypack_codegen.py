@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 import py_compile
-import sys
 from dataclasses import is_dataclass
 from enum import IntEnum
-from importlib import util
 from pathlib import Path
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
@@ -23,6 +21,7 @@ from ba_downloader.infrastructure.schema.memorypack.reader import (
     MemoryPackReader,
     MemoryPackSchemaRegistry,
 )
+from generated_modules import load_generated_module
 
 CN_MEMORYPACK_SAMPLE = """
 // Namespace: MX.AssetBundles
@@ -160,27 +159,7 @@ def _write_dump(tmp_path: Path, content: str) -> Path:
 
 
 def _load_generated_module(package_dir: Path, module_name: str) -> Any:
-    package_name = f"generated_memorypack_{abs(hash(str(package_dir)))}"
-    if package_name not in sys.modules:
-        package_spec = util.spec_from_file_location(
-            package_name,
-            package_dir / "__init__.py",
-            submodule_search_locations=[str(package_dir)],
-        )
-        assert package_spec is not None and package_spec.loader is not None
-        package = util.module_from_spec(package_spec)
-        sys.modules[package_name] = package
-        package_spec.loader.exec_module(package)
-
-    spec = util.spec_from_file_location(
-        f"{package_name}.{module_name}",
-        package_dir / f"{module_name}.py",
-    )
-    assert spec is not None and spec.loader is not None
-    module = util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_generated_module(package_dir, module_name, "generated_memorypack")
 
 
 def test_memorypack_parser_reads_cn_style_imemorypackable_types(
@@ -227,7 +206,10 @@ def test_memorypack_parser_reads_jp_style_imemorypackable_types(
     assert descriptor.base_type == "MX.Logic.Battles.GroundCommand"
     assert descriptor.type_def_index == 4006
     assert descriptor.token == "0x02000FA6"
-    assert "MemoryPack.IMemoryPackable`1<GroundCommandCameraShake>" in descriptor.interfaces
+    assert (
+        "MemoryPack.IMemoryPackable`1<GroundCommandCameraShake>"
+        in descriptor.interfaces
+    )
     assert [(member.name, member.python_type) for member in descriptor.members] == [
         ("Duration", "float"),
         ("UseCurve", "bool"),
@@ -306,7 +288,10 @@ def test_memorypack_parser_strips_property_type_modifiers(
 
     descriptor = MemoryPackCSParser(str(dump_path)).parse_types()[0]
 
-    assert [(member.name, member.cs_type, member.python_type) for member in descriptor.members] == [
+    assert [
+        (member.name, member.cs_type, member.python_type)
+        for member in descriptor.members
+    ] == [
         ("childCount", "int", "int"),
         ("valueString", "string", "str | None"),
     ]
@@ -393,7 +378,9 @@ def test_memorypack_codegen_exports_enums_and_schema_references(
         include_extras=True,
     )
     table_annotation = get_args(catalog_hints["Table"])[0]
-    table_type = next(arg for arg in get_args(table_annotation) if arg is not type(None))
+    table_type = next(
+        arg for arg in get_args(table_annotation) if arg is not type(None)
+    )
     assert get_args(table_type)[1] is media_module.Media
 
 
@@ -418,6 +405,18 @@ def test_memorypack_codegen_keeps_cyclic_schema_references_importable(
     assert "Parent: Annotated[NodeA | None," in node_b_source
     assert _load_generated_module(output_dir, "NodeA").NodeA.__name__ == "NodeA"
     assert _load_generated_module(output_dir, "NodeB").NodeB.__name__ == "NodeB"
+
+
+def test_memorypack_package_exports_reader_api() -> None:
+    from ba_downloader.infrastructure.schema.memorypack import (
+        MemoryPackReader as PackageMemoryPackReader,
+    )
+    from ba_downloader.infrastructure.schema.memorypack import (
+        MemoryPackSchemaRegistry as PackageMemoryPackSchemaRegistry,
+    )
+
+    assert PackageMemoryPackReader is MemoryPackReader
+    assert PackageMemoryPackSchemaRegistry is MemoryPackSchemaRegistry
 
 
 def test_memorypack_reader_decodes_basic_schema_payload() -> None:
@@ -743,14 +742,18 @@ def test_memorypack_reader_partially_decodes_skill_visual_dao_payloads() -> None
     first = bytearray()
     first.append(8)
     first.extend(_mp_utf8_string("Buff_AttackPower_Ally_10s_150_Ratio_SkillVisual01"))
-    first.extend(_mp_utf8_string("EventChallenge_Buff_StatChange_AttackPower_Ally_10s_150_Ratio"))
+    first.extend(
+        _mp_utf8_string("EventChallenge_Buff_StatChange_AttackPower_Ally_10s_150_Ratio")
+    )
     first.extend(_mp_utf8_string(""))
     first.extend(_mp_empty_collection() * 5)
 
     second = bytearray()
     second.append(8)
     second.extend(_mp_utf8_string("Buff_AttackPower_Ally_10s_175_Ratio_SkillVisual01"))
-    second.extend(_mp_utf8_string("EventChallenge_Buff_StatChange_AttackPower_Ally_10s_175_Ratio"))
+    second.extend(
+        _mp_utf8_string("EventChallenge_Buff_StatChange_AttackPower_Ally_10s_175_Ratio")
+    )
     second.extend(_mp_utf8_string(""))
     second.extend(_mp_empty_collection() * 5)
 

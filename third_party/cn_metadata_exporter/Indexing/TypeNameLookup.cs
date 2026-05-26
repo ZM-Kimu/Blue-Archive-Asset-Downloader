@@ -1,4 +1,4 @@
-namespace YldaDumpCsExporter;
+namespace CnMetadataExporter;
 
 internal sealed class TypeNameLookup : IReadOnlyDictionary<uint, string>
 {

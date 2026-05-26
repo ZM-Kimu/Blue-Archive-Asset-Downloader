@@ -53,7 +53,9 @@ class SchemaWorkflow(SchemaWorkflowPort):
                     f"Compiler details: {exc.msg.strip()}"
                 ) from exc
 
-    def _generate_memorypack_data(self, dump_cs_file_path: str, context: RuntimeContext) -> None:
+    def _generate_memorypack_data(
+        self, dump_cs_file_path: str, context: RuntimeContext
+    ) -> None:
         memorypack_data_dir = Path(context.extract_dir) / "MemoryPackData"
         try:
             self.logger.info("Generating MemoryPackData schema files...")

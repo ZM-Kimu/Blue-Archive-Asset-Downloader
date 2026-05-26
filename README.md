@@ -3,15 +3,16 @@
 # Blue Archive Asset Downloader 
 
 本项目可以从不同服务器下载并提取碧蓝档案的素材，现支援中国服、国际服、日本服。
+
+<a href="docs/README.en.md">English</a>
+
 </div>
 
 
-## 主要功能
-
-- **多服务器支持**：可从中国(蔚蓝档案)、国际(Blue Archive)、日本(ブルーアーカイブ)三个服务器下载素材。
-<!-- - **资源解开**：在日本服务器中包含几乎完整的支持。 -->
-<!-- - **CN 阶段成果**：当前 `download --region cn`、`sync --region cn`、`relation build --region cn` 已可用；`--advanced-search` 仍未开放。 -->
-<!-- - **JP 阶段成果**：当前 `download --region jp`、`sync --region jp`、`relation build --region jp` 已可用；`--advanced-search` 仍未开放。 -->
+<!-- ## 主要功能
+- **资源解开**：在日本服务器中包含几乎完整的支持。
+- **CN 阶段成果**：当前 `download --region cn`、`sync --region cn`、`relation build --region cn` 已可用；`--advanced-search` 仍未开放。
+- **JP 阶段成果**：当前 `download --region jp`、`sync --region jp`、`relation build --region jp` 已可用；`--advanced-search` 仍未开放。 -->
 
 
 ## 资源类型
@@ -22,11 +23,11 @@
 - Media
 - Table
 
-<!-- 提取的文件类型包括：
+可提取的文件类型包括：
 
-- Bundle(仅JP)
+- Bundle
 - Media
-- Table(仅JP) -->
+- Table（部分尚不可用）
 
 #### **注意**：尽管部分区域支持下载不同版本的资源，但是该程序不保证能够提取过时版本的资源文件。
 
@@ -34,7 +35,7 @@
 
 - Windows/Linux
 - Python 3.10 或更高版本
-- [.NET10 SDK](https://dotnet.microsoft.com/download)(提取 table 时必须安装)
+- [.NET10 SDK](https://dotnet.microsoft.com/download) (提取 table 时安装)
 
 ## 先决条件
 
@@ -65,14 +66,13 @@ pip install -e .
 
 ```shell
 ba-downloader <subcommand> [options]
-python -m ba_downloader <subcommand> [options]
 ```
 
 子命令：
 
-<!-- - `ba-downloader sync [options]`: 下载并解开全部内容 -->
+- `ba-downloader sync [options]`: 下载并解开全部内容
 - `ba-downloader download [options]`: 下载全部内容
-<!-- - `ba-downloader extract [options]`: 解开已下载的内容 -->
+- `ba-downloader extract [options]`: 解开已下载的内容
 <!-- - `ba-downloader relation build [options]`: 构建角色信息表 -->
 
 使用下列命令运行完整下载与提取流程（示例）：
@@ -143,7 +143,7 @@ python -m ba_downloader sync --region jp
   >ba-downloader sync --region jp -as yume 百合園セイア 호시노 cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
   >```
   -->
-- 高级检索目前暂不可用，仅能使用普通检索：
+- 普通检索：
   > package name only
   >```sh
   >ba-downloader sync --region jp -s aris ch0070 shiroko
@@ -168,29 +168,18 @@ ba-downloader download --region jp --platform windows
 
 ## 使用须知
 - `--platform` 仅对 JP 生效，用于指定 JP 平台的资源：
-  - 同时影响 JP 默认输出目录前缀，例如 `JP_Windows_RawData`。
 - JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本，后续开放官方 PC 版解析支持。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
 - Bundle文件的提取基于UnityPy，如希望更加详细的内容请使用[AssetRipper](https://github.com/AssetRipper/AssetRipper)或[AssetStudio](https://github.com/Perfare/AssetStudio)
-<!-- - JP 当前支持 `download --region jp`、`sync --region jp`、`relation build --region jp`；JP `--advanced-search` 仍暂不可用。 -->
-
-## 维护说明
-开发、静态检查、dumper backend、子模块与发版流程请参阅 [docs/development.md](docs/development.md)。
 
 ## TODO
-- `v2.0.1`
-  - 完善三服下载流程（CN / GL / JP）
-- `v2.0.2`
-  - 完善 JP 解开（需要密钥，而密钥位于服务器）
-  - 继续完善基于 `dump.cs` annotation tree 的 MemoryPack payload 语义解析
-  - ~flatbufer & memorypack 可复用的特性
-  - CN metadata 解开
-- `v2.0.3`
+- `v2.2.0`
+  - 完善 JP 解开（需要密钥）
   - 新 Bundle 解开器
   
 ## 关于项目
-Blue Archive Asset Downloader v2.0.0.
+Blue Archive Asset Downloader v2.1.0.
 
 ✨ 技术支持：Codex ✨
 

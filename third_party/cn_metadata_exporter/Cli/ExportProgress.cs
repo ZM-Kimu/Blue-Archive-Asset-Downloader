@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace YldaDumpCsExporter;
+namespace CnMetadataExporter;
 
 internal sealed class ExportProgress
 {

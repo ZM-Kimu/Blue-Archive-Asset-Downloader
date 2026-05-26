@@ -343,9 +343,7 @@ def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(
     monkeypatch.setattr(
         backend, "_resolve_unity_version", lambda *_args, **_kwargs: "2021.3.36f1"
     )
-    monkeypatch.setattr(
-        backend, "_resolve_framework", lambda: "net10.0"
-    )
+    monkeypatch.setattr(backend, "_resolve_framework", lambda: "net10.0")
     monkeypatch.setattr(
         "ba_downloader.infrastructure.tools.dump_backend.subprocess.run", fake_run
     )
@@ -426,10 +424,7 @@ def test_cn_metadata_backend_uses_metadata_only_exporter(
             "--formatter-output",
             str(
                 (
-                    tmp_path
-                    / "Extracted"
-                    / "Dumps"
-                    / "memorypack_formatters.json"
+                    tmp_path / "Extracted" / "Dumps" / "memorypack_formatters.json"
                 ).resolve()
             ),
         ]

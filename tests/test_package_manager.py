@@ -12,14 +12,14 @@ from zipfile import ZipFile
 
 import pytest
 
-import ba_downloader.infrastructure.apk.package_manager as package_manager
+import ba_downloader.infrastructure.packages.android_package as package_manager
 from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
-from ba_downloader.infrastructure.apk.package_manager import (
+from ba_downloader.infrastructure.logging.console_logger import NullLogger
+from ba_downloader.infrastructure.packages.android_package import (
     PackageArchiveError,
     _resolve_filename,
     download_package_file,
 )
-from ba_downloader.infrastructure.logging.console_logger import NullLogger
 
 
 class RecordingHttpClient:

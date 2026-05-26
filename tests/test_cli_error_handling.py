@@ -15,7 +15,7 @@ class ClosableHttpClient:
         self.closed = True
 
 
-class FailingExtractService:
+class FailingExtractAssetsUseCase:
     def __init__(self, error: Exception) -> None:
         self.error = error
 
@@ -56,7 +56,7 @@ def test_main_logs_operational_errors_without_traceback(
     )
 
     monkeypatch.setattr(
-        "ba_downloader.cli.main._build_cli_runtime_services",
+        "ba_downloader.cli.main.build_cli_runtime_services",
         lambda context: services,
     )
     monkeypatch.setattr(
@@ -84,11 +84,11 @@ def test_main_logs_extract_bootstrap_errors_without_traceback(
     services = SimpleNamespace(
         logger=ConsoleLogger(),
         http_client=http_client,
-        extract_service=FailingExtractService(error),
+        extract_service=FailingExtractAssetsUseCase(error),
     )
 
     monkeypatch.setattr(
-        "ba_downloader.cli.main._build_cli_runtime_services",
+        "ba_downloader.cli.main.build_cli_runtime_services",
         lambda context: services,
     )
 
