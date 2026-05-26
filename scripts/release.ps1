@@ -103,7 +103,7 @@ function Get-PreferredRemote {
         }
     }
 
-    if (Test-GitRef -RefName "origin/HEAD" -or Test-GitRef -RefName "origin/main") {
+    if ((Test-GitRef -RefName "origin/HEAD") -or (Test-GitRef -RefName "origin/main")) {
         return "origin"
     }
 
