@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import TextIO
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from ba_downloader.domain.models.region import Region
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -239,7 +239,10 @@ class Cpp2ILSourceResolver:
         self.logger.warn(
             "Cpp2IL source is missing. Downloading fallback source package..."
         )
-        self._download_to_cache(cache_root)
+        self._download_to_cache(
+            cache_root,
+            max_attempts=max(1, context.max_retries + 1),
+        )
         if self._is_valid_cpp2il_root(cache_root):
             return cache_root
         raise FileNotFoundError("Unable to resolve a valid Cpp2IL source tree.")
@@ -256,36 +259,57 @@ class Cpp2ILSourceResolver:
     def _is_valid_cpp2il_root(root: Path) -> bool:
         return (root / CPP2IL_PROJECT).exists() and (root / LIBCPP2IL_PROJECT).exists()
 
-    def _download_to_cache(self, cache_root: Path) -> None:
+    def _download_to_cache(self, cache_root: Path, *, max_attempts: int) -> None:
         cache_root.parent.mkdir(parents=True, exist_ok=True)
         archive_path = cache_root.parent / f"cpp2il-{self.commit}.zip"
         extract_dir = cache_root.parent / f"cpp2il-{self.commit}-extract"
+        last_error: BaseException | None = None
 
-        if extract_dir.exists():
-            shutil.rmtree(extract_dir)
-        if archive_path.exists():
-            archive_path.unlink()
+        for attempt in range(1, max_attempts + 1):
+            if extract_dir.exists():
+                shutil.rmtree(extract_dir)
+            if archive_path.exists():
+                archive_path.unlink()
 
-        self.http_client.download_to_file(self.archive_url, str(archive_path))
-        with ZipFile(archive_path, "r") as archive:
-            archive.extractall(extract_dir)
+            self.http_client.download_to_file(self.archive_url, str(archive_path))
+            try:
+                with ZipFile(archive_path, "r") as archive:
+                    archive.extractall(extract_dir)
+            except BadZipFile as exc:
+                last_error = exc
+                if archive_path.exists():
+                    archive_path.unlink()
+                if extract_dir.exists():
+                    shutil.rmtree(extract_dir)
+                if attempt < max_attempts:
+                    continue
+                raise FileNotFoundError(
+                    "Failed to download Cpp2IL source archive. "
+                    "Retry the download or initialize the Cpp2IL submodule."
+                ) from last_error
 
-        source_root = next(
-            (
-                path
-                for path in extract_dir.iterdir()
-                if path.is_dir() and self._is_valid_cpp2il_root(path)
-            ),
-            None,
-        )
-        if source_root is None:
-            raise FileNotFoundError(
-                "Downloaded Cpp2IL archive does not contain expected project files.",
+            source_root = next(
+                (
+                    path
+                    for path in extract_dir.iterdir()
+                    if path.is_dir() and self._is_valid_cpp2il_root(path)
+                ),
+                None,
             )
+            if source_root is None:
+                raise FileNotFoundError(
+                    "Downloaded Cpp2IL archive does not contain expected project files.",
+                )
 
-        if cache_root.exists():
-            shutil.rmtree(cache_root)
-        shutil.move(str(source_root), str(cache_root))
+            if cache_root.exists():
+                shutil.rmtree(cache_root)
+            shutil.move(str(source_root), str(cache_root))
+
+            if archive_path.exists():
+                archive_path.unlink()
+            if extract_dir.exists():
+                shutil.rmtree(extract_dir)
+            return
 
         if archive_path.exists():
             archive_path.unlink()

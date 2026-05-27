@@ -43,12 +43,26 @@ class ArchiveHttpClient(DummyHttpClient):
     def download_to_file(self, url: str, dest_path: str, **kwargs) -> None:  # type: ignore[no-untyped-def]
         _ = kwargs
         self.download_calls.append((url, dest_path))
-        archive_root = f"Cpp2IL-{CPP2IL_COMMIT}"
-        with ZipFile(dest_path, "w") as archive:
-            archive.writestr(f"{archive_root}/Cpp2IL/Cpp2IL.csproj", "<Project />")
-            archive.writestr(
-                f"{archive_root}/LibCpp2IL/LibCpp2IL.csproj", "<Project />"
-            )
+        _write_cpp2il_archive(Path(dest_path))
+
+
+class FlakyArchiveHttpClient(DummyHttpClient):
+    def download_to_file(self, url: str, dest_path: str, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        _ = kwargs
+        self.download_calls.append((url, dest_path))
+        if len(self.download_calls) == 1:
+            Path(dest_path).write_bytes(b"PK\x03\x04truncated")
+            return
+        _write_cpp2il_archive(Path(dest_path))
+
+
+def _write_cpp2il_archive(dest_path: Path) -> None:
+    archive_root = f"Cpp2IL-{CPP2IL_COMMIT}"
+    with ZipFile(dest_path, "w") as archive:
+        archive.writestr(f"{archive_root}/Cpp2IL/Cpp2IL.csproj", "<Project />")
+        archive.writestr(
+            f"{archive_root}/LibCpp2IL/LibCpp2IL.csproj", "<Project />"
+        )
 
 
 class RecordingLogger:
@@ -273,6 +287,27 @@ def test_cpp2il_source_resolver_downloads_and_reuses_cache(
     assert first == second
     assert (first / "Cpp2IL" / "Cpp2IL.csproj").exists()
     assert len(http_client.download_calls) == 1
+
+
+def test_cpp2il_source_resolver_retries_truncated_fallback_archive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_repo_root = tmp_path / "repo"
+    fake_repo_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.tools.dump_backend._repo_root",
+        lambda: fake_repo_root,
+    )
+
+    http_client = FlakyArchiveHttpClient()
+    resolver = Cpp2ILSourceResolver(http_client, NullLogger())
+    context = _build_context(tmp_path)
+
+    resolved = resolver.resolve(context)
+
+    assert (resolved / "Cpp2IL" / "Cpp2IL.csproj").exists()
+    assert len(http_client.download_calls) == 2
 
 
 def test_cpp2il_exporter_project_targets_selected_framework(
