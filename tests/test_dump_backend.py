@@ -56,13 +56,21 @@ class FlakyArchiveHttpClient(DummyHttpClient):
         _write_cpp2il_archive(Path(dest_path))
 
 
+class StaticSourceResolver:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.contexts: list[RuntimeContext] = []
+
+    def resolve(self, context: RuntimeContext) -> Path:
+        self.contexts.append(context)
+        return self.root
+
+
 def _write_cpp2il_archive(dest_path: Path) -> None:
     archive_root = f"Cpp2IL-{CPP2IL_COMMIT}"
     with ZipFile(dest_path, "w") as archive:
         archive.writestr(f"{archive_root}/Cpp2IL/Cpp2IL.csproj", "<Project />")
-        archive.writestr(
-            f"{archive_root}/LibCpp2IL/LibCpp2IL.csproj", "<Project />"
-        )
+        archive.writestr(f"{archive_root}/LibCpp2IL/LibCpp2IL.csproj", "<Project />")
 
 
 class RecordingLogger:
@@ -407,7 +415,9 @@ def test_cn_metadata_backend_uses_metadata_only_exporter(
     metadata_path = metadata_dir / "global-metadata.dat"
     metadata_path.write_bytes(b"metadata")
     logger = RecordingLogger()
-    backend = CnMetadataDumpBackend(DummyHttpClient(), logger)
+    cpp2il_root = tmp_path / "fallback" / "Cpp2IL"
+    source_resolver = StaticSourceResolver(cpp2il_root)
+    backend = CnMetadataDumpBackend(DummyHttpClient(), logger, source_resolver)
     popen_calls: list[list[str]] = []
 
     def fake_popen(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
@@ -451,6 +461,7 @@ def test_cn_metadata_backend_uses_metadata_only_exporter(
             str(tmp_path / "third_party" / "cn_metadata_exporter.csproj"),
             "-c",
             "Release",
+            f"-p:Cpp2ILRoot={cpp2il_root.resolve()}",
             "--",
             "--metadata",
             str(metadata_path.resolve()),
@@ -464,6 +475,7 @@ def test_cn_metadata_backend_uses_metadata_only_exporter(
             ),
         ]
     ]
+    assert source_resolver.contexts == [context]
 
 
 def test_cn_metadata_backend_raises_on_exporter_failure(
@@ -475,7 +487,11 @@ def test_cn_metadata_backend_raises_on_exporter_failure(
     metadata_dir.mkdir(parents=True, exist_ok=True)
     (metadata_dir / "global-metadata.dat").write_bytes(b"metadata")
     logger = RecordingLogger()
-    backend = CnMetadataDumpBackend(DummyHttpClient(), logger)
+    backend = CnMetadataDumpBackend(
+        DummyHttpClient(),
+        logger,
+        StaticSourceResolver(tmp_path / "Cpp2IL"),
+    )
 
     def fake_popen(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
         _ = kwargs
@@ -516,7 +532,11 @@ def test_cn_metadata_backend_propagates_startup_failure(
     metadata_dir = Path(context.temp_dir) / "CN_Metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
     (metadata_dir / "global-metadata.dat").write_bytes(b"metadata")
-    backend = CnMetadataDumpBackend(DummyHttpClient(), RecordingLogger())
+    backend = CnMetadataDumpBackend(
+        DummyHttpClient(),
+        RecordingLogger(),
+        StaticSourceResolver(tmp_path / "Cpp2IL"),
+    )
 
     def fake_popen(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
         _ = (command, kwargs)

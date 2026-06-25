@@ -1,4 +1,5 @@
 from ba_downloader.application.config import AppSettings
+from ba_downloader.cli.main import build_parser, runtime_context_from_namespace
 
 
 def test_settings_normalization_defaults() -> None:
@@ -71,3 +72,48 @@ def test_runtime_context_copies_normalized_settings() -> None:
     assert runtime_context.resource_type == ("media",)
     assert runtime_context.platform == "android"
     assert runtime_context.platform_explicit is False
+
+
+def test_runtime_context_copies_jp_sqlcipher_key_from_cli() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "extract",
+            "--region",
+            "jp",
+            "--jp-sqlcipher-key-hex",
+            "a" * 64,
+        ]
+    )
+
+    runtime_context = runtime_context_from_namespace(args)
+
+    assert runtime_context.jp_sqlcipher_key_hex == "a" * 64
+
+
+def test_runtime_context_ignores_jp_sqlcipher_key_environment(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("_".join(("BA", "JP", "SQLCIPHER", "KEY", "HEX")), "b" * 64)
+
+    runtime_context = AppSettings(region="jp").to_runtime_context()
+
+    assert runtime_context.jp_sqlcipher_key_hex == ""
+
+
+def test_cli_jp_sqlcipher_key_is_not_affected_by_environment(monkeypatch) -> None:
+    monkeypatch.setenv("_".join(("BA", "JP", "SQLCIPHER", "KEY", "HEX")), "b" * 64)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "extract",
+            "--region",
+            "jp",
+            "--jp-sqlcipher-key-hex",
+            "c" * 64,
+        ]
+    )
+
+    runtime_context = runtime_context_from_namespace(args)
+
+    assert runtime_context.jp_sqlcipher_key_hex == "c" * 64

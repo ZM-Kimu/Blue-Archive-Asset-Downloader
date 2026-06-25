@@ -23,6 +23,7 @@ class RuntimeContext:
     work_dir: str
     platform: Platform = "android"
     platform_explicit: bool = False
+    jp_sqlcipher_key_hex: str = ""
 
     @property
     def proxy(self) -> dict[str, str] | None:

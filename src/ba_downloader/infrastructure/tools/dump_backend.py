@@ -153,13 +153,21 @@ class CnMetadataDumpBackend(Il2CppDumpBackendPort):
     METADATA_FOLDER = "CN_Metadata"
     METADATA_NAME = "global-metadata.dat"
 
-    def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
+    def __init__(
+        self,
+        http_client: HttpClientPort,
+        logger: LoggerPort,
+        source_resolver: Cpp2ILSourceResolver | None = None,
+    ) -> None:
         self.http_client = http_client
         self.logger = logger
+        self.source_resolver = source_resolver or Cpp2ILSourceResolver(
+            http_client, logger
+        )
 
     def dump(self, context: RuntimeContext, output_dir: str) -> None:
-        _ = self.http_client
         metadata_path = self._resolve_metadata_path(context)
+        cpp2il_root = self.source_resolver.resolve(context)
         project_path = self._resolve_project_path()
         dump_cs_path = Path(output_dir) / "dump.cs"
         formatter_sidecar_path = Path(output_dir) / "memorypack_formatters.json"
@@ -174,6 +182,7 @@ class CnMetadataDumpBackend(Il2CppDumpBackendPort):
                 str(project_path),
                 "-c",
                 "Release",
+                f"-p:Cpp2ILRoot={cpp2il_root.resolve()}",
                 "--",
                 "--metadata",
                 str(metadata_path.resolve()),

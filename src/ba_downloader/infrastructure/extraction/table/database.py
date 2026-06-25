@@ -4,7 +4,7 @@ import json
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from ba_downloader.domain.models.database import DBTable, SQLiteDataType
 from ba_downloader.domain.ports.logging import LoggerPort
@@ -25,6 +25,10 @@ from ba_downloader.infrastructure.extraction.table.progress import (
 from ba_downloader.infrastructure.storage import TableDatabase
 
 
+class DatabasePathResolver(Protocol):
+    def resolve(self, database_path: Path) -> Path: ...
+
+
 class TableDatabaseReader:
     def __init__(
         self,
@@ -32,11 +36,13 @@ class TableDatabaseReader:
         payload_router: TablePayloadRouter,
         logger: LoggerPort,
         progress: TableExtractionProgress,
+        database_path_resolver: DatabasePathResolver | None = None,
     ) -> None:
         self.codec_adapter = codec_adapter
         self.payload_router = payload_router
         self.logger = logger
         self.progress = progress
+        self.database_path_resolver = database_path_resolver
 
     def process_db_file(
         self,
@@ -46,10 +52,16 @@ class TableDatabaseReader:
         should_stop: Callable[[], bool] | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> list[DBTable]:
-        with TableDatabase(file_path) as db:
+        source_path = Path(file_path)
+        database_path = (
+            self.database_path_resolver.resolve(source_path)
+            if self.database_path_resolver is not None
+            else source_path
+        )
+        with TableDatabase(str(database_path)) as db:
             tables: list[DBTable] = []
             table_list = [table_name] if table_name else db.get_table_list()
-            db_name = Path(file_path).name
+            db_name = source_path.name
 
             for index, table in enumerate(table_list, start=1):
                 self.progress.ensure_not_cancelled(should_stop)

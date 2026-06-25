@@ -76,6 +76,11 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--proxy", "-px", default="")
     parser.add_argument("--max-retries", "-mr", type=int, default=5)
     parser.add_argument(
+        "--jp-sqlcipher-key-hex",
+        default="",
+        help="JP SQLCipher raw key as 64 hex characters.",
+    )
+    parser.add_argument(
         "--platform",
         "-p",
         choices=["windows", "android", "ios"],
@@ -135,6 +140,7 @@ def runtime_context_from_namespace(args: argparse.Namespace) -> RuntimeContext:
         advanced_search=tuple(getattr(args, "advanced_search", [])),
         platform=cast(Platform, getattr(args, "platform", "android")),
         platform_explicit=getattr(args, "platform_explicit", False),
+        jp_sqlcipher_key_hex=getattr(args, "jp_sqlcipher_key_hex", ""),
     )
     return settings.to_runtime_context()
 

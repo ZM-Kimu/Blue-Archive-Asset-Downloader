@@ -20,6 +20,7 @@ from ba_downloader.infrastructure.extraction.table.codecs import (
     TablePayloadCodecAdapter,
 )
 from ba_downloader.infrastructure.extraction.table.database import (
+    DatabasePathResolver,
     TableDatabaseJsonWriter,
     TableDatabaseReader,
 )
@@ -39,6 +40,7 @@ from ba_downloader.infrastructure.extraction.table.progress import (
     TableExtractionProgress,
 )
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
+from ba_downloader.infrastructure.storage import SqlCipherDatabaseResolver
 
 __all__ = [
     "FlatBufferExportError",
@@ -75,6 +77,8 @@ class TableExtractor:
         logger: LoggerPort | None = None,
         memorypack_data_dir: str | None = None,
         memorypack_formatter_path: str | None = None,
+        context: RuntimeContext | None = None,
+        database_path_resolver: DatabasePathResolver | None = None,
     ) -> None:
         self.table_file_folder = table_file_folder
         self.extract_folder = extract_folder
@@ -102,6 +106,8 @@ class TableExtractor:
             self.payload_router,
             self.logger,
             self.progress,
+            database_path_resolver=database_path_resolver
+            or (SqlCipherDatabaseResolver(context) if context is not None else None),
         )
         self.database_writer = TableDatabaseJsonWriter()
         self.archive_classifier = TableArchiveClassifier()
@@ -124,6 +130,7 @@ class TableExtractor:
             str(Path(context.extract_dir) / "Table"),
             str(Path(context.extract_dir) / "FlatBufferData"),
             logger=logger,
+            context=context,
         )
 
     def _sync_codec_attributes(self) -> None:

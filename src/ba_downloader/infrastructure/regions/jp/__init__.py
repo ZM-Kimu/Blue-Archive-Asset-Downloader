@@ -8,6 +8,9 @@ from ba_downloader.infrastructure.regions.jp.models import (
     resolve_jp_patch_pack_dir,
 )
 from ba_downloader.infrastructure.regions.jp.release_resolver import JPReleaseResolver
+from ba_downloader.infrastructure.regions.jp.runtime_assets import (
+    JPRuntimeAssetPreparer,
+)
 
 __all__ = [
     "APKPackageInfo",
@@ -15,5 +18,6 @@ __all__ = [
     "JPBootstrapper",
     "JPCatalogSourceProvider",
     "JPReleaseResolver",
+    "JPRuntimeAssetPreparer",
     "resolve_jp_patch_pack_dir",
 ]

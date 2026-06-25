@@ -17,6 +17,9 @@ from ba_downloader.infrastructure.regions.gl.provider import (
     GLRuntimeAssetPreparer,
 )
 from ba_downloader.infrastructure.regions.jp.provider import JPRegionProvider
+from ba_downloader.infrastructure.regions.jp.runtime_assets import (
+    JPRuntimeAssetPreparer,
+)
 from ba_downloader.infrastructure.schema.catalog import JPCatalogDecoder
 
 
@@ -82,4 +85,7 @@ DEFAULT_REGION_REGISTRY.register("jp", build_jp_region_provider)
 DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY = RuntimeAssetPreparerRegistry()
 DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.register("cn", CNRuntimeAssetPreparer)
 DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.register("gl", GLRuntimeAssetPreparer)
-DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.register("jp", build_noop_runtime_preparer)
+DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.register(
+    "jp",
+    lambda http_client, logger: JPRuntimeAssetPreparer(logger),
+)

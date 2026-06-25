@@ -14,6 +14,14 @@ from ba_downloader.domain.models.character import CharacterData, CharacterRelati
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.relation import RelationBuilderPort
+from ba_downloader.infrastructure.extraction.character.scenario_matching import (
+    collect_dev_exact_aliases,
+    collect_dev_prefix_aliases,
+    normalize_lookup_tokens,
+    select_best_scenario_candidate,
+    tokens_match_exact,
+    tokens_match_prefix,
+)
 from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
 from ba_downloader.infrastructure.schema.crypto import zip_password
@@ -38,6 +46,11 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         "characterexceltable.bytes",
         "localizecharprofileexceltable.bytes",
     )
+    JP_REQUIRED_RELATION_SOURCES = (
+        "ScenarioCharacterNameDBSchema",
+        "CharacterDBSchema",
+        "LocalizeCharProfileDBSchema",
+    )
 
     def __init__(
         self,
@@ -51,6 +64,7 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             str(Path(context.temp_dir) / "Table"),
             str(Path(context.extract_dir) / "FlatBufferData"),
             logger=self.logger,
+            context=context,
         )
         self.kana_converter = pykakasi.kakasi()
 
@@ -90,13 +104,30 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         list[dict[str, Any]],
         list[dict[str, Any]],
     ]:
+        if self.context.region == "jp":
+            return self.__extract_jp_excel_db()
+        return self.__extract_archive_excel()
+
+    def __extract_archive_excel(
+        self,
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+    ]:
         scenario_db = self.__extract_scenario_db()
         extracted_paths = self.__extract_excel_bytes_files()
         excel_payloads = self.__load_excel_payloads(extracted_paths)
 
         self.__validate_relation_sources(
-            scenario_db=scenario_db,
-            extracted_payloads=excel_payloads,
+            source_payloads={
+                "ScenarioCharacterNameDBSchema": scenario_db,
+                **excel_payloads,
+            },
+            required_sources=self.REQUIRED_RELATION_SOURCES,
         )
 
         char_profile = excel_payloads.get("localizecharprofileexceltable.bytes", [])
@@ -113,14 +144,57 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             localize_gacha,
         )
 
+    def __extract_jp_excel_db(
+        self,
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+    ]:
+        scenario_db = self.__extract_scenario_db()
+        char_excel = self.__extract_db_bytes_payloads("CharacterDBSchema")
+        char_profile = self.__extract_db_bytes_payloads("LocalizeCharProfileDBSchema")
+
+        self.__validate_relation_sources(
+            source_payloads={
+                "ScenarioCharacterNameDBSchema": scenario_db,
+                "CharacterDBSchema": char_excel,
+                "LocalizeCharProfileDBSchema": char_profile,
+            },
+            required_sources=self.JP_REQUIRED_RELATION_SOURCES,
+        )
+
+        return (
+            scenario_db,
+            char_profile,
+            char_excel,
+            [],
+            [],
+            [],
+        )
+
     def __extract_scenario_db(self) -> list[dict[str, Any]]:
+        return self.__extract_db_table("ScenarioCharacterNameDBSchema")
+
+    def __extract_db_table(self, table_name: str) -> list[dict[str, Any]]:
         tables = self._process_db_file(
             str(Path(self.table_file_folder) / self.DB_NAME),
-            "ScenarioCharacterNameDBSchema",
+            table_name,
         )
         if not tables:
             return []
         return TableDatabase.convert_to_list_dict(tables[0])
+
+    def __extract_db_bytes_payloads(self, table_name: str) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        for row in self.__extract_db_table(table_name):
+            payload = row.get("Bytes", {})
+            if isinstance(payload, dict) and payload:
+                payloads.append(payload)
+        return payloads
 
     def __extract_excel_bytes_files(self) -> dict[str, Path]:
         excel_folder = Path(self.table_file_folder)
@@ -190,17 +264,15 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
     def __validate_relation_sources(
         self,
         *,
-        scenario_db: list[dict[str, Any]],
-        extracted_payloads: dict[str, list[dict[str, Any]]],
+        source_payloads: dict[str, list[dict[str, Any]]],
+        required_sources: tuple[str, ...],
     ) -> None:
         missing_sources: list[str] = []
-        if not scenario_db:
-            missing_sources.append("ScenarioCharacterNameDBSchema")
-        for file_name in self.REQUIRED_BYTES_FILES:
-            if not extracted_payloads.get(file_name):
-                missing_sources.append(file_name)
+        for source_name in required_sources:
+            if not source_payloads.get(source_name):
+                missing_sources.append(source_name)
 
-        if len(missing_sources) == len(self.REQUIRED_RELATION_SOURCES):
+        if len(missing_sources) == len(required_sources):
             raise LookupError(
                 "Relation build failed because all core relation sources are missing."
             )
@@ -279,13 +351,16 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
     def __collect_profile_names(self, profile: dict[str, Any]) -> set[str]:
         names: set[str] = set()
         for key in profile:
-            if not key.lower().startswith(("fullname", "familyname", "personalname")):
+            lowered_key = key.lower()
+            if not lowered_key.startswith(("fullname", "familyname", "personalname")):
                 continue
             name = profile.get(key, "")
             if name:
-                names.add(name)
-            if name and key.lower() in ("familynamerubyjp", "personalnamejp"):
-                names.add(self.__convert_kana_to_hepburn(str(name)))
+                names.add(str(name))
+            if name and self.context.region == "jp" and lowered_key.endswith("jp"):
+                romanized_name = self.__convert_kana_to_hepburn(str(name))
+                if romanized_name:
+                    names.add(romanized_name)
         return names
 
     @staticmethod
@@ -401,10 +476,6 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         data.names = sorted(merged_names)
         hash_map[char_id] = data
 
-    @staticmethod
-    def __normalize_lookup_token(value: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", value.lower())
-
     def __add_file_aliases(self, char_data: CharacterData, aliases: set[str]) -> None:
         valid_aliases = {alias for alias in aliases if alias and alias != "Null"}
         if not valid_aliases:
@@ -439,6 +510,9 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             ):
                 continue
 
+            if self.context.region == "jp":
+                continue
+
             self.__register_unmatched_scenario(
                 hash_map,
                 scene_data,
@@ -454,57 +528,44 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         file_name: str,
         name_no_underline: str,
     ) -> bool:
-        normalized_scenario_names = {
-            self.__normalize_lookup_token(name) for name in scenario_names if name
-        }
-        normalized_file_name = self.__normalize_lookup_token(file_name)
-        normalized_file_name_no_underline = self.__normalize_lookup_token(
-            name_no_underline
-        )
+        normalized_scenario_names = normalize_lookup_tokens(scenario_names)
+        file_candidates = {file_name, name_no_underline}
+        name_candidates: list[CharacterData] = []
+        exact_file_candidates: list[CharacterData] = []
         prefix_candidates: list[CharacterData] = []
 
         for char_data in hash_map.values():
-            normalized_names = {
-                self.__normalize_lookup_token(name)
-                for name in (char_data.names or [])
-                if name
-            }
+            normalized_names = normalize_lookup_tokens(set(char_data.names or []))
             if normalized_scenario_names and normalized_names.intersection(
                 normalized_scenario_names
             ):
-                self.__add_file_aliases(char_data, {file_name, name_no_underline})
-                return True
+                name_candidates.append(char_data)
 
-            normalized_aliases = {
-                self.__normalize_lookup_token(alias)
-                for alias in (char_data.file_name or set())
-                if alias
-            }
-            if any(
-                normalized_alias
-                and (
-                    normalized_file_name.startswith(normalized_alias)
-                    or normalized_alias.startswith(normalized_file_name)
-                    or normalized_file_name_no_underline.startswith(normalized_alias)
-                    or normalized_alias.startswith(normalized_file_name_no_underline)
-                )
-                for normalized_alias in normalized_aliases
-            ):
-                self.__add_file_aliases(char_data, {file_name, name_no_underline})
-                return True
+            aliases = set(char_data.file_name or set())
+            dev_exact_aliases = collect_dev_exact_aliases(char_data.dev_name)
+            exact_references = aliases.union(dev_exact_aliases)
+            if tokens_match_exact(file_candidates, exact_references):
+                exact_file_candidates.append(char_data)
 
-            dev_prefix = self.__normalize_lookup_token(
-                char_data.dev_name.split("_", 1)[0]
-            )
-            if dev_prefix and (
-                normalized_file_name.startswith(dev_prefix)
-                or normalized_file_name_no_underline.startswith(dev_prefix)
-            ):
+            dev_prefix_aliases = collect_dev_prefix_aliases(char_data.dev_name)
+            prefix_references = aliases.union(dev_prefix_aliases)
+            if tokens_match_prefix(file_candidates, prefix_references):
                 prefix_candidates.append(char_data)
 
-        if len(prefix_candidates) == 1:
+        for candidates in (
+            name_candidates,
+            exact_file_candidates,
+            prefix_candidates,
+        ):
+            matched_char = select_best_scenario_candidate(
+                candidates,
+                file_candidates,
+            )
+            if not matched_char:
+                continue
             self.__add_file_aliases(
-                prefix_candidates[0], {file_name, name_no_underline}
+                matched_char,
+                {file_name, name_no_underline},
             )
             return True
 

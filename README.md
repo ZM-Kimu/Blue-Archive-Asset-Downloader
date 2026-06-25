@@ -96,19 +96,20 @@ python -m ba_downloader sync --region jp
 
 ## **基本参数**
 **`*`** :**必选的选项**
-| 参数                       | 缩&nbsp;写 | 说明                                                                         | 默认值             | 示例                          |
-| -------------------------- | ---------- | ---------------------------------------------------------------------------- | ------------------ | ----------------------------- |
-| **`--region`**`*`          | `-r`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                     | 无                 | `-r jp`                       |
-| `--threads`                | `-t`       | **同时下载或解压的线程数**                                                   | `20`               | `-t 50`                       |
-| `--version`                | `-v`       | **需要下载的资源版本号**（仅 GL 生效）                                       | 无                 | `-v 1.2.3`                    |
-| `--platform`               | `-p`       | **资源所属平台**：`windows`、`android`、`ios`（仅 JP 生效）                  | `android`          | `-p windows`                  |
-| `--raw-dir`                | `-rd`      | **指定未处理文件的位置**                                                     | `"RawData"`        | `-rd raw_folder`              |
-| `--extract-dir`            | `-ed`      | **指定已提取文件的位置**                                                     | `"Extracted"`      | `-ed output_folder`           |
-| `--temp-dir`               | `-td`      | **指定临时文件的位置**                                                       | `"Temp"`           | `-td temp_dir`                |
-| `--extract-while-download` | `-ewd`     | **是否在下载时便提取文件**（仅 `sync` 可用；较慢，在资源数量较多时酌情使用） | `False`            | `--extract-while-download`    |
-| `--resource-type`          | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                              | `all`              | `--resource-type media table` |
-| `--proxy`                  | `-px`      | **设置 HTTP 代理**                                                           | 无（使用系统代理） | `-px http://127.0.0.1:8080`   |
-| `--max-retries`            | `-mr`      | **下载失败时的最大重试次数**                                                 | `5`                | `--max-retries 3`             |
+| 参数                       | 缩&nbsp;写 | 说明                                                                         | 默认值             | 示例                             |
+| -------------------------- | ---------- | ---------------------------------------------------------------------------- | ------------------ | -------------------------------- |
+| **`--region`**`*`          | `-r`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                     | 无                 | `-r jp`                          |
+| `--threads`                | `-t`       | **同时下载或解压的线程数**                                                   | `20`               | `-t 50`                          |
+| `--version`                | `-v`       | **需要下载的资源版本号**（仅 GL 生效）                                       | 无                 | `-v 1.2.3`                       |
+| `--platform`               | `-p`       | **资源所属平台**：`windows`、`android`、`ios`（仅 JP 生效）                  | `android`          | `-p windows`                     |
+| `--raw-dir`                | `-rd`      | **指定未处理文件的位置**                                                     | `"RawData"`        | `-rd raw_folder`                 |
+| `--extract-dir`            | `-ed`      | **指定已提取文件的位置**                                                     | `"Extracted"`      | `-ed output_folder`              |
+| `--temp-dir`               | `-td`      | **指定临时文件的位置**                                                       | `"Temp"`           | `-td temp_dir`                   |
+| `--extract-while-download` | `-ewd`     | **是否在下载时便提取文件**（仅 `sync` 可用；较慢，在资源数量较多时酌情使用） | `False`            | `--extract-while-download`       |
+| `--resource-type`          | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                              | `all`              | `--resource-type media table`    |
+| `--proxy`                  | `-px`      | **设置 HTTP 代理**                                                           | 无（使用系统代理） | `-px http://127.0.0.1:8080`      |
+| `--max-retries`            | `-mr`      | **下载失败时的最大重试次数**                                                 | `5`                | `--max-retries 3`                |
+| `--jp-sqlcipher-key-hex`   | 无         | **JP 的 SQL key**                                                            | 无                 | `--jp-sqlcipher-key-hex <64hex>` |
 | `--search`                 | `-s`       | **普通检索**，指定需要检索并下载的文件关键词（仅 `sync` 与 `download` 可用） |
 
 <!-- | `--advanced-search`        | `-as`      | **高级检索**，指定角色关键词（仅 `sync` 可用；当前仅 GL 支持，需要 .NET 环境） | -->
@@ -167,7 +168,7 @@ ba-downloader download --region jp --platform windows
 
 
 ## 使用须知
-- `--platform` 仅对 JP 生效，用于指定 JP 平台的资源：
+- `--platform` 仅对 JP 生效，用于指定 JP 平台的资源。
 - JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本，后续开放官方 PC 版解析支持。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
@@ -175,7 +176,6 @@ ba-downloader download --region jp --platform windows
 
 ## TODO
 - `v2.2.0`
-  - 完善 JP 解开（需要密钥）
   - 新 Bundle 解开器
   
 ## 关于项目

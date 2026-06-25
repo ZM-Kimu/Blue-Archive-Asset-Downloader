@@ -31,6 +31,7 @@ class AppSettings:
     work_dir: str = ""
     platform: Platform = "android"
     platform_explicit: bool = False
+    jp_sqlcipher_key_hex: str = ""
 
     def normalized(self) -> AppSettings:
         region = cast(Region, self.region.lower())
@@ -60,6 +61,10 @@ class AppSettings:
         if not resource_type or "all" in resource_type:
             resource_type = ("table", "media", "bundle")
 
+        jp_sqlcipher_key_hex = (
+            self.jp_sqlcipher_key_hex.strip() if region == "jp" else ""
+        )
+
         return AppSettings(
             region=region,
             threads=max(1, self.threads),
@@ -76,6 +81,7 @@ class AppSettings:
             work_dir=self.work_dir or getcwd(),
             platform=platform,
             platform_explicit=self.platform_explicit,
+            jp_sqlcipher_key_hex=jp_sqlcipher_key_hex,
         )
 
     def to_runtime_context(self) -> RuntimeContext:
@@ -96,4 +102,5 @@ class AppSettings:
             work_dir=normalized.work_dir,
             platform=normalized.platform,
             platform_explicit=normalized.platform_explicit,
+            jp_sqlcipher_key_hex=normalized.jp_sqlcipher_key_hex,
         )
