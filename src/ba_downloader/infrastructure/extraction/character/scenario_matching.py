@@ -48,14 +48,6 @@ def token_matches_prefix(candidate: str, prefix: str) -> bool:
     )
 
 
-def tokens_match_prefix(candidates: set[str], references: set[str]) -> bool:
-    return any(
-        token_matches_prefix(candidate, reference)
-        for candidate in candidates
-        for reference in references
-    )
-
-
 def is_plain_default_dev_name(dev_name: str) -> bool:
     parts = dev_name.split("_")
     return len(parts) == 2 and parts[1].casefold() == "default"

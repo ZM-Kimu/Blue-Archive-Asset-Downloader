@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ba_downloader.domain.models.region import Region
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
@@ -40,11 +39,6 @@ class RegionRegistry:
         return self._providers[region]
 
 
-class NoOpRuntimeAssetPreparer(RuntimeAssetPreparerPort):
-    def prepare(self, context: RuntimeContext) -> None:
-        _ = context
-
-
 class RuntimeAssetPreparerRegistry:
     def __init__(self) -> None:
         self._preparers: dict[Region, Callable[..., RuntimeAssetPreparerPort]] = {}
@@ -60,10 +54,6 @@ class RuntimeAssetPreparerRegistry:
         if region not in self._preparers:
             raise KeyError(f"Region '{region}' is not registered.")
         return self._preparers[region]
-
-
-def build_noop_runtime_preparer(**_: object) -> RuntimeAssetPreparerPort:
-    return NoOpRuntimeAssetPreparer()
 
 
 def build_jp_region_provider(
