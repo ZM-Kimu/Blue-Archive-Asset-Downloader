@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from ba_downloader.application.use_cases.asset_selection import (
     AssetSelectionService,
     RelationBuilderFactory,
@@ -8,11 +6,10 @@ from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import (
     AssetExtractionPort,
-    SchemaWorkflowPort,
+    ExtractionPrerequisitePort,
 )
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
-from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 from ba_downloader.domain.services.resource_query import ResourceQueryService
 
 
@@ -20,96 +17,21 @@ class ExtractAssetsUseCase:
     def __init__(
         self,
         extraction_workflow: AssetExtractionPort,
-        schema_workflow: SchemaWorkflowPort | None = None,
-        runtime_asset_preparer: RuntimeAssetPreparerPort | None = None,
         logger: LoggerPort | None = None,
         *,
         provider: RegionProvider | None = None,
         relation_builder_factory: RelationBuilderFactory | None = None,
+        prerequisite_service: ExtractionPrerequisitePort | None = None,
     ) -> None:
         self.extraction_workflow = extraction_workflow
-        self.schema_workflow = schema_workflow
-        self.runtime_asset_preparer = runtime_asset_preparer
         self.logger = logger
         self.provider = provider
+        self.prerequisite_service = prerequisite_service
         self.asset_selector = (
             AssetSelectionService(relation_builder_factory, logger)
             if relation_builder_factory is not None and logger is not None
             else None
         )
-
-    @staticmethod
-    def _is_flat_buffer_data_ready(context: RuntimeContext) -> bool:
-        flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
-        return (
-            flatbuffer_data_dir.is_dir()
-            and (flatbuffer_data_dir / "__init__.py").is_file()
-            and (flatbuffer_data_dir / "_registry.py").is_file()
-        )
-
-    @staticmethod
-    def _is_dump_cs_ready(context: RuntimeContext) -> bool:
-        return (Path(context.extract_dir) / "Dumps" / "dump.cs").is_file()
-
-    @staticmethod
-    def _format_jp_table_bootstrap_error(
-        context: RuntimeContext,
-        error: Exception,
-        *,
-        attempted_dump: bool,
-    ) -> str:
-        details = str(error).strip() or error.__class__.__name__
-        if attempted_dump:
-            return (
-                "JP table extract prerequisites were missing and auto-generation was attempted. "
-                f"This requires JP runtime files under '{context.temp_dir}', including "
-                "'global-metadata.dat' and either 'GameAssembly.dll' or 'libil2cpp.so'. "
-                f"Retry after preparing the JP temp files or running a JP sync/download flow. Details: {details}"
-            )
-        return (
-            "JP table extract prerequisites were missing and recompiling FlatBufferData from the existing "
-            f"dump.cs failed under '{context.extract_dir}'. If dump.cs must be regenerated, JP runtime "
-            f"files are required under '{context.temp_dir}', including 'global-metadata.dat' and either "
-            f"'GameAssembly.dll' or 'libil2cpp.so'. Details: {details}"
-        )
-
-    def _ensure_jp_table_prerequisites(self, context: RuntimeContext) -> None:
-        if context.region != "jp" or "table" not in context.resource_type:
-            return
-        if not (Path(context.raw_dir) / "Table").exists():
-            return
-        if self._is_flat_buffer_data_ready(context):
-            return
-        if self.schema_workflow is None or self.runtime_asset_preparer is None:
-            raise LookupError(
-                "JP table extract prerequisites are unavailable because FlatBufferData bootstrap services are not configured."
-            )
-
-        attempted_dump = not self._is_dump_cs_ready(context)
-        try:
-            if not attempted_dump:
-                if self.logger is not None:
-                    self.logger.info(
-                        "FlatBufferData is missing. Recompiling JP FlatBufferData from existing dump.cs..."
-                    )
-                self.schema_workflow.compile(context)
-                return
-
-            if self.logger is not None:
-                self.logger.info(
-                    "FlatBufferData and dump.cs are missing. Generating JP table extract prerequisites..."
-                )
-            self.runtime_asset_preparer.prepare(context)
-            self.schema_workflow.dump(context)
-            self.schema_workflow.compile(context)
-        except (FileNotFoundError, LookupError, RuntimeError) as exc:
-            raise LookupError(
-                self._format_jp_table_bootstrap_error(
-                    context,
-                    exc,
-                    attempted_dump=attempted_dump,
-                )
-            ) from exc
 
     def _resolve_search_resources(
         self,
@@ -192,7 +114,11 @@ class ExtractAssetsUseCase:
                 "table",
             )
             if self._should_extract_type(table_resources):
-                self._ensure_jp_table_prerequisites(active_context)
+                if self.prerequisite_service is not None:
+                    self.prerequisite_service.ensure(
+                        active_context,
+                        table_resources,
+                    )
                 self.extraction_workflow.extract_tables(
                     active_context,
                     table_resources,

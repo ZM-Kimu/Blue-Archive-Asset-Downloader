@@ -2,6 +2,10 @@ from collections.abc import Callable
 
 from ba_downloader.application.use_cases.asset_selection import AssetSelectionService
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
+from ba_downloader.application.use_cases.sync_policy import (
+    SyncExtractionMode,
+    resolve_sync_workflow_policy,
+)
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
@@ -90,35 +94,17 @@ class SyncAssetsUseCase:
         catalog = self.provider.load_catalog(context)
         active_context = catalog.context
         resources = catalog.resources
+        policy = resolve_sync_workflow_policy(active_context)
 
-        if active_context.region == "gl":
+        if policy.requires_schema_workflow:
             self._dump_and_compile(active_context)
-            if active_context.search or active_context.advanced_search:
-                resources = self._search_resource(resources, active_context, True)
-            filtered = self._filter_and_download(resources, active_context)
-            extract_resources = (
-                filtered
-                if active_context.search or active_context.advanced_search
-                else None
-            )
-            self.extract_service.run(active_context, extract_resources)
-            return active_context
-
-        if active_context.region in {"jp", "cn"}:
-            self._dump_and_compile(active_context)
-            if active_context.search or active_context.advanced_search:
-                resources = self._search_resource(resources, active_context, True)
-            filtered = self._filter_and_download(resources, active_context)
-            extract_resources = (
-                filtered
-                if active_context.search or active_context.advanced_search
-                else None
-            )
-            self.extract_service.run_post_download(active_context, extract_resources)
-            return active_context
 
         if active_context.search or active_context.advanced_search:
-            resources = self._search_resource(resources, active_context, False)
+            resources = self._search_resource(
+                resources,
+                active_context,
+                policy.requires_schema_workflow,
+            )
 
         filtered = self._filter_and_download(resources, active_context)
         extract_resources = (
@@ -126,5 +112,8 @@ class SyncAssetsUseCase:
             if active_context.search or active_context.advanced_search
             else None
         )
-        self.extract_service.run_post_download(active_context, extract_resources)
+        if policy.extraction_mode is SyncExtractionMode.direct:
+            self.extract_service.run(active_context, extract_resources)
+        else:
+            self.extract_service.run_post_download(active_context, extract_resources)
         return active_context

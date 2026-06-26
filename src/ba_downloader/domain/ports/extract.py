@@ -32,3 +32,11 @@ class SchemaWorkflowPort(Protocol):
     def dump(self, context: RuntimeContext) -> None: ...
 
     def compile(self, context: RuntimeContext) -> None: ...
+
+
+class ExtractionPrerequisitePort(Protocol):
+    def ensure(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None: ...

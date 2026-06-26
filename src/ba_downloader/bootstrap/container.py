@@ -33,6 +33,9 @@ def build_cli_runtime_services(context: RuntimeContext) -> CliRuntimeServices:
         ImmediateResourceExtractor,
     )
     from ba_downloader.infrastructure.extraction.character import CharacterNameRelation
+    from ba_downloader.infrastructure.extraction.prerequisites import (
+        JpTableExtractionPrerequisite,
+    )
     from ba_downloader.infrastructure.http import ResilientHttpClient
     from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
     from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
@@ -69,11 +72,14 @@ def build_cli_runtime_services(context: RuntimeContext) -> CliRuntimeServices:
         ),
         extract_service=ExtractAssetsUseCase(
             AssetExtractionWorkflow(logger),
-            schema_workflow,
-            runtime_asset_preparer,
             logger,
             provider=provider,
             relation_builder_factory=relation_builder_factory,
+            prerequisite_service=JpTableExtractionPrerequisite(
+                schema_workflow,
+                runtime_asset_preparer,
+                logger,
+            ),
         ),
         schema_workflow=schema_workflow,
         relation_builder_factory=relation_builder_factory,

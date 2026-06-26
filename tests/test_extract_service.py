@@ -12,6 +12,10 @@ from ba_downloader.domain.models.asset import (
 )
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.infrastructure.extraction.prerequisites import (
+    JpTableExtractionPrerequisite,
+)
+from support import DummyRelationBuilder, StaticProvider
 
 
 class RecordingExtractionWorkflow:
@@ -53,46 +57,22 @@ class RecordingExtractionWorkflow:
         self.resource_calls.append(self._resource_paths(resources))
 
 
-class StaticProvider:
-    def __init__(self, result: RegionCatalogResult) -> None:
-        self.result = result
-        self.calls: list[RuntimeContext] = []
+class RecordingPrerequisiteService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[RuntimeContext, list[str] | None]] = []
 
-    def get_capabilities(self) -> RegionCapabilities:
-        return self.result.capabilities
+    @staticmethod
+    def _resource_paths(resources: AssetCollection | None) -> list[str] | None:
+        if resources is None:
+            return None
+        return [item.path for item in resources]
 
-    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
-        self.calls.append(context)
-        return self.result
-
-
-class DummyRelationBuilder:
-    def __init__(
+    def ensure(
         self,
-        *,
-        relation_file_valid: bool = True,
-        search_results: list[str] | None = None,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
     ) -> None:
-        self.relation_file_valid = relation_file_valid
-        self.search_results = search_results or ["Shiroko"]
-        self.search_calls: list[list[str]] = []
-        self.verify_calls = 0
-
-    def build(self, context: RuntimeContext) -> None:
-        _ = context
-
-    def get_excel_resources(self, resources: AssetCollection) -> AssetCollection:
-        return resources
-
-    def search(self, context: RuntimeContext, search_terms: list[str]) -> list[str]:
-        _ = context
-        self.search_calls.append(search_terms)
-        return self.search_results
-
-    def verify_relation_file(self, context: RuntimeContext) -> bool:
-        _ = context
-        self.verify_calls += 1
-        return self.relation_file_valid
+        self.calls.append((context, self._resource_paths(resources)))
 
 
 class RecordingRuntimeAssetPreparer:
@@ -225,6 +205,19 @@ def _create_existing_bundle(context: RuntimeContext, name: str) -> None:
     (bundle_dir / name).write_bytes(b"bundle")
 
 
+def _build_jp_prerequisite_service(
+    calls: list[str],
+    *,
+    fail_on: str | None = None,
+    error: Exception | None = None,
+) -> JpTableExtractionPrerequisite:
+    return JpTableExtractionPrerequisite(
+        RecordingSchemaWorkflow(calls, fail_on=fail_on, error=error),
+        RecordingRuntimeAssetPreparer(calls),
+        RecordingLogger(),
+    )
+
+
 def test_extract_service_skips_bootstrap_when_flatbufferdata_exists(
     tmp_path: Path,
 ) -> None:
@@ -235,9 +228,7 @@ def test_extract_service_skips_bootstrap_when_flatbufferdata_exists(
     extraction_workflow = RecordingExtractionWorkflow()
     service = ExtractAssetsUseCase(
         extraction_workflow,
-        RecordingSchemaWorkflow(calls),
-        RecordingRuntimeAssetPreparer(calls),
-        RecordingLogger(),
+        prerequisite_service=_build_jp_prerequisite_service(calls),
     )
 
     service.run(context)
@@ -256,9 +247,7 @@ def test_extract_service_compiles_when_dump_cs_exists_but_flatbufferdata_is_miss
     extraction_workflow = RecordingExtractionWorkflow()
     service = ExtractAssetsUseCase(
         extraction_workflow,
-        RecordingSchemaWorkflow(calls),
-        RecordingRuntimeAssetPreparer(calls),
-        RecordingLogger(),
+        prerequisite_service=_build_jp_prerequisite_service(calls),
     )
 
     service.run(context)
@@ -277,9 +266,7 @@ def test_extract_service_bootstraps_when_dump_cs_and_flatbufferdata_are_missing(
     extraction_workflow = RecordingExtractionWorkflow()
     service = ExtractAssetsUseCase(
         extraction_workflow,
-        RecordingSchemaWorkflow(calls),
-        RecordingRuntimeAssetPreparer(calls),
-        RecordingLogger(),
+        prerequisite_service=_build_jp_prerequisite_service(calls),
     )
 
     service.run(context)
@@ -318,9 +305,11 @@ def test_extract_service_translates_jp_bootstrap_failures_to_lookup_error(
     calls: list[str] = []
     service = ExtractAssetsUseCase(
         RecordingExtractionWorkflow(),
-        RecordingSchemaWorkflow(calls, fail_on=fail_on, error=error),
-        RecordingRuntimeAssetPreparer(calls),
-        RecordingLogger(),
+        prerequisite_service=_build_jp_prerequisite_service(
+            calls,
+            fail_on=fail_on,
+            error=error,
+        ),
     )
 
     with pytest.raises(
@@ -342,14 +331,27 @@ def test_extract_service_does_not_bootstrap_when_jp_table_folder_is_missing(
     extraction_workflow = RecordingExtractionWorkflow()
     service = ExtractAssetsUseCase(
         extraction_workflow,
-        RecordingSchemaWorkflow(calls),
-        RecordingRuntimeAssetPreparer(calls),
-        RecordingLogger(),
+        prerequisite_service=_build_jp_prerequisite_service(calls),
     )
 
     service.run(context)
 
     assert calls == []
+    assert extraction_workflow.calls == ["extract_tables"]
+
+
+def test_extract_service_delegates_prerequisite_checks(tmp_path: Path) -> None:
+    context = _build_context(tmp_path)
+    extraction_workflow = RecordingExtractionWorkflow()
+    prerequisites = RecordingPrerequisiteService()
+    service = ExtractAssetsUseCase(
+        extraction_workflow,
+        prerequisite_service=prerequisites,
+    )
+
+    service.run(context)
+
+    assert prerequisites.calls == [(context, None)]
     assert extraction_workflow.calls == ["extract_tables"]
 
 
