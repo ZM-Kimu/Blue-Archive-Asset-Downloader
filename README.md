@@ -110,11 +110,12 @@ python -m ba_downloader sync --region jp
 | `--proxy`                  | `-px`      | **设置 HTTP 代理**                                                           | 无（使用系统代理） | `-px http://127.0.0.1:8080`      |
 | `--max-retries`            | `-mr`      | **下载失败时的最大重试次数**                                                 | `5`                | `--max-retries 3`                |
 | `--jp-sqlcipher-key-hex`   | 无         | **JP 的 SQL key**                                                            | 无                 | `--jp-sqlcipher-key-hex <64hex>` |
-| `--search`                 | `-s`       | **普通检索**，指定需要检索并下载的文件关键词（仅 `sync` 与 `download` 可用） |
+| `--search`                 | `-s`       | **普通检索**，指定需要检索、下载或解压的文件关键词（`sync`、`download`、`extract` 可用） |
+| `--advanced-search`        | `-as`      | **高级检索**，指定角色关键词（`sync`、`extract` 可用；当前支持 GL/JP，需要 .NET 环境） |
 
-<!-- | `--advanced-search`        | `-as`      | **高级检索**，指定角色关键词（仅 `sync` 可用；当前仅 GL 支持，需要 .NET 环境） | -->
+**CN 服务器目前不支持高级检索。JP 若需要现场生成 relation，可能需要同时传入 `--jp-sqlcipher-key-hex`。`extract -as` 不会自动生成 relation；请先运行 `relation build` 或 `sync -as` 生成对应版本 relation。**
 
-<!-- **(CN服务器目前不支持高级检索)高级检索支持的检索条件：**
+高级检索支持的检索条件：
 - `[*]` **角色名称**
 - `cv` **声优**
 - `age` **年龄**
@@ -136,14 +137,13 @@ python -m ba_downloader sync --region jp
   > sync
   >```sh
   >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ ibuki
-  >``` -->
+  >```
 
-  <!--
   > japan
   >```sh
   >ba-downloader sync --region jp -as yume 百合園セイア 호시노 cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
   >```
-  -->
+
 - 普通检索：
   > package name only
   >```sh

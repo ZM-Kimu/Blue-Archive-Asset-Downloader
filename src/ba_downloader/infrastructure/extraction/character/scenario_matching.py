@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from collections.abc import Iterable
+
 from ba_downloader.domain.models.character import CharacterData
 
 
@@ -116,3 +119,70 @@ def select_best_scenario_candidate(
     if best_rank == second_rank:
         return None
     return ranked_candidates[0]
+
+
+class ScenarioMatchIndex:
+    def __init__(self, characters: Iterable[CharacterData]) -> None:
+        self.name_index: dict[str, list[CharacterData]] = defaultdict(list)
+        self.exact_index: dict[str, list[CharacterData]] = defaultdict(list)
+        self.prefix_index: dict[str, list[tuple[str, CharacterData]]] = defaultdict(
+            list
+        )
+        for character in characters:
+            self.add_character(character)
+
+    def add_character(self, character: CharacterData) -> None:
+        for token in normalize_lookup_tokens(set(character.names or [])):
+            self.name_index[token].append(character)
+
+        aliases = set(character.file_name or set())
+        exact_references = aliases.union(collect_dev_exact_aliases(character.dev_name))
+        for token in normalize_lookup_tokens(exact_references):
+            self.exact_index[token].append(character)
+
+        prefix_references = aliases.union(
+            collect_dev_prefix_aliases(character.dev_name)
+        )
+        for reference in prefix_references:
+            token = normalize_lookup_token(reference)
+            if len(token) >= 3:
+                self.prefix_index[token].append((reference, character))
+
+    def match(
+        self,
+        scenario_names: set[str],
+        file_candidates: set[str],
+    ) -> CharacterData | None:
+        normalized_scenario_names = normalize_lookup_tokens(scenario_names)
+        candidate_groups = (
+            self._match_names(normalized_scenario_names),
+            self._match_exact_files(file_candidates),
+            self._match_prefix_files(file_candidates),
+        )
+        for candidates in candidate_groups:
+            if matched := select_best_scenario_candidate(candidates, file_candidates):
+                return matched
+        return None
+
+    def _match_names(self, normalized_scenario_names: set[str]) -> list[CharacterData]:
+        candidates: list[CharacterData] = []
+        for token in normalized_scenario_names:
+            candidates.extend(self.name_index.get(token, []))
+        return candidates
+
+    def _match_exact_files(self, file_candidates: set[str]) -> list[CharacterData]:
+        candidates: list[CharacterData] = []
+        for token in normalize_lookup_tokens(file_candidates):
+            candidates.extend(self.exact_index.get(token, []))
+        return candidates
+
+    def _match_prefix_files(self, file_candidates: set[str]) -> list[CharacterData]:
+        candidates: list[CharacterData] = []
+        for candidate in file_candidates:
+            normalized_candidate = normalize_lookup_token(candidate)
+            for end in range(3, len(normalized_candidate) + 1):
+                prefix_token = normalized_candidate[:end]
+                for raw_prefix, character in self.prefix_index.get(prefix_token, []):
+                    if token_matches_prefix(candidate, raw_prefix):
+                        candidates.append(character)
+        return candidates

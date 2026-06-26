@@ -5,24 +5,94 @@ from pathlib import Path
 import pytest
 
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
+from ba_downloader.domain.models.asset import (
+    AssetCollection,
+    AssetType,
+    RegionCapabilities,
+)
+from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 
 
 class RecordingExtractionWorkflow:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.resource_calls: list[list[str] | None] = []
 
-    def extract_tables(self, context: RuntimeContext) -> None:
+    @staticmethod
+    def _resource_paths(resources: AssetCollection | None) -> list[str] | None:
+        if resources is None:
+            return None
+        return [item.path for item in resources]
+
+    def extract_tables(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None:
         _ = context
         self.calls.append("extract_tables")
+        self.resource_calls.append(self._resource_paths(resources))
 
-    def extract_bundles(self, context: RuntimeContext) -> None:
+    def extract_bundles(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None:
         _ = context
         self.calls.append("extract_bundles")
+        self.resource_calls.append(self._resource_paths(resources))
 
-    def extract_media(self, context: RuntimeContext) -> None:
+    def extract_media(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None:
         _ = context
         self.calls.append("extract_media")
+        self.resource_calls.append(self._resource_paths(resources))
+
+
+class StaticProvider:
+    def __init__(self, result: RegionCatalogResult) -> None:
+        self.result = result
+        self.calls: list[RuntimeContext] = []
+
+    def get_capabilities(self) -> RegionCapabilities:
+        return self.result.capabilities
+
+    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
+        self.calls.append(context)
+        return self.result
+
+
+class DummyRelationBuilder:
+    def __init__(
+        self,
+        *,
+        relation_file_valid: bool = True,
+        search_results: list[str] | None = None,
+    ) -> None:
+        self.relation_file_valid = relation_file_valid
+        self.search_results = search_results or ["Shiroko"]
+        self.search_calls: list[list[str]] = []
+        self.verify_calls = 0
+
+    def build(self, context: RuntimeContext) -> None:
+        _ = context
+
+    def get_excel_resources(self, resources: AssetCollection) -> AssetCollection:
+        return resources
+
+    def search(self, context: RuntimeContext, search_terms: list[str]) -> list[str]:
+        _ = context
+        self.search_calls.append(search_terms)
+        return self.search_results
+
+    def verify_relation_file(self, context: RuntimeContext) -> bool:
+        _ = context
+        self.verify_calls += 1
+        return self.relation_file_valid
 
 
 class RecordingRuntimeAssetPreparer:
@@ -114,6 +184,45 @@ def _create_dump_cs(context: RuntimeContext) -> None:
     dump_dir = Path(context.extract_dir) / "Dumps"
     dump_dir.mkdir(parents=True, exist_ok=True)
     (dump_dir / "dump.cs").write_text("// generated", encoding="utf8")
+
+
+def _build_filter_catalog(context: RuntimeContext) -> RegionCatalogResult:
+    resources = AssetCollection()
+    resources.add(
+        "https://example.invalid/Bundle/shiroko.bundle",
+        "Bundle/Shiroko.bundle",
+        10,
+        "deadbeef",
+        "md5",
+        AssetType.bundle,
+    )
+    resources.add(
+        "https://example.invalid/Bundle/shiroko_missing.bundle",
+        "Bundle/ShirokoMissing.bundle",
+        10,
+        "deadbeef",
+        "md5",
+        AssetType.bundle,
+    )
+    resources.add(
+        "https://example.invalid/Bundle/other.bundle",
+        "Bundle/Other.bundle",
+        10,
+        "deadbeef",
+        "md5",
+        AssetType.bundle,
+    )
+    return RegionCatalogResult(
+        resources=resources,
+        context=context,
+        capabilities=RegionCapabilities(supports_advanced_search=True),
+    )
+
+
+def _create_existing_bundle(context: RuntimeContext, name: str) -> None:
+    bundle_dir = Path(context.raw_dir) / "Bundle"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / name).write_bytes(b"bundle")
 
 
 def test_extract_service_skips_bootstrap_when_flatbufferdata_exists(
@@ -242,3 +351,112 @@ def test_extract_service_does_not_bootstrap_when_jp_table_folder_is_missing(
 
     assert calls == []
     assert extraction_workflow.calls == ["extract_tables"]
+
+
+def test_extract_service_search_extracts_only_existing_filtered_resources(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(
+        resource_type=("bundle",),
+        search=("Shiroko",),
+    )
+    _create_existing_bundle(context, "Shiroko.bundle")
+    _create_existing_bundle(context, "Other.bundle")
+    extraction_workflow = RecordingExtractionWorkflow()
+    service = ExtractAssetsUseCase(
+        extraction_workflow,
+        provider=StaticProvider(_build_filter_catalog(context)),
+        relation_builder_factory=lambda _context: DummyRelationBuilder(),
+        logger=RecordingLogger(),
+    )
+
+    service.run(context)
+
+    assert extraction_workflow.calls == ["extract_bundles"]
+    assert extraction_workflow.resource_calls == [["Bundle/Shiroko.bundle"]]
+
+
+def test_extract_service_advanced_search_filters_existing_resources(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(
+        resource_type=("bundle",),
+        advanced_search=("シロコ",),
+    )
+    _create_existing_bundle(context, "Shiroko.bundle")
+    relation_builder = DummyRelationBuilder(search_results=["Shiroko"])
+    extraction_workflow = RecordingExtractionWorkflow()
+    service = ExtractAssetsUseCase(
+        extraction_workflow,
+        provider=StaticProvider(_build_filter_catalog(context)),
+        relation_builder_factory=lambda _context: relation_builder,
+        logger=RecordingLogger(),
+    )
+
+    service.run(context)
+
+    assert relation_builder.search_calls == [["シロコ"]]
+    assert extraction_workflow.calls == ["extract_bundles"]
+    assert extraction_workflow.resource_calls == [["Bundle/Shiroko.bundle"]]
+
+
+def test_extract_service_advanced_search_requires_current_relation_file(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(
+        version="1.70.436321",
+        resource_type=("bundle",),
+        advanced_search=("シロコ",),
+    )
+    relation_builder = DummyRelationBuilder(relation_file_valid=False)
+    extraction_workflow = RecordingExtractionWorkflow()
+    service = ExtractAssetsUseCase(
+        extraction_workflow,
+        provider=StaticProvider(_build_filter_catalog(context)),
+        relation_builder_factory=lambda _context: relation_builder,
+        logger=RecordingLogger(),
+    )
+
+    with pytest.raises(LookupError) as exc_info:
+        service.run(context)
+
+    message = str(exc_info.value)
+    assert "Character relation file is missing or does not match" in message
+    assert "ba-downloader relation build --region jp`" in message
+    assert "ba-downloader sync --region jp -as <keyword>`" in message
+    assert "--version" not in message
+    assert relation_builder.search_calls == []
+    assert extraction_workflow.calls == []
+
+
+def test_extract_service_advanced_search_respects_region_capabilities(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(
+        region="cn",
+        resource_type=("bundle",),
+        advanced_search=("シロコ",),
+    )
+    catalog = _build_filter_catalog(context)
+    provider = StaticProvider(
+        RegionCatalogResult(
+            resources=catalog.resources,
+            context=context,
+            capabilities=RegionCapabilities(supports_advanced_search=False),
+        )
+    )
+    extraction_workflow = RecordingExtractionWorkflow()
+    service = ExtractAssetsUseCase(
+        extraction_workflow,
+        provider=provider,
+        relation_builder_factory=lambda _context: DummyRelationBuilder(),
+        logger=RecordingLogger(),
+    )
+
+    with pytest.raises(
+        LookupError,
+        match="Advanced search is not supported for region 'cn'",
+    ):
+        service.run(context)
+
+    assert extraction_workflow.calls == []

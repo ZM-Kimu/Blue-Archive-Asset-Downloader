@@ -15,9 +15,6 @@ from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.pipeline import CatalogDecoder
 from ba_downloader.domain.services.catalog_pipeline import CatalogPipeline
-from ba_downloader.infrastructure.regions.common import (
-    SYNC_AND_RELATION_CAPABILITIES,
-)
 from ba_downloader.infrastructure.regions.jp.asset_normalizer import JPAssetNormalizer
 from ba_downloader.infrastructure.regions.jp.bootstrapper import JPBootstrapper
 from ba_downloader.infrastructure.regions.jp.catalog_source import (
@@ -28,7 +25,11 @@ from ba_downloader.infrastructure.regions.jp.release_resolver import JPReleaseRe
 
 
 class JPRegionProvider:
-    CAPABILITIES = SYNC_AND_RELATION_CAPABILITIES
+    CAPABILITIES = RegionCapabilities(
+        supports_sync=True,
+        supports_advanced_search=True,
+        supports_relation_build=True,
+    )
 
     def __init__(
         self,

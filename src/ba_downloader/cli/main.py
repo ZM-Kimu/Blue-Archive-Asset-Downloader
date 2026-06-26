@@ -99,7 +99,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(sync_parser)
     sync_parser.add_argument("--extract-while-download", "-ewd", action="store_true")
     sync_parser.add_argument("--search", "-s", nargs="*", default=[])
-    sync_parser.add_argument("--advanced-search", "-as", nargs="*", default=[])
+    sync_parser.add_argument(
+        "--advanced-search",
+        "-as",
+        nargs="*",
+        default=[],
+        help="Search assets by character relation fields (GL/JP sync only).",
+    )
 
     download_parser = subparsers.add_parser("download", help="Download assets only")
     _add_common_options(download_parser)
@@ -109,6 +115,14 @@ def build_parser() -> argparse.ArgumentParser:
         "extract", help="Extract existing raw assets"
     )
     _add_common_options(extract_parser)
+    extract_parser.add_argument("--search", "-s", nargs="*", default=[])
+    extract_parser.add_argument(
+        "--advanced-search",
+        "-as",
+        nargs="*",
+        default=[],
+        help="Search existing raw assets by character relation fields (GL/JP extract only).",
+    )
 
     relation_parser = subparsers.add_parser(
         "relation", help="Character relation commands"

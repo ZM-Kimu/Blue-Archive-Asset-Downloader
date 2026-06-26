@@ -44,6 +44,7 @@ def build_cli_runtime_services(context: RuntimeContext) -> CliRuntimeServices:
     )
     provider_factory = DEFAULT_REGION_REGISTRY.resolve(context.region)
     preparer_factory = DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.resolve(context.region)
+    provider = provider_factory(http_client=http_client, logger=logger)
     runtime_asset_preparer = preparer_factory(
         http_client=http_client,
         logger=logger,
@@ -59,7 +60,7 @@ def build_cli_runtime_services(context: RuntimeContext) -> CliRuntimeServices:
     return CliRuntimeServices(
         logger=logger,
         http_client=http_client,
-        provider=provider_factory(http_client=http_client, logger=logger),
+        provider=provider,
         runtime_asset_preparer=runtime_asset_preparer,
         downloader=ResourceDownloader(
             http_client,
@@ -71,6 +72,8 @@ def build_cli_runtime_services(context: RuntimeContext) -> CliRuntimeServices:
             schema_workflow,
             runtime_asset_preparer,
             logger,
+            provider=provider,
+            relation_builder_factory=relation_builder_factory,
         ),
         schema_workflow=schema_workflow,
         relation_builder_factory=relation_builder_factory,

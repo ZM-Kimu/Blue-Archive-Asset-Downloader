@@ -13,6 +13,7 @@ from threading import Event
 from typing import Any
 from zipfile import BadZipFile
 
+from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import AssetExtractionPort
 from ba_downloader.domain.ports.logging import LoggerPort
@@ -51,18 +52,22 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             "Extraction",
         )
 
-    def extract_bundles(self, context: RuntimeContext) -> None:
-        bundle_folder = Path(context.raw_dir) / "Bundle"
-        if not bundle_folder.exists():
+    def extract_bundles(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None:
+        bundles = [
+            str(bundle_path)
+            for bundle_path in self._resolve_bundle_files(context, resources)
+        ]
+        if not bundles:
             return
 
         freeze_support()
         queue: multiprocessing.queues.Queue[str] = Queue()
         log_event_queue: multiprocessing.queues.Queue[BundleLogEvent] = Queue()
         error_count = multiprocessing.Value("i", 0)
-        bundles = [
-            str(bundle_folder / bundle.name) for bundle in bundle_folder.iterdir()
-        ]
         for bundle in bundles:
             queue.put(bundle)
 
@@ -111,12 +116,15 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             if stop_event.is_set():
                 raise KeyboardInterrupt()
 
-    def extract_media(self, context: RuntimeContext) -> None:
-        media_folder = Path(context.raw_dir) / "Media"
-        if not media_folder.exists():
-            return
-
-        files = [str(file_path) for file_path in media_folder.rglob("*.zip")]
+    def extract_media(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None:
+        files = [
+            str(file_path)
+            for file_path in self._resolve_media_files(context, resources)
+        ]
         if not files:
             return
 
@@ -160,21 +168,20 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             if stop_event.is_set():
                 raise KeyboardInterrupt()
 
-    def extract_tables(self, context: RuntimeContext) -> None:
-        table_folder = Path(context.raw_dir) / "Table"
-        if not table_folder.exists():
-            return
-
-        extractor = TableExtractor.from_context(context, self.logger)
-        Path(extractor.extract_folder).mkdir(parents=True, exist_ok=True)
+    def extract_tables(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None:
         table_files = [
-            file_path.name
-            for file_path in table_folder.iterdir()
-            if file_path.is_file()
+            table_path.name
+            for table_path in self._resolve_table_files(context, resources)
         ]
         if not table_files:
             return
 
+        extractor = TableExtractor.from_context(context, self.logger)
+        Path(extractor.extract_folder).mkdir(parents=True, exist_ok=True)
         stop_event = Event()
         future_map: dict[Future[None], str] = {}
         executor = ThreadPoolExecutor(
@@ -213,6 +220,86 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             executor.shutdown(wait=False, cancel_futures=True)
             if stop_event.is_set():
                 raise KeyboardInterrupt()
+
+    def _resolve_bundle_files(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None,
+    ) -> list[Path]:
+        if resources is not None:
+            return self._resolve_existing_resource_files(
+                context,
+                resources,
+                AssetType.bundle,
+            )
+
+        bundle_folder = Path(context.raw_dir) / "Bundle"
+        if not bundle_folder.exists():
+            return []
+        return [
+            bundle_folder / bundle.name
+            for bundle in bundle_folder.iterdir()
+            if bundle.is_file()
+        ]
+
+    def _resolve_media_files(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None,
+    ) -> list[Path]:
+        if resources is not None:
+            return [
+                file_path
+                for file_path in self._resolve_existing_resource_files(
+                    context,
+                    resources,
+                    AssetType.media,
+                )
+                if file_path.suffix.lower() == ".zip"
+            ]
+
+        media_folder = Path(context.raw_dir) / "Media"
+        if not media_folder.exists():
+            return []
+        return list(media_folder.rglob("*.zip"))
+
+    def _resolve_table_files(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None,
+    ) -> list[Path]:
+        if resources is not None:
+            return self._resolve_existing_resource_files(
+                context,
+                resources,
+                AssetType.table,
+            )
+
+        table_folder = Path(context.raw_dir) / "Table"
+        if not table_folder.exists():
+            return []
+        return [
+            file_path for file_path in table_folder.iterdir() if file_path.is_file()
+        ]
+
+    @staticmethod
+    def _resolve_existing_resource_files(
+        context: RuntimeContext,
+        resources: AssetCollection,
+        asset_type: AssetType,
+    ) -> list[Path]:
+        raw_dir = Path(context.raw_dir)
+        files: list[Path] = []
+        seen_paths: set[Path] = set()
+        for resource in resources:
+            if resource.asset_type is not asset_type:
+                continue
+            file_path = raw_dir / resource.path
+            if file_path in seen_paths or not file_path.is_file():
+                continue
+            files.append(file_path)
+            seen_paths.add(file_path)
+        return files
 
     @contextmanager
     def _install_interrupt_handler(

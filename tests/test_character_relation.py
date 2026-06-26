@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from ba_downloader.domain.models.character import CharacterRelation
 from ba_downloader.domain.models.database import DBColumn, DBTable
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.extraction.character.relation import (
@@ -482,8 +483,10 @@ def test_jp_relation_does_not_match_non_latin_names_by_empty_token(
     )
 
     relation_by_id = {item.character_id: item for item in relations}
-    assert sorted(relation_by_id) == [16004]
+    assert sorted(relation_by_id) == [16004, 4200835236]
     assert relation_by_id[16004].file_name is None
+    assert relation_by_id[4200835236].file_name == {"Hina"}
+    assert relation_by_id[4200835236].names == ["hina", "ヒナ"]
 
 
 def test_jp_relation_matches_kana_scenario_name_with_hepburn(
@@ -614,7 +617,7 @@ def test_jp_relation_prefers_exact_file_match_over_prefix_match(
     assert relation_by_id[10043].file_name == {"Hinata"}
 
 
-def test_jp_relation_drops_unmatched_scenario_portraits(
+def test_jp_relation_registers_unmatched_scenario_portraits(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -640,4 +643,134 @@ def test_jp_relation_drops_unmatched_scenario_portraits(
         localize_gacha=[],
     )
 
-    assert relations == []
+    relation_by_id = {item.character_id: item for item in relations}
+    assert relation_by_id[4200835236].dev_name == "Unknown"
+    assert relation_by_id[4200835236].names == ["mitouroku", "未登録"]
+    assert relation_by_id[4200835236].file_name == {"Unknown"}
+
+
+def test_jp_relation_registers_yume_scenario_only_portraits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_table_extractor_init(monkeypatch)
+    relation = CharacterNameRelation(
+        _build_context(tmp_path, region="jp"), RecordingLogger()
+    )
+
+    relations = relation._CharacterNameRelation__create_relation_list(
+        scenario_db=[
+            {
+                "Bytes": {
+                    "CharacterName": 2357886682,
+                    "NameJP": "ユメ",
+                    "SmallPortrait": "UIs/01_Common/01_Character/Student_Portrait_CH0157",
+                }
+            },
+            {
+                "Bytes": {
+                    "CharacterName": 4059581467,
+                    "NameJP": "ユメ",
+                    "SmallPortrait": "UIs/01_Common/01_Character/NPC_Portrait_NP0166",
+                }
+            },
+        ],
+        char_profile=[],
+        char_excel=[],
+        costume_excel=[],
+        shop_recruit=[],
+        localize_gacha=[],
+    )
+
+    assert len(relations) == 1
+    assert relations[0].names == ["yume", "ユメ"]
+    assert relations[0].file_name == {"CH0157", "NP0166"}
+
+
+def test_jp_relation_registers_decagram_scenario_only_portrait(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_table_extractor_init(monkeypatch)
+    relation = CharacterNameRelation(
+        _build_context(tmp_path, region="jp"), RecordingLogger()
+    )
+
+    relations = relation._CharacterNameRelation__create_relation_list(
+        scenario_db=[
+            {
+                "Bytes": {
+                    "CharacterName": 48056105,
+                    "NameJP": "デカグラマトン",
+                    "SmallPortrait": "UIs/01_Common/01_Character/NPC_Portrait_NP0274",
+                }
+            }
+        ],
+        char_profile=[],
+        char_excel=[],
+        costume_excel=[],
+        shop_recruit=[],
+        localize_gacha=[],
+    )
+
+    relation_by_id = {item.character_id: item for item in relations}
+    assert relation_by_id[48056105].dev_name == "NP0274"
+    assert relation_by_id[48056105].file_name == {"NP0274"}
+    assert "デカグラマトン" in relation_by_id[48056105].names
+
+
+def test_relation_search_matches_dev_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_table_extractor_init(monkeypatch)
+    relation = CharacterNameRelation(
+        _build_context(tmp_path, region="jp"), RecordingLogger()
+    )
+    relations = relation._CharacterNameRelation__create_relation_list(
+        scenario_db=[],
+        char_profile=[],
+        char_excel=[{"Id": 7010301, "DevName": "Droid_Decagram_Shield_M"}],
+        costume_excel=[],
+        shop_recruit=[],
+        localize_gacha=[],
+    )
+    character_relation = CharacterRelation("JP1.0.0", relations)
+
+    keywords = relation._CharacterNameRelation__search_keywords(
+        character_relation,
+        ["decagram"],
+    )
+
+    assert keywords == ["Droid_Decagram_Shield_M"]
+
+
+def test_relation_build_logs_saved_file_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_table_extractor_init(monkeypatch)
+    logger = RecordingLogger()
+    context = _build_context(tmp_path, region="jp")
+    relation = CharacterNameRelation(context, logger)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        relation,
+        "_CharacterNameRelation__extract_excel",
+        lambda: (
+            [],
+            [],
+            [{"Id": 10003, "DevName": "Hihumi_default"}],
+            [],
+            [],
+            [],
+        ),
+    )
+
+    relation.build()
+
+    relation_path = tmp_path / "JPCharacterRelation.json"
+    assert relation_path.exists()
+    assert logger.info_messages[-1] == (
+        f"Character relation file saved to {relation_path.resolve()}."
+    )

@@ -1,5 +1,6 @@
 from collections.abc import Callable
 
+from ba_downloader.application.use_cases.asset_selection import AssetSelectionService
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -30,6 +31,7 @@ class SyncAssetsUseCase:
         self.runtime_asset_preparer = runtime_asset_preparer
         self.relation_builder_factory = relation_builder_factory
         self.logger = logger
+        self.asset_selector = AssetSelectionService(relation_builder_factory, logger)
 
     def _dump_and_compile(self, context: RuntimeContext) -> None:
         self.runtime_asset_preparer.prepare(context)
@@ -42,38 +44,37 @@ class SyncAssetsUseCase:
         context: RuntimeContext,
         dumped: bool,
     ) -> AssetCollection:
-        keywords: list[str] = []
-        relation_builder = self.relation_builder_factory(context)
+        dumped_state = dumped
         if context.advanced_search:
             self.logger.info("Preparing for advanced search...")
-            if not relation_builder.verify_relation_file(context):
-                if not dumped:
-                    self._dump_and_compile(context)
-                    dumped = True
-                excel_resource = relation_builder.get_excel_resources(resources)
-                self.downloader.verify_and_download(excel_resource, context)
-                relation_builder.build(context)
 
-            keywords = relation_builder.search(
-                context,
-                list(context.advanced_search),
-            )
+        def ensure_relation(
+            relation_builder: RelationBuilderPort,
+            search_resources: AssetCollection,
+            active_context: RuntimeContext,
+        ) -> None:
+            nonlocal dumped_state
+            if not dumped_state:
+                self._dump_and_compile(active_context)
+                dumped_state = True
+            excel_resource = relation_builder.get_excel_resources(search_resources)
+            self.downloader.verify_and_download(excel_resource, active_context)
+            relation_builder.build(active_context)
 
-        if context.search:
-            keywords = list(context.search)
-
-        if keywords:
-            resources = ResourceQueryService.search_name(resources, keywords)
-
-        return resources
+        return self.asset_selector.filter_search_resources(
+            resources,
+            context,
+            ensure_relation=ensure_relation,
+        )
 
     def _filter_and_download(
         self,
         resources: AssetCollection,
         context: RuntimeContext,
-    ) -> None:
+    ) -> AssetCollection:
         filtered = ResourceQueryService.filter_type(resources, context.resource_type)
         self.downloader.verify_and_download(filtered, context)
+        return filtered
 
     def run(self, context: RuntimeContext) -> RuntimeContext:
         capabilities = self.provider.get_capabilities()
@@ -94,21 +95,36 @@ class SyncAssetsUseCase:
             self._dump_and_compile(active_context)
             if active_context.search or active_context.advanced_search:
                 resources = self._search_resource(resources, active_context, True)
-            self._filter_and_download(resources, active_context)
-            self.extract_service.run(active_context)
+            filtered = self._filter_and_download(resources, active_context)
+            extract_resources = (
+                filtered
+                if active_context.search or active_context.advanced_search
+                else None
+            )
+            self.extract_service.run(active_context, extract_resources)
             return active_context
 
         if active_context.region in {"jp", "cn"}:
             self._dump_and_compile(active_context)
             if active_context.search or active_context.advanced_search:
                 resources = self._search_resource(resources, active_context, True)
-            self._filter_and_download(resources, active_context)
-            self.extract_service.run_post_download(active_context)
+            filtered = self._filter_and_download(resources, active_context)
+            extract_resources = (
+                filtered
+                if active_context.search or active_context.advanced_search
+                else None
+            )
+            self.extract_service.run_post_download(active_context, extract_resources)
             return active_context
 
         if active_context.search or active_context.advanced_search:
             resources = self._search_resource(resources, active_context, False)
 
-        self._filter_and_download(resources, active_context)
-        self.extract_service.run_post_download(active_context)
+        filtered = self._filter_and_download(resources, active_context)
+        extract_resources = (
+            filtered
+            if active_context.search or active_context.advanced_search
+            else None
+        )
+        self.extract_service.run_post_download(active_context, extract_resources)
         return active_context

@@ -117,3 +117,25 @@ def test_cli_jp_sqlcipher_key_is_not_affected_by_environment(monkeypatch) -> Non
     runtime_context = runtime_context_from_namespace(args)
 
     assert runtime_context.jp_sqlcipher_key_hex == "c" * 64
+
+
+def test_extract_cli_accepts_search_options() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "extract",
+            "--region",
+            "jp",
+            "--version",
+            "1.70.436321",
+            "--search",
+            "Shiroko",
+            "--advanced-search",
+            "シロコ",
+        ]
+    )
+
+    runtime_context = runtime_context_from_namespace(args)
+
+    assert runtime_context.search == ("Shiroko",)
+    assert runtime_context.advanced_search == ("シロコ",)

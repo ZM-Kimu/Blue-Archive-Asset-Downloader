@@ -15,12 +15,7 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.relation import RelationBuilderPort
 from ba_downloader.infrastructure.extraction.character.scenario_matching import (
-    collect_dev_exact_aliases,
-    collect_dev_prefix_aliases,
-    normalize_lookup_tokens,
-    select_best_scenario_candidate,
-    tokens_match_exact,
-    tokens_match_prefix,
+    ScenarioMatchIndex,
 )
 from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
@@ -85,9 +80,10 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         excel = self.__extract_excel()
         self.logger.info("Relating character data...")
         relations = self.__create_relation_list(*excel)
-        self.__create_relation_file(
+        relation_path = self.__create_relation_file(
             self.context.version, self.context.region, relations
         )
+        self.logger.info(f"Character relation file saved to {relation_path}.")
 
     def get_excel_resources(self, resource: AssetCollection) -> AssetCollection:
         if not (searched := resource.search("path", "Excel")):
@@ -489,6 +485,7 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         hash_map: dict[int, CharacterData],
         scenario_db: list[dict[str, Any]],
     ) -> None:
+        match_index = ScenarioMatchIndex(hash_map.values())
         for scenario in scenario_db:
             scene_data = scenario.get("Bytes", {})
             if not isinstance(scene_data, dict):
@@ -504,17 +501,16 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             scenario_names = self.__collect_scenario_names(scene_data)
             if self.__apply_existing_scenario_mapping(
                 hash_map,
+                match_index,
                 scenario_names,
                 file_name,
                 name_no_underline,
             ):
                 continue
 
-            if self.context.region == "jp":
-                continue
-
             self.__register_unmatched_scenario(
                 hash_map,
+                match_index,
                 scene_data,
                 scenario_names,
                 file_name,
@@ -524,49 +520,18 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
     def __apply_existing_scenario_mapping(
         self,
         hash_map: dict[int, CharacterData],
+        match_index: ScenarioMatchIndex,
         scenario_names: set[str],
         file_name: str,
         name_no_underline: str,
     ) -> bool:
-        normalized_scenario_names = normalize_lookup_tokens(scenario_names)
         file_candidates = {file_name, name_no_underline}
-        name_candidates: list[CharacterData] = []
-        exact_file_candidates: list[CharacterData] = []
-        prefix_candidates: list[CharacterData] = []
-
-        for char_data in hash_map.values():
-            normalized_names = normalize_lookup_tokens(set(char_data.names or []))
-            if normalized_scenario_names and normalized_names.intersection(
-                normalized_scenario_names
-            ):
-                name_candidates.append(char_data)
-
-            aliases = set(char_data.file_name or set())
-            dev_exact_aliases = collect_dev_exact_aliases(char_data.dev_name)
-            exact_references = aliases.union(dev_exact_aliases)
-            if tokens_match_exact(file_candidates, exact_references):
-                exact_file_candidates.append(char_data)
-
-            dev_prefix_aliases = collect_dev_prefix_aliases(char_data.dev_name)
-            prefix_references = aliases.union(dev_prefix_aliases)
-            if tokens_match_prefix(file_candidates, prefix_references):
-                prefix_candidates.append(char_data)
-
-        for candidates in (
-            name_candidates,
-            exact_file_candidates,
-            prefix_candidates,
-        ):
-            matched_char = select_best_scenario_candidate(
-                candidates,
-                file_candidates,
-            )
-            if not matched_char:
-                continue
+        if matched_char := match_index.match(scenario_names, file_candidates):
             self.__add_file_aliases(
                 matched_char,
                 {file_name, name_no_underline},
             )
+            match_index.add_character(matched_char)
             return True
 
         return False
@@ -574,6 +539,7 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
     def __register_unmatched_scenario(
         self,
         hash_map: dict[int, CharacterData],
+        match_index: ScenarioMatchIndex,
         scene_data: dict[str, Any],
         scenario_names: set[str],
         file_name: str,
@@ -586,12 +552,14 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
             return
 
         normalized_id = -char_id if char_id in hash_map else char_id
-        hash_map[normalized_id] = CharacterData(
+        char_data = CharacterData(
             normalized_id,
             dev_name=file_name,
             names=sorted(scenario_names),
             file_name={file_name, name_no_underline},
         )
+        hash_map[normalized_id] = char_data
+        match_index.add_character(char_data)
 
     def __collect_scenario_names(
         self,
@@ -613,9 +581,10 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         version: str,
         region: str,
         data: list[CharacterData],
-    ) -> None:
+    ) -> Path:
         region = region.upper()
-        with open(region + self.RELATION_NAME, "w", encoding="utf8") as file_handle:
+        relation_path = Path(region + self.RELATION_NAME).resolve()
+        with open(relation_path, "w", encoding="utf8") as file_handle:
             json.dump(
                 asdict(CharacterRelation(region + version, data)),
                 file_handle,
@@ -623,6 +592,7 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
                 ensure_ascii=False,
                 default=CharacterData.serialize,
             )
+        return relation_path
 
     def verify_relation_file(self, context: RuntimeContext | None = None) -> bool:
         active_context = context or self.context
@@ -726,10 +696,12 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
     ) -> bool:
         lowered_names = [name.lower() for name in char_names]
         lowered_files = [file_name.lower() for file_name in file_names]
+        lowered_dev_name = char.dev_name.lower()
         return any(
             [
                 any(keyword in lowered_names for keyword in keywords),
                 any(keyword in lowered_files for keyword in keywords),
+                any(keyword in lowered_dev_name for keyword in keywords),
                 (char.cv.lower() or "None") in char_attr.get("cv", "_"),
                 str(char.age) == char_attr.get("age", -1),
                 str(char.height) == char_attr.get("height", -1),

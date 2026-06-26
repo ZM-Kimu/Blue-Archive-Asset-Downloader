@@ -1,12 +1,19 @@
 from pathlib import Path
 
+from ba_downloader.application.use_cases.asset_selection import (
+    AssetSelectionService,
+    RelationBuilderFactory,
+)
+from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import (
     AssetExtractionPort,
     SchemaWorkflowPort,
 )
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.region import RegionProvider
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
+from ba_downloader.domain.services.resource_query import ResourceQueryService
 
 
 class ExtractAssetsUseCase:
@@ -16,11 +23,20 @@ class ExtractAssetsUseCase:
         schema_workflow: SchemaWorkflowPort | None = None,
         runtime_asset_preparer: RuntimeAssetPreparerPort | None = None,
         logger: LoggerPort | None = None,
+        *,
+        provider: RegionProvider | None = None,
+        relation_builder_factory: RelationBuilderFactory | None = None,
     ) -> None:
         self.extraction_workflow = extraction_workflow
         self.schema_workflow = schema_workflow
         self.runtime_asset_preparer = runtime_asset_preparer
         self.logger = logger
+        self.provider = provider
+        self.asset_selector = (
+            AssetSelectionService(relation_builder_factory, logger)
+            if relation_builder_factory is not None and logger is not None
+            else None
+        )
 
     @staticmethod
     def _is_flat_buffer_data_ready(context: RuntimeContext) -> bool:
@@ -95,16 +111,115 @@ class ExtractAssetsUseCase:
                 )
             ) from exc
 
-    def run(self, context: RuntimeContext) -> None:
-        if "table" in context.resource_type:
-            self._ensure_jp_table_prerequisites(context)
-            self.extraction_workflow.extract_tables(context)
-        if "bundle" in context.resource_type:
-            self.extraction_workflow.extract_bundles(context)
-        if "media" in context.resource_type:
-            self.extraction_workflow.extract_media(context)
+    def _resolve_search_resources(
+        self,
+        context: RuntimeContext,
+    ) -> tuple[RuntimeContext, AssetCollection]:
+        if self.provider is None:
+            raise LookupError("Extract search requires a configured region provider.")
 
-    def run_post_download(self, context: RuntimeContext) -> None:
+        capabilities = self.provider.get_capabilities()
+        if context.advanced_search and not capabilities.supports_advanced_search:
+            raise LookupError(
+                f"Advanced search is not supported for region '{context.region}'."
+            )
+
+        catalog = self.provider.load_catalog(context)
+        active_context = catalog.context
+        resources = self._filter_search_resources(catalog.resources, active_context)
+        resources = ResourceQueryService.filter_type(
+            resources,
+            active_context.resource_type,
+        )
+        return active_context, AssetSelectionService.filter_existing_resources(
+            resources,
+            active_context,
+        )
+
+    def _filter_search_resources(
+        self,
+        resources: AssetCollection,
+        context: RuntimeContext,
+    ) -> AssetCollection:
+        if self.asset_selector is not None:
+            return self.asset_selector.filter_search_resources(
+                resources,
+                context,
+                require_current_relation=bool(context.advanced_search),
+            )
+
+        if context.advanced_search:
+            raise LookupError(
+                "Extract advanced search requires a configured relation builder."
+            )
+        if context.search:
+            return ResourceQueryService.search_name(resources, context.search)
+        return resources
+
+    @staticmethod
+    def _filter_resources_for_type(
+        resources: AssetCollection | None,
+        resource_type: str,
+    ) -> AssetCollection | None:
+        if resources is None:
+            return None
+        return ResourceQueryService.filter_type(resources, (resource_type,))
+
+    @staticmethod
+    def _should_extract_type(resources: AssetCollection | None) -> bool:
+        return resources is None or bool(resources)
+
+    def run(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None:
+        active_context = context
+        active_resources = resources
+        if active_resources is None and (
+            active_context.search or active_context.advanced_search
+        ):
+            active_context, active_resources = self._resolve_search_resources(
+                active_context
+            )
+
+        if active_resources is not None and not active_resources:
+            return
+
+        if "table" in active_context.resource_type:
+            table_resources = self._filter_resources_for_type(
+                active_resources,
+                "table",
+            )
+            if self._should_extract_type(table_resources):
+                self._ensure_jp_table_prerequisites(active_context)
+                self.extraction_workflow.extract_tables(
+                    active_context,
+                    table_resources,
+                )
+        if "bundle" in active_context.resource_type:
+            bundle_resources = self._filter_resources_for_type(
+                active_resources,
+                "bundle",
+            )
+            if self._should_extract_type(bundle_resources):
+                self.extraction_workflow.extract_bundles(
+                    active_context,
+                    bundle_resources,
+                )
+        if "media" in active_context.resource_type:
+            media_resources = self._filter_resources_for_type(
+                active_resources,
+                "media",
+            )
+            if self._should_extract_type(media_resources):
+                self.extraction_workflow.extract_media(active_context, media_resources)
+
+    def run_post_download(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None:
         if context.extract_while_download:
             return
-        self.run(context)
+        self.run(context, resources)
