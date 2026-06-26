@@ -1,5 +1,10 @@
+import re
+from pathlib import Path
+
 from ba_downloader.application.config import AppSettings
 from ba_downloader.cli.main import build_parser, runtime_context_from_namespace
+from ba_downloader.domain.models.asset import AssetType
+from support import build_asset_collection, build_runtime_context
 
 
 def test_settings_normalization_defaults() -> None:
@@ -139,3 +144,73 @@ def test_extract_cli_accepts_search_options() -> None:
 
     assert runtime_context.search == ("Shiroko",)
     assert runtime_context.advanced_search == ("シロコ",)
+
+
+def test_cli_help_documents_relation_and_search_support() -> None:
+    parser = build_parser()
+
+    root_help = parser.format_help()
+
+    assert "relation" in root_help
+    assert "Character relation commands" in root_help
+
+    subparsers_action = next(
+        action
+        for action in parser._actions
+        if getattr(action, "dest", None) == "command"
+    )
+    choices = subparsers_action.choices
+
+    relation_help = re.sub(r"\s+", " ", choices["relation"].format_help())
+    sync_help = re.sub(r"\s+", " ", choices["sync"].format_help())
+    extract_help = re.sub(r"\s+", " ", choices["extract"].format_help())
+
+    assert "Build character relation file" in relation_help
+    assert "Search assets by character relation fields (GL/JP sync only)." in sync_help
+    assert (
+        "Search existing raw assets by character relation fields (GL/JP extract only)."
+        in extract_help
+    )
+
+
+def test_readmes_document_current_cli_search_and_relation_support() -> None:
+    root = Path(__file__).resolve().parents[1]
+    chinese_readme = (root / "README.md").read_text(encoding="utf-8")
+    english_readme = (root / "docs" / "README.en.md").read_text(encoding="utf-8")
+
+    for content in (chinese_readme, english_readme):
+        assert "`ba-downloader relation build [options]`" in content
+        assert "<!-- - `ba-downloader relation build [options]`" not in content
+        assert (
+            "`sync`、`download`、`extract`" in content
+            or "`sync`, `download`, and `extract`" in content
+        )
+        assert "GL/JP" in content
+        assert "CN" in content
+        assert "extract -as" in content
+        assert "relation build" in content
+
+    assert "JP 不支持指定 `--version`" in chinese_readme
+    assert "JP does not support specifying `--version`" in english_readme
+
+
+def test_support_builders_create_common_runtime_and_assets(tmp_path: Path) -> None:
+    context = build_runtime_context(
+        tmp_path,
+        region="gl",
+        search=("Shiroko",),
+        advanced_search=("cv=Ogura Yui",),
+    )
+    resources = build_asset_collection(
+        ("Bundle/chara.bundle", AssetType.bundle),
+        ("Media/voice.zip", AssetType.media, 10),
+    )
+
+    assert context.region == "gl"
+    assert context.search == ("Shiroko",)
+    assert context.advanced_search == ("cv=Ogura Yui",)
+    assert [resource.path for resource in resources] == [
+        "Bundle/chara.bundle",
+        "Media/voice.zip",
+    ]
+    assert resources[1].size == 10

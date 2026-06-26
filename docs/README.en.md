@@ -74,7 +74,7 @@ Subcommands:
 - `ba-downloader sync [options]`: Download and extract all resources
 - `ba-downloader download [options]`: Download all resources
 - `ba-downloader extract [options]`: Extract existing raw resources
-<!-- - `ba-downloader relation build [options]`: Build the character relation file -->
+- `ba-downloader relation build [options]`: Build the character relation file
 
 Run the full download-and-extract workflow with:
 
@@ -102,7 +102,7 @@ python -m ba_downloader sync --region jp
 | -------------------------- | ---------- | ------------------------------------------------------------------------------------------------- | ------------------- | ----------------------------- |
 | **`--region`**`*`          | `-r`       | **Server region**: `cn` (China), `gl` (Global), `jp` (Japan)                                      | None                | `-r jp`                       |
 | `--threads`                | `-t`       | **Number of concurrent download or extraction workers**                                           | `20`                | `-t 50`                       |
-| `--version`                | `-v`       | **Resource version to download** (effective for GL only)                                          | None                | `-v 1.2.3`                    |
+| `--version`                | `-v`       | **Resource version to download** (effective for GL only; JP does not support specifying versions) | None                | `-v 1.2.3`                    |
 | `--platform`               | `-p`       | **Resource platform**: `windows`, `android`, `ios` (effective for JP only)                        | `android`           | `-p windows`                  |
 | `--raw-dir`                | `-rd`      | **Directory for raw downloaded files**                                                            | `"RawData"`         | `-rd raw_folder`              |
 | `--extract-dir`            | `-ed`      | **Directory for extracted output**                                                                | `"Extracted"`       | `-ed output_folder`           |
@@ -111,11 +111,15 @@ python -m ba_downloader sync --region jp
 | `--resource-type`          | `-rt`      | **Resource types**: `table`, `media`, `bundle`, `all`                                             | `all`               | `--resource-type media table` |
 | `--proxy`                  | `-px`      | **HTTP proxy**                                                                                    | None (system proxy) | `-px http://127.0.0.1:8080`   |
 | `--max-retries`            | `-mr`      | **Maximum retry count for failed downloads**                                                      | `5`                 | `--max-retries 3`             |
-| `--search`                 | `-s`       | **Basic search**: keywords used to filter files for download (`sync` and `download` only)         |
+| `--jp-sqlcipher-key-hex`   | None       | **JP SQL key**                                                                                    | None                | `--jp-sqlcipher-key-hex <64hex>` |
+| `--search`                 | `-s`       | **Basic search**: keywords used to filter files for sync, download, or extraction (`sync`, `download`, and `extract` are supported) | None                | `-s aris shiroko`             |
+| `--advanced-search`        | `-as`      | **Advanced search**: character-oriented filters (`sync` and `extract` are supported; currently supported by GL/JP and requires a .NET environment) | None                | `-as yume cv=OguraYui`        |
 
-<!-- | `--advanced-search`        | `-as`      | **Advanced search**: character-oriented filters (`sync` only; currently supported by GL only and requires a .NET environment) | -->
+**CN does not currently support advanced search. For JP, generating relation data on demand may also require `--jp-sqlcipher-key-hex`. `extract -as` does not automatically generate relation data; run `relation build` or `sync -as` first to generate relation data for the matching version.**
 
-<!-- **Advanced-search fields (currently unsupported on CN):**
+JP does not support specifying `--version`; it automatically resolves the currently available version. If you need fixed-version input, manage the existing raw/extracted directories yourself.
+
+Advanced-search fields:
 - `[*]` **Character name**
 - `cv` **Voice actor**
 - `age` **Age**
@@ -137,14 +141,13 @@ python -m ba_downloader sync --region jp
   > sync
   >```sh
   >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ ibuki
-  >``` -->
+  >```
 
-  <!--
   > japan
   >```sh
   >ba-downloader sync --region jp -as yume 百合園セイア 호시노 cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
   >```
-  -->
+
 - Basic search:
   > package name only
   >```sh
@@ -157,7 +160,7 @@ python -m ba_downloader sync --region jp
 - `Temp`: Stores temporary files or non-primary files, such as APK packages.
 - `RawData`: Stores files downloaded from catalogs, such as Bundle, Media, and Table files.
 - `Extracted`: Stores extracted output, such as Bundle, Media, Table, and Dumps files.
-<!-- - `CharacterRelation.json`: Character metadata; it can be generated with `ba-downloader relation build --region <region>`. -->
+- `CharacterRelation.json`: Character metadata; it can be generated with `ba-downloader relation build --region <region>`.
 
 JP default directories are separated by platform:
 - **Example:** `--platform android`: `JP_Android_RawData` / `JP_Android_Extracted` / `JP_Android_Temp`
@@ -172,6 +175,7 @@ ba-downloader download --region jp --platform windows
 ## Notes
 
 - `--platform` applies only to JP and selects JP platform-specific resources.
+- `--version` applies only to GL. JP does not support specifying `--version`, and CN/JP automatically resolve the currently available version.
 - JP APK files are currently sourced from APKPure. After the Play Store updates, APKPure may take some time to synchronize. Official PC package parsing may be added later.
 - Resource catalogs may be unavailable during server maintenance windows.
 - A proxy may be required in some regions to download assets from specific servers.
