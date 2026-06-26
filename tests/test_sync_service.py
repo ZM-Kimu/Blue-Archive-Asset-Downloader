@@ -14,18 +14,7 @@ from ba_downloader.domain.models.asset import (
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.regions.jp.provider import JPRegionProvider
-
-
-class StaticProvider:
-    def __init__(self, result: RegionCatalogResult) -> None:
-        self.result = result
-
-    def get_capabilities(self) -> RegionCapabilities:
-        return self.result.capabilities
-
-    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
-        _ = context
-        return self.result
+from support import DummyRelationBuilder, StaticProvider
 
 
 class FailingDownloader:
@@ -105,27 +94,6 @@ class RecordingRuntimeAssetPreparer:
     def prepare(self, context: RuntimeContext) -> None:
         _ = context
         self.calls.append("prepare")
-
-
-class DummyRelationBuilder:
-    def __init__(self) -> None:
-        self.search_calls: list[list[str]] = []
-        self.search_results = ["Shiroko"]
-
-    def verify_relation_file(self, context: RuntimeContext) -> bool:
-        _ = context
-        return True
-
-    def get_excel_resources(self, resources: AssetCollection) -> AssetCollection:
-        return resources
-
-    def build(self, context: RuntimeContext) -> None:
-        _ = context
-
-    def search(self, context: RuntimeContext, keywords: list[str]) -> list[str]:
-        _ = context
-        self.search_calls.append(keywords)
-        return self.search_results
 
 
 class NullLogger:
