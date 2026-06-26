@@ -10,6 +10,7 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.extraction.character.relation import (
     CharacterNameRelation,
 )
+from ba_downloader.infrastructure.extraction.table.models import ProcessedTableArtifact
 
 
 class RecordingLogger:
@@ -26,6 +27,48 @@ class RecordingLogger:
 
     def error(self, message: str) -> None:
         self.error_messages.append(message)
+
+
+class FakeTableSource:
+    def __init__(
+        self,
+        tmp_path: Path,
+        tables_by_name: dict[str, list[dict]] | None = None,
+        zip_payloads: dict[str, bytes] | None = None,
+    ) -> None:
+        self.table_file_folder = str(tmp_path / "Raw" / "Table")
+        self.extract_folder = str(tmp_path / "Temp" / "Table")
+        self.tables_by_name = tables_by_name or {}
+        self.zip_payloads = zip_payloads or {}
+        self.table_names: list[str] = []
+
+    def process_db_file(
+        self,
+        file_path: str,
+        table_name: str = "",
+        **kwargs: object,
+    ) -> list[DBTable]:
+        _ = file_path
+        _ = kwargs
+        self.table_names.append(table_name)
+        rows = self.tables_by_name.get(table_name, [])
+        return [_db_table(table_name, rows)] if rows else []
+
+    def process_zip_file(
+        self,
+        archive_name: str,
+        file_name: str,
+        file_data: bytes,
+        *,
+        detect_type: bool = False,
+    ) -> ProcessedTableArtifact:
+        _ = archive_name
+        _ = file_data
+        _ = detect_type
+        return ProcessedTableArtifact(
+            data=self.zip_payloads.get(file_name, b"[]"),
+            file_name=file_name,
+        )
 
 
 def _build_context(tmp_path: Path, region: str = "jp") -> RuntimeContext:
@@ -46,63 +89,22 @@ def _build_context(tmp_path: Path, region: str = "jp") -> RuntimeContext:
     )
 
 
-def _patch_table_extractor_init(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_init(
-        self: CharacterNameRelation,
-        table_file_folder: str,
-        extract_folder: str,
-        flat_data_folder: str,
-        *,
-        logger: RecordingLogger,
-        **kwargs: object,
-    ) -> None:
-        _ = kwargs
-        self.table_file_folder = table_file_folder
-        self.extract_folder = extract_folder
-        self.flat_data_folder = flat_data_folder
-        self.logger = logger
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.table.extractor.TableExtractor.__init__",
-        fake_init,
-    )
-
-
 def _db_table(name: str, rows: list[dict]) -> DBTable:
     columns = [DBColumn(name="Bytes", data_type="BLOB")]
     data = [[row] for row in rows]
     return DBTable(name=name, columns=columns, data=data)
 
 
-def _patch_relation_db_tables(
-    monkeypatch: pytest.MonkeyPatch,
-    relation: CharacterNameRelation,
-    tables_by_name: dict[str, list[dict]],
-) -> list[str]:
-    table_names: list[str] = []
-
-    def fake_process_db_file(
-        file_path: str,
-        table_name: str = "",
-        **kwargs: object,
-    ) -> list[DBTable]:
-        _ = file_path
-        _ = kwargs
-        table_names.append(table_name)
-        rows = tables_by_name.get(table_name, [])
-        return [_db_table(table_name, rows)] if rows else []
-
-    monkeypatch.setattr(relation, "_process_db_file", fake_process_db_file)
-    return table_names
-
-
 def test_relation_extract_excel_warns_and_continues_when_one_source_is_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     logger = RecordingLogger()
-    relation = CharacterNameRelation(_build_context(tmp_path, region="cn"), logger)
+    relation = CharacterNameRelation(
+        _build_context(tmp_path, region="cn"),
+        logger,
+        table_source=FakeTableSource(tmp_path),
+    )
 
     monkeypatch.setattr(
         relation,
@@ -148,12 +150,9 @@ def test_jp_relation_extract_excel_uses_excel_db_schema_sources(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     logger = RecordingLogger()
-    relation = CharacterNameRelation(_build_context(tmp_path, region="jp"), logger)
-    table_names = _patch_relation_db_tables(
-        monkeypatch,
-        relation,
+    table_source = FakeTableSource(
+        tmp_path,
         {
             "ScenarioCharacterNameDBSchema": [
                 {
@@ -183,6 +182,11 @@ def test_jp_relation_extract_excel_uses_excel_db_schema_sources(
             ],
         },
     )
+    relation = CharacterNameRelation(
+        _build_context(tmp_path, region="jp"),
+        logger,
+        table_source=table_source,
+    )
     monkeypatch.setattr(
         relation,
         "_CharacterNameRelation__extract_excel_bytes_files",
@@ -198,7 +202,7 @@ def test_jp_relation_extract_excel_uses_excel_db_schema_sources(
         localize_gacha,
     ) = relation._CharacterNameRelation__extract_excel()
 
-    assert table_names == [
+    assert table_source.table_names == [
         "ScenarioCharacterNameDBSchema",
         "CharacterDBSchema",
         "LocalizeCharProfileDBSchema",
@@ -241,22 +245,23 @@ def test_jp_relation_extract_excel_warns_with_schema_name_when_source_is_missing
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     logger = RecordingLogger()
-    relation = CharacterNameRelation(_build_context(tmp_path, region="jp"), logger)
-    _patch_relation_db_tables(
-        monkeypatch,
-        relation,
-        {
-            "ScenarioCharacterNameDBSchema": [
-                {
-                    "CharacterName": 1001,
-                    "NameJP": "Arona",
-                    "SmallPortrait": "Portrait_Arona",
-                }
-            ],
-            "CharacterDBSchema": [{"Id": 1001, "DevName": "Arona"}],
-        },
+    relation = CharacterNameRelation(
+        _build_context(tmp_path, region="jp"),
+        logger,
+        table_source=FakeTableSource(
+            tmp_path,
+            {
+                "ScenarioCharacterNameDBSchema": [
+                    {
+                        "CharacterName": 1001,
+                        "NameJP": "Arona",
+                        "SmallPortrait": "Portrait_Arona",
+                    }
+                ],
+                "CharacterDBSchema": [{"Id": 1001, "DevName": "Arona"}],
+            },
+        ),
     )
 
     (
@@ -283,11 +288,11 @@ def test_jp_relation_extract_excel_fails_when_all_db_sources_are_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="jp"), RecordingLogger()
+        _build_context(tmp_path, region="jp"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
-    _patch_relation_db_tables(monkeypatch, relation, {})
 
     with pytest.raises(
         LookupError,
@@ -300,9 +305,10 @@ def test_cn_relation_extract_excel_fails_when_all_core_sources_are_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="cn"), RecordingLogger()
+        _build_context(tmp_path, region="cn"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
 
     monkeypatch.setattr(
@@ -332,9 +338,10 @@ def test_relation_uses_cn_profile_fallback_fields(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="cn"), RecordingLogger()
+        _build_context(tmp_path, region="cn"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
 
     relations = relation._CharacterNameRelation__create_relation_list(
@@ -376,9 +383,10 @@ def test_relation_applies_cn_gacha_names_and_costume_aliases(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="cn"), RecordingLogger()
+        _build_context(tmp_path, region="cn"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
 
     relations = relation._CharacterNameRelation__create_relation_list(
@@ -411,9 +419,10 @@ def test_relation_merges_scenario_aliases_without_scenario_names(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="cn"), RecordingLogger()
+        _build_context(tmp_path, region="cn"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
 
     relations = relation._CharacterNameRelation__create_relation_list(
@@ -454,9 +463,10 @@ def test_jp_relation_does_not_match_non_latin_names_by_empty_token(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="jp"), RecordingLogger()
+        _build_context(tmp_path, region="jp"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
 
     relations = relation._CharacterNameRelation__create_relation_list(
@@ -493,9 +503,10 @@ def test_jp_relation_matches_kana_scenario_name_with_hepburn(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="jp"), RecordingLogger()
+        _build_context(tmp_path, region="jp"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
 
     relations = relation._CharacterNameRelation__create_relation_list(
@@ -529,9 +540,10 @@ def test_jp_relation_keeps_long_alias_prefix_match_for_variants(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="jp"), RecordingLogger()
+        _build_context(tmp_path, region="jp"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
 
     relations = relation._CharacterNameRelation__create_relation_list(
@@ -576,9 +588,10 @@ def test_jp_relation_prefers_exact_file_match_over_prefix_match(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="jp"), RecordingLogger()
+        _build_context(tmp_path, region="jp"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
 
     relations = relation._CharacterNameRelation__create_relation_list(
@@ -621,9 +634,10 @@ def test_jp_relation_registers_unmatched_scenario_portraits(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="jp"), RecordingLogger()
+        _build_context(tmp_path, region="jp"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
 
     relations = relation._CharacterNameRelation__create_relation_list(
@@ -653,9 +667,10 @@ def test_jp_relation_registers_yume_scenario_only_portraits(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="jp"), RecordingLogger()
+        _build_context(tmp_path, region="jp"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
 
     relations = relation._CharacterNameRelation__create_relation_list(
@@ -691,9 +706,10 @@ def test_jp_relation_registers_decagram_scenario_only_portrait(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="jp"), RecordingLogger()
+        _build_context(tmp_path, region="jp"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
 
     relations = relation._CharacterNameRelation__create_relation_list(
@@ -723,9 +739,10 @@ def test_relation_search_matches_dev_name(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     relation = CharacterNameRelation(
-        _build_context(tmp_path, region="jp"), RecordingLogger()
+        _build_context(tmp_path, region="jp"),
+        RecordingLogger(),
+        table_source=FakeTableSource(tmp_path),
     )
     relations = relation._CharacterNameRelation__create_relation_list(
         scenario_db=[],
@@ -749,10 +766,11 @@ def test_relation_build_logs_saved_file_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_table_extractor_init(monkeypatch)
     logger = RecordingLogger()
     context = _build_context(tmp_path, region="jp")
-    relation = CharacterNameRelation(context, logger)
+    relation = CharacterNameRelation(
+        context, logger, table_source=FakeTableSource(tmp_path)
+    )
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         relation,

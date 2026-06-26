@@ -17,13 +17,16 @@ from ba_downloader.domain.ports.relation import RelationBuilderPort
 from ba_downloader.infrastructure.extraction.character.scenario_matching import (
     ScenarioMatchIndex,
 )
-from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
+from ba_downloader.infrastructure.extraction.character.table_source import (
+    CharacterTableSource,
+    TableExtractorCharacterTableSource,
+)
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
 from ba_downloader.infrastructure.schema.crypto import zip_password
 from ba_downloader.infrastructure.storage import TableDatabase
 
 
-class CharacterNameRelation(TableExtractor, RelationBuilderPort):
+class CharacterNameRelation(RelationBuilderPort):
     EXCEL_NAME = "Excel.zip"
     DB_NAME = "ExcelDB.db"
     RELATION_NAME = "CharacterRelation.json"
@@ -51,15 +54,16 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         self,
         context: RuntimeContext,
         logger: LoggerPort | None = None,
+        table_source: CharacterTableSource | None = None,
     ) -> None:
         self.context = context
         self.logger = logger or ConsoleLogger()
-        super().__init__(
-            str(Path(context.raw_dir) / "Table"),
-            str(Path(context.temp_dir) / "Table"),
-            str(Path(context.extract_dir) / "FlatBufferData"),
-            logger=self.logger,
-            context=context,
+        self._table_source = (
+            table_source
+            or TableExtractorCharacterTableSource.from_context(
+                context,
+                self.logger,
+            )
         )
         self.kana_converter = pykakasi.kakasi()
 
@@ -176,8 +180,8 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         return self.__extract_db_table("ScenarioCharacterNameDBSchema")
 
     def __extract_db_table(self, table_name: str) -> list[dict[str, Any]]:
-        tables = self._process_db_file(
-            str(Path(self.table_file_folder) / self.DB_NAME),
+        tables = self._table_source.process_db_file(
+            str(Path(self._table_source.table_file_folder) / self.DB_NAME),
             table_name,
         )
         if not tables:
@@ -193,8 +197,10 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         return payloads
 
     def __extract_excel_bytes_files(self) -> dict[str, Path]:
-        excel_folder = Path(self.table_file_folder)
-        extract_dir = Path(self.extract_folder) / self.EXCEL_NAME.removesuffix(".zip")
+        excel_folder = Path(self._table_source.table_file_folder)
+        extract_dir = Path(
+            self._table_source.extract_folder
+        ) / self.EXCEL_NAME.removesuffix(".zip")
         extract_dir.mkdir(parents=True, exist_ok=True)
 
         with ZipFile(excel_folder / self.EXCEL_NAME, "r") as excel_zip:
@@ -222,7 +228,7 @@ class CharacterNameRelation(TableExtractor, RelationBuilderPort):
         for file_name, file_path in extracted_paths.items():
             try:
                 with file_path.open("rb") as file_handle:
-                    processed = self._process_zip_file(
+                    processed = self._table_source.process_zip_file(
                         self.EXCEL_NAME,
                         file_name,
                         file_handle.read(),
