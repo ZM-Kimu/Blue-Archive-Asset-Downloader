@@ -133,7 +133,6 @@ class ResourceDownloader(ResourceDownloaderPort):
         workers = min(max(context.threads, 1), max(len(resources), 1))
         stop_event = Event()
         executor = ThreadPoolExecutor(max_workers=workers)
-        future_map: dict[Future[tuple[AssetRecord, bool]], AssetRecord] = {}
 
         try:
             with (
@@ -143,13 +142,12 @@ class ResourceDownloader(ResourceDownloaderPort):
                     "Verifying assets...",
                 ) as progress,
             ):
-                future_map = {
-                    executor.submit(self._verify_resource, resource, context): resource
+                pending_futures = {
+                    executor.submit(self._verify_resource, resource, context)
                     for resource in resources
                 }
                 self._drain_verification_futures(
-                    set(future_map),
-                    future_map,
+                    pending_futures,
                     stop_event,
                     progress,
                     pending,
@@ -276,7 +274,6 @@ class ResourceDownloader(ResourceDownloaderPort):
     def _drain_verification_futures(
         self,
         pending_futures: set[Future[tuple[AssetRecord, bool]]],
-        future_map: dict[Future[tuple[AssetRecord, bool]], AssetRecord],
         stop_event: Event,
         progress: RichProgressReporter,
         pending: list[AssetRecord],

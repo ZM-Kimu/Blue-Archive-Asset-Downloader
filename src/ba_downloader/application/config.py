@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from os import getcwd
 from typing import cast
 
+from ba_downloader.domain.models.asset_type_selection import ResourceTypeSelection
 from ba_downloader.domain.models.region import Platform, Region
 from ba_downloader.domain.models.runtime import RuntimeContext
 
@@ -57,9 +58,9 @@ class AppSettings:
             if temp_dir == "Temp":
                 temp_dir = f"{region_prefix}{temp_dir}"
 
-        resource_type = tuple(r.lower() for r in self.resource_type)
-        if not resource_type or "all" in resource_type:
-            resource_type = ("table", "media", "bundle")
+        resource_type = ResourceTypeSelection.from_values(
+            value.lower() for value in self.resource_type
+        ).as_strings()
 
         jp_sqlcipher_key_hex = (
             self.jp_sqlcipher_key_hex.strip() if region == "jp" else ""

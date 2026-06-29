@@ -2,6 +2,7 @@ from collections.abc import Callable
 
 from ba_downloader.application.use_cases.asset_selection import AssetSelectionService
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
+from ba_downloader.application.use_cases.relation_search import RelationSearchService
 from ba_downloader.application.use_cases.sync_policy import (
     SyncExtractionMode,
     resolve_sync_workflow_policy,
@@ -9,11 +10,10 @@ from ba_downloader.application.use_cases.sync_policy import (
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
-from ba_downloader.domain.ports.extract import SchemaWorkflowPort
+from ba_downloader.domain.ports.extract import SchemaPreparationPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
 from ba_downloader.domain.ports.relation import RelationBuilderPort
-from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 from ba_downloader.domain.services.resource_query import ResourceQueryService
 
 
@@ -23,52 +23,43 @@ class SyncAssetsUseCase:
         provider: RegionProvider,
         downloader: ResourceDownloaderPort,
         extract_service: ExtractAssetsUseCase,
-        schema_workflow: SchemaWorkflowPort,
-        runtime_asset_preparer: RuntimeAssetPreparerPort,
+        schema_preparation: SchemaPreparationPort,
         relation_builder_factory: Callable[[RuntimeContext], RelationBuilderPort],
         logger: LoggerPort,
     ) -> None:
         self.provider = provider
         self.downloader = downloader
         self.extract_service = extract_service
-        self.schema_workflow = schema_workflow
-        self.runtime_asset_preparer = runtime_asset_preparer
+        self.schema_preparation = schema_preparation
         self.relation_builder_factory = relation_builder_factory
         self.logger = logger
-        self.asset_selector = AssetSelectionService(relation_builder_factory, logger)
+        self.asset_selector = AssetSelectionService(logger)
+        self.relation_search = RelationSearchService(relation_builder_factory, logger)
 
-    def _dump_and_compile(self, context: RuntimeContext) -> None:
-        self.runtime_asset_preparer.prepare(context)
-        self.schema_workflow.dump(context)
-        self.schema_workflow.compile(context)
+    def _prepare_schema(self, context: RuntimeContext) -> None:
+        self.schema_preparation.prepare(context)
 
     def _search_resource(
         self,
         resources: AssetCollection,
         context: RuntimeContext,
-        dumped: bool,
+        schema_prepared: bool,
     ) -> AssetCollection:
-        dumped_state = dumped
+        advanced_keywords: list[str] | None = None
         if context.advanced_search:
-            self.logger.info("Preparing for advanced search...")
-
-        def ensure_relation(
-            relation_builder: RelationBuilderPort,
-            search_resources: AssetCollection,
-            active_context: RuntimeContext,
-        ) -> None:
-            nonlocal dumped_state
-            if not dumped_state:
-                self._dump_and_compile(active_context)
-                dumped_state = True
-            excel_resource = relation_builder.get_excel_resources(search_resources)
-            self.downloader.verify_and_download(excel_resource, active_context)
-            relation_builder.build(active_context)
+            relation_result = self.relation_search.resolve_sync_keywords(
+                resources,
+                context,
+                schema_preparation=self.schema_preparation,
+                downloader=self.downloader,
+                schema_prepared=schema_prepared,
+            )
+            advanced_keywords = relation_result.keywords
 
         return self.asset_selector.filter_search_resources(
             resources,
             context,
-            ensure_relation=ensure_relation,
+            advanced_keywords=advanced_keywords,
         )
 
     def _filter_and_download(
@@ -96,14 +87,14 @@ class SyncAssetsUseCase:
         resources = catalog.resources
         policy = resolve_sync_workflow_policy(active_context)
 
-        if policy.requires_schema_workflow:
-            self._dump_and_compile(active_context)
+        if policy.prepares_schema:
+            self._prepare_schema(active_context)
 
         if active_context.search or active_context.advanced_search:
             resources = self._search_resource(
                 resources,
                 active_context,
-                policy.requires_schema_workflow,
+                policy.prepares_schema,
             )
 
         filtered = self._filter_and_download(resources, active_context)

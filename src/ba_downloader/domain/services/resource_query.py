@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from ba_downloader.domain.models.asset import AssetCollection, AssetRecord
+from ba_downloader.domain.models.asset_type_selection import (
+    ALL_RESOURCE_TYPES,
+    ResourceTypeSelection,
+)
 
 
 class ResourceQueryService:
@@ -9,12 +13,13 @@ class ResourceQueryService:
         resource: AssetCollection,
         resource_type: list[str] | tuple[str, ...],
     ) -> AssetCollection:
-        if len(resource_type) == 3:
+        selection = ResourceTypeSelection.from_values(resource_type)
+        if selection.types == ALL_RESOURCE_TYPES:
             return resource
 
         filtered = AssetCollection()
         for item in resource:
-            if item.asset_type.value in resource_type:
+            if selection.contains(item.asset_type):
                 filtered.add_item(item)
 
         return filtered

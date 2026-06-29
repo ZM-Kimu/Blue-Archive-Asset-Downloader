@@ -20,16 +20,27 @@ class TableDatabase:
         return [table[0] for table in cursor.fetchall() if table]
 
     def get_table_column_structure(self, table: str) -> list[DBColumn]:
+        table_name = self._require_table_name(table)
         cursor = self.connection.cursor()
-        cursor.execute(f"PRAGMA table_info({table});")
+        cursor.execute(f"PRAGMA table_info({self._quote_identifier(table_name)});")
         return [DBColumn(name=col[1], data_type=col[2]) for col in cursor.fetchall()]
 
     def get_table_data(self, table: str) -> tuple[list, list]:
+        table_name = self._require_table_name(table)
         cursor = self.connection.cursor()
-        cursor.execute(f"SELECT * FROM {table};")
+        cursor.execute(f"SELECT * FROM {self._quote_identifier(table_name)};")
         column_names = [description[0] for description in cursor.description]
         rows = cursor.fetchall()
         return column_names, rows
+
+    def _require_table_name(self, table: str) -> str:
+        if table not in self.get_table_list():
+            raise LookupError(f"Unknown SQLite table: {table}")
+        return table
+
+    @staticmethod
+    def _quote_identifier(identifier: str) -> str:
+        return '"' + identifier.replace('"', '""') + '"'
 
     @staticmethod
     def convert_to_list_dict(table: DBTable) -> list[dict]:

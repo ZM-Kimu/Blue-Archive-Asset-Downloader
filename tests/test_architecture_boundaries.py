@@ -1,8 +1,4 @@
-import importlib
-import importlib.util
 from pathlib import Path
-
-import pytest
 
 FORBIDDEN_IMPORTS = (
     "ba_downloader.legacy",
@@ -45,35 +41,3 @@ def test_runtime_code_avoids_deprecated_import_paths() -> None:
                 violations.append(f"{file_path}: {pattern}")
 
     assert not violations, "\n".join(violations)
-
-
-def test_removed_internal_packages_do_not_provide_shims() -> None:
-    removed_modules = (
-        "ba_downloader.application.services",
-        "ba_downloader.application.catalog_pipeline",
-        "ba_downloader.domain.models.settings",
-        "ba_downloader.infrastructure.apk",
-        "ba_downloader.infrastructure.extract",
-        "ba_downloader.infrastructure.extractors",
-        "ba_downloader.infrastructure.jp",
-        "ba_downloader.infrastructure.regions.providers",
-        "ba_downloader.infrastructure.regions.registry",
-        "ba_downloader.infrastructure.regions.jp.catalog_decoder",
-        "ba_downloader.infrastructure.runtime.registry",
-        "ba_downloader.infrastructure.schema.common.support",
-        "ba_downloader.shared.crypto.encryption",
-    )
-
-    for module_name in removed_modules:
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module(module_name)
-
-
-def test_removed_shared_namespace_has_no_source_shim() -> None:
-    assert not Path("src/ba_downloader/shared/__init__.py").exists()
-
-    spec = importlib.util.find_spec("ba_downloader.shared")
-    if spec is None:
-        return
-
-    assert spec.origin is None

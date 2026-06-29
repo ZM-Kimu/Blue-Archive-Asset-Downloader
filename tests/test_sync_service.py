@@ -9,12 +9,10 @@ from ba_downloader.domain.exceptions import DownloadError
 from ba_downloader.domain.models.asset import (
     AssetCollection,
     AssetType,
-    RegionCapabilities,
 )
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.infrastructure.regions.jp.provider import JPRegionProvider
-from support import DummyRelationBuilder, StaticProvider
+from support import DummyRelationBuilder, RecordingLogger, StaticProvider
 
 
 class FailingDownloader:
@@ -74,20 +72,7 @@ class RecordingExtractAssetsUseCase:
         self.resource_calls.append(self._resource_paths(resources))
 
 
-class RecordingSchemaWorkflow:
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    def dump(self, context: RuntimeContext) -> None:
-        _ = context
-        self.calls.append("dump")
-
-    def compile(self, context: RuntimeContext) -> None:
-        _ = context
-        self.calls.append("compile")
-
-
-class RecordingRuntimeAssetPreparer:
+class RecordingSchemaPreparation:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
@@ -95,32 +80,9 @@ class RecordingRuntimeAssetPreparer:
         _ = context
         self.calls.append("prepare")
 
-
-class NullLogger:
-    def info(self, message: str) -> None:
-        _ = message
-
-    def warn(self, message: str) -> None:
-        _ = message
-
-    def error(self, message: str) -> None:
-        _ = message
-
-
-class RecordingLogger:
-    def __init__(self) -> None:
-        self.info_messages: list[str] = []
-        self.warn_messages: list[str] = []
-        self.error_messages: list[str] = []
-
-    def info(self, message: str) -> None:
-        self.info_messages.append(message)
-
-    def warn(self, message: str) -> None:
-        self.warn_messages.append(message)
-
-    def error(self, message: str) -> None:
-        self.error_messages.append(message)
+    def compile(self, context: RuntimeContext) -> None:
+        _ = context
+        self.calls.append("compile")
 
 
 def _build_context(tmp_path: Path) -> RuntimeContext:
@@ -154,7 +116,6 @@ def _build_catalog(context: RuntimeContext) -> RegionCatalogResult:
     return RegionCatalogResult(
         resources=resources,
         context=context,
-        capabilities=RegionCapabilities(),
     )
 
 
@@ -179,7 +140,6 @@ def _build_search_catalog(context: RuntimeContext) -> RegionCatalogResult:
     return RegionCatalogResult(
         resources=resources,
         context=context,
-        capabilities=JPRegionProvider.CAPABILITIES,
     )
 
 
@@ -187,24 +147,21 @@ def test_sync_does_not_extract_after_download_failure(tmp_path: Path) -> None:
     context = _build_context(tmp_path)
     downloader = FailingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
-    schema_workflow = RecordingSchemaWorkflow()
-    runtime_asset_preparer = RecordingRuntimeAssetPreparer()
+    schema_preparation = RecordingSchemaPreparation()
     service = SyncAssetsUseCase(
         StaticProvider(_build_catalog(context)),
         downloader,
         extract_service,  # type: ignore[arg-type]
-        schema_workflow,
-        runtime_asset_preparer,
+        schema_preparation,
         lambda _context: DummyRelationBuilder(),
-        NullLogger(),
+        RecordingLogger(),
     )
 
     with pytest.raises(DownloadError, match="download incomplete"):
         service.run(context)
 
     assert downloader.calls == ["verify_and_download"]
-    assert runtime_asset_preparer.calls == ["prepare"]
-    assert schema_workflow.calls == ["dump", "compile"]
+    assert schema_preparation.calls == ["prepare"]
     assert extract_service.calls == []
 
 
@@ -215,26 +172,62 @@ def test_jp_sync_advanced_search_uses_relation_keywords(tmp_path: Path) -> None:
     )
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
-    schema_workflow = RecordingSchemaWorkflow()
-    runtime_asset_preparer = RecordingRuntimeAssetPreparer()
+    schema_preparation = RecordingSchemaPreparation()
     relation_builder = DummyRelationBuilder()
     service = SyncAssetsUseCase(
         StaticProvider(_build_search_catalog(context)),
         downloader,
         extract_service,  # type: ignore[arg-type]
-        schema_workflow,
-        runtime_asset_preparer,
+        schema_preparation,
         lambda _context: relation_builder,
-        NullLogger(),
+        RecordingLogger(),
     )
 
     service.run(context)
 
-    assert runtime_asset_preparer.calls == ["prepare"]
-    assert schema_workflow.calls == ["dump", "compile"]
+    assert schema_preparation.calls == ["prepare"]
     assert relation_builder.search_calls == [["シロコ"]]
     assert downloader.calls == [["Bundle/Shiroko.bundle"]]
     assert extract_service.calls == ["run_post_download"]
+    assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
+
+
+def test_jp_sync_advanced_search_builds_missing_relation(tmp_path: Path) -> None:
+    context = _build_context(tmp_path).with_updates(
+        region="jp",
+        advanced_search=("シロコ",),
+    )
+    excel_resources = AssetCollection()
+    excel_resources.add(
+        "https://example.invalid/Table/Excel.zip",
+        "Table/Excel.zip",
+        10,
+        "deadbeef",
+        "md5",
+        AssetType.table,
+    )
+    downloader = RecordingDownloader()
+    extract_service = RecordingExtractAssetsUseCase()
+    schema_preparation = RecordingSchemaPreparation()
+    relation_builder = DummyRelationBuilder(
+        relation_file_valid=False,
+        excel_resources=excel_resources,
+    )
+    service = SyncAssetsUseCase(
+        StaticProvider(_build_search_catalog(context)),
+        downloader,
+        extract_service,  # type: ignore[arg-type]
+        schema_preparation,
+        lambda _context: relation_builder,
+        RecordingLogger(),
+    )
+
+    service.run(context)
+
+    assert schema_preparation.calls == ["prepare"]
+    assert relation_builder.build_calls == [context]
+    assert relation_builder.search_calls == [["シロコ"]]
+    assert downloader.calls == [["Table/Excel.zip"], ["Bundle/Shiroko.bundle"]]
     assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
 
 
@@ -245,16 +238,14 @@ def test_jp_sync_search_extracts_only_filtered_resources(tmp_path: Path) -> None
     )
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
-    schema_workflow = RecordingSchemaWorkflow()
-    runtime_asset_preparer = RecordingRuntimeAssetPreparer()
+    schema_preparation = RecordingSchemaPreparation()
     service = SyncAssetsUseCase(
         StaticProvider(_build_search_catalog(context)),
         downloader,
         extract_service,  # type: ignore[arg-type]
-        schema_workflow,
-        runtime_asset_preparer,
+        schema_preparation,
         lambda _context: DummyRelationBuilder(),
-        NullLogger(),
+        RecordingLogger(),
     )
 
     service.run(context)
@@ -273,8 +264,7 @@ def test_jp_sync_advanced_search_with_no_relation_matches_downloads_nothing(
     )
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
-    schema_workflow = RecordingSchemaWorkflow()
-    runtime_asset_preparer = RecordingRuntimeAssetPreparer()
+    schema_preparation = RecordingSchemaPreparation()
     relation_builder = DummyRelationBuilder()
     relation_builder.search_results = []
     logger = RecordingLogger()
@@ -282,8 +272,7 @@ def test_jp_sync_advanced_search_with_no_relation_matches_downloads_nothing(
         StaticProvider(_build_search_catalog(context)),
         downloader,
         extract_service,  # type: ignore[arg-type]
-        schema_workflow,
-        runtime_asset_preparer,
+        schema_preparation,
         lambda _context: relation_builder,
         logger,
     )
@@ -294,6 +283,6 @@ def test_jp_sync_advanced_search_with_no_relation_matches_downloads_nothing(
     assert downloader.calls == [[]]
     assert extract_service.calls == ["run_post_download"]
     assert extract_service.resource_calls == [[]]
-    assert logger.warn_messages == [
+    assert logger.by_level("warn") == [
         "Advanced search found no matching character relation entries."
     ]

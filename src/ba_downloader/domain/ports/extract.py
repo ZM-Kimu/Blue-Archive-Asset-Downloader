@@ -34,6 +34,12 @@ class SchemaWorkflowPort(Protocol):
     def compile(self, context: RuntimeContext) -> None: ...
 
 
+class SchemaPreparationPort(Protocol):
+    def prepare(self, context: RuntimeContext) -> None: ...
+
+    def compile(self, context: RuntimeContext) -> None: ...
+
+
 class ExtractionPrerequisitePort(Protocol):
     def ensure(
         self,

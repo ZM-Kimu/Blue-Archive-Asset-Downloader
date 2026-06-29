@@ -26,7 +26,8 @@ def _context(region: str) -> RuntimeContext:
 def test_sync_policy_uses_direct_extract_for_gl() -> None:
     policy = resolve_sync_workflow_policy(_context("gl"))
 
-    assert policy.requires_schema_workflow is True
+    assert policy.prepares_schema is True
+    assert policy.requires_schema_preparation is True
     assert policy.extraction_mode is SyncExtractionMode.direct
 
 
@@ -34,5 +35,6 @@ def test_sync_policy_uses_post_download_extract_for_cn_and_jp() -> None:
     for region in ("cn", "jp"):
         policy = resolve_sync_workflow_policy(_context(region))
 
-        assert policy.requires_schema_workflow is True
+        assert policy.prepares_schema is True
+        assert policy.requires_schema_preparation is True
         assert policy.extraction_mode is SyncExtractionMode.post_download

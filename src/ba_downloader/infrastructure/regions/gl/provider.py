@@ -77,7 +77,6 @@ class GLRegionProvider:
             self.logger,
             resources=resources,
             context=context,
-            capabilities=self.get_capabilities(),
         )
 
     def get_apk_url(self, version: str) -> str:

@@ -46,13 +46,11 @@ def build_region_catalog_result(
     *,
     resources: AssetCollection,
     context: RuntimeContext,
-    capabilities: RegionCapabilities,
 ) -> RegionCatalogResult:
     logger.info(f"Catalog: {resources}.")
     return RegionCatalogResult(
         resources=resources,
         context=context,
-        capabilities=capabilities,
     )
 
 

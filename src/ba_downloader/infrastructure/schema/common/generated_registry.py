@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sys
 from dataclasses import dataclass
 from importlib import import_module, invalidate_caches, util
@@ -97,7 +98,11 @@ def load_generated_registry_module(
 
     invalidate_caches()
     path_digest = hashlib.sha1(str(package_dir.resolve()).encode("utf-8")).hexdigest()
-    package_name = f"{package_prefix}_{path_digest}"
+    module_prefix = f"{package_prefix}_{path_digest}"
+    _clear_generated_modules(module_prefix)
+    _clear_generated_bytecode(package_dir)
+    content_digest = _generated_schema_content_digest(package_dir)
+    package_name = f"{module_prefix}_{content_digest}"
     spec = util.spec_from_file_location(
         package_name,
         init_file,
@@ -120,3 +125,23 @@ def load_generated_registry_module(
 def load_generated_symbol(package_name: str, module_name: str) -> Any:
     module = import_module(f"{package_name}.{module_name}")
     return getattr(module, module_name)
+
+
+def _clear_generated_modules(module_prefix: str) -> None:
+    for module_name in tuple(sys.modules):
+        if module_name == module_prefix or module_name.startswith(f"{module_prefix}_"):
+            sys.modules.pop(module_name, None)
+
+
+def _generated_schema_content_digest(package_dir: Path) -> str:
+    digest = hashlib.sha1()
+    for file_path in sorted(package_dir.glob("*.py")):
+        digest.update(file_path.name.encode("utf-8"))
+        digest.update(file_path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+def _clear_generated_bytecode(package_dir: Path) -> None:
+    pycache_dir = package_dir / "__pycache__"
+    if pycache_dir.exists():
+        shutil.rmtree(pycache_dir)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import Il2CppDumpBackendPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.infrastructure.runtime.assets import RuntimeAssetLocator
 from ba_downloader.infrastructure.tools.runtime_probe import (
     get_installed_dotnet_sdk_major_versions,
 )
@@ -22,6 +24,11 @@ CPP2IL_COMMIT = "6af99f218501529af84202243aedb7089f5307dc"
 CPP2IL_ARCHIVE_URL = (
     f"https://github.com/SamboyCoding/Cpp2IL/archive/{CPP2IL_COMMIT}.zip"
 )
+CPP2IL_ARCHIVE_SHA256 = (
+    "968f043b28c53c3bedebe1da8fed432e9ec52deb1d2b19021f3a0964d854d32c"
+)
+CPP2IL_MAX_ARCHIVE_FILES = 20_000
+CPP2IL_MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 CPP2IL_PROJECT = Path("Cpp2IL") / "Cpp2IL.csproj"
 LIBCPP2IL_PROJECT = Path("LibCpp2IL") / "LibCpp2IL.csproj"
 EXPORTER_PROJECT_NAME = "dumpcs_exporter"
@@ -47,14 +54,6 @@ def _read_exporter_template(template_path: Path) -> str:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
-
-
-def _find_first_match(base_dir: Path, file_names: tuple[str, ...]) -> Path | None:
-    for file_name in file_names:
-        matches = list(base_dir.rglob(file_name))
-        if matches:
-            return matches[0]
-    return None
 
 
 class _StreamingProcessResult:
@@ -230,11 +229,17 @@ class Cpp2ILSourceResolver:
         logger: LoggerPort,
         commit: str = CPP2IL_COMMIT,
         archive_url: str = CPP2IL_ARCHIVE_URL,
+        archive_sha256: str = CPP2IL_ARCHIVE_SHA256,
+        max_archive_files: int = CPP2IL_MAX_ARCHIVE_FILES,
+        max_archive_bytes: int = CPP2IL_MAX_ARCHIVE_BYTES,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
         self.commit = commit
         self.archive_url = archive_url
+        self.archive_sha256 = archive_sha256
+        self.max_archive_files = max_archive_files
+        self.max_archive_bytes = max_archive_bytes
 
     def resolve(self, context: RuntimeContext) -> Path:
         submodule_root = _repo_root() / "third_party" / "Cpp2IL"
@@ -282,9 +287,10 @@ class Cpp2ILSourceResolver:
 
             self.http_client.download_to_file(self.archive_url, str(archive_path))
             try:
+                self._verify_archive_checksum(archive_path)
                 with ZipFile(archive_path, "r") as archive:
-                    archive.extractall(extract_dir)
-            except BadZipFile as exc:
+                    self._safe_extract_archive(archive, extract_dir)
+            except (BadZipFile, ValueError) as exc:
                 last_error = exc
                 if archive_path.exists():
                     archive_path.unlink()
@@ -294,7 +300,8 @@ class Cpp2ILSourceResolver:
                     continue
                 raise FileNotFoundError(
                     "Failed to download Cpp2IL source archive. "
-                    "Retry the download or initialize the Cpp2IL submodule."
+                    "Retry the download or initialize the Cpp2IL submodule. "
+                    f"Details: {last_error}"
                 ) from last_error
 
             source_root = next(
@@ -325,6 +332,39 @@ class Cpp2ILSourceResolver:
         if extract_dir.exists():
             shutil.rmtree(extract_dir)
 
+    def _verify_archive_checksum(self, archive_path: Path) -> None:
+        if not self.archive_sha256:
+            return
+        digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        if digest.lower() != self.archive_sha256.lower():
+            raise ValueError(
+                "Cpp2IL source archive checksum mismatch: "
+                f"expected {self.archive_sha256}, got {digest}."
+            )
+
+    def _safe_extract_archive(self, archive: ZipFile, extract_dir: Path) -> None:
+        extract_root = extract_dir.resolve()
+        total_size = 0
+        infos = archive.infolist()
+        if len(infos) > self.max_archive_files:
+            raise ValueError(f"Cpp2IL source archive has too many files: {len(infos)}.")
+
+        for info in infos:
+            total_size += max(info.file_size, 0)
+            if total_size > self.max_archive_bytes:
+                raise ValueError(
+                    "Cpp2IL source archive exceeds maximum extracted size."
+                )
+            target_path = (extract_dir / info.filename).resolve()
+            try:
+                target_path.relative_to(extract_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Cpp2IL source archive contains unsafe path: {info.filename}"
+                ) from exc
+
+        archive.extractall(extract_dir)
+
 
 class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
     BINARY_CANDIDATES = ("GameAssembly.dll", "libil2cpp.so")
@@ -346,14 +386,15 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
 
     def dump(self, context: RuntimeContext, output_dir: str) -> None:
         base_dir = Path(context.temp_dir)
-        binary_path = _find_first_match(base_dir, self.BINARY_CANDIDATES)
-        metadata_path = _find_first_match(base_dir, (self.METADATA_NAME,))
+        locator = RuntimeAssetLocator(base_dir)
+        binary_path = locator.find_first(self.BINARY_CANDIDATES)
+        metadata_path = locator.find_first((self.METADATA_NAME,))
         if not binary_path or not metadata_path:
             raise FileNotFoundError(
                 "Cannot find binary file or global-metadata file for Cpp2IL backend.",
             )
 
-        unity_version = self._resolve_unity_version(context, base_dir)
+        unity_version = self._resolve_unity_version(base_dir)
         if not unity_version:
             raise LookupError(
                 "Cannot determine Unity version for Cpp2IL backend. "
@@ -400,7 +441,7 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
 
         self.logger.info("Dumped il2cpp binary file successfully.")
 
-    def _resolve_unity_version(self, context: RuntimeContext, temp_dir: Path) -> str:
+    def _resolve_unity_version(self, temp_dir: Path) -> str:
         import os
 
         if env_value := os.getenv(self.UNITY_VERSION_ENV, "").strip():

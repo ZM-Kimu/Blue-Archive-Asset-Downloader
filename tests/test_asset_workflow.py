@@ -5,6 +5,9 @@ from queue import Queue
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
+import pytest
+
+from ba_downloader.domain.exceptions import ExtractError
 from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.extraction.bundle.exporter import BundleLogEvent
@@ -121,6 +124,17 @@ def _resources(items: list[tuple[str, AssetType]]) -> AssetCollection:
     return resources
 
 
+def _patch_progress_reporter(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extraction.workflow.RichProgressReporter",
+        RecordingProgressReporter,
+    )
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extraction.threaded_runner.RichProgressReporter",
+        RecordingProgressReporter,
+    )
+
+
 def test_media_extraction_uses_extract_progress_mode(
     monkeypatch: Any,
     tmp_path: Path,
@@ -141,10 +155,7 @@ def test_media_extraction_uses_extract_progress_mode(
             progress_callback("2/2 members")
 
     RecordingProgressReporter.instances = []
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.RichProgressReporter",
-        RecordingProgressReporter,
-    )
+    _patch_progress_reporter(monkeypatch)
     monkeypatch.setattr(
         "ba_downloader.infrastructure.extraction.workflow.MediaExtractor",
         FakeMediaExtractor,
@@ -179,10 +190,7 @@ def test_media_extraction_uses_filtered_existing_resources(
             calls.append(Path(file_path).name)
 
     RecordingProgressReporter.instances = []
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.RichProgressReporter",
-        RecordingProgressReporter,
-    )
+    _patch_progress_reporter(monkeypatch)
     monkeypatch.setattr(
         "ba_downloader.infrastructure.extraction.workflow.MediaExtractor",
         FakeMediaExtractor,
@@ -201,6 +209,42 @@ def test_media_extraction_uses_filtered_existing_resources(
     )
 
     assert calls == ["voice.zip"]
+
+
+def test_media_extraction_aggregates_failures_after_processing_other_files(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path, ("media",))
+    media_dir = Path(context.raw_dir) / "Media"
+    media_dir.mkdir(parents=True)
+    (media_dir / "bad.zip").write_bytes(b"zip")
+    (media_dir / "good.zip").write_bytes(b"zip")
+    calls: list[str] = []
+    logger = RecordingLogger()
+
+    class FakeMediaExtractor:
+        def __init__(self, received_context: RuntimeContext) -> None:
+            assert received_context == context
+
+        def extract_zip(self, file_path: str, **kwargs: Any) -> None:
+            _ = kwargs
+            calls.append(Path(file_path).name)
+            if Path(file_path).name == "bad.zip":
+                raise LookupError("bad archive")
+
+    RecordingProgressReporter.instances = []
+    _patch_progress_reporter(monkeypatch)
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extraction.workflow.MediaExtractor",
+        FakeMediaExtractor,
+    )
+
+    with pytest.raises(ExtractError, match="media extraction failed for 1 file"):
+        AssetExtractionWorkflow(logger).extract_media(context)
+
+    assert sorted(calls) == ["bad.zip", "good.zip"]
+    assert any("bad.zip" in message for message in logger.error_messages)
 
 
 def test_table_extraction_uses_extract_progress_mode(
@@ -231,10 +275,7 @@ def test_table_extraction_uses_extract_progress_mode(
             progress_callback("1/1 entries")
 
     RecordingProgressReporter.instances = []
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.RichProgressReporter",
-        RecordingProgressReporter,
-    )
+    _patch_progress_reporter(monkeypatch)
     monkeypatch.setattr(
         "ba_downloader.infrastructure.extraction.workflow.TableExtractor",
         FakeTableExtractor,
@@ -301,6 +342,49 @@ def test_table_extraction_uses_filtered_existing_resources(
     assert calls == ["ExcelDB.db"]
 
 
+def test_table_extraction_uses_one_extractor_instance_per_file(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path, ("table",)).with_updates(threads=2)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True)
+    (table_dir / "A.db").write_bytes(b"db")
+    (table_dir / "B.db").write_bytes(b"db")
+    instances: list[Any] = []
+
+    class FakeTableExtractor:
+        extract_folder = str(Path(context.extract_dir) / "Table")
+
+        def __init__(self) -> None:
+            instances.append(self)
+
+        @classmethod
+        def from_context(
+            cls,
+            received_context: RuntimeContext,
+            logger: RecordingLogger,
+        ) -> FakeTableExtractor:
+            assert received_context == context
+            _ = logger
+            return cls()
+
+        def extract_table(self, file_path: str, **kwargs: Any) -> None:
+            _ = (file_path, kwargs)
+
+    RecordingProgressReporter.instances = []
+    _patch_progress_reporter(monkeypatch)
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extraction.workflow.TableExtractor",
+        FakeTableExtractor,
+    )
+
+    AssetExtractionWorkflow(RecordingLogger()).extract_tables(context)
+
+    assert len(instances) == 2
+    assert len({id(instance) for instance in instances}) == 2
+
+
 def test_bundle_extraction_uses_filtered_existing_resources(
     monkeypatch: Any,
     tmp_path: Path,
@@ -321,10 +405,7 @@ def test_bundle_extraction_uses_filtered_existing_resources(
         captured_bundles.extend(kwargs["bundles"])
 
     RecordingProgressReporter.instances = []
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.RichProgressReporter",
-        RecordingProgressReporter,
-    )
+    _patch_progress_reporter(monkeypatch)
     monkeypatch.setattr(workflow, "_build_bundle_processes", build_processes)
     monkeypatch.setattr(
         workflow,

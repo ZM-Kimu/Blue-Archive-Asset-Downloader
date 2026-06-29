@@ -35,7 +35,7 @@
 
 - Windows/Linux
 - Python 3.10 或更高版本
-- [.NET10 SDK](https://dotnet.microsoft.com/download) (提取 table 时安装)
+- [.NET10 SDK](https://dotnet.microsoft.com/download) (用于提取 table)
 
 ## 先决条件
 
@@ -96,27 +96,25 @@ python -m ba_downloader sync --region jp
 
 ## **基本参数**
 **`*`** :**必选的选项**
-| 参数                       | 缩&nbsp;写 | 说明                                                                         | 默认值             | 示例                             |
-| -------------------------- | ---------- | ---------------------------------------------------------------------------- | ------------------ | -------------------------------- |
-| **`--region`**`*`          | `-r`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                     | 无                 | `-r jp`                          |
-| `--threads`                | `-t`       | **同时下载或解压的线程数**                                                   | `20`               | `-t 50`                          |
-| `--version`                | `-v`       | **需要下载的资源版本号**（仅 GL 生效；JP 不支持指定版本）                    | 无                 | `-v 1.2.3`                       |
-| `--platform`               | `-p`       | **资源所属平台**：`windows`、`android`、`ios`（仅 JP 生效）                  | `android`          | `-p windows`                     |
-| `--raw-dir`                | `-rd`      | **指定未处理文件的位置**                                                     | `"RawData"`        | `-rd raw_folder`                 |
-| `--extract-dir`            | `-ed`      | **指定已提取文件的位置**                                                     | `"Extracted"`      | `-ed output_folder`              |
-| `--temp-dir`               | `-td`      | **指定临时文件的位置**                                                       | `"Temp"`           | `-td temp_dir`                   |
-| `--extract-while-download` | `-ewd`     | **是否在下载时便提取文件**（仅 `sync` 可用；较慢，在资源数量较多时酌情使用） | `False`            | `--extract-while-download`       |
-| `--resource-type`          | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                              | `all`              | `--resource-type media table`    |
-| `--proxy`                  | `-px`      | **设置 HTTP 代理**                                                           | 无（使用系统代理） | `-px http://127.0.0.1:8080`      |
-| `--max-retries`            | `-mr`      | **下载失败时的最大重试次数**                                                 | `5`                | `--max-retries 3`                |
-| `--jp-sqlcipher-key-hex`   | 无         | **JP 的 SQL key**                                                            | 无                 | `--jp-sqlcipher-key-hex <64hex>` |
+| 参数                       | 缩&nbsp;写 | 说明                                                                                     | 默认值             | 示例                             |
+| -------------------------- | ---------- | ---------------------------------------------------------------------------------------- | ------------------ | -------------------------------- |
+| **`--region`**`*`          | `-r`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                                 | 无                 | `-r jp`                          |
+| `--threads`                | `-t`       | **同时下载或解压的线程数**                                                               | `20`               | `-t 50`                          |
+| `--version`                | `-v`       | **需要下载的资源版本号**（仅 GL 生效；JP 不支持指定版本）                                | 无                 | `-v 1.2.3`                       |
+| `--platform`               | `-p`       | **资源所属平台**：`windows`、`android`、`ios`（仅 JP 生效）                              | `android`          | `-p windows`                     |
+| `--raw-dir`                | `-rd`      | **指定未处理文件的位置**                                                                 | `"RawData"`        | `-rd raw_folder`                 |
+| `--extract-dir`            | `-ed`      | **指定已提取文件的位置**                                                                 | `"Extracted"`      | `-ed output_folder`              |
+| `--temp-dir`               | `-td`      | **指定临时文件的位置**                                                                   | `"Temp"`           | `-td temp_dir`                   |
+| `--extract-while-download` | `-ewd`     | **是否在下载时便提取文件**（仅 `sync` 可用；较慢，在资源数量较多时酌情使用）             | `False`            | `--extract-while-download`       |
+| `--resource-type`          | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                                          | `all`              | `--resource-type media table`    |
+| `--proxy`                  | `-px`      | **设置 HTTP 代理**                                                                       | 无（使用系统代理） | `-px http://127.0.0.1:8080`      |
+| `--max-retries`            | `-mr`      | **下载失败时的最大重试次数**                                                             | `5`                | `--max-retries 3`                |
+| `--jp-sqlcipher-key-hex`   | 无         | **JP 的 SQL key**                                                                        | 无                 | `--jp-sqlcipher-key-hex <64hex>` |
 | `--search`                 | `-s`       | **普通检索**，指定需要检索、下载或解压的文件关键词（`sync`、`download`、`extract` 可用） | 无                 | `-s aris shiroko`                |
-| `--advanced-search`        | `-as`      | **高级检索**，指定角色关键词（`sync`、`extract` 可用；当前支持 GL/JP，需要 .NET 环境） | 无                 | `-as yume cv=小倉唯`             |
+| `--advanced-search`        | `-as`      | **高级检索**，指定角色关键词（GL/JP 的 `sync`、`extract` 可用，需要 .NET 环境）          | 无                 | `-as yume cv=小倉唯`             |
 
-**CN 服务器目前不支持高级检索。JP 若需要现场生成 relation，可能需要同时传入 `--jp-sqlcipher-key-hex`。`extract -as` 不会自动生成 relation；请先运行 `relation build` 或 `sync -as` 生成对应版本 relation。**
-
-JP 不支持指定 `--version`，会自动解析当前可用版本；需要固定版本时只能通过已有 raw/extracted 目录自行管理输入文件。
-
+`--search` 与 `--advanced-search` 互斥；同一次命令请只选择一种检索模式。
+**CN 服务器目前不支持高级检索。**
 高级检索支持的检索条件：
 - `[*]` **角色名称**
 - `cv` **声优**
@@ -153,14 +151,11 @@ JP 不支持指定 `--version`，会自动解析当前可用版本；需要固�
   >```
 
 
-## 输出
+## 默认输出
 - `Temp`: 存储临时文件或非主要文件。如：Apk文件等。
 - `RawData`: 存储经由Catalog下载的文件。如：Bundle、Media、Table等。
 - `Extracted`: 存储已提取的文件。如：Bundle、Media、Table与Dumps等。
 - `CharacterRelation.json`: 角色信息，可通过 `ba-downloader relation build --region <region>` 生成。
-
-JP 默认目录会按平台隔离：
-- **例：**`--platform android`: `JP_Android_RawData` / `JP_Android_Extracted` / `JP_Android_Temp`
 
 示例：
 
@@ -171,15 +166,17 @@ ba-downloader download --region jp --platform windows
 
 ## 使用须知
 - `--platform` 仅对 JP 生效，用于指定 JP 平台的资源。
-- `--version` 仅对 GL 生效；JP 不支持指定 `--version`，CN/JP 会自动解析当前可用版本。
-- JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本，后续开放官方 PC 版解析支持。
+- `--version` 仅对 GL 生效；CN/JP 会自动解析当前可用版本。
+- JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
 - Bundle文件的提取基于UnityPy，如希望更加详细的内容请使用[AssetRipper](https://github.com/AssetRipper/AssetRipper)或[AssetStudio](https://github.com/Perfare/AssetStudio)
+- 由于解开方法经常变更，各类接口会频繁变动，不建议直接调用内部方法。
 
 ## TODO
-- `v2.2.0`
+- `v2.3.0`
   - 新 Bundle 解开器
+  - 从 launcher 取得最新可用资源
   
 ## 关于项目
 Blue Archive Asset Downloader v2.1.0.

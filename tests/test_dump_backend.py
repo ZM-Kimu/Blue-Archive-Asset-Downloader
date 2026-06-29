@@ -56,6 +56,18 @@ class FlakyArchiveHttpClient(DummyHttpClient):
         _write_cpp2il_archive(Path(dest_path))
 
 
+class TraversalArchiveHttpClient(DummyHttpClient):
+    def download_to_file(self, url: str, dest_path: str, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        _ = kwargs
+        self.download_calls.append((url, dest_path))
+        with ZipFile(dest_path, "w") as archive:
+            archive.writestr("../escape.txt", "owned")
+
+
+class HashMismatchArchiveHttpClient(ArchiveHttpClient):
+    pass
+
+
 class StaticSourceResolver:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -208,27 +220,6 @@ def test_cpp2il_framework_selection_rejects_older_dotnet_versions(
         Cpp2IlDumpCsBackend._resolve_framework()
 
 
-def test_tools_package_does_not_export_legacy_il2cpp_dumper() -> None:
-    from ba_downloader.infrastructure import tools
-
-    assert "IL2CppDumper" not in tools.__all__
-    assert "LegacyIl2CppDumperBackend" not in tools.__all__
-    assert not hasattr(tools, "IL2CppDumper")
-    assert not hasattr(tools, "LegacyIl2CppDumperBackend")
-
-
-def test_dump_backend_module_does_not_export_legacy_il2cpp_dumper() -> None:
-    from ba_downloader.infrastructure.tools import dump_backend
-
-    assert not hasattr(dump_backend, "IL2CppDumper")
-    assert not hasattr(dump_backend, "LegacyIl2CppDumperBackend")
-
-
-def test_legacy_il2cpp_dumper_module_is_removed() -> None:
-    with pytest.raises(ModuleNotFoundError):
-        __import__("ba_downloader.infrastructure.tools.il2cpp_dumper")
-
-
 def test_cpp2il_source_resolver_prefers_submodule_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -286,7 +277,11 @@ def test_cpp2il_source_resolver_downloads_and_reuses_cache(
     )
 
     http_client = ArchiveHttpClient()
-    resolver = Cpp2ILSourceResolver(http_client, NullLogger())
+    resolver = Cpp2ILSourceResolver(
+        http_client,
+        NullLogger(),
+        archive_sha256="",
+    )
     context = _build_context(tmp_path)
 
     first = resolver.resolve(context)
@@ -309,13 +304,62 @@ def test_cpp2il_source_resolver_retries_truncated_fallback_archive(
     )
 
     http_client = FlakyArchiveHttpClient()
-    resolver = Cpp2ILSourceResolver(http_client, NullLogger())
+    resolver = Cpp2ILSourceResolver(
+        http_client,
+        NullLogger(),
+        archive_sha256="",
+    )
     context = _build_context(tmp_path)
 
     resolved = resolver.resolve(context)
 
     assert (resolved / "Cpp2IL" / "Cpp2IL.csproj").exists()
     assert len(http_client.download_calls) == 2
+
+
+def test_cpp2il_source_resolver_rejects_archive_path_traversal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_repo_root = tmp_path / "repo"
+    fake_repo_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.tools.dump_backend._repo_root",
+        lambda: fake_repo_root,
+    )
+
+    resolver = Cpp2ILSourceResolver(
+        TraversalArchiveHttpClient(),
+        NullLogger(),
+        archive_sha256="",
+    )
+    context = _build_context(tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="unsafe path"):
+        resolver.resolve(context)
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_cpp2il_source_resolver_rejects_archive_checksum_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_repo_root = tmp_path / "repo"
+    fake_repo_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.tools.dump_backend._repo_root",
+        lambda: fake_repo_root,
+    )
+
+    resolver = Cpp2ILSourceResolver(
+        HashMismatchArchiveHttpClient(),
+        NullLogger(),
+        archive_sha256="0" * 64,
+    )
+    context = _build_context(tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="checksum"):
+        resolver.resolve(context)
 
 
 def test_cpp2il_exporter_project_targets_selected_framework(

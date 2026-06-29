@@ -1,6 +1,7 @@
-from ba_downloader.application.use_cases.asset_selection import (
-    AssetSelectionService,
+from ba_downloader.application.use_cases.asset_selection import AssetSelectionService
+from ba_downloader.application.use_cases.relation_search import (
     RelationBuilderFactory,
+    RelationSearchService,
 )
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -28,7 +29,10 @@ class ExtractAssetsUseCase:
         self.provider = provider
         self.prerequisite_service = prerequisite_service
         self.asset_selector = (
-            AssetSelectionService(relation_builder_factory, logger)
+            AssetSelectionService(logger) if logger is not None else None
+        )
+        self.relation_search = (
+            RelationSearchService(relation_builder_factory, logger)
             if relation_builder_factory is not None and logger is not None
             else None
         )
@@ -64,10 +68,19 @@ class ExtractAssetsUseCase:
         context: RuntimeContext,
     ) -> AssetCollection:
         if self.asset_selector is not None:
+            advanced_keywords = None
+            if context.advanced_search:
+                if self.relation_search is None:
+                    raise LookupError(
+                        "Extract advanced search requires a configured relation builder."
+                    )
+                advanced_keywords = self.relation_search.resolve_existing_keywords(
+                    context
+                )
             return self.asset_selector.filter_search_resources(
                 resources,
                 context,
-                require_current_relation=bool(context.advanced_search),
+                advanced_keywords=advanced_keywords,
             )
 
         if context.advanced_search:

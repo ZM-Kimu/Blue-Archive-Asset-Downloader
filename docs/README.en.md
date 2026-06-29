@@ -113,11 +113,10 @@ python -m ba_downloader sync --region jp
 | `--max-retries`            | `-mr`      | **Maximum retry count for failed downloads**                                                      | `5`                 | `--max-retries 3`             |
 | `--jp-sqlcipher-key-hex`   | None       | **JP SQL key**                                                                                    | None                | `--jp-sqlcipher-key-hex <64hex>` |
 | `--search`                 | `-s`       | **Basic search**: keywords used to filter files for sync, download, or extraction (`sync`, `download`, and `extract` are supported) | None                | `-s aris shiroko`             |
-| `--advanced-search`        | `-as`      | **Advanced search**: character-oriented filters (`sync` and `extract` are supported; currently supported by GL/JP and requires a .NET environment) | None                | `-as yume cv=OguraYui`        |
+| `--advanced-search`        | `-as`      | **Advanced search**: character-oriented filters (GL/JP `sync` and `extract` are supported; requires a .NET environment) | None                | `-as yume cv=OguraYui`        |
 
-**CN does not currently support advanced search. For JP, generating relation data on demand may also require `--jp-sqlcipher-key-hex`. `extract -as` does not automatically generate relation data; run `relation build` or `sync -as` first to generate relation data for the matching version.**
-
-JP does not support specifying `--version`; it automatically resolves the currently available version. If you need fixed-version input, manage the existing raw/extracted directories yourself.
+`--search` and `--advanced-search` are mutually exclusive; use only one search mode in a command.
+**The CN server currently does not support advanced search.**
 
 Advanced-search fields:
 - `[*]` **Character name**
@@ -155,15 +154,12 @@ Advanced-search fields:
   >```
 
 
-## Output
+## Default Output
 
 - `Temp`: Stores temporary files or non-primary files, such as APK packages.
 - `RawData`: Stores files downloaded from catalogs, such as Bundle, Media, and Table files.
 - `Extracted`: Stores extracted output, such as Bundle, Media, Table, and Dumps files.
 - `CharacterRelation.json`: Character metadata; it can be generated with `ba-downloader relation build --region <region>`.
-
-JP default directories are separated by platform:
-- **Example:** `--platform android`: `JP_Android_RawData` / `JP_Android_Extracted` / `JP_Android_Temp`
 
 Example:
 
@@ -175,17 +171,18 @@ ba-downloader download --region jp --platform windows
 ## Notes
 
 - `--platform` applies only to JP and selects JP platform-specific resources.
-- `--version` applies only to GL. JP does not support specifying `--version`, and CN/JP automatically resolve the currently available version.
-- JP APK files are currently sourced from APKPure. After the Play Store updates, APKPure may take some time to synchronize. Official PC package parsing may be added later.
+- `--version` applies only to GL. CN/JP automatically resolve the currently available version.
+- JP APK files are currently sourced from APKPure. After the Play Store updates, APKPure may take some time to synchronize.
 - Resource catalogs may be unavailable during server maintenance windows.
 - A proxy may be required in some regions to download assets from specific servers.
 - Bundle extraction is based on UnityPy. If you need more detailed extraction results, use [AssetRipper](https://github.com/AssetRipper/AssetRipper) or [AssetStudio](https://github.com/Perfare/AssetStudio).
+- Extraction methods change frequently, so internal APIs may change often. Directly calling internal methods is not recommended.
 
 ## TODO
 
-- `v2.2.0`
-  - Improve JP extraction (requires a key)
+- `v2.3.0`
   - Add a new bundle extractor
+  - Fetch the latest available resources from the launcher
 
 ## About
 

@@ -6,21 +6,18 @@ from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import (
     ExtractionPrerequisitePort,
-    SchemaWorkflowPort,
+    SchemaPreparationPort,
 )
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 
 
 class JpTableExtractionPrerequisite(ExtractionPrerequisitePort):
     def __init__(
         self,
-        schema_workflow: SchemaWorkflowPort,
-        runtime_asset_preparer: RuntimeAssetPreparerPort,
+        schema_preparation: SchemaPreparationPort,
         logger: LoggerPort | None = None,
     ) -> None:
-        self.schema_workflow = schema_workflow
-        self.runtime_asset_preparer = runtime_asset_preparer
+        self.schema_preparation = schema_preparation
         self.logger = logger
 
     def ensure(
@@ -42,16 +39,14 @@ class JpTableExtractionPrerequisite(ExtractionPrerequisitePort):
                     self.logger.info(
                         "FlatBufferData is missing. Recompiling JP FlatBufferData from existing dump.cs..."
                     )
-                self.schema_workflow.compile(context)
+                self.schema_preparation.compile(context)
                 return
 
             if self.logger is not None:
                 self.logger.info(
                     "FlatBufferData and dump.cs are missing. Generating JP table extract prerequisites..."
                 )
-            self.runtime_asset_preparer.prepare(context)
-            self.schema_workflow.dump(context)
-            self.schema_workflow.compile(context)
+            self.schema_preparation.prepare(context)
         except (FileNotFoundError, LookupError, RuntimeError) as exc:
             raise LookupError(
                 self._format_jp_table_bootstrap_error(

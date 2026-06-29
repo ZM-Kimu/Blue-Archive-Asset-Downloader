@@ -42,6 +42,18 @@ def test_filter_type_returns_matching_resource_types() -> None:
     ]
 
 
+def test_filter_type_does_not_treat_any_three_values_as_all_types() -> None:
+    filtered = ResourceQueryService.filter_type(
+        _build_resource(),
+        ["media", "media", "table"],
+    )
+
+    assert [item.asset_type for item in filtered] == [
+        AssetType.media,
+        AssetType.table,
+    ]
+
+
 def test_search_name_deduplicates_results() -> None:
     results = ResourceQueryService.search_name(
         _build_resource(), ["character", "excel"]

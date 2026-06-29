@@ -72,7 +72,6 @@ class CNRegionProvider:
             self.logger,
             resources=resources,
             context=resolved_context,
-            capabilities=self.get_capabilities(),
         )
 
     def get_apk_url(self, server: Literal["official", "bili"] = "official") -> str:

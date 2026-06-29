@@ -5,17 +5,7 @@ from pathlib import Path
 from ba_downloader.domain.models.asset import AssetRecord, AssetType, ChecksumSpec
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.extraction.immediate import ImmediateResourceExtractor
-
-
-class NullLogger:
-    def info(self, message: str) -> None:
-        _ = message
-
-    def warn(self, message: str) -> None:
-        _ = message
-
-    def error(self, message: str) -> None:
-        _ = message
+from support import RecordingLogger
 
 
 class RecordingBundleExtractor:
@@ -82,7 +72,7 @@ def test_immediate_resource_extractor_routes_downloaded_assets(
     media = RecordingMediaExtractor()
     table = RecordingTableExtractor()
     extractor = ImmediateResourceExtractor(
-        NullLogger(),
+        RecordingLogger(),
         bundle_factory=lambda _context, _logger: bundle,
         media_factory=lambda _context: media,
         table_factory=lambda _context, _logger: table,
@@ -105,7 +95,7 @@ def test_immediate_resource_extractor_routes_downloaded_assets(
 def test_immediate_resource_extractor_skips_non_zip_media(tmp_path: Path) -> None:
     media = RecordingMediaExtractor()
     extractor = ImmediateResourceExtractor(
-        NullLogger(),
+        RecordingLogger(),
         media_factory=lambda _context: media,
     )
 

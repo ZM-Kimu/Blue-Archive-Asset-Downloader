@@ -25,6 +25,7 @@ from ba_downloader.infrastructure.regions.cn.provider import (
     CNRegionProvider,
     CNRuntimeAssetPreparer,
 )
+from support import RecordingLogger
 
 
 def _build_context(tmp_path: Path) -> RuntimeContext:
@@ -106,22 +107,6 @@ class RangeHttpClient:
 
     def close(self) -> None:
         return None
-
-
-class RecordingLogger:
-    def __init__(self) -> None:
-        self.info_messages: list[str] = []
-        self.warn_messages: list[str] = []
-        self.error_messages: list[str] = []
-
-    def info(self, message: str) -> None:
-        self.info_messages.append(message)
-
-    def warn(self, message: str) -> None:
-        self.warn_messages.append(message)
-
-    def error(self, message: str) -> None:
-        self.error_messages.append(message)
 
 
 def test_zip_range_reader_reads_entries_and_extracts_metadata(tmp_path: Path) -> None:
@@ -242,7 +227,7 @@ def test_cn_runtime_asset_preparer_extracts_metadata_without_full_download(
     assert all(
         call["method"] == "HEAD" or "Range" in call["headers"] for call in client.calls
     )
-    assert logger.info_messages == [
+    assert logger.by_level("info") == [
         "Preparing CN metadata from APK central directory..."
     ]
 

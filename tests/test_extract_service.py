@@ -5,6 +5,9 @@ from pathlib import Path
 import pytest
 
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
+from ba_downloader.application.use_cases.schema_preparation import (
+    SchemaPreparationService,
+)
 from ba_downloader.domain.models.asset import (
     AssetCollection,
     AssetType,
@@ -15,7 +18,7 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.extraction.prerequisites import (
     JpTableExtractionPrerequisite,
 )
-from support import DummyRelationBuilder, StaticProvider
+from support import DummyRelationBuilder, RecordingLogger, StaticProvider
 
 
 class RecordingExtractionWorkflow:
@@ -57,24 +60,6 @@ class RecordingExtractionWorkflow:
         self.resource_calls.append(self._resource_paths(resources))
 
 
-class RecordingPrerequisiteService:
-    def __init__(self) -> None:
-        self.calls: list[tuple[RuntimeContext, list[str] | None]] = []
-
-    @staticmethod
-    def _resource_paths(resources: AssetCollection | None) -> list[str] | None:
-        if resources is None:
-            return None
-        return [item.path for item in resources]
-
-    def ensure(
-        self,
-        context: RuntimeContext,
-        resources: AssetCollection | None = None,
-    ) -> None:
-        self.calls.append((context, self._resource_paths(resources)))
-
-
 class RecordingRuntimeAssetPreparer:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
@@ -112,20 +97,6 @@ class RecordingSchemaWorkflow:
         flatbuffer_data_dir.mkdir(parents=True, exist_ok=True)
         (flatbuffer_data_dir / "__init__.py").write_text("", encoding="utf8")
         (flatbuffer_data_dir / "_registry.py").write_text("", encoding="utf8")
-
-
-class RecordingLogger:
-    def __init__(self) -> None:
-        self.info_messages: list[str] = []
-
-    def info(self, message: str) -> None:
-        self.info_messages.append(message)
-
-    def warn(self, message: str) -> None:
-        _ = message
-
-    def error(self, message: str) -> None:
-        _ = message
 
 
 def _build_context(tmp_path: Path) -> RuntimeContext:
@@ -195,7 +166,6 @@ def _build_filter_catalog(context: RuntimeContext) -> RegionCatalogResult:
     return RegionCatalogResult(
         resources=resources,
         context=context,
-        capabilities=RegionCapabilities(supports_advanced_search=True),
     )
 
 
@@ -212,8 +182,10 @@ def _build_jp_prerequisite_service(
     error: Exception | None = None,
 ) -> JpTableExtractionPrerequisite:
     return JpTableExtractionPrerequisite(
-        RecordingSchemaWorkflow(calls, fail_on=fail_on, error=error),
-        RecordingRuntimeAssetPreparer(calls),
+        SchemaPreparationService(
+            RecordingSchemaWorkflow(calls, fail_on=fail_on, error=error),
+            RecordingRuntimeAssetPreparer(calls),
+        ),
         RecordingLogger(),
     )
 
@@ -340,21 +312,6 @@ def test_extract_service_does_not_bootstrap_when_jp_table_folder_is_missing(
     assert extraction_workflow.calls == ["extract_tables"]
 
 
-def test_extract_service_delegates_prerequisite_checks(tmp_path: Path) -> None:
-    context = _build_context(tmp_path)
-    extraction_workflow = RecordingExtractionWorkflow()
-    prerequisites = RecordingPrerequisiteService()
-    service = ExtractAssetsUseCase(
-        extraction_workflow,
-        prerequisite_service=prerequisites,
-    )
-
-    service.run(context)
-
-    assert prerequisites.calls == [(context, None)]
-    assert extraction_workflow.calls == ["extract_tables"]
-
-
 def test_extract_service_search_extracts_only_existing_filtered_resources(
     tmp_path: Path,
 ) -> None:
@@ -444,8 +401,8 @@ def test_extract_service_advanced_search_respects_region_capabilities(
         RegionCatalogResult(
             resources=catalog.resources,
             context=context,
-            capabilities=RegionCapabilities(supports_advanced_search=False),
-        )
+        ),
+        capabilities=RegionCapabilities(supports_advanced_search=False),
     )
     extraction_workflow = RecordingExtractionWorkflow()
     service = ExtractAssetsUseCase(

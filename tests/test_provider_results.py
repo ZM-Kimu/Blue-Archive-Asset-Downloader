@@ -11,6 +11,7 @@ from ba_downloader.infrastructure.regions.gl.provider import (
     GLRegionProvider,
     GLRuntimeAssetPreparer,
 )
+from support import RecordingLogger
 
 
 class RecordingHttpClient:
@@ -67,22 +68,6 @@ class RecordingHttpClient:
         return None
 
 
-class RecordingLogger:
-    def __init__(self) -> None:
-        self.info_messages: list[str] = []
-        self.warn_messages: list[str] = []
-        self.error_messages: list[str] = []
-
-    def info(self, message: str) -> None:
-        self.info_messages.append(message)
-
-    def warn(self, message: str) -> None:
-        self.warn_messages.append(message)
-
-    def error(self, message: str) -> None:
-        self.error_messages.append(message)
-
-
 def _json_response(url: str, payload: object) -> HttpResponse:
     return HttpResponse(
         status_code=200,
@@ -101,9 +86,7 @@ def _text_response(url: str, payload: str) -> HttpResponse:
     )
 
 
-def test_gl_provider_returns_updated_context_when_version_is_missing(
-    monkeypatch,
-) -> None:
+def test_gl_provider_returns_updated_context_when_version_is_missing() -> None:
     context = RuntimeContext(
         region="gl",
         threads=4,
@@ -173,15 +156,15 @@ def test_gl_provider_returns_updated_context_when_version_is_missing(
         "Media/GameData/title_theme.zip",
         "Bundle/characters.bundle",
     ]
-    assert result.capabilities.supports_sync is True
+    assert provider.get_capabilities().supports_sync is True
     assert client.download_calls == []
-    assert logger.warn_messages == []
-    assert logger.info_messages[:3] == [
+    assert logger.by_level("warn") == []
+    assert logger.by_level("info")[:3] == [
         "Version not specified. Automatically fetching latest...",
         "Current resource version: 1.2.3",
         "Pulling catalog...",
     ]
-    assert logger.info_messages[-1].startswith("Catalog: 3 items in the catalog")
+    assert logger.by_level("info")[-1].startswith("Catalog: 3 items in the catalog")
 
 
 def test_gl_provider_uses_explicit_version_without_fetching_latest() -> None:
@@ -278,7 +261,7 @@ def test_gl_provider_warns_when_platform_is_explicitly_ignored() -> None:
 
     GLRegionProvider(http_client=client, logger=logger).load_catalog(context)
 
-    assert logger.warn_messages == [
+    assert logger.by_level("warn") == [
         "The --platform option only applies to JP and was ignored."
     ]
 
@@ -454,9 +437,9 @@ def test_cn_provider_builds_assets_without_downloading_apk(
         AssetType.media,
         AssetType.media,
     ]
-    assert result.capabilities.supports_sync is True
-    assert result.capabilities.supports_advanced_search is False
-    assert result.capabilities.supports_relation_build is True
+    assert provider.get_capabilities().supports_sync is True
+    assert provider.get_capabilities().supports_advanced_search is False
+    assert provider.get_capabilities().supports_relation_build is True
     assert [item.checksum.algorithm for item in result.resources] == [
         "md5",
         "md5",
@@ -478,13 +461,13 @@ def test_cn_provider_builds_assets_without_downloading_apk(
         "CHANNEL-ID": "2",
     }
     assert client.download_calls == []
-    assert logger.warn_messages == []
-    assert logger.info_messages[:3] == [
+    assert logger.by_level("warn") == []
+    assert logger.by_level("info")[:3] == [
         "Automatically fetching latest version...",
         "Current resource version: 1.2.3",
         "Pulling catalog...",
     ]
-    assert logger.info_messages[-1].startswith("Catalog: 8 items in the catalog")
+    assert logger.by_level("info")[-1].startswith("Catalog: 8 items in the catalog")
 
 
 def test_cn_provider_warns_when_platform_is_explicitly_ignored(
@@ -626,7 +609,7 @@ def test_cn_provider_warns_when_platform_is_explicitly_ignored(
 
     result = CNRegionProvider(http_client=client, logger=logger).load_catalog(context)
 
-    assert logger.warn_messages == [
+    assert logger.by_level("warn") == [
         "The --platform option only applies to JP and was ignored."
     ]
     assert len(result.resources) == 8
@@ -654,12 +637,12 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
     preparer = GLRuntimeAssetPreparer(http_client=object(), logger=NullLogger())
     calls: list[tuple[str, object]] = []
 
-    def fake_download_package_file(*args, **kwargs) -> str:
+    def fake_download_package_file(*_args: object, **kwargs: object) -> str:
         calls.append(("download", kwargs["transport"]))
         return str(tmp_path / "package.xapk")
 
     def fake_extract_xapk_file(
-        package_path: str, extract_dest: str, temp_dir: str
+        package_path: str, extract_dest: str, _temp_dir: str
     ) -> None:
         calls.append(("extract", package_path))
         extract_path = Path(extract_dest)

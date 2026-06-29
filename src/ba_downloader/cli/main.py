@@ -9,10 +9,17 @@ from ba_downloader.application.use_cases.build_relation import BuildRelationUseC
 from ba_downloader.application.use_cases.download_assets import DownloadAssetsUseCase
 from ba_downloader.application.use_cases.sync_assets import SyncAssetsUseCase
 from ba_downloader.bootstrap.container import (
-    CliRuntimeServices,
-    build_cli_runtime_services,
+    BaseRuntimeServices,
+    DownloadRuntimeServices,
+    ExtractRuntimeServices,
+    RelationRuntimeServices,
+    SyncRuntimeServices,
+    build_download_runtime_services,
+    build_extract_runtime_services,
+    build_relation_runtime_services,
+    build_sync_runtime_services,
 )
-from ba_downloader.domain.exceptions import DownloadError, NetworkError
+from ba_downloader.domain.exceptions import DownloadError, ExtractError, NetworkError
 from ba_downloader.domain.models.region import Platform, Region
 from ba_downloader.domain.models.runtime import RuntimeContext
 
@@ -36,9 +43,26 @@ class _StorePlatformAction(argparse.Action):
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--region", "-r", choices=["cn", "gl", "jp"], required=True)
-    parser.add_argument("--threads", "-t", type=int, default=20)
-    parser.add_argument("--version", "-v", default="")
+    parser.add_argument(
+        "--region",
+        "-r",
+        choices=["cn", "gl", "jp"],
+        required=True,
+        help="Server region: cn, gl, or jp.",
+    )
+    parser.add_argument(
+        "--threads",
+        "-t",
+        type=int,
+        default=20,
+        help="Concurrent download or extraction worker count.",
+    )
+    parser.add_argument(
+        "--version",
+        "-v",
+        default="",
+        help="Resource version. Effective for GL only; JP resolves the latest version.",
+    )
     parser.add_argument(
         "--raw-dir",
         "-rd",
@@ -72,9 +96,16 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         choices=["table", "media", "bundle", "all"],
         nargs="*",
         default=["all"],
+        help="Resource types to process.",
     )
-    parser.add_argument("--proxy", "-px", default="")
-    parser.add_argument("--max-retries", "-mr", type=int, default=5)
+    parser.add_argument("--proxy", "-px", default="", help="HTTP proxy URL.")
+    parser.add_argument(
+        "--max-retries",
+        "-mr",
+        type=int,
+        default=5,
+        help="Maximum retry count for failed downloads.",
+    )
     parser.add_argument(
         "--jp-sqlcipher-key-hex",
         default="",
@@ -91,37 +122,65 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(platform_explicit=False)
 
 
+def _add_basic_search_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--search",
+        "-s",
+        nargs="*",
+        default=[],
+        help="Search assets by file or bundle name.",
+    )
+
+
+def _add_search_options(parser: argparse.ArgumentParser, *, advanced_help: str) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--search",
+        "-s",
+        nargs="*",
+        default=[],
+        help="Search assets by file or bundle name.",
+    )
+    group.add_argument(
+        "--advanced-search",
+        "-as",
+        nargs="*",
+        default=[],
+        help=advanced_help,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ba-downloader")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     sync_parser = subparsers.add_parser("sync", help="Download and extract assets")
     _add_common_options(sync_parser)
-    sync_parser.add_argument("--extract-while-download", "-ewd", action="store_true")
-    sync_parser.add_argument("--search", "-s", nargs="*", default=[])
     sync_parser.add_argument(
-        "--advanced-search",
-        "-as",
-        nargs="*",
-        default=[],
-        help="Search assets by character relation fields (GL/JP sync only).",
+        "--extract-while-download",
+        "-ewd",
+        action="store_true",
+        help="Extract supported resources immediately after each download.",
+    )
+    _add_search_options(
+        sync_parser,
+        advanced_help="Search assets by character relation fields (GL/JP sync only).",
     )
 
     download_parser = subparsers.add_parser("download", help="Download assets only")
     _add_common_options(download_parser)
-    download_parser.add_argument("--search", "-s", nargs="*", default=[])
+    _add_basic_search_option(download_parser)
 
     extract_parser = subparsers.add_parser(
         "extract", help="Extract existing raw assets"
     )
     _add_common_options(extract_parser)
-    extract_parser.add_argument("--search", "-s", nargs="*", default=[])
-    extract_parser.add_argument(
-        "--advanced-search",
-        "-as",
-        nargs="*",
-        default=[],
-        help="Search existing raw assets by character relation fields (GL/JP extract only).",
+    _add_search_options(
+        extract_parser,
+        advanced_help=(
+            "Search existing raw assets by character relation fields "
+            "(GL/JP extract only)."
+        ),
     )
 
     relation_parser = subparsers.add_parser(
@@ -162,39 +221,65 @@ def runtime_context_from_namespace(args: argparse.Namespace) -> RuntimeContext:
 def _run_command(
     args: argparse.Namespace,
     context: RuntimeContext,
-    services: CliRuntimeServices,
+    services: BaseRuntimeServices,
 ) -> int:
-    if args.command == "sync":
+    if args.command == "sync" and isinstance(services, SyncRuntimeServices):
         SyncAssetsUseCase(
             services.provider,
             services.downloader,
             services.extract_service,
-            services.schema_workflow,
-            services.runtime_asset_preparer,
+            services.schema_preparation,
             services.relation_builder_factory,
             services.logger,
         ).run(context)
         return 0
 
-    if args.command == "download":
+    if args.command == "download" and isinstance(services, DownloadRuntimeServices):
         DownloadAssetsUseCase(services.provider, services.downloader).run(context)
         return 0
 
-    if args.command == "extract":
+    if args.command == "extract" and isinstance(services, ExtractRuntimeServices):
         services.extract_service.run(context)
         return 0
 
-    if args.command == "relation" and args.relation_command == "build":
+    if (
+        args.command == "relation"
+        and args.relation_command == "build"
+        and isinstance(services, RelationRuntimeServices)
+    ):
         BuildRelationUseCase(
             services.provider,
             services.downloader,
-            services.schema_workflow,
-            services.runtime_asset_preparer,
+            services.schema_preparation,
             services.relation_builder_factory,
         ).build(context)
         return 0
 
     return 1
+
+
+def _build_services(
+    args: argparse.Namespace,
+    context: RuntimeContext,
+) -> BaseRuntimeServices:
+    if args.command == "sync":
+        return build_sync_runtime_services(context)
+    if args.command == "download":
+        return build_download_runtime_services(context)
+    if args.command == "extract":
+        return build_extract_runtime_services(context)
+    if args.command == "relation" and args.relation_command == "build":
+        return build_relation_runtime_services(context)
+    raise LookupError(f"Unsupported command '{args.command}'.")
+
+
+def _log_cli_error(services: BaseRuntimeServices | None, message: str) -> None:
+    if services is None:
+        from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
+
+        ConsoleLogger().error(message)
+        return
+    services.logger.error(message)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -204,20 +289,29 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     configure_logging()
     context = runtime_context_from_namespace(args)
-    services = build_cli_runtime_services(context)
+    services: BaseRuntimeServices | None = None
 
     try:
+        services = _build_services(args, context)
         command_result = _run_command(args, context, services)
         if command_result == 0:
             return 0
     except KeyboardInterrupt:
-        services.logger.warn("Operation cancelled by user.")
+        if services is None:
+            from ba_downloader.infrastructure.logging.console_logger import (
+                ConsoleLogger,
+            )
+
+            ConsoleLogger().warn("Operation cancelled by user.")
+        else:
+            services.logger.warn("Operation cancelled by user.")
         return 130
-    except (LookupError, DownloadError, NetworkError) as exc:
-        services.logger.error(str(exc) or exc.__class__.__name__)
+    except (LookupError, DownloadError, ExtractError, NetworkError) as exc:
+        _log_cli_error(services, str(exc) or exc.__class__.__name__)
         return 1
     finally:
-        services.http_client.close()
+        if services is not None:
+            services.http_client.close()
 
     parser.print_help()
     return 1

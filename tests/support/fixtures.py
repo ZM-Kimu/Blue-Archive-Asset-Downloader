@@ -96,12 +96,17 @@ def build_asset_collection(
 
 
 class StaticProvider:
-    def __init__(self, result: RegionCatalogResult) -> None:
+    def __init__(
+        self,
+        result: RegionCatalogResult,
+        capabilities: RegionCapabilities | None = None,
+    ) -> None:
         self.result = result
+        self.capabilities = capabilities or RegionCapabilities()
         self.calls: list[RuntimeContext] = []
 
     def get_capabilities(self) -> RegionCapabilities:
-        return self.result.capabilities
+        return self.capabilities
 
     def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
         self.calls.append(context)

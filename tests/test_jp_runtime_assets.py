@@ -16,6 +16,8 @@ from ba_downloader.infrastructure.regions.jp.runtime_assets import (
     JPRuntimeAssetPreparer,
     JpRuntimeDecryptError,
 )
+from ba_downloader.infrastructure.runtime import RuntimeAssetLocator
+from support import RecordingLogger
 
 PADDED_65537 = b"\x00" * 125 + b"\x01\x00\x01"
 TARA_MAGIC = 0x41524154
@@ -180,22 +182,6 @@ def test_jp_encrypted_runtime_extractor_rejects_missing_mftl_footer(
         JpEncryptedRuntimeExtractor().extract(source_path, tmp_path / "libil2cpp.so")
 
 
-class RecordingLogger:
-    def __init__(self) -> None:
-        self.info_messages: list[str] = []
-        self.warn_messages: list[str] = []
-        self.error_messages: list[str] = []
-
-    def info(self, message: str) -> None:
-        self.info_messages.append(message)
-
-    def warn(self, message: str) -> None:
-        self.warn_messages.append(message)
-
-    def error(self, message: str) -> None:
-        self.error_messages.append(message)
-
-
 @dataclass
 class RecordingRuntimeExtractor:
     calls: list[tuple[Path, Path]]
@@ -241,3 +227,23 @@ def test_default_runtime_preparer_registry_uses_jp_runtime_preparer() -> None:
     )
 
     assert isinstance(preparer, JPRuntimeAssetPreparer)
+
+
+def test_runtime_asset_locator_uses_candidate_order_and_deterministic_paths(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Temp"
+    deeper = root / "z" / "runtime"
+    shallower = root / "a"
+    deeper.mkdir(parents=True)
+    shallower.mkdir(parents=True)
+    (deeper / "libil2cpp.so").write_bytes(b"deeper")
+    (shallower / "libil2cpp.so").write_bytes(b"shallower")
+    (deeper / "GameAssembly.dll").write_bytes(b"preferred")
+
+    locator = RuntimeAssetLocator(root)
+
+    assert locator.find_first(("GameAssembly.dll", "libil2cpp.so")) == (
+        deeper / "GameAssembly.dll"
+    )
+    assert locator.find_first(("libil2cpp.so",)) == shallower / "libil2cpp.so"

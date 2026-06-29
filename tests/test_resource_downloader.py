@@ -263,9 +263,7 @@ def test_download_resources_tracks_aggregate_bytes(monkeypatch, tmp_path: Path) 
     assert callable(client.download_calls[0]["should_stop"])
 
 
-def test_handle_interrupt_closes_client_and_force_exits_on_second_interrupt(
-    tmp_path: Path,
-) -> None:
+def test_handle_interrupt_closes_client_and_force_exits_on_second_interrupt() -> None:
     client = RecordingHttpClient()
     exit_codes: list[int] = []
     downloader = ResourceDownloader(client, NullLogger(), force_exit=exit_codes.append)

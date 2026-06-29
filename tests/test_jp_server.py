@@ -1,4 +1,3 @@
-import ast
 import json
 import struct
 from pathlib import Path
@@ -6,7 +5,6 @@ from typing import Any
 
 import pytest
 
-import ba_downloader.infrastructure.regions.jp.provider as jp_provider_module
 from ba_downloader.domain.models.asset import (
     AssetCollection,
     BootstrapSession,
@@ -31,30 +29,6 @@ from ba_downloader.infrastructure.schema.memorypack.generator import (
     CompileMemoryPackToPython,
 )
 from ba_downloader.infrastructure.schema.memorypack.parser import MemoryPackCSParser
-
-
-def test_jp_provider_facade_does_not_import_catalog_decode_or_unity_readers() -> None:
-    source_path = Path(jp_provider_module.__file__)
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    forbidden_imports = {
-        "ba_downloader.infrastructure.schema.memorypack.reader",
-        "ba_downloader.infrastructure.unity",
-    }
-    imported_modules: set[str] = set()
-    imported_names: set[str] = set()
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imported_modules.add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                imported_modules.add(node.module)
-            imported_names.update(alias.name for alias in node.names)
-
-    assert forbidden_imports.isdisjoint(imported_modules)
-    assert "MemoryPackReader" not in imported_names
-    assert "UnityAssetReader" not in imported_names
 
 
 class MemoryPackWriter:

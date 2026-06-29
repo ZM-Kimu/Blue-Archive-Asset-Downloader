@@ -2,8 +2,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from ba_downloader.bootstrap.container import (
+    DownloadRuntimeServices,
+    ExtractRuntimeServices,
+)
 from ba_downloader.cli.main import main
 from ba_downloader.domain.exceptions import DownloadError, NetworkError
+from ba_downloader.domain.models.asset import AssetCollection, RegionCapabilities
+from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
 
 
@@ -22,6 +28,23 @@ class FailingExtractAssetsUseCase:
     def run(self, context) -> None:  # type: ignore[no-untyped-def]
         _ = context
         raise self.error
+
+
+class DownloadProvider:
+    def get_capabilities(self) -> RegionCapabilities:
+        return RegionCapabilities()
+
+    def load_catalog(self, context) -> RegionCatalogResult:  # type: ignore[no-untyped-def]
+        return RegionCatalogResult(AssetCollection(), context)
+
+
+class RecordingDownloader:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def verify_and_download(self, resources, context) -> None:  # type: ignore[no-untyped-def]
+        _ = (resources, context)
+        self.calls += 1
 
 
 @pytest.mark.parametrize(
@@ -56,7 +79,7 @@ def test_main_logs_operational_errors_without_traceback(
     )
 
     monkeypatch.setattr(
-        "ba_downloader.cli.main.build_cli_runtime_services",
+        "ba_downloader.cli.main.build_download_runtime_services",
         lambda context: services,
     )
     monkeypatch.setattr(
@@ -81,14 +104,15 @@ def test_main_logs_extract_bootstrap_errors_without_traceback(
     error = LookupError(
         "JP table extract prerequisites were missing and auto-generation was attempted."
     )
-    services = SimpleNamespace(
+    services = ExtractRuntimeServices(
         logger=ConsoleLogger(),
         http_client=http_client,
+        provider=DownloadProvider(),
         extract_service=FailingExtractAssetsUseCase(error),
     )
 
     monkeypatch.setattr(
-        "ba_downloader.cli.main.build_cli_runtime_services",
+        "ba_downloader.cli.main.build_extract_runtime_services",
         lambda context: services,
     )
 
@@ -98,4 +122,26 @@ def test_main_logs_extract_bootstrap_errors_without_traceback(
     assert exit_code == 1
     assert "JP table extract prerequisites were missing" in captured.err
     assert "Traceback" not in captured.err
+    assert http_client.closed is True
+
+
+def test_download_command_uses_download_only_runtime_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = ClosableHttpClient()
+    downloader = RecordingDownloader()
+    services = DownloadRuntimeServices(
+        logger=ConsoleLogger(),
+        http_client=http_client,
+        provider=DownloadProvider(),
+        downloader=downloader,
+    )
+
+    monkeypatch.setattr(
+        "ba_downloader.cli.main.build_download_runtime_services",
+        lambda context: services,
+    )
+
+    assert main(["download", "--region", "jp"]) == 0
+    assert downloader.calls == 1
     assert http_client.closed is True

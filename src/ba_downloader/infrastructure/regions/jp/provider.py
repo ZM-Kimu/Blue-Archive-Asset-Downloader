@@ -71,7 +71,6 @@ class JPRegionProvider:
         return RegionCatalogResult(
             resources=assets,
             context=resolved_context,
-            capabilities=self.get_capabilities(),
         )
 
     def download_apk_file(self, apk_url: str, context: RuntimeContext) -> str:

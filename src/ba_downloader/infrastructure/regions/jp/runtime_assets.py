@@ -10,6 +10,7 @@ from Crypto.Cipher import AES
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.infrastructure.runtime.assets import RuntimeAssetLocator
 
 MFTL_FOOTER_SIZE = 0x2C
 MFTL_MAGIC = b"MFTL"
@@ -271,13 +272,11 @@ class JPRuntimeAssetPreparer:
 
     def prepare(self, context: RuntimeContext) -> None:
         temp_dir = Path(context.temp_dir)
-        if self._find_first_match(temp_dir, self.BINARY_CANDIDATES):
+        locator = RuntimeAssetLocator(temp_dir)
+        if locator.find_first(self.BINARY_CANDIDATES):
             return
 
-        encrypted_binary = self._find_first_match(
-            temp_dir,
-            (self.ENCRYPTED_BINARY_NAME,),
-        )
+        encrypted_binary = locator.find_first((self.ENCRYPTED_BINARY_NAME,))
         if encrypted_binary is None:
             raise FileNotFoundError(
                 "Cannot find JP runtime binary. Expected GameAssembly.dll, "
@@ -293,13 +292,3 @@ class JPRuntimeAssetPreparer:
                 f"Failed to restore JP libil2cpp.so from {encrypted_binary}."
             )
         self.logger.info("Restored JP libil2cpp.so successfully.")
-
-    @staticmethod
-    def _find_first_match(base_dir: Path, file_names: tuple[str, ...]) -> Path | None:
-        if not base_dir.exists():
-            return None
-        for file_name in file_names:
-            matches = list(base_dir.rglob(file_name))
-            if matches:
-                return matches[0]
-        return None

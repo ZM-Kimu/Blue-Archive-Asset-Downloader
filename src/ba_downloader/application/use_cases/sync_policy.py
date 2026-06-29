@@ -13,22 +13,26 @@ class SyncExtractionMode(Enum):
 
 @dataclass(frozen=True, slots=True)
 class SyncWorkflowPolicy:
-    requires_schema_workflow: bool
+    prepares_schema: bool
     extraction_mode: SyncExtractionMode
+
+    @property
+    def requires_schema_preparation(self) -> bool:
+        return self.prepares_schema
 
 
 def resolve_sync_workflow_policy(context: RuntimeContext) -> SyncWorkflowPolicy:
     if context.region == "gl":
         return SyncWorkflowPolicy(
-            requires_schema_workflow=True,
+            prepares_schema=True,
             extraction_mode=SyncExtractionMode.direct,
         )
     if context.region in {"cn", "jp"}:
         return SyncWorkflowPolicy(
-            requires_schema_workflow=True,
+            prepares_schema=True,
             extraction_mode=SyncExtractionMode.post_download,
         )
     return SyncWorkflowPolicy(
-        requires_schema_workflow=False,
+        prepares_schema=False,
         extraction_mode=SyncExtractionMode.post_download,
     )
