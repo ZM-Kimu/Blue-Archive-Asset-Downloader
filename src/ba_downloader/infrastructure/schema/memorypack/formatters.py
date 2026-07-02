@@ -11,6 +11,7 @@ class MemoryPackFormatterMemberDescriptor:
     name: str
     cs_type: str
     source: str = ""
+    wire_type: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,7 @@ class MemoryPackFormatterRegistry:
                 name=str(member.get("name", "")),
                 cs_type=str(member.get("cs_type", "")),
                 source=str(member.get("source", "")),
+                wire_type=str(member.get("wire_type", "")),
             )
             for member in data.get("members", [])
             if isinstance(member, dict)

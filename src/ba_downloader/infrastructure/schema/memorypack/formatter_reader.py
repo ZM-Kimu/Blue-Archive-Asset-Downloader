@@ -87,6 +87,17 @@ class FormatterDrivenReader:
         formatter_registry: MemoryPackFormatterRegistry,
     ) -> dict[str, Any]:
         tag = self._read_formatter_tag(formatter)
+        if tag == 0xFF:
+            if (
+                self._cursor.offset < len(self._cursor.payload)
+                and self._cursor.payload[self._cursor.offset] == 0xFF
+            ):
+                self._cursor.offset += 1
+            return {
+                "__union_root__": formatter.target_type,
+                "__union_tag__": tag,
+                "__value__": None,
+            }
         if not formatter.union_tags or tag not in formatter.union_tags:
             raise ValueError(
                 f"Unknown MemoryPack formatter tag {tag} for {formatter.target_type}."
@@ -141,6 +152,7 @@ class FormatterDrivenReader:
             member.cs_type,
             schema_registry,
             formatter_registry,
+            wire_type=member.wire_type,
         )
 
     def _read_formatter_value(
@@ -148,8 +160,17 @@ class FormatterDrivenReader:
         cs_type: str,
         schema_registry: MemoryPackSchemaRegistry,
         formatter_registry: MemoryPackFormatterRegistry,
+        *,
+        wire_type: str = "",
     ) -> Any:
         normalized = MemoryPackCSParser._normalize_cs_type(cs_type)
+        if wire_type == "int32_enum":
+            return self._read_int32_enum(normalized, schema_registry)
+
+        special_value = self._read_special_value(normalized)
+        if special_value is not _UNHANDLED:
+            return special_value
+
         collection_value = self._read_collection_value(
             normalized,
             schema_registry,
@@ -179,6 +200,86 @@ class FormatterDrivenReader:
             return to_json_value(self._schema_reader.read_object(schema_type))
 
         raise TypeError(f"Unsupported MemoryPack formatter member type: {cs_type}.")
+
+    def _read_special_value(self, normalized: str) -> Any:
+        if nullable_inner := MemoryPackCSParser._extract_generic_inner(
+            normalized,
+            ("System.Nullable", "Nullable"),
+        ):
+            return self._read_nullable_value(nullable_inner)
+
+        if normalized in {"char", "System.Char"}:
+            return chr(self._cursor.read_uint16())
+        if normalized == "UnityEngine.Vector2":
+            return self._read_vector2()
+        if normalized == "UnityEngine.Vector3":
+            return self._read_vector3()
+        if normalized.rsplit(".", maxsplit=1)[-1] == "ShapeSpecification":
+            return self._read_shape_specification()
+        return _UNHANDLED
+
+    def _read_nullable_value(self, inner_type: str) -> Any:
+        normalized_inner = MemoryPackCSParser._normalize_cs_type(inner_type)
+        if normalized_inner in {"long", "System.Int64"}:
+            raw_has_value = self._cursor.read_uint8()
+            self._cursor._read_exact(7)
+            int_value = self._cursor.read_int64()
+            return int_value if raw_has_value else None
+        if normalized_inner == "UnityEngine.Vector2":
+            raw_has_value = self._cursor.read_uint8()
+            self._cursor._read_exact(3)
+            vector2_value = self._read_vector2()
+            return vector2_value if raw_has_value else None
+        if normalized_inner == "UnityEngine.Vector3":
+            raw_has_value = self._cursor.read_uint8()
+            self._cursor._read_exact(3)
+            vector3_value = self._read_vector3()
+            return vector3_value if raw_has_value else None
+        raise TypeError(f"Unsupported MemoryPack nullable member type: {inner_type}.")
+
+    def _read_vector2(self) -> dict[str, float]:
+        return {
+            "x": self._cursor.read_float32(),
+            "y": self._cursor.read_float32(),
+        }
+
+    def _read_vector3(self) -> dict[str, float]:
+        return {
+            "x": self._cursor.read_float32(),
+            "y": self._cursor.read_float32(),
+            "z": self._cursor.read_float32(),
+        }
+
+    def _read_shape_specification(self) -> dict[str, Any]:
+        return {
+            "__type__": "ShapeSpecification",
+            "__unmanaged__": True,
+            "Type": self._cursor.read_int32(),
+            "PositionOffset": self._read_vector2(),
+            "AngleOffset": self._cursor.read_int32(),
+            "CircleRadius": self._cursor.read_float32(),
+            "DonutOuterRadius": self._cursor.read_float32(),
+            "DonutInnerRadius": self._cursor.read_float32(),
+            "DonutAngle": self._cursor.read_int32(),
+            "FanRadius": self._cursor.read_float32(),
+            "FanAngle": self._cursor.read_int32(),
+            "OBBWidth": self._cursor.read_float32(),
+            "OBBHeight": self._cursor.read_float32(),
+        }
+
+    def _read_int32_enum(
+        self,
+        normalized: str,
+        schema_registry: MemoryPackSchemaRegistry,
+    ) -> int | str:
+        value = self._cursor.read_int32()
+        enum_type = schema_registry.resolve_enum(normalized)
+        if enum_type is None:
+            return value
+        try:
+            return enum_type(value).name
+        except ValueError:
+            return value
 
     def _read_collection_value(
         self,

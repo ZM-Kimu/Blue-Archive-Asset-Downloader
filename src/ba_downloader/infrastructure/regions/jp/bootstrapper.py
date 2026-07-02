@@ -14,7 +14,7 @@ from ba_downloader.infrastructure.packages import (
     extract_xapk_file,
 )
 from ba_downloader.infrastructure.packages.jp_server_info import JPServerInfoExtractor
-from ba_downloader.infrastructure.regions.jp.models import resolve_jp_patch_pack_dir
+from ba_downloader.infrastructure.regions.jp.profile import build_jp_platform_profile
 
 
 class JPBootstrapper:
@@ -59,7 +59,7 @@ class JPBootstrapper:
             catalog_root=catalog_root,
             metadata={
                 "apk_path": apk_path,
-                "bundle_patch_dir": resolve_jp_patch_pack_dir(context.platform),
+                "bundle_patch_dir": build_jp_platform_profile(context).bundle_patch_dir,
             },
         )
 

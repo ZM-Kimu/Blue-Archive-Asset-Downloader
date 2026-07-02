@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from threading import Lock
 from typing import Protocol, cast
@@ -26,7 +26,12 @@ class _MediaExtractor(Protocol):
 
 
 class _TableExtractor(Protocol):
-    def extract_table(self, file_path: str) -> None: ...
+    def extract_table(
+        self,
+        file_path: str,
+        *,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None: ...
 
 
 _BundleFactory = Callable[[RuntimeContext, LoggerPort | None], _BundleExtractor]
@@ -68,7 +73,10 @@ class ImmediateResourceExtractor:
             return
 
         if resource.asset_type is AssetType.table:
-            self._get_table_extractor(context).extract_table(resource_path)
+            self._get_table_extractor(context).extract_table(
+                resource_path,
+                metadata=resource.metadata,
+            )
 
     def _get_bundle_extractor(self, context: RuntimeContext) -> _BundleExtractor:
         cache_key = self._cache_key("bundle", context)

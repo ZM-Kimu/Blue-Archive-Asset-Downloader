@@ -2,7 +2,7 @@
 
 # Blue Archive Asset Downloader
 
-This project downloads and extracts Blue Archive assets from multiple regions. It currently supports the CN, GL, and JP servers.
+This project downloads and extracts Blue Archive assets from multiple regions. It currently supports the CN, GL, and JP servers; the JP profile covers Windows/Android/iOS, with Android table semantic extraction currently having the most complete coverage.
 
 <a href="../README.md">中文</a>
 
@@ -173,6 +173,8 @@ ba-downloader download --region jp --platform windows
 - `--platform` applies only to JP and selects JP platform-specific resources.
 - `--version` applies only to GL. CN/JP automatically resolve the currently available version.
 - JP APK files are currently sourced from APKPure. After the Play Store updates, APKPure may take some time to synchronize.
+- The JP profile covers Windows/Android/iOS. JP Android table extraction is the most complete semantic path today. When dump sidecars can automatically produce MemoryPack formatter facts, BAAD exports `StageSaveData.json`, `LogicEffectDAO` JSON, and `GroundNodeLayerFlat.json`; payloads without reliable formatter facts fall back to raw output.
+- JP table extraction requires a current table metadata manifest or access to the JP catalog. Missing metadata no longer falls back to local archive entry names.
 - Resource catalogs may be unavailable during server maintenance windows.
 - A proxy may be required in some regions to download assets from specific servers.
 - Bundle extraction is based on UnityPy. If you need more detailed extraction results, use [AssetRipper](https://github.com/AssetRipper/AssetRipper) or [AssetStudio](https://github.com/Perfare/AssetStudio).

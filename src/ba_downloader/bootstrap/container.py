@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ba_downloader.application.profiles import RegionProfile, build_region_profile
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
 from ba_downloader.application.use_cases.schema_preparation import (
     SchemaPreparationService,
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.catalog_metadata import TableMetadataManifestPort
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.extract import SchemaPreparationPort
 from ba_downloader.domain.ports.http import HttpClientPort
@@ -29,11 +31,13 @@ class BaseRuntimeServices:
 @dataclass(frozen=True, slots=True)
 class DownloadRuntimeServices(BaseRuntimeServices):
     downloader: ResourceDownloaderPort
+    workflow_profile: RegionProfile
 
 
 @dataclass(frozen=True, slots=True)
 class ExtractRuntimeServices(BaseRuntimeServices):
     extract_service: ExtractAssetsUseCase
+    workflow_profile: RegionProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +46,7 @@ class SyncRuntimeServices(BaseRuntimeServices):
     extract_service: ExtractAssetsUseCase
     schema_preparation: SchemaPreparationPort
     relation_builder_factory: RelationBuilderFactory
+    workflow_profile: RegionProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,15 +131,32 @@ def _build_relation_builder_factory(logger: LoggerPort) -> RelationBuilderFactor
     return relation_builder_factory
 
 
+def _build_table_metadata_store() -> TableMetadataManifestPort:
+    from ba_downloader.infrastructure.storage.table_metadata_manifest import (
+        JpTableMetadataManifestStore,
+    )
+
+    return JpTableMetadataManifestStore()
+
+
 def _build_extract_service(
     context: RuntimeContext,
     base: BaseRuntimeServices,
     schema_preparation: SchemaPreparationPort,
+    workflow_profile: RegionProfile,
 ) -> ExtractAssetsUseCase:
     from ba_downloader.infrastructure.extraction import AssetExtractionWorkflow
-    from ba_downloader.infrastructure.extraction.prerequisites import (
-        JpTableExtractionPrerequisite,
-    )
+
+    prerequisite_service = None
+    if workflow_profile.requires_jp_table_prerequisite:
+        from ba_downloader.infrastructure.extraction.prerequisites import (
+            JpTableExtractionPrerequisite,
+        )
+
+        prerequisite_service = JpTableExtractionPrerequisite(
+            schema_preparation,
+            base.logger,
+        )
 
     _ = context
     relation_builder_factory = _build_relation_builder_factory(base.logger)
@@ -143,10 +165,8 @@ def _build_extract_service(
         base.logger,
         provider=base.provider,
         relation_builder_factory=relation_builder_factory,
-        prerequisite_service=JpTableExtractionPrerequisite(
-            schema_preparation,
-            base.logger,
-        ),
+        prerequisite_service=prerequisite_service,
+        workflow_profile=workflow_profile,
     )
 
 
@@ -154,11 +174,18 @@ def build_download_runtime_services(
     context: RuntimeContext,
 ) -> DownloadRuntimeServices:
     base = _build_base_services(context)
+    workflow_profile = build_region_profile(
+        context,
+        base.provider,
+        base.logger,
+        _build_table_metadata_store(),
+    )
     return DownloadRuntimeServices(
         logger=base.logger,
         http_client=base.http_client,
         provider=base.provider,
         downloader=_build_downloader(base.http_client, base.logger),
+        workflow_profile=workflow_profile,
     )
 
 
@@ -171,11 +198,23 @@ def build_extract_runtime_services(
         base.http_client,
         base.logger,
     )
+    workflow_profile = build_region_profile(
+        context,
+        base.provider,
+        base.logger,
+        _build_table_metadata_store(),
+    )
     return ExtractRuntimeServices(
         logger=base.logger,
         http_client=base.http_client,
         provider=base.provider,
-        extract_service=_build_extract_service(context, base, schema_preparation),
+        extract_service=_build_extract_service(
+            context,
+            base,
+            schema_preparation,
+            workflow_profile,
+        ),
+        workflow_profile=workflow_profile,
     )
 
 
@@ -187,6 +226,12 @@ def build_sync_runtime_services(context: RuntimeContext) -> SyncRuntimeServices:
         base.logger,
     )
     relation_builder_factory = _build_relation_builder_factory(base.logger)
+    workflow_profile = build_region_profile(
+        context,
+        base.provider,
+        base.logger,
+        _build_table_metadata_store(),
+    )
     return SyncRuntimeServices(
         logger=base.logger,
         http_client=base.http_client,
@@ -196,9 +241,15 @@ def build_sync_runtime_services(context: RuntimeContext) -> SyncRuntimeServices:
             base.logger,
             enable_immediate_extraction=context.extract_while_download,
         ),
-        extract_service=_build_extract_service(context, base, schema_preparation),
+        extract_service=_build_extract_service(
+            context,
+            base,
+            schema_preparation,
+            workflow_profile,
+        ),
         schema_preparation=schema_preparation,
         relation_builder_factory=relation_builder_factory,
+        workflow_profile=workflow_profile,
     )
 
 

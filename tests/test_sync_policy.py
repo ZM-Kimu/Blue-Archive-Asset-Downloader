@@ -1,8 +1,38 @@
-from ba_downloader.application.use_cases.sync_policy import (
+from ba_downloader.application.profiles import (
     SyncExtractionMode,
-    resolve_sync_workflow_policy,
+    build_region_profile,
 )
+from ba_downloader.domain.models.asset import AssetCollection, RegionCapabilities
+from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
+
+
+class DummyProvider:
+    def get_capabilities(self) -> RegionCapabilities:
+        return RegionCapabilities()
+
+    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
+        return RegionCatalogResult(AssetCollection(), context)
+
+
+class DummyLogger:
+    def info(self, message: str) -> None:
+        _ = message
+
+    def warn(self, message: str) -> None:
+        _ = message
+
+    def error(self, message: str) -> None:
+        _ = message
+
+
+class DummyTableMetadataStore:
+    def load(self, context: RuntimeContext) -> AssetCollection | None:
+        _ = context
+        return None
+
+    def write(self, context: RuntimeContext, resources: AssetCollection) -> None:
+        _ = (context, resources)
 
 
 def _context(region: str) -> RuntimeContext:
@@ -23,18 +53,32 @@ def _context(region: str) -> RuntimeContext:
     )
 
 
-def test_sync_policy_uses_direct_extract_for_gl() -> None:
-    policy = resolve_sync_workflow_policy(_context("gl"))
+def _profile(region: str):
+    return build_region_profile(
+        _context(region),
+        DummyProvider(),
+        DummyLogger(),
+        DummyTableMetadataStore(),
+    )
 
-    assert policy.prepares_schema is True
-    assert policy.requires_schema_preparation is True
-    assert policy.extraction_mode is SyncExtractionMode.direct
+
+def test_region_profile_uses_direct_extract_for_gl() -> None:
+    profile = _profile("gl")
+
+    assert profile.prepares_schema_for_sync is True
+    assert profile.sync_extraction_mode is SyncExtractionMode.direct
+    assert profile.requires_jp_table_prerequisite is False
 
 
-def test_sync_policy_uses_post_download_extract_for_cn_and_jp() -> None:
+def test_region_profile_uses_post_download_extract_for_cn_and_jp() -> None:
     for region in ("cn", "jp"):
-        policy = resolve_sync_workflow_policy(_context(region))
+        profile = _profile(region)
 
-        assert policy.prepares_schema is True
-        assert policy.requires_schema_preparation is True
-        assert policy.extraction_mode is SyncExtractionMode.post_download
+        assert profile.prepares_schema_for_sync is True
+        assert profile.sync_extraction_mode is SyncExtractionMode.post_download
+
+
+def test_region_profile_marks_only_jp_for_jp_table_prerequisite() -> None:
+    assert _profile("jp").requires_jp_table_prerequisite is True
+    assert _profile("cn").requires_jp_table_prerequisite is False
+    assert _profile("gl").requires_jp_table_prerequisite is False

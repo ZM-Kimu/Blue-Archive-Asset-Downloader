@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from io import StringIO
 from pathlib import Path
@@ -199,6 +200,67 @@ def test_schema_workflow_does_not_fallback_when_jp_backend_fails(
     assert ForbiddenBackend.called is False
 
 
+def test_schema_workflow_builds_supplemental_memorypack_formatters(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path)
+    dumps_dir = Path(context.extract_dir) / "Dumps"
+    dumps_dir.mkdir(parents=True, exist_ok=True)
+    (dumps_dir / "dump.cs").write_text(
+        """// Namespace: FlatData
+public struct CharacterExcel : FlatBuffers.IFlatbufferObject // TypeDefIndex: 1 Token: 0x02000001
+{
+}
+
+// Namespace: MX.GameData.DAO.Battle
+public abstract class LogicEffectDAO : MemoryPack.IMemoryPackable`1<MX.GameData.DAO.Battle.LogicEffectDAO>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 10 Token: 0x0200000A
+{
+    // Properties
+    public System.Int32 Level { get; set; } // Token: 0x17000001
+    public FlatData.LogicEffectCategory Category { get; set; } // Token: 0x17000002
+}
+
+// Namespace: MX.GameData.DAO.Battle
+public class DamageEffectDAO : MX.GameData.DAO.Battle.LogicEffectDAO, MemoryPack.IMemoryPackable`1<MX.GameData.DAO.Battle.DamageEffectDAO>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 11 Token: 0x0200000B
+{
+    // Properties
+    public System.String TemplateId { get; set; } // Token: 0x17000003
+}
+""",
+        encoding="utf8",
+    )
+    (dumps_dir / "memorypack_formatters.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "formatters": [
+                    {
+                        "target_type": "MX.GameData.DAO.Battle.LogicEffectDAO",
+                        "kind": "union",
+                        "tag_type": "byte",
+                        "union_tags": {"17": "MX.GameData.DAO.Battle.DamageEffectDAO"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf8",
+    )
+    workflow = SchemaWorkflow(DummyHttpClient(), NullLogger())
+
+    workflow.compile(context)
+
+    sidecar = json.loads((dumps_dir / "memorypack_formatters.json").read_text())
+    formatter_map = {
+        formatter["target_type"]: formatter for formatter in sidecar["formatters"]
+    }
+    damage = formatter_map["MX.GameData.DAO.Battle.DamageEffectDAO"]
+    assert damage["kind"] == "object"
+    assert damage["members"][0]["name"] == "Level"
+    assert damage["members"][1]["name"] == "Category"
+    assert damage["members"][1]["wire_type"] == "int32_enum"
+    assert damage["members"][2]["name"] == "TemplateId"
+
+
 def test_cpp2il_framework_selection_requires_net10(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -380,13 +442,12 @@ def test_cpp2il_exporter_project_targets_selected_framework(
     assert EXPORTER_PROGRAM_CS_PATH.exists()
     assert "<TargetFramework>net10.0</TargetFramework>" in project_text
     assert "<TargetFrameworks>" not in project_text
+    assert "Cpp2IL.Core.csproj" not in project_text
     assert "LibCpp2IL.csproj" in project_text
     assert 'SetTargetFramework="TargetFramework=net10.0"' in project_text
-    assert (
-        (project_path.parent / "Program.cs")
-        .read_text(encoding="utf8")
-        .startswith("using System.Reflection;")
-    )
+    program_text = (project_path.parent / "Program.cs").read_text(encoding="utf8")
+    assert program_text.startswith("using System.Reflection;")
+    assert "memorypack_union_attrs.json" in program_text
 
 
 def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(

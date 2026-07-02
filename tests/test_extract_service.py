@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from ba_downloader.application.profiles import RegionProfile, build_region_profile
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
 from ba_downloader.application.use_cases.schema_preparation import (
     SchemaPreparationService,
@@ -58,6 +60,33 @@ class RecordingExtractionWorkflow:
         _ = context
         self.calls.append("extract_media")
         self.resource_calls.append(self._resource_paths(resources))
+
+
+class FailingProvider:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls: list[RuntimeContext] = []
+
+    def get_capabilities(self) -> RegionCapabilities:
+        return RegionCapabilities()
+
+    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
+        self.calls.append(context)
+        raise self.error
+
+
+class RecordingTableMetadataStore:
+    def __init__(self, loaded: AssetCollection | None = None) -> None:
+        self.loaded = loaded
+        self.load_calls: list[RuntimeContext] = []
+        self.write_calls: list[tuple[RuntimeContext, AssetCollection]] = []
+
+    def load(self, context: RuntimeContext) -> AssetCollection | None:
+        self.load_calls.append(context)
+        return self.loaded
+
+    def write(self, context: RuntimeContext, resources: AssetCollection) -> None:
+        self.write_calls.append((context, resources))
 
 
 class RecordingRuntimeAssetPreparer:
@@ -169,10 +198,65 @@ def _build_filter_catalog(context: RuntimeContext) -> RegionCatalogResult:
     )
 
 
+def _build_table_metadata_resources() -> AssetCollection:
+    resources = AssetCollection()
+    resources.add(
+        "https://example.invalid/Table/TablePatchPack_GroundStage_1.zip",
+        "Table/TablePatchPack_GroundStage_1.zip",
+        10,
+        "deadbeef",
+        "crc",
+        AssetType.table,
+        {"includes": ["EN0010_VeryHard.zip"]},
+    )
+    return resources
+
+
+def _build_table_catalog(context: RuntimeContext) -> RegionCatalogResult:
+    resources = _build_table_metadata_resources()
+    resources.add(
+        "https://example.invalid/Bundle/ignored.bundle",
+        "Bundle/Ignored.bundle",
+        10,
+        "deadbeef",
+        "md5",
+        AssetType.bundle,
+    )
+    return RegionCatalogResult(resources=resources, context=context)
+
+
+def _build_profile(
+    context: RuntimeContext,
+    provider: Any,
+    logger: RecordingLogger,
+    metadata_store: RecordingTableMetadataStore | None = None,
+) -> RegionProfile:
+    return build_region_profile(
+        context,
+        provider,
+        logger,
+        metadata_store or RecordingTableMetadataStore(),
+    )
+
+
+def _build_noop_profile(context: RuntimeContext) -> RegionProfile:
+    return _build_profile(
+        context,
+        StaticProvider(RegionCatalogResult(AssetCollection(), context)),
+        RecordingLogger(),
+    )
+
+
 def _create_existing_bundle(context: RuntimeContext, name: str) -> None:
     bundle_dir = Path(context.raw_dir) / "Bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
     (bundle_dir / name).write_bytes(b"bundle")
+
+
+def _create_existing_table(context: RuntimeContext, name: str) -> None:
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    (table_dir / name).write_bytes(b"table")
 
 
 def _build_jp_prerequisite_service(
@@ -201,9 +285,10 @@ def test_extract_service_skips_bootstrap_when_flatbufferdata_exists(
     service = ExtractAssetsUseCase(
         extraction_workflow,
         prerequisite_service=_build_jp_prerequisite_service(calls),
+        workflow_profile=_build_noop_profile(context),
     )
 
-    service.run(context)
+    service.run(context, _build_table_metadata_resources())
 
     assert calls == []
     assert extraction_workflow.calls == ["extract_tables"]
@@ -220,9 +305,10 @@ def test_extract_service_compiles_when_dump_cs_exists_but_flatbufferdata_is_miss
     service = ExtractAssetsUseCase(
         extraction_workflow,
         prerequisite_service=_build_jp_prerequisite_service(calls),
+        workflow_profile=_build_noop_profile(context),
     )
 
-    service.run(context)
+    service.run(context, _build_table_metadata_resources())
 
     assert calls == ["compile"]
     assert extraction_workflow.calls == ["extract_tables"]
@@ -239,9 +325,10 @@ def test_extract_service_bootstraps_when_dump_cs_and_flatbufferdata_are_missing(
     service = ExtractAssetsUseCase(
         extraction_workflow,
         prerequisite_service=_build_jp_prerequisite_service(calls),
+        workflow_profile=_build_noop_profile(context),
     )
 
-    service.run(context)
+    service.run(context, _build_table_metadata_resources())
 
     assert calls == ["prepare", "dump", "compile"]
     assert extraction_workflow.calls == ["extract_tables"]
@@ -282,12 +369,13 @@ def test_extract_service_translates_jp_bootstrap_failures_to_lookup_error(
             fail_on=fail_on,
             error=error,
         ),
+        workflow_profile=_build_noop_profile(context),
     )
 
     with pytest.raises(
         LookupError, match="JP table extract prerequisites were missing"
     ) as exc_info:
-        service.run(context)
+        service.run(context, _build_table_metadata_resources())
 
     message = str(exc_info.value)
     assert context.temp_dir in message
@@ -304,12 +392,88 @@ def test_extract_service_does_not_bootstrap_when_jp_table_folder_is_missing(
     service = ExtractAssetsUseCase(
         extraction_workflow,
         prerequisite_service=_build_jp_prerequisite_service(calls),
+        workflow_profile=_build_noop_profile(context),
     )
 
     service.run(context)
 
     assert calls == []
+    assert extraction_workflow.calls == []
+
+
+def test_extract_service_plain_jp_table_uses_manifest_metadata_resources(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(version="1.70.436321")
+    _create_existing_table(context, "TablePatchPack_GroundStage_1.zip")
+    extraction_workflow = RecordingExtractionWorkflow()
+    metadata_store = RecordingTableMetadataStore(_build_table_metadata_resources())
+    provider = StaticProvider(_build_table_catalog(context))
+    logger = RecordingLogger()
+    service = ExtractAssetsUseCase(
+        extraction_workflow,
+        workflow_profile=_build_profile(context, provider, logger, metadata_store),
+    )
+
+    service.run(context)
+
+    assert metadata_store.load_calls == [context]
     assert extraction_workflow.calls == ["extract_tables"]
+    assert extraction_workflow.resource_calls == [
+        ["Table/TablePatchPack_GroundStage_1.zip"]
+    ]
+
+
+def test_extract_service_plain_jp_table_rebuilds_missing_manifest_from_catalog(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(version="1.70.436321")
+    _create_existing_table(context, "TablePatchPack_GroundStage_1.zip")
+    extraction_workflow = RecordingExtractionWorkflow()
+    metadata_store = RecordingTableMetadataStore()
+    provider = StaticProvider(_build_table_catalog(context))
+    logger = RecordingLogger()
+    service = ExtractAssetsUseCase(
+        extraction_workflow,
+        provider=provider,
+        logger=logger,
+        workflow_profile=_build_profile(context, provider, logger, metadata_store),
+    )
+
+    service.run(context)
+
+    assert provider.calls == [context]
+    assert metadata_store.write_calls == [(context, provider.result.resources)]
+    assert extraction_workflow.calls == ["extract_tables"]
+    assert extraction_workflow.resource_calls == [
+        ["Table/TablePatchPack_GroundStage_1.zip"]
+    ]
+
+
+def test_extract_service_plain_jp_table_requires_manifest_or_catalog_metadata(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(version="1.70.436321")
+    _create_existing_table(context, "Excel.zip")
+    extraction_workflow = RecordingExtractionWorkflow()
+    logger = RecordingLogger()
+    provider = FailingProvider(LookupError("offline"))
+    metadata_store = RecordingTableMetadataStore()
+    service = ExtractAssetsUseCase(
+        extraction_workflow,
+        provider=provider,
+        logger=logger,
+        workflow_profile=_build_profile(context, provider, logger, metadata_store),
+    )
+
+    with pytest.raises(
+        LookupError,
+        match="JP table metadata manifest is missing or stale",
+    ):
+        service.run(context)
+
+    assert provider.calls == [context]
+    assert extraction_workflow.calls == []
 
 
 def test_extract_service_search_extracts_only_existing_filtered_resources(
@@ -322,11 +486,14 @@ def test_extract_service_search_extracts_only_existing_filtered_resources(
     _create_existing_bundle(context, "Shiroko.bundle")
     _create_existing_bundle(context, "Other.bundle")
     extraction_workflow = RecordingExtractionWorkflow()
+    provider = StaticProvider(_build_filter_catalog(context))
+    logger = RecordingLogger()
     service = ExtractAssetsUseCase(
         extraction_workflow,
-        provider=StaticProvider(_build_filter_catalog(context)),
+        provider=provider,
         relation_builder_factory=lambda _context: DummyRelationBuilder(),
-        logger=RecordingLogger(),
+        logger=logger,
+        workflow_profile=_build_profile(context, provider, logger),
     )
 
     service.run(context)
@@ -345,11 +512,14 @@ def test_extract_service_advanced_search_filters_existing_resources(
     _create_existing_bundle(context, "Shiroko.bundle")
     relation_builder = DummyRelationBuilder(search_results=["Shiroko"])
     extraction_workflow = RecordingExtractionWorkflow()
+    provider = StaticProvider(_build_filter_catalog(context))
+    logger = RecordingLogger()
     service = ExtractAssetsUseCase(
         extraction_workflow,
-        provider=StaticProvider(_build_filter_catalog(context)),
+        provider=provider,
         relation_builder_factory=lambda _context: relation_builder,
-        logger=RecordingLogger(),
+        logger=logger,
+        workflow_profile=_build_profile(context, provider, logger),
     )
 
     service.run(context)
@@ -369,11 +539,14 @@ def test_extract_service_advanced_search_requires_current_relation_file(
     )
     relation_builder = DummyRelationBuilder(relation_file_valid=False)
     extraction_workflow = RecordingExtractionWorkflow()
+    provider = StaticProvider(_build_filter_catalog(context))
+    logger = RecordingLogger()
     service = ExtractAssetsUseCase(
         extraction_workflow,
-        provider=StaticProvider(_build_filter_catalog(context)),
+        provider=provider,
         relation_builder_factory=lambda _context: relation_builder,
-        logger=RecordingLogger(),
+        logger=logger,
+        workflow_profile=_build_profile(context, provider, logger),
     )
 
     with pytest.raises(LookupError) as exc_info:
@@ -405,11 +578,13 @@ def test_extract_service_advanced_search_respects_region_capabilities(
         capabilities=RegionCapabilities(supports_advanced_search=False),
     )
     extraction_workflow = RecordingExtractionWorkflow()
+    logger = RecordingLogger()
     service = ExtractAssetsUseCase(
         extraction_workflow,
         provider=provider,
         relation_builder_factory=lambda _context: DummyRelationBuilder(),
-        logger=RecordingLogger(),
+        logger=logger,
+        workflow_profile=_build_profile(context, provider, logger),
     )
 
     with pytest.raises(

@@ -19,7 +19,9 @@ from ba_downloader.infrastructure.extraction.bundle.exporter import (
     BundleLogEvent,
 )
 from ba_downloader.infrastructure.extraction.media.exporter import MediaExtractor
-from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
+from ba_downloader.infrastructure.extraction.process_table_runner import (
+    ProcessTableExtractionRunner,
+)
 from ba_downloader.infrastructure.extraction.threaded_runner import (
     ExtractionFailureError,
     ThreadedExtractionRunner,
@@ -45,6 +47,12 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         self.logger = logger
         self._force_exit = force_exit or os._exit
         self._threaded_runner = ThreadedExtractionRunner(
+            logger,
+            poll_interval_seconds=self.POLL_INTERVAL_SECONDS,
+            interrupt_grace_seconds=self.INTERRUPT_GRACE_SECONDS,
+            force_exit=self._force_exit,
+        )
+        self._process_table_runner = ProcessTableExtractionRunner(
             logger,
             poll_interval_seconds=self.POLL_INTERVAL_SECONDS,
             interrupt_grace_seconds=self.INTERRUPT_GRACE_SECONDS,
@@ -158,21 +166,17 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         if not table_files:
             return
 
+        table_file_metadata = self._resolve_table_file_metadata(context, resources)
         Path(context.extract_dir, "Table").mkdir(parents=True, exist_ok=True)
-        self._threaded_runner.run(
-            table_files,
-            context,
-            progress_title="Extracting table files...",
-            operation_name="table extraction",
-            task=lambda table_file, should_stop, progress_callback: (
-                self._extract_table_file(
-                    context,
-                    table_file,
-                    should_stop=should_stop,
-                    progress_callback=progress_callback,
-                )
-            ),
-        )
+        if table_file_metadata:
+            self._process_table_runner.run(
+                table_files,
+                context,
+                metadata_by_file=table_file_metadata,
+            )
+            return
+
+        self._process_table_runner.run(table_files, context)
 
     def _resolve_bundle_files(
         self,
@@ -253,6 +257,25 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             files.append(file_path)
             seen_paths.add(file_path)
         return files
+
+    @staticmethod
+    def _resolve_table_file_metadata(
+        context: RuntimeContext,
+        resources: AssetCollection | None,
+    ) -> dict[str, dict[str, object]]:
+        if resources is None:
+            return {}
+        raw_dir = Path(context.raw_dir)
+        result: dict[str, dict[str, object]] = {}
+        for resource in resources:
+            if resource.asset_type is not AssetType.table:
+                continue
+            file_path = raw_dir / resource.path
+            if not file_path.is_file():
+                continue
+            if resource.metadata:
+                result.setdefault(file_path.name, dict(resource.metadata))
+        return result
 
     @contextmanager
     def _install_interrupt_handler(
@@ -413,18 +436,3 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 join_thread()
             except (AssertionError, OSError, RuntimeError, ValueError):
                 return
-
-    def _extract_table_file(
-        self,
-        context: RuntimeContext,
-        table_file: str,
-        *,
-        should_stop: Callable[[], bool] | None = None,
-        progress_callback: Callable[[str], None] | None = None,
-    ) -> None:
-        extractor = TableExtractor.from_context(context, self.logger)
-        extractor.extract_table(
-            table_file,
-            should_stop=should_stop,
-            progress_callback=progress_callback,
-        )

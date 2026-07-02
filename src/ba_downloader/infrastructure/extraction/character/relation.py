@@ -9,6 +9,7 @@ from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.relation import RelationBuilderPort
 from ba_downloader.infrastructure.extraction.character.relation_composer import (
     CharacterRelationComposer,
+    build_character_relation_composition_profile,
 )
 from ba_downloader.infrastructure.extraction.character.relation_sources import (
     CharacterRelationSourceLoader,
@@ -57,7 +58,10 @@ class CharacterNameRelation(RelationBuilderPort):
         self.logger.info("Extracting necessary data...")
         sources = self._source_loader.load(self.context)
         self.logger.info("Relating character data...")
-        relations = self._composer.compose(sources, self.context.region)
+        relations = self._composer.compose(
+            sources,
+            build_character_relation_composition_profile(self.context),
+        )
         relation_path = self._relation_store.save(
             self.context.version,
             self.context.region,

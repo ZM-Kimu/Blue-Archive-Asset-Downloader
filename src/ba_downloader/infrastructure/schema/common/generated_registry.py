@@ -6,8 +6,22 @@ import sys
 from dataclasses import dataclass
 from importlib import import_module, invalidate_caches, util
 from pathlib import Path
+from threading import RLock
 from types import ModuleType
 from typing import Any
+
+
+@dataclass(frozen=True, slots=True)
+class _GeneratedSchemaCacheKey:
+    package_dir: str
+    content_digest: str
+    type_registry_name: str
+    enum_registry_name: str
+    package_prefix: str
+    registry_values_are_module_names: bool
+
+
+_GENERATED_SCHEMA_LOAD_LOCK = RLock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,34 +41,59 @@ class GeneratedSchemaRegistry:
         registry_values_are_module_names: bool = False,
     ) -> GeneratedSchemaRegistry:
         package_path = Path(package_dir)
-        registry = load_generated_registry_module(package_path, package_prefix)
-        package_name = registry.__package__
-        if not package_name:
-            raise ImportError(
-                f"Unable to resolve generated schema package name for {package_path}."
+        with _GENERATED_SCHEMA_LOAD_LOCK:
+            content_digest = _generated_schema_content_digest(package_path)
+            cache_key = _GeneratedSchemaCacheKey(
+                package_dir=str(package_path.resolve()),
+                content_digest=content_digest,
+                type_registry_name=type_registry_name,
+                enum_registry_name=enum_registry_name,
+                package_prefix=package_prefix,
+                registry_values_are_module_names=registry_values_are_module_names,
             )
+            cached_registry = _GENERATED_SCHEMA_REGISTRY_CACHE.get(cache_key)
+            if cached_registry is not None:
+                return cached_registry
 
-        raw_types = getattr(registry, type_registry_name, {})
-        raw_enums = getattr(registry, enum_registry_name, {})
-        if not isinstance(raw_types, dict) or not isinstance(raw_enums, dict):
-            raise TypeError(
-                f"Generated schema registry has an invalid shape: {package_path}."
+            registry = load_generated_registry_module(
+                package_path,
+                package_prefix,
+                content_digest=content_digest,
             )
+            package_name = registry.__package__
+            if not package_name:
+                raise ImportError(
+                    "Unable to resolve generated schema package name for "
+                    f"{package_path}."
+                )
 
-        if registry_values_are_module_names:
-            types = {
-                key: load_generated_symbol(package_name, module_name)
-                for key, module_name in raw_types.items()
-            }
-            enums = {
-                key: load_generated_symbol(package_name, module_name)
-                for key, module_name in raw_enums.items()
-            }
-        else:
-            types = dict(raw_types)
-            enums = dict(raw_enums)
+            raw_types = getattr(registry, type_registry_name, {})
+            raw_enums = getattr(registry, enum_registry_name, {})
+            if not isinstance(raw_types, dict) or not isinstance(raw_enums, dict):
+                raise TypeError(
+                    f"Generated schema registry has an invalid shape: {package_path}."
+                )
 
-        return cls(types=types, enums=enums, package_name=package_name)
+            if registry_values_are_module_names:
+                types = {
+                    key: load_generated_symbol(package_name, module_name)
+                    for key, module_name in raw_types.items()
+                }
+                enums = {
+                    key: load_generated_symbol(package_name, module_name)
+                    for key, module_name in raw_enums.items()
+                }
+            else:
+                types = dict(raw_types)
+                enums = dict(raw_enums)
+
+            generated_registry = cls(
+                types=types,
+                enums=enums,
+                package_name=package_name,
+            )
+            _GENERATED_SCHEMA_REGISTRY_CACHE[cache_key] = generated_registry
+            return generated_registry
 
     def resolve_type(self, name: str) -> type[Any] | None:
         if schema_type := self.types.get(name):
@@ -78,8 +117,31 @@ class GeneratedSchemaRegistry:
         }
 
 
+_GENERATED_SCHEMA_REGISTRY_CACHE: dict[
+    _GeneratedSchemaCacheKey,
+    GeneratedSchemaRegistry,
+] = {}
+
+
 def load_generated_registry_module(
-    package_dir: Path, package_prefix: str
+    package_dir: Path,
+    package_prefix: str,
+    *,
+    content_digest: str | None = None,
+) -> ModuleType:
+    with _GENERATED_SCHEMA_LOAD_LOCK:
+        return _load_generated_registry_module(
+            package_dir,
+            package_prefix,
+            content_digest=content_digest,
+        )
+
+
+def _load_generated_registry_module(
+    package_dir: Path,
+    package_prefix: str,
+    *,
+    content_digest: str | None,
 ) -> ModuleType:
     init_file = package_dir / "__init__.py"
     registry_file = package_dir / "_registry.py"
@@ -101,7 +163,8 @@ def load_generated_registry_module(
     module_prefix = f"{package_prefix}_{path_digest}"
     _clear_generated_modules(module_prefix)
     _clear_generated_bytecode(package_dir)
-    content_digest = _generated_schema_content_digest(package_dir)
+    if content_digest is None:
+        content_digest = _generated_schema_content_digest(package_dir)
     package_name = f"{module_prefix}_{content_digest}"
     spec = util.spec_from_file_location(
         package_name,
@@ -144,4 +207,7 @@ def _generated_schema_content_digest(package_dir: Path) -> str:
 def _clear_generated_bytecode(package_dir: Path) -> None:
     pycache_dir = package_dir / "__pycache__"
     if pycache_dir.exists():
-        shutil.rmtree(pycache_dir)
+        try:
+            shutil.rmtree(pycache_dir)
+        except OSError:
+            return

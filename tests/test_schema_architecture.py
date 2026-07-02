@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 
 def test_schema_package_exposes_flatbuffer_and_memorypack_apis() -> None:
@@ -127,3 +131,108 @@ def test_generated_schema_registry_reloads_same_directory_after_regeneration(
     )
 
     assert new_registry.types["Sample"].version == "new"
+
+
+def test_generated_schema_registry_serializes_parallel_schema_loads(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    from ba_downloader.infrastructure.schema.common import generated_registry
+    from ba_downloader.infrastructure.schema.common.generated_registry import (
+        GeneratedSchemaRegistry,
+    )
+
+    registry_dir = tmp_path / "FlatBufferData"
+    registry_dir.mkdir()
+    (registry_dir / "__init__.py").write_text("", encoding="utf8")
+    (registry_dir / "Sample.py").write_text(
+        "class Sample:\n    pass\n",
+        encoding="utf8",
+    )
+    (registry_dir / "_registry.py").write_text(
+        "from .Sample import Sample\n"
+        'FLATBUFFER_TYPES = {"Sample": Sample}\n'
+        "FLATBUFFER_ENUMS = {}\n",
+        encoding="utf8",
+    )
+
+    active_cleanups = 0
+    max_active_cleanups = 0
+    cleanup_calls = 0
+    cleanup_lock = threading.Lock()
+
+    def slow_clear_generated_bytecode(package_dir: Path) -> None:
+        nonlocal active_cleanups, max_active_cleanups, cleanup_calls
+        _ = package_dir
+        with cleanup_lock:
+            active_cleanups += 1
+            cleanup_calls += 1
+            max_active_cleanups = max(max_active_cleanups, active_cleanups)
+        time.sleep(0.05)
+        with cleanup_lock:
+            active_cleanups -= 1
+
+    monkeypatch.setattr(
+        generated_registry,
+        "_clear_generated_bytecode",
+        slow_clear_generated_bytecode,
+    )
+
+    def load_registry() -> str:
+        registry = GeneratedSchemaRegistry.from_directory(
+            registry_dir,
+            type_registry_name="FLATBUFFER_TYPES",
+            enum_registry_name="FLATBUFFER_ENUMS",
+            package_prefix="test_parallel_schema",
+        )
+        return registry.types["Sample"].__name__
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: load_registry(), range(8)))
+
+    assert results == ["Sample"] * 8
+    assert max_active_cleanups == 1
+    assert cleanup_calls == 1
+
+
+def test_generated_schema_registry_ignores_blocked_bytecode_cleanup(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    import shutil
+
+    from ba_downloader.infrastructure.schema.common.generated_registry import (
+        GeneratedSchemaRegistry,
+    )
+
+    registry_dir = tmp_path / "FlatBufferData"
+    registry_dir.mkdir()
+    (registry_dir / "__init__.py").write_text("", encoding="utf8")
+    (registry_dir / "Sample.py").write_text(
+        "class Sample:\n    pass\n",
+        encoding="utf8",
+    )
+    (registry_dir / "_registry.py").write_text(
+        "from .Sample import Sample\n"
+        'FLATBUFFER_TYPES = {"Sample": Sample}\n'
+        "FLATBUFFER_ENUMS = {}\n",
+        encoding="utf8",
+    )
+    pycache_dir = registry_dir / "__pycache__"
+    pycache_dir.mkdir()
+    (pycache_dir / "Sample.cpython-313.pyc").write_bytes(b"locked")
+
+    def blocked_rmtree(path: Path) -> None:
+        _ = path
+        raise PermissionError("locked pycache")
+
+    monkeypatch.setattr(shutil, "rmtree", blocked_rmtree)
+
+    registry = GeneratedSchemaRegistry.from_directory(
+        registry_dir,
+        type_registry_name="FLATBUFFER_TYPES",
+        enum_registry_name="FLATBUFFER_ENUMS",
+        package_prefix="test_blocked_pycache_schema",
+    )
+
+    assert registry.types["Sample"].__name__ == "Sample"

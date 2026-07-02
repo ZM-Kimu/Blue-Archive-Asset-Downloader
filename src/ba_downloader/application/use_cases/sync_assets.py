@@ -1,12 +1,12 @@
 from collections.abc import Callable
 
+from ba_downloader.application.profiles import (
+    RegionProfile,
+    SyncExtractionMode,
+)
 from ba_downloader.application.use_cases.asset_selection import AssetSelectionService
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
 from ba_downloader.application.use_cases.relation_search import RelationSearchService
-from ba_downloader.application.use_cases.sync_policy import (
-    SyncExtractionMode,
-    resolve_sync_workflow_policy,
-)
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
@@ -26,6 +26,8 @@ class SyncAssetsUseCase:
         schema_preparation: SchemaPreparationPort,
         relation_builder_factory: Callable[[RuntimeContext], RelationBuilderPort],
         logger: LoggerPort,
+        *,
+        workflow_profile: RegionProfile,
     ) -> None:
         self.provider = provider
         self.downloader = downloader
@@ -33,6 +35,7 @@ class SyncAssetsUseCase:
         self.schema_preparation = schema_preparation
         self.relation_builder_factory = relation_builder_factory
         self.logger = logger
+        self.workflow_profile = workflow_profile
         self.asset_selector = AssetSelectionService(logger)
         self.relation_search = RelationSearchService(relation_builder_factory, logger)
 
@@ -85,26 +88,24 @@ class SyncAssetsUseCase:
         catalog = self.provider.load_catalog(context)
         active_context = catalog.context
         resources = catalog.resources
-        policy = resolve_sync_workflow_policy(active_context)
+        self.workflow_profile.catalog_metadata.on_catalog_loaded(
+            active_context,
+            resources,
+        )
 
-        if policy.prepares_schema:
+        if self.workflow_profile.prepares_schema_for_sync:
             self._prepare_schema(active_context)
 
         if active_context.search or active_context.advanced_search:
             resources = self._search_resource(
                 resources,
                 active_context,
-                policy.prepares_schema,
+                self.workflow_profile.prepares_schema_for_sync,
             )
 
         filtered = self._filter_and_download(resources, active_context)
-        extract_resources = (
-            filtered
-            if active_context.search or active_context.advanced_search
-            else None
-        )
-        if policy.extraction_mode is SyncExtractionMode.direct:
-            self.extract_service.run(active_context, extract_resources)
+        if self.workflow_profile.sync_extraction_mode is SyncExtractionMode.direct:
+            self.extract_service.run(active_context, filtered)
         else:
-            self.extract_service.run_post_download(active_context, extract_resources)
+            self.extract_service.run_post_download(active_context, filtered)
         return active_context

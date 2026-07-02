@@ -231,11 +231,16 @@ def _run_command(
             services.schema_preparation,
             services.relation_builder_factory,
             services.logger,
+            workflow_profile=services.workflow_profile,
         ).run(context)
         return 0
 
     if args.command == "download" and isinstance(services, DownloadRuntimeServices):
-        DownloadAssetsUseCase(services.provider, services.downloader).run(context)
+        DownloadAssetsUseCase(
+            services.provider,
+            services.downloader,
+            workflow_profile=services.workflow_profile,
+        ).run(context)
         return 0
 
     if args.command == "extract" and isinstance(services, ExtractRuntimeServices):

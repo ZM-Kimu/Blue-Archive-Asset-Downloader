@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import py_compile
-from dataclasses import is_dataclass
+from dataclasses import dataclass, is_dataclass
 from enum import IntEnum
 from pathlib import Path
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
@@ -594,6 +594,37 @@ def test_flatbuffer_reader_decodes_table_root_vector_and_nested_enums(
         {"X": 1.5, "AttackType": "Special", "Name": "First"},
         {"X": 1.5, "AttackType": "Normal", "Name": "Second"},
     ]
+
+
+def test_flatbuffer_reader_caches_schema_field_descriptors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @dataclass
+    class CachedSchema:
+        Value: Annotated[
+            int,
+            FlatBufferField(index=0, cs_type="System.Int32"),
+        ]
+
+    get_type_hints_calls = 0
+    original_get_type_hints = flatbuffer_reader_module.get_type_hints
+
+    def counting_get_type_hints(*args: Any, **kwargs: Any) -> Any:
+        nonlocal get_type_hints_calls
+        get_type_hints_calls += 1
+        return original_get_type_hints(*args, **kwargs)
+
+    monkeypatch.setattr(
+        flatbuffer_reader_module,
+        "get_type_hints",
+        counting_get_type_hints,
+    )
+
+    first = FlatBufferReader._schema_fields(CachedSchema)
+    second = FlatBufferReader._schema_fields(CachedSchema)
+
+    assert second == first
+    assert get_type_hints_calls == 1
 
 
 def test_flatbuffer_reader_applies_field_decryption() -> None:

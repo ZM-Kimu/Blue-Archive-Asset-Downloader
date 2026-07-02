@@ -15,6 +15,7 @@ from typing import (
     get_origin,
     get_type_hints,
 )
+from weakref import WeakKeyDictionary
 
 import flatbuffers
 
@@ -38,6 +39,9 @@ LOGGER = ConsoleLogger()
 
 class FlatBufferReader:
     _warning_cache: ClassVar[set[tuple[str, str, str, str]]] = set()
+    _schema_fields_cache: ClassVar[
+        WeakKeyDictionary[type[Any], list[tuple[str, FlatBufferField, Any]]]
+    ] = WeakKeyDictionary()
     SCALAR_SPECS: ClassVar[dict[str, tuple[Any, int, str | None]]] = {
         "bool": (flatbuffers.number_types.BoolFlags, 1, None),
         "System.Boolean": (flatbuffers.number_types.BoolFlags, 1, None),
@@ -374,6 +378,10 @@ class FlatBufferReader:
         cls,
         schema_type: type[Any],
     ) -> list[tuple[str, FlatBufferField, Any]]:
+        cached_members = cls._schema_fields_cache.get(schema_type)
+        if cached_members is not None:
+            return cached_members
+
         hints = getattr(schema_type, "__flatbuffer_type_hints__", None)
         if hints is None:
             hints = get_type_hints(schema_type, include_extras=True)
@@ -389,6 +397,7 @@ class FlatBufferReader:
                 item for item in args[1:] if isinstance(item, FlatBufferField)
             )
             members.append((dataclass_field.name, field_metadata, annotation))
+        cls._schema_fields_cache[schema_type] = members
         return members
 
     @classmethod

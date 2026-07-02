@@ -15,6 +15,9 @@ from ba_downloader.infrastructure.schema.memorypack.generator import (
     CompileMemoryPackToPython,
 )
 from ba_downloader.infrastructure.schema.memorypack.parser import MemoryPackCSParser
+from ba_downloader.infrastructure.schema.memorypack.supplemental import (
+    SupplementalMemoryPackFormatterBuilder,
+)
 from ba_downloader.infrastructure.tools import (
     DEFAULT_DUMPER_BACKEND_REGISTRY,
     DumperBackendRegistry,
@@ -72,6 +75,31 @@ class SchemaWorkflow(SchemaWorkflowPort):
         except Exception as exc:  # pylint: disable=broad-exception-caught
             self.logger.warn(f"MemoryPackData generation failed: {exc}")
 
+    def _generate_supplemental_memorypack_formatters(
+        self,
+        dump_cs_file_path: str,
+        context: RuntimeContext,
+    ) -> None:
+        dumps_dir = Path(context.extract_dir) / self.DUMP_PATH
+        memorypack_data_dir = Path(context.extract_dir) / "MemoryPackData"
+        sidecar_path = dumps_dir / "memorypack_formatters.json"
+        try:
+            self.logger.info("Building MemoryPack semantic formatter sidecar...")
+            updated = SupplementalMemoryPackFormatterBuilder(
+                dump_cs_path=dump_cs_file_path,
+                memorypack_data_dir=memorypack_data_dir,
+                sidecar_path=sidecar_path,
+            ).build()
+            if not updated:
+                self.logger.warn(
+                    "MemoryPack semantic formatter sidecar was not updated; "
+                    "advanced JP table semantics may fall back to raw payloads."
+                )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self.logger.warn(
+                f"MemoryPack semantic formatter sidecar generation failed: {exc}"
+            )
+
     def compile(self, context: RuntimeContext) -> None:
         dump_cs_file_path = str(Path(context.extract_dir) / self.DUMP_PATH / "dump.cs")
         flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
@@ -90,3 +118,4 @@ class SchemaWorkflow(SchemaWorkflowPort):
         compiler.create_schema_files()
         self._validate_generated_python(flatbuffer_data_dir, "FlatBufferData")
         self._generate_memorypack_data(dump_cs_file_path, context)
+        self._generate_supplemental_memorypack_formatters(dump_cs_file_path, context)

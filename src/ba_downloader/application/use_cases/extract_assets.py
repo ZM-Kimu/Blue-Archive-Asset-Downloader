@@ -1,3 +1,4 @@
+from ba_downloader.application.profiles import RegionProfile
 from ba_downloader.application.use_cases.asset_selection import AssetSelectionService
 from ba_downloader.application.use_cases.relation_search import (
     RelationBuilderFactory,
@@ -23,11 +24,13 @@ class ExtractAssetsUseCase:
         provider: RegionProvider | None = None,
         relation_builder_factory: RelationBuilderFactory | None = None,
         prerequisite_service: ExtractionPrerequisitePort | None = None,
+        workflow_profile: RegionProfile,
     ) -> None:
         self.extraction_workflow = extraction_workflow
         self.logger = logger
         self.provider = provider
         self.prerequisite_service = prerequisite_service
+        self.workflow_profile = workflow_profile
         self.asset_selector = (
             AssetSelectionService(logger) if logger is not None else None
         )
@@ -52,6 +55,10 @@ class ExtractAssetsUseCase:
 
         catalog = self.provider.load_catalog(context)
         active_context = catalog.context
+        self.workflow_profile.catalog_metadata.on_catalog_loaded(
+            active_context,
+            catalog.resources,
+        )
         resources = self._filter_search_resources(catalog.resources, active_context)
         resources = ResourceQueryService.filter_type(
             resources,
@@ -91,6 +98,14 @@ class ExtractAssetsUseCase:
             return ResourceQueryService.search_name(resources, context.search)
         return resources
 
+    def _resolve_table_metadata_resources(
+        self,
+        context: RuntimeContext,
+    ) -> tuple[RuntimeContext, AssetCollection | None]:
+        return self.workflow_profile.catalog_metadata.resolve_existing_table_resources(
+            context
+        )
+
     @staticmethod
     def _filter_resources_for_type(
         resources: AssetCollection | None,
@@ -126,6 +141,10 @@ class ExtractAssetsUseCase:
                 active_resources,
                 "table",
             )
+            if table_resources is None:
+                active_context, table_resources = (
+                    self._resolve_table_metadata_resources(active_context)
+                )
             if self._should_extract_type(table_resources):
                 if self.prerequisite_service is not None:
                     self.prerequisite_service.ensure(

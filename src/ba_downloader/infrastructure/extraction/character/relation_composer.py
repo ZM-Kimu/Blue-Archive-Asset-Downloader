@@ -1,18 +1,63 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import pykakasi
 
 from ba_downloader.domain.models.character import CharacterData
+from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.extraction.character.relation_sources import (
     CharacterRelationSources,
 )
 from ba_downloader.infrastructure.extraction.character.scenario_matching import (
     ScenarioMatchIndex,
 )
+
+
+class CharacterRelationEnricher(Protocol):
+    def enrich(
+        self,
+        composer: CharacterRelationComposer,
+        hash_map: dict[int, CharacterData],
+        sources: CharacterRelationSources,
+    ) -> None: ...
+
+
+class CnLegacyRelationEnricher:
+    def enrich(
+        self,
+        composer: CharacterRelationComposer,
+        hash_map: dict[int, CharacterData],
+        sources: CharacterRelationSources,
+    ) -> None:
+        composer.apply_costume_data(hash_map, sources.costume_excel)
+        composer.apply_cn_recruit_data(
+            hash_map,
+            sources.shop_recruit,
+            sources.localize_gacha,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CharacterRelationCompositionProfile:
+    romanize_japanese_names: bool
+    enrichers: tuple[CharacterRelationEnricher, ...] = ()
+
+
+def build_character_relation_composition_profile(
+    context: RuntimeContext,
+) -> CharacterRelationCompositionProfile:
+    if context.region == "jp":
+        return CharacterRelationCompositionProfile(romanize_japanese_names=True)
+    if context.region == "cn":
+        return CharacterRelationCompositionProfile(
+            romanize_japanese_names=False,
+            enrichers=(CnLegacyRelationEnricher(),),
+        )
+    return CharacterRelationCompositionProfile(romanize_japanese_names=False)
 
 
 class CharacterRelationComposer:
@@ -22,19 +67,14 @@ class CharacterRelationComposer:
     def compose(
         self,
         sources: CharacterRelationSources,
-        region: str,
+        profile: CharacterRelationCompositionProfile,
     ) -> list[CharacterData]:
         hash_map: dict[int, CharacterData] = {}
-        self.apply_profile_data(hash_map, sources.char_profile, region)
+        self.apply_profile_data(hash_map, sources.char_profile, profile)
         self.apply_excel_data(hash_map, sources.char_excel)
-        if region == "cn":
-            self.apply_costume_data(hash_map, sources.costume_excel)
-            self.apply_cn_recruit_data(
-                hash_map,
-                sources.shop_recruit,
-                sources.localize_gacha,
-            )
-        self.apply_scenario_data(hash_map, sources.scenario_db)
+        for enricher in profile.enrichers:
+            enricher.enrich(self, hash_map, sources)
+        self.apply_scenario_data(hash_map, sources.scenario_db, profile)
         return list(hash_map.values())
 
     def convert_kana_to_hepburn(self, kana: str) -> str:
@@ -52,35 +92,35 @@ class CharacterRelationComposer:
         self,
         hash_map: dict[int, CharacterData],
         char_profile: list[dict[str, Any]],
-        region: str,
+        profile: CharacterRelationCompositionProfile,
     ) -> None:
-        for profile in char_profile:
-            names = self.collect_profile_names(profile, region)
+        for character_profile in char_profile:
+            names = self.collect_profile_names(character_profile, profile)
             data = CharacterData(
-                profile.get("CharacterId", 0),
+                character_profile.get("CharacterId", 0),
                 names=list(names),
                 cv=first_non_empty(
-                    profile,
+                    character_profile,
                     "CharacterVoiceJp",
                     "CharacterVoiceKr",
                 ),
                 age=self.str_to_int(
                     first_non_empty(
-                        profile,
+                        character_profile,
                         "CharacterAgeJp",
                         "CharacterAgeKr",
                     )
                 ),
                 height=self.str_to_int(
                     first_non_empty(
-                        profile,
+                        character_profile,
                         "CharHeightJp",
                         "CharHeightKr",
                     )
                 ),
-                birthday=profile.get("BirthDay", ""),
+                birthday=character_profile.get("BirthDay", ""),
                 illustrator=first_non_empty(
-                    profile,
+                    character_profile,
                     "IllustratorNameJp",
                     "IllustratorNameKr",
                 ),
@@ -90,7 +130,7 @@ class CharacterRelationComposer:
     def collect_profile_names(
         self,
         profile: dict[str, Any],
-        region: str,
+        composition_profile: CharacterRelationCompositionProfile,
     ) -> set[str]:
         names: set[str] = set()
         for key in profile:
@@ -100,7 +140,11 @@ class CharacterRelationComposer:
             name = profile.get(key, "")
             if name:
                 names.add(str(name))
-            if name and region == "jp" and lowered_key.endswith("jp"):
+            if (
+                name
+                and composition_profile.romanize_japanese_names
+                and lowered_key.endswith("jp")
+            ):
                 romanized_name = self.convert_kana_to_hepburn(str(name))
                 if romanized_name:
                     names.add(romanized_name)
@@ -193,6 +237,7 @@ class CharacterRelationComposer:
         self,
         hash_map: dict[int, CharacterData],
         scenario_db: list[dict[str, Any]],
+        profile: CharacterRelationCompositionProfile,
     ) -> None:
         match_index = ScenarioMatchIndex(hash_map.values())
         for scenario in scenario_db:
@@ -207,7 +252,7 @@ class CharacterRelationComposer:
             if not file_name:
                 continue
 
-            scenario_names = self.collect_scenario_names(scene_data)
+            scenario_names = self.collect_scenario_names(scene_data, profile)
             if self.apply_existing_scenario_mapping(
                 match_index,
                 scenario_names,
@@ -271,6 +316,7 @@ class CharacterRelationComposer:
     def collect_scenario_names(
         self,
         scene_data: dict[str, Any],
+        profile: CharacterRelationCompositionProfile,
     ) -> set[str]:
         names: set[str] = set()
         for key in scene_data:
@@ -279,7 +325,7 @@ class CharacterRelationComposer:
             name = scene_data.get(key, "")
             if name:
                 names.add(str(name))
-            if name and key.lower() == "namejp":
+            if name and profile.romanize_japanese_names and key.lower() == "namejp":
                 names.add(self.convert_kana_to_hepburn(str(name)))
         return names
 

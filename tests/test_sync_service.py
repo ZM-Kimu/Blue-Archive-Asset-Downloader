@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from ba_downloader.application.profiles import RegionProfile, build_region_profile
 from ba_downloader.application.use_cases.sync_assets import SyncAssetsUseCase
 from ba_downloader.domain.exceptions import DownloadError
 from ba_downloader.domain.models.asset import (
@@ -70,6 +71,18 @@ class RecordingExtractAssetsUseCase:
         _ = context
         self.calls.append("run_post_download")
         self.resource_calls.append(self._resource_paths(resources))
+
+
+class RecordingTableMetadataStore:
+    def __init__(self) -> None:
+        self.write_calls: list[tuple[RuntimeContext, AssetCollection]] = []
+
+    def load(self, context: RuntimeContext) -> AssetCollection | None:
+        _ = context
+        return None
+
+    def write(self, context: RuntimeContext, resources: AssetCollection) -> None:
+        self.write_calls.append((context, resources))
 
 
 class RecordingSchemaPreparation:
@@ -143,18 +156,49 @@ def _build_search_catalog(context: RuntimeContext) -> RegionCatalogResult:
     )
 
 
+def _build_table_catalog(context: RuntimeContext) -> RegionCatalogResult:
+    resources = AssetCollection()
+    resources.add(
+        "https://example.invalid/Table/TablePatchPack_GroundStage_1.zip",
+        "Table/TablePatchPack_GroundStage_1.zip",
+        10,
+        "deadbeef",
+        "crc",
+        AssetType.table,
+        {"includes": ["EN0010_VeryHard.zip"]},
+    )
+    return RegionCatalogResult(resources=resources, context=context)
+
+
+def _build_profile(
+    context: RuntimeContext,
+    provider: StaticProvider,
+    logger: RecordingLogger,
+    metadata_store: RecordingTableMetadataStore | None = None,
+) -> RegionProfile:
+    return build_region_profile(
+        context,
+        provider,
+        logger,
+        metadata_store or RecordingTableMetadataStore(),
+    )
+
+
 def test_sync_does_not_extract_after_download_failure(tmp_path: Path) -> None:
     context = _build_context(tmp_path)
     downloader = FailingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
+    provider = StaticProvider(_build_catalog(context))
+    logger = RecordingLogger()
     service = SyncAssetsUseCase(
-        StaticProvider(_build_catalog(context)),
+        provider,
         downloader,
         extract_service,  # type: ignore[arg-type]
         schema_preparation,
         lambda _context: DummyRelationBuilder(),
-        RecordingLogger(),
+        logger,
+        workflow_profile=_build_profile(context, provider, logger),
     )
 
     with pytest.raises(DownloadError, match="download incomplete"):
@@ -163,6 +207,39 @@ def test_sync_does_not_extract_after_download_failure(tmp_path: Path) -> None:
     assert downloader.calls == ["verify_and_download"]
     assert schema_preparation.calls == ["prepare"]
     assert extract_service.calls == []
+
+
+def test_jp_sync_passes_catalog_resources_to_post_download_extract(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(
+        region="jp",
+        resource_type=("table",),
+    )
+    downloader = RecordingDownloader()
+    extract_service = RecordingExtractAssetsUseCase()
+    schema_preparation = RecordingSchemaPreparation()
+    metadata_store = RecordingTableMetadataStore()
+    provider = StaticProvider(_build_table_catalog(context))
+    logger = RecordingLogger()
+    service = SyncAssetsUseCase(
+        provider,
+        downloader,
+        extract_service,  # type: ignore[arg-type]
+        schema_preparation,
+        lambda _context: DummyRelationBuilder(),
+        logger,
+        workflow_profile=_build_profile(context, provider, logger, metadata_store),
+    )
+
+    service.run(context)
+
+    assert metadata_store.write_calls == [(context, provider.result.resources)]
+    assert downloader.calls == [["Table/TablePatchPack_GroundStage_1.zip"]]
+    assert extract_service.calls == ["run_post_download"]
+    assert extract_service.resource_calls == [
+        ["Table/TablePatchPack_GroundStage_1.zip"]
+    ]
 
 
 def test_jp_sync_advanced_search_uses_relation_keywords(tmp_path: Path) -> None:
@@ -174,13 +251,16 @@ def test_jp_sync_advanced_search_uses_relation_keywords(tmp_path: Path) -> None:
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
     relation_builder = DummyRelationBuilder()
+    provider = StaticProvider(_build_search_catalog(context))
+    logger = RecordingLogger()
     service = SyncAssetsUseCase(
-        StaticProvider(_build_search_catalog(context)),
+        provider,
         downloader,
         extract_service,  # type: ignore[arg-type]
         schema_preparation,
         lambda _context: relation_builder,
-        RecordingLogger(),
+        logger,
+        workflow_profile=_build_profile(context, provider, logger),
     )
 
     service.run(context)
@@ -213,13 +293,16 @@ def test_jp_sync_advanced_search_builds_missing_relation(tmp_path: Path) -> None
         relation_file_valid=False,
         excel_resources=excel_resources,
     )
+    provider = StaticProvider(_build_search_catalog(context))
+    logger = RecordingLogger()
     service = SyncAssetsUseCase(
-        StaticProvider(_build_search_catalog(context)),
+        provider,
         downloader,
         extract_service,  # type: ignore[arg-type]
         schema_preparation,
         lambda _context: relation_builder,
-        RecordingLogger(),
+        logger,
+        workflow_profile=_build_profile(context, provider, logger),
     )
 
     service.run(context)
@@ -239,13 +322,16 @@ def test_jp_sync_search_extracts_only_filtered_resources(tmp_path: Path) -> None
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
+    provider = StaticProvider(_build_search_catalog(context))
+    logger = RecordingLogger()
     service = SyncAssetsUseCase(
-        StaticProvider(_build_search_catalog(context)),
+        provider,
         downloader,
         extract_service,  # type: ignore[arg-type]
         schema_preparation,
         lambda _context: DummyRelationBuilder(),
-        RecordingLogger(),
+        logger,
+        workflow_profile=_build_profile(context, provider, logger),
     )
 
     service.run(context)
@@ -268,13 +354,15 @@ def test_jp_sync_advanced_search_with_no_relation_matches_downloads_nothing(
     relation_builder = DummyRelationBuilder()
     relation_builder.search_results = []
     logger = RecordingLogger()
+    provider = StaticProvider(_build_search_catalog(context))
     service = SyncAssetsUseCase(
-        StaticProvider(_build_search_catalog(context)),
+        provider,
         downloader,
         extract_service,  # type: ignore[arg-type]
         schema_preparation,
         lambda _context: relation_builder,
         logger,
+        workflow_profile=_build_profile(context, provider, logger),
     )
 
     service.run(context)

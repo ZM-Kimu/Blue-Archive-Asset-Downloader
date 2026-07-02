@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ba_downloader.application.profiles import build_region_profile
 from ba_downloader.bootstrap.container import (
     DownloadRuntimeServices,
     ExtractRuntimeServices,
@@ -45,6 +46,15 @@ class RecordingDownloader:
     def verify_and_download(self, resources, context) -> None:  # type: ignore[no-untyped-def]
         _ = (resources, context)
         self.calls += 1
+
+
+class NoopTableMetadataStore:
+    def load(self, context):  # type: ignore[no-untyped-def]
+        _ = context
+        return None
+
+    def write(self, context, resources) -> None:  # type: ignore[no-untyped-def]
+        _ = (context, resources)
 
 
 @pytest.mark.parametrize(
@@ -104,11 +114,18 @@ def test_main_logs_extract_bootstrap_errors_without_traceback(
     error = LookupError(
         "JP table extract prerequisites were missing and auto-generation was attempted."
     )
+    provider = DownloadProvider()
     services = ExtractRuntimeServices(
         logger=ConsoleLogger(),
         http_client=http_client,
-        provider=DownloadProvider(),
+        provider=provider,
         extract_service=FailingExtractAssetsUseCase(error),
+        workflow_profile=build_region_profile(
+            context=SimpleNamespace(region="jp"),  # type: ignore[arg-type]
+            provider=provider,
+            logger=ConsoleLogger(),
+            table_metadata_store=NoopTableMetadataStore(),
+        ),
     )
 
     monkeypatch.setattr(
@@ -130,11 +147,18 @@ def test_download_command_uses_download_only_runtime_services(
 ) -> None:
     http_client = ClosableHttpClient()
     downloader = RecordingDownloader()
+    provider = DownloadProvider()
     services = DownloadRuntimeServices(
         logger=ConsoleLogger(),
         http_client=http_client,
-        provider=DownloadProvider(),
+        provider=provider,
         downloader=downloader,
+        workflow_profile=build_region_profile(
+            context=SimpleNamespace(region="jp"),  # type: ignore[arg-type]
+            provider=provider,
+            logger=ConsoleLogger(),
+            table_metadata_store=NoopTableMetadataStore(),
+        ),
     )
 
     monkeypatch.setattr(

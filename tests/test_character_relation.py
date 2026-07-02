@@ -12,10 +12,15 @@ from ba_downloader.infrastructure.extraction.character.relation import (
 )
 from ba_downloader.infrastructure.extraction.character.relation_composer import (
     CharacterRelationComposer,
+    CharacterRelationCompositionProfile,
+    build_character_relation_composition_profile,
 )
 from ba_downloader.infrastructure.extraction.character.relation_sources import (
     CharacterRelationSourceLoader,
     CharacterRelationSources,
+    JpDbRelationSourceProfile,
+    LegacyArchiveRelationSourceProfile,
+    build_character_relation_source_profile,
 )
 from ba_downloader.infrastructure.extraction.character.relation_store import (
     CharacterRelationSearchIndex,
@@ -129,6 +134,7 @@ def _compose_relation(
     shop_recruit: list[dict] | None = None,
     localize_gacha: list[dict] | None = None,
 ) -> list[CharacterData]:
+    context = _build_context(Path("."), region=region)
     return CharacterRelationComposer().compose(
         _sources(
             scenario_db=scenario_db,
@@ -138,7 +144,7 @@ def _compose_relation(
             shop_recruit=shop_recruit,
             localize_gacha=localize_gacha,
         ),
-        region,
+        build_character_relation_composition_profile(context),
     )
 
 
@@ -177,6 +183,19 @@ def test_cn_relation_sources_warn_but_continue_when_profile_bytes_missing(
     assert logger.by_level("warn") == [
         "Some relation sources are missing or invalid: localizecharprofileexceltable.bytes. Name relation might be incomplete."
     ]
+
+
+def test_relation_source_profile_selects_jp_db_and_legacy_archive(
+    tmp_path: Path,
+) -> None:
+    assert isinstance(
+        build_character_relation_source_profile(_build_context(tmp_path, region="jp")),
+        JpDbRelationSourceProfile,
+    )
+    assert isinstance(
+        build_character_relation_source_profile(_build_context(tmp_path, region="cn")),
+        LegacyArchiveRelationSourceProfile,
+    )
 
 
 def test_jp_relation_sources_read_excel_db_schemas_without_excel_zip(
@@ -376,6 +395,34 @@ def test_relation_uses_cn_profile_fallback_fields() -> None:
     assert relation_by_id[10003].illustrator == "Hwansang"
     assert relation_by_id[10003].school_en == "Trinity"
     assert relation_by_id[10003].club_en == "RemedialClass"
+
+
+def test_jp_relation_romanization_is_controlled_by_profile_policy() -> None:
+    sources = _sources(
+        char_profile=[
+            {
+                "CharacterId": 10003,
+                "FullNameJp": "阿慈谷ヒフミ",
+                "PersonalNameJp": "ヒフミ",
+            }
+        ],
+    )
+    composer = CharacterRelationComposer()
+
+    jp_relations = composer.compose(
+        sources,
+        build_character_relation_composition_profile(_build_context(Path("."), "jp")),
+    )
+    legacy_relations = composer.compose(
+        sources,
+        CharacterRelationCompositionProfile(
+            romanize_japanese_names=False,
+            enrichers=(),
+        ),
+    )
+
+    assert "hifumi" in {name.lower() for name in jp_relations[0].names}
+    assert "hifumi" not in {name.lower() for name in legacy_relations[0].names}
 
 
 def test_relation_applies_cn_gacha_names_and_costume_aliases() -> None:

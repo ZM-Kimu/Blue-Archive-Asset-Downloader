@@ -4,53 +4,107 @@ import sqlite3
 
 import pytest
 
-from ba_downloader.infrastructure.extraction.table.archives import (
-    TableArchiveClassifier,
+from ba_downloader.infrastructure.extraction.table.archive_classifier import (
     TableArchiveKind,
+    classify_jp_table_archive,
+    classify_legacy_table_archive,
+    classify_table_archive,
+)
+from ba_downloader.infrastructure.extraction.table.payload_router import (
+    TablePayloadCodec,
+)
+from ba_downloader.infrastructure.extraction.table.profiles import (
+    build_table_extraction_profile,
 )
 from ba_downloader.infrastructure.storage.sqlite_reader import TableDatabase
+from support import build_runtime_context
 
 
 def test_table_archive_classifier_preserves_special_archive_routes() -> None:
-    classifier = TableArchiveClassifier()
-
     assert (
-        classifier.classify("RhythmBeatmapData.zip").kind
+        classify_table_archive("RhythmBeatmapData.zip").kind
         is TableArchiveKind.RHYTHM_BEATMAP
     )
     assert (
-        classifier.classify("TablePatchPack_GroundGrid_11.zip").kind
+        classify_table_archive("TablePatchPack_GroundGrid_11.zip").kind
         is TableArchiveKind.GROUND_GRID_PATCH
     )
     assert (
-        classifier.classify("TablePatchPack_GroundStage_1.zip").kind
+        classify_table_archive("TablePatchPack_GroundStage_1.zip").kind
         is TableArchiveKind.GROUND_STAGE_PATCH
     )
     assert (
-        classifier.classify("C_sb_01_hyakkiyakomatsuri_p02_Little.zip").kind
+        classify_table_archive("C_sb_01_hyakkiyakomatsuri_p02_Little.zip").kind
         is TableArchiveKind.RAW
     )
     assert (
-        classifier.classify("1041104_03_s3_boss_02_desertcity_p01_d.zip").kind
+        classify_table_archive("1041104_03_s3_boss_02_desertcity_p01_d.zip").kind
         is TableArchiveKind.GL_NUMERIC_STAGE
     )
     assert (
-        classifier.classify("MGSLogicGroundData.zip").kind
+        classify_table_archive("MGSLogicGroundData.zip").kind
         is TableArchiveKind.MGS_LOGIC_GROUND
     )
-    assert classifier.classify("Excel.zip").kind is TableArchiveKind.STANDARD
+    assert classify_table_archive("Excel.zip").kind is TableArchiveKind.STANDARD
 
 
 def test_table_archive_classifier_preserves_gl_ground_schema_selection() -> None:
-    classifier = TableArchiveClassifier()
-
-    grid_route = classifier.classify("sb_02_desertcity_p01_e.zip")
-    node_layer_route = classifier.classify("sb_02_desertcity_p01_e_nodelayer.zip")
+    grid_route = classify_table_archive("sb_02_desertcity_p01_e.zip")
+    node_layer_route = classify_table_archive("sb_02_desertcity_p01_e_nodelayer.zip")
 
     assert grid_route.kind is TableArchiveKind.GL_GROUND
     assert grid_route.schema_name == "GroundGridFlat.bytes"
     assert node_layer_route.kind is TableArchiveKind.GL_GROUND
     assert node_layer_route.schema_name == "GroundNodeLayerFlat.bytes"
+
+
+def test_jp_table_archive_classifier_does_not_route_gl_legacy_archives() -> None:
+    jp_route = classify_jp_table_archive("sb_02_desertcity_p01_e.zip")
+    legacy_route = classify_legacy_table_archive("sb_02_desertcity_p01_e.zip")
+
+    assert jp_route.kind is TableArchiveKind.UNSUPPORTED
+    assert legacy_route.kind is TableArchiveKind.GL_GROUND
+    assert legacy_route.schema_name == "GroundGridFlat.bytes"
+
+
+def test_table_extraction_profile_splits_jp_and_legacy_routing(tmp_path) -> None:
+    jp_profile = build_table_extraction_profile(
+        build_runtime_context(tmp_path, region="jp")
+    )
+    cn_profile = build_table_extraction_profile(
+        build_runtime_context(tmp_path, region="cn")
+    )
+    gl_profile = build_table_extraction_profile(
+        build_runtime_context(tmp_path, region="gl")
+    )
+
+    jp_route = jp_profile.payload_router.resolve_database_blob(
+        "LogicEffectDataDBSchema.db",
+        "LogicEffect_PC",
+        "Bytes",
+    )
+    cn_route = cn_profile.payload_router.resolve_database_blob(
+        "LogicEffectDataDBSchema.db",
+        "LogicEffect_PC",
+        "Bytes",
+    )
+    gl_route = gl_profile.payload_router.resolve_database_blob(
+        "LogicEffectDataDBSchema.db",
+        "LogicEffect_PC",
+        "Bytes",
+    )
+
+    assert jp_profile.archive_registry.classifier(
+        "sb_02_desertcity_p01_e.zip"
+    ).kind is (TableArchiveKind.UNSUPPORTED)
+    assert cn_profile.archive_registry.classifier(
+        "sb_02_desertcity_p01_e.zip"
+    ).kind is (TableArchiveKind.GL_GROUND)
+    assert jp_route.codec is TablePayloadCodec.MEMORYPACK
+    assert jp_route.allow_partial_memorypack is False
+    assert cn_route.codec is TablePayloadCodec.MEMORYPACK
+    assert cn_route.allow_partial_memorypack is True
+    assert gl_route.codec is TablePayloadCodec.FLATBUFFER
 
 
 def test_table_database_quotes_special_table_names(tmp_path) -> None:

@@ -247,47 +247,85 @@ def test_media_extraction_aggregates_failures_after_processing_other_files(
     assert any("bad.zip" in message for message in logger.error_messages)
 
 
-def test_table_extraction_uses_extract_progress_mode(
+def test_table_extraction_uses_process_runner_for_real_extractor(
     monkeypatch: Any,
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("table",))
     table_dir = Path(context.raw_dir) / "Table"
     table_dir.mkdir(parents=True)
-    (table_dir / "Excel.zip").write_bytes(b"zip")
+    (table_dir / "A.db").write_bytes(b"db")
+    (table_dir / "B.db").write_bytes(b"db")
+    captured_files: list[list[str]] = []
 
-    class FakeTableExtractor:
-        extract_folder = str(Path(context.extract_dir) / "Table")
+    class FakeProcessTableExtractionRunner:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
 
-        @classmethod
-        def from_context(
-            cls,
+        def run(
+            self,
+            files: list[str],
             received_context: RuntimeContext,
-            logger: RecordingLogger,
-        ) -> FakeTableExtractor:
+        ) -> None:
             assert received_context == context
-            _ = logger
-            return cls()
+            captured_files.append(files)
 
-        def extract_table(self, file_path: str, **kwargs: Any) -> None:
-            assert file_path == "Excel.zip"
-            progress_callback = kwargs["progress_callback"]
-            progress_callback("1/1 entries")
-
-    RecordingProgressReporter.instances = []
-    _patch_progress_reporter(monkeypatch)
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.TableExtractor",
-        FakeTableExtractor,
+        "ba_downloader.infrastructure.extraction.workflow.ProcessTableExtractionRunner",
+        FakeProcessTableExtractionRunner,
     )
 
     AssetExtractionWorkflow(RecordingLogger()).extract_tables(context)
 
-    progress = RecordingProgressReporter.instances[0]
-    assert progress.extract_mode is True
-    assert progress.statuses == ["0/1 files", "1/1 files"]
-    assert progress.secondary_statuses == ["1/1 entries"]
-    assert progress.advances == [1]
+    assert captured_files == [["A.db", "B.db"]]
+
+
+def test_table_extraction_passes_resource_metadata_to_process_runner(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path, ("table",))
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True)
+    (table_dir / "TablePatchPack_GroundStage_1.zip").write_bytes(b"zip")
+    resources = AssetCollection()
+    metadata = {"includes": ["EN0010_VeryHard.zip"]}
+    resources.add(
+        "https://example.invalid/Table/TablePatchPack_GroundStage_1.zip",
+        "Table/TablePatchPack_GroundStage_1.zip",
+        1,
+        "deadbeef",
+        "md5",
+        AssetType.table,
+        metadata,
+    )
+    captured_metadata: list[dict[str, dict[str, object]]] = []
+
+    class FakeProcessTableExtractionRunner:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+
+        def run(
+            self,
+            files: list[str],
+            received_context: RuntimeContext,
+            *,
+            metadata_by_file: dict[str, dict[str, object]],
+        ) -> None:
+            assert files == ["TablePatchPack_GroundStage_1.zip"]
+            assert received_context == context
+            captured_metadata.append(metadata_by_file)
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extraction.workflow.ProcessTableExtractionRunner",
+        FakeProcessTableExtractionRunner,
+    )
+
+    AssetExtractionWorkflow(RecordingLogger()).extract_tables(context, resources)
+
+    assert captured_metadata == [
+        {"TablePatchPack_GroundStage_1.zip": {"includes": ["EN0010_VeryHard.zip"]}}
+    ]
 
 
 def test_table_extraction_uses_filtered_existing_resources(
@@ -299,33 +337,23 @@ def test_table_extraction_uses_filtered_existing_resources(
     table_dir.mkdir(parents=True)
     (table_dir / "ExcelDB.db").write_bytes(b"db")
     (table_dir / "Other.db").write_bytes(b"db")
-    calls: list[str] = []
+    captured_files: list[list[str]] = []
 
-    class FakeTableExtractor:
-        extract_folder = str(Path(context.extract_dir) / "Table")
+    class FakeProcessTableExtractionRunner:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
 
-        @classmethod
-        def from_context(
-            cls,
+        def run(
+            self,
+            files: list[str],
             received_context: RuntimeContext,
-            logger: RecordingLogger,
-        ) -> FakeTableExtractor:
+        ) -> None:
             assert received_context == context
-            _ = logger
-            return cls()
+            captured_files.append(files)
 
-        def extract_table(self, file_path: str, **kwargs: Any) -> None:
-            _ = kwargs
-            calls.append(file_path)
-
-    RecordingProgressReporter.instances = []
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.RichProgressReporter",
-        RecordingProgressReporter,
-    )
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.TableExtractor",
-        FakeTableExtractor,
+        "ba_downloader.infrastructure.extraction.workflow.ProcessTableExtractionRunner",
+        FakeProcessTableExtractionRunner,
     )
 
     AssetExtractionWorkflow(RecordingLogger()).extract_tables(
@@ -339,50 +367,7 @@ def test_table_extraction_uses_filtered_existing_resources(
         ),
     )
 
-    assert calls == ["ExcelDB.db"]
-
-
-def test_table_extraction_uses_one_extractor_instance_per_file(
-    monkeypatch: Any,
-    tmp_path: Path,
-) -> None:
-    context = _build_context(tmp_path, ("table",)).with_updates(threads=2)
-    table_dir = Path(context.raw_dir) / "Table"
-    table_dir.mkdir(parents=True)
-    (table_dir / "A.db").write_bytes(b"db")
-    (table_dir / "B.db").write_bytes(b"db")
-    instances: list[Any] = []
-
-    class FakeTableExtractor:
-        extract_folder = str(Path(context.extract_dir) / "Table")
-
-        def __init__(self) -> None:
-            instances.append(self)
-
-        @classmethod
-        def from_context(
-            cls,
-            received_context: RuntimeContext,
-            logger: RecordingLogger,
-        ) -> FakeTableExtractor:
-            assert received_context == context
-            _ = logger
-            return cls()
-
-        def extract_table(self, file_path: str, **kwargs: Any) -> None:
-            _ = (file_path, kwargs)
-
-    RecordingProgressReporter.instances = []
-    _patch_progress_reporter(monkeypatch)
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.TableExtractor",
-        FakeTableExtractor,
-    )
-
-    AssetExtractionWorkflow(RecordingLogger()).extract_tables(context)
-
-    assert len(instances) == 2
-    assert len({id(instance) for instance in instances}) == 2
+    assert captured_files == [["ExcelDB.db"]]
 
 
 def test_bundle_extraction_uses_filtered_existing_resources(

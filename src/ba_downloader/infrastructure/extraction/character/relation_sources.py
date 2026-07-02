@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from zipfile import ZipFile
 
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -66,6 +66,37 @@ class CharacterRelationSources:
         )
 
 
+class CharacterRelationSourceProfile(Protocol):
+    def load(
+        self,
+        loader: CharacterRelationSourceLoader,
+    ) -> CharacterRelationSources: ...
+
+
+class JpDbRelationSourceProfile:
+    def load(
+        self,
+        loader: CharacterRelationSourceLoader,
+    ) -> CharacterRelationSources:
+        return loader._load_jp_excel_db()
+
+
+class LegacyArchiveRelationSourceProfile:
+    def load(
+        self,
+        loader: CharacterRelationSourceLoader,
+    ) -> CharacterRelationSources:
+        return loader._load_archive_excel()
+
+
+def build_character_relation_source_profile(
+    context: RuntimeContext,
+) -> CharacterRelationSourceProfile:
+    if context.region == "jp":
+        return JpDbRelationSourceProfile()
+    return LegacyArchiveRelationSourceProfile()
+
+
 class CharacterRelationSourceLoader:
     def __init__(
         self,
@@ -76,9 +107,7 @@ class CharacterRelationSourceLoader:
         self._logger = logger
 
     def load(self, context: RuntimeContext) -> CharacterRelationSources:
-        if context.region == "jp":
-            return self._load_jp_excel_db()
-        return self._load_archive_excel()
+        return build_character_relation_source_profile(context).load(self)
 
     def _load_archive_excel(self) -> CharacterRelationSources:
         scenario_db = self.extract_scenario_db()

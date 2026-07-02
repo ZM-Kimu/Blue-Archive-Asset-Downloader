@@ -52,7 +52,14 @@ internal static class Program
             }
 
             if (!string.IsNullOrWhiteSpace(options.FormatterOutputPath))
+            {
                 WriteMemoryPackFormatterSidecar(metadata, options.FormatterOutputPath);
+                WriteMemoryPackUnionAttributeSidecar(
+                    metadata,
+                    Path.Combine(
+                        Path.GetDirectoryName(Path.GetFullPath(options.FormatterOutputPath))!,
+                        "memorypack_union_attrs.json"));
+            }
 
             Console.WriteLine($"dump.cs exported to {outputPath}");
             return 0;
@@ -274,6 +281,253 @@ internal static class Program
             outputPath,
             JsonSerializer.Serialize(new { version = 1, formatters }, options),
             new UTF8Encoding(false));
+    }
+
+    private static void WriteMemoryPackUnionAttributeSidecar(
+        Il2CppMetadata metadata,
+        string unionOutputPath)
+    {
+        var targets = new List<Dictionary<string, object?>>();
+        if (metadata.MetadataVersion >= 29 && metadata.AttributeDataRanges is not null)
+        {
+            foreach (var type in EnumerateTypes(metadata))
+            {
+                var customAttributes = ReadMemoryPackUnionAttributes(metadata, type);
+                if (customAttributes.Count == 0)
+                    continue;
+
+                targets.Add(new Dictionary<string, object?>
+                {
+                    ["full_name"] = CleanTypeName(type.FullName ?? BuildFullTypeName(type)),
+                    ["custom_attributes"] = customAttributes,
+                });
+            }
+        }
+
+        var outputPath = Path.GetFullPath(unionOutputPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(
+            outputPath,
+            JsonSerializer.Serialize(new { version = 1, targets }, options),
+            new UTF8Encoding(false));
+    }
+
+    private static List<Dictionary<string, object?>> ReadMemoryPackUnionAttributes(
+        Il2CppMetadata metadata,
+        Il2CppTypeDefinition ownerType)
+    {
+        var blob = ReadCustomAttributeBlob(metadata, ownerType.Token);
+        if (blob is null || blob.Length == 0)
+            return [];
+
+        var result = new List<Dictionary<string, object?>>();
+        try
+        {
+            using var stream = new MemoryStream(blob);
+            using var reader = new BinaryReader(stream, Encoding.UTF8, true);
+            var attributeCount = ReadCompressedUInt(stream);
+            var constructors = new Il2CppMethodDefinition[attributeCount];
+            for (var index = 0; index < attributeCount; index++)
+                constructors[index] = metadata.methodDefs[reader.ReadUInt32()];
+
+            foreach (var constructor in constructors)
+            {
+                var constructorArgs = ReadCustomAttributeConstructorArgs(stream);
+                var attributeType = constructor.DeclaringType?.FullName ?? "";
+                if (
+                    attributeType == "MemoryPack.MemoryPackUnionAttribute"
+                    && TryBuildUnionAttribute(constructorArgs, out var attribute)
+                )
+                {
+                    result.Add(attribute);
+                }
+            }
+        }
+        catch
+        {
+            return [];
+        }
+
+        return result;
+    }
+
+    private static byte[]? ReadCustomAttributeBlob(
+        Il2CppMetadata metadata,
+        uint token)
+    {
+        var ranges = metadata.AttributeDataRanges;
+        if (ranges is null)
+            return null;
+
+        for (var index = 0; index < ranges.Count - 1; index++)
+        {
+            if (ranges[index].token != token)
+                continue;
+
+            var start = metadata.metadataHeader.attributeData.Offset + ranges[index].startOffset;
+            var end = metadata.metadataHeader.attributeData.Offset + ranges[index + 1].startOffset;
+            if (end <= start)
+                return null;
+            return metadata.ReadByteArrayAtRawAddress(start, (int)(end - start));
+        }
+
+        return null;
+    }
+
+    private static List<object?> ReadCustomAttributeConstructorArgs(Stream stream)
+    {
+        var ctorArgCount = ReadCompressedUInt(stream);
+        var fieldCount = ReadCompressedUInt(stream);
+        var propertyCount = ReadCompressedUInt(stream);
+        var args = new List<object?>();
+        using var reader = new BinaryReader(stream, Encoding.UTF8, true);
+
+        for (var index = 0; index < ctorArgCount; index++)
+            args.Add(ReadCustomAttributeValue(reader));
+
+        for (var index = 0; index < fieldCount; index++)
+        {
+            _ = ReadCustomAttributeValue(reader);
+            SkipCustomAttributeMemberIndex(stream);
+        }
+
+        for (var index = 0; index < propertyCount; index++)
+        {
+            _ = ReadCustomAttributeValue(reader);
+            SkipCustomAttributeMemberIndex(stream);
+        }
+
+        return args;
+    }
+
+    private static bool TryBuildUnionAttribute(
+        IReadOnlyList<object?> constructorArgs,
+        out Dictionary<string, object?> attribute)
+    {
+        attribute = [];
+        if (constructorArgs.Count < 2)
+            return false;
+
+        if (constructorArgs[0] is not int tag)
+            return false;
+
+        if (constructorArgs[1] is not string unionType || string.IsNullOrWhiteSpace(unionType))
+            return false;
+
+        attribute = new Dictionary<string, object?>
+        {
+            ["attribute_type"] = "MemoryPack.MemoryPackUnionAttribute",
+            ["rendered"] = $"MemoryPackUnion({tag}, typeof({unionType}))",
+            ["tag"] = tag,
+            ["union_type"] = unionType,
+        };
+        return true;
+    }
+
+    private static object? ReadCustomAttributeValue(BinaryReader reader)
+    {
+        var valueType = (Il2CppTypeEnum)reader.ReadByte();
+        return valueType switch
+        {
+            Il2CppTypeEnum.IL2CPP_TYPE_BOOLEAN => reader.ReadBoolean(),
+            Il2CppTypeEnum.IL2CPP_TYPE_CHAR => reader.ReadChar(),
+            Il2CppTypeEnum.IL2CPP_TYPE_I1 => reader.ReadSByte(),
+            Il2CppTypeEnum.IL2CPP_TYPE_U1 => reader.ReadByte(),
+            Il2CppTypeEnum.IL2CPP_TYPE_I2 => reader.ReadInt16(),
+            Il2CppTypeEnum.IL2CPP_TYPE_U2 => reader.ReadUInt16(),
+            Il2CppTypeEnum.IL2CPP_TYPE_I4 => ReadCompressedInt(reader.BaseStream),
+            Il2CppTypeEnum.IL2CPP_TYPE_U4 => (int)ReadCompressedUInt(reader.BaseStream),
+            Il2CppTypeEnum.IL2CPP_TYPE_I8 => reader.ReadInt64(),
+            Il2CppTypeEnum.IL2CPP_TYPE_U8 => reader.ReadUInt64(),
+            Il2CppTypeEnum.IL2CPP_TYPE_R4 => reader.ReadSingle(),
+            Il2CppTypeEnum.IL2CPP_TYPE_R8 => reader.ReadDouble(),
+            Il2CppTypeEnum.IL2CPP_TYPE_STRING => ReadCustomAttributeString(reader),
+            Il2CppTypeEnum.IL2CPP_TYPE_IL2CPP_TYPE_INDEX => ReadCustomAttributeTypeName(reader.BaseStream),
+            _ => throw new InvalidDataException($"Unsupported custom attribute value type: {valueType}"),
+        };
+    }
+
+    private static string? ReadCustomAttributeString(BinaryReader reader)
+    {
+        var length = ReadCompressedInt(reader.BaseStream);
+        if (length <= 0)
+            return null;
+        return Encoding.UTF8.GetString(reader.ReadBytes(length));
+    }
+
+    private static string ReadCustomAttributeTypeName(Stream stream)
+    {
+        var typeIndex = ReadCompressedInt(stream);
+        if (typeIndex < 0 || LibCpp2IlMain.Binary is null)
+            return "";
+        var type = LibCpp2IlMain.Binary.GetType(
+            Il2CppVariableWidthIndex<Il2CppType>.MakeTemporaryForFixedWidthUsage(typeIndex));
+        return CleanTypeName(type.ToString() ?? "");
+    }
+
+    private static void SkipCustomAttributeMemberIndex(Stream stream)
+    {
+        var memberIndex = ReadCompressedInt(stream);
+        if (memberIndex < 0)
+            _ = ReadCompressedUInt(stream);
+    }
+
+    private static uint ReadCompressedUInt(Stream stream)
+    {
+        var first = stream.ReadByte();
+        if (first < 0)
+            throw new EndOfStreamException();
+
+        var value = (byte)first;
+        if (value < 128)
+            return value;
+        if (value == 240)
+            return ReadUInt32LittleEndian(stream);
+        if (value == byte.MaxValue)
+            return uint.MaxValue;
+        if (value == 254)
+            return uint.MaxValue - 1;
+        if ((value & 192) == 192)
+        {
+            return (value & ~192U) << 24
+                | (uint)(ReadByte(stream) << 16)
+                | (uint)(ReadByte(stream) << 8)
+                | ReadByte(stream);
+        }
+        if ((value & 128) == 128)
+            return (value & ~128U) << 8 | ReadByte(stream);
+
+        throw new InvalidDataException($"Invalid compressed int first byte {value}.");
+    }
+
+    private static int ReadCompressedInt(Stream stream)
+    {
+        var unsigned = ReadCompressedUInt(stream);
+        if (unsigned == uint.MaxValue)
+            return int.MinValue;
+
+        var isNegative = (unsigned & 1) == 1;
+        unsigned >>= 1;
+        if (isNegative)
+            return -(int)(unsigned + 1);
+        return (int)unsigned;
+    }
+
+    private static uint ReadUInt32LittleEndian(Stream stream)
+    {
+        return ReadByte(stream)
+            | (uint)(ReadByte(stream) << 8)
+            | (uint)(ReadByte(stream) << 16)
+            | (uint)(ReadByte(stream) << 24);
+    }
+
+    private static byte ReadByte(Stream stream)
+    {
+        var value = stream.ReadByte();
+        if (value < 0)
+            throw new EndOfStreamException();
+        return (byte)value;
     }
 
     private static IEnumerable<Il2CppTypeDefinition> EnumerateTypes(

@@ -63,7 +63,7 @@ class TableExtractorCharacterTableSource:
         file_path: str,
         table_name: str = "",
     ) -> list[DBTable]:
-        return self._extractor._process_db_file(file_path, table_name)
+        return self._extractor.process_db_file(file_path, table_name)
 
     def process_zip_file(
         self,
@@ -73,7 +73,7 @@ class TableExtractorCharacterTableSource:
         *,
         detect_type: bool = False,
     ) -> ProcessedTableArtifact:
-        return self._extractor._process_zip_file(
+        return self._extractor.process_zip_file(
             archive_name,
             file_name,
             file_data,
