@@ -1,8 +1,8 @@
 from ba_downloader.infrastructure.tools.dump_backend import (
     CPP2IL_COMMIT,
     DEFAULT_DUMPER_BACKEND_REGISTRY,
-    CnMetadataDumpBackend,
-    CnMetadataDumpError,
+    CnMetadataRecoveryDumpBackend,
+    CnMetadataRecoveryDumpError,
     Cpp2IlDumpCsBackend,
     Cpp2ILSourceResolver,
     DumperBackendRegistry,
@@ -15,8 +15,8 @@ from ba_downloader.infrastructure.tools.runtime_probe import (
 __all__ = [
     "CPP2IL_COMMIT",
     "DEFAULT_DUMPER_BACKEND_REGISTRY",
-    "CnMetadataDumpBackend",
-    "CnMetadataDumpError",
+    "CnMetadataRecoveryDumpBackend",
+    "CnMetadataRecoveryDumpError",
     "Cpp2ILSourceResolver",
     "Cpp2IlDumpCsBackend",
     "DumperBackendRegistry",

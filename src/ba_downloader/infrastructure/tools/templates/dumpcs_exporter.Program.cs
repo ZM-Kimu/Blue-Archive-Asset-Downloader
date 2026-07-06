@@ -27,6 +27,9 @@ internal static class Program
                 ? throw new InvalidOperationException("Missing unity version. Please pass --unity-version.")
                 : UnityVersion.Parse(options.UnityVersion);
 
+            if (options.EnableCnMetadataRecoveryShim)
+                CnMetadataRecoveryInputShim.Register();
+
             if (!LibCpp2IlMain.LoadFromFile(options.BinaryPath, options.MetadataPath, unityVersion))
                 throw new InvalidOperationException("Failed to load IL2CPP binary and metadata.");
 
@@ -675,6 +678,7 @@ internal static class Program
         string? outputPath = null;
         string? formatterOutputPath = null;
         string? unityVersion = null;
+        var enableCnMetadataRecoveryShim = false;
 
         foreach (var arg in args)
         {
@@ -688,6 +692,8 @@ internal static class Program
                 formatterOutputPath = arg["--formatter-output=".Length..].Trim('"');
             else if (arg.StartsWith("--unity-version=", StringComparison.OrdinalIgnoreCase))
                 unityVersion = arg["--unity-version=".Length..].Trim('"');
+            else if (arg.Equals("--enable-cn-metadata-recovery-shim", StringComparison.OrdinalIgnoreCase))
+                enableCnMetadataRecoveryShim = true;
         }
 
         if (string.IsNullOrWhiteSpace(binaryPath) || string.IsNullOrWhiteSpace(metadataPath) || string.IsNullOrWhiteSpace(outputPath))
@@ -698,13 +704,14 @@ internal static class Program
             metadataPath,
             outputPath,
             formatterOutputPath ?? string.Empty,
-            unityVersion ?? string.Empty);
+            unityVersion ?? string.Empty,
+            enableCnMetadataRecoveryShim);
     }
 
     private static void PrintUsage()
     {
         Console.WriteLine("Usage:");
-        Console.WriteLine("  dotnet run --project dumpcs_exporter -- --binary-path=<path> --metadata-path=<path> --unity-version=<version> --output=<path> [--formatter-output=<path>]");
+        Console.WriteLine("  dotnet run --project dumpcs_exporter -- --binary-path=<path> --metadata-path=<path> --unity-version=<version> --output=<path> [--formatter-output=<path>] [--enable-cn-metadata-recovery-shim]");
     }
 
     private sealed record Options(
@@ -712,5 +719,6 @@ internal static class Program
         string MetadataPath,
         string OutputPath,
         string FormatterOutputPath,
-        string UnityVersion);
+        string UnityVersion,
+        bool EnableCnMetadataRecoveryShim);
 }

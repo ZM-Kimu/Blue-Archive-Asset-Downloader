@@ -4,10 +4,8 @@ import hashlib
 import re
 import shutil
 import subprocess
-import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import TextIO
 from zipfile import BadZipFile, ZipFile
 
 from ba_downloader.domain.models.region import Region
@@ -16,6 +14,10 @@ from ba_downloader.domain.ports.extract import Il2CppDumpBackendPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.runtime.assets import RuntimeAssetLocator
+from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
+    CnMetadataRecoveryError,
+    CnMetadataRecoveryPipeline,
+)
 from ba_downloader.infrastructure.tools.runtime_probe import (
     get_installed_dotnet_sdk_major_versions,
 )
@@ -33,18 +35,14 @@ CPP2IL_PROJECT = Path("Cpp2IL") / "Cpp2IL.csproj"
 LIBCPP2IL_PROJECT = Path("LibCpp2IL") / "LibCpp2IL.csproj"
 EXPORTER_PROJECT_NAME = "dumpcs_exporter"
 UNITY_VERSION_PATTERN = re.compile(r"(20\d{2}\.\d+\.\d+[a-z]\d+)", re.IGNORECASE)
-CN_EXPORTER_STAGE_PATTERN = re.compile(r"^\[[#\.]+\]\s+\[\d+/\d+\]\s+.+$")
-CN_EXPORTER_LOOP_PATTERN = re.compile(
-    r"^\s+.+\s+\[[#\.]+\]\s+\d{1,3}%\s+\(\d+/\d+,\s+.+\)$"
-)
 
 EXPORTER_TEMPLATE_DIR = Path(__file__).with_name("templates")
 EXPORTER_CSPROJ_TEMPLATE_PATH = (
     EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.csproj.template"
 )
 EXPORTER_PROGRAM_CS_PATH = EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.Program.cs"
-CN_METADATA_EXPORTER_PROJECT = (
-    Path("third_party") / "cn_metadata_exporter" / "cn_metadata_exporter.csproj"
+EXPORTER_CN_METADATA_RECOVERY_SHIM_CS_PATH = (
+    EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.CnMetadataRecoveryInputShim.cs"
 )
 
 
@@ -54,172 +52,6 @@ def _read_exporter_template(template_path: Path) -> str:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
-
-
-class _StreamingProcessResult:
-    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-
-def _classify_cn_exporter_stderr_line(line: str) -> str:
-    if CN_EXPORTER_LOOP_PATTERN.match(line):
-        return "suppress"
-    if CN_EXPORTER_STAGE_PATTERN.match(line):
-        return "info"
-    return "warn"
-
-
-def _forward_process_stream(
-    stream: TextIO | None,
-    logger: LoggerPort,
-    collector: list[str],
-    *,
-    is_stderr: bool = False,
-) -> None:
-    if stream is None:
-        return
-
-    try:
-        for raw_line in iter(stream.readline, ""):
-            line = raw_line.rstrip("\r\n")
-            if not line:
-                continue
-            if not is_stderr:
-                collector.append(line)
-                logger.info(line)
-                continue
-
-            classification = _classify_cn_exporter_stderr_line(line)
-            if classification == "suppress":
-                continue
-            collector.append(line)
-            if classification == "info":
-                logger.info(line)
-            else:
-                logger.warn(line)
-    finally:
-        stream.close()
-
-
-def _run_streaming_process(
-    command: list[str],
-    logger: LoggerPort,
-) -> _StreamingProcessResult:
-    with subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf8",
-        errors="replace",
-        bufsize=1,
-    ) as process:
-        stdout_lines: list[str] = []
-        stderr_lines: list[str] = []
-        threads = [
-            threading.Thread(
-                target=_forward_process_stream,
-                args=(process.stdout, logger, stdout_lines),
-            ),
-            threading.Thread(
-                target=_forward_process_stream,
-                args=(process.stderr, logger, stderr_lines),
-                kwargs={"is_stderr": True},
-            ),
-        ]
-        for thread in threads:
-            thread.start()
-
-        returncode = process.wait()
-
-        for thread in threads:
-            thread.join()
-
-        return _StreamingProcessResult(
-            returncode=returncode,
-            stdout="\n".join(stdout_lines),
-            stderr="\n".join(stderr_lines),
-        )
-
-
-class CnMetadataDumpError(RuntimeError):
-    """Raised when the CN metadata dump backend fails."""
-
-
-class CnMetadataDumpBackend(Il2CppDumpBackendPort):
-    METADATA_FOLDER = "CN_Metadata"
-    METADATA_NAME = "global-metadata.dat"
-
-    def __init__(
-        self,
-        http_client: HttpClientPort,
-        logger: LoggerPort,
-        source_resolver: Cpp2ILSourceResolver | None = None,
-    ) -> None:
-        self.http_client = http_client
-        self.logger = logger
-        self.source_resolver = source_resolver or Cpp2ILSourceResolver(
-            http_client, logger
-        )
-
-    def dump(self, context: RuntimeContext, output_dir: str) -> None:
-        metadata_path = self._resolve_metadata_path(context)
-        cpp2il_root = self.source_resolver.resolve(context)
-        project_path = self._resolve_project_path()
-        dump_cs_path = Path(output_dir) / "dump.cs"
-        formatter_sidecar_path = Path(output_dir) / "memorypack_formatters.json"
-        dump_cs_path.parent.mkdir(parents=True, exist_ok=True)
-
-        self.logger.info("Trying to dump CN metadata...")
-        result = _run_streaming_process(
-            [
-                "dotnet",
-                "run",
-                "--project",
-                str(project_path),
-                "-c",
-                "Release",
-                f"-p:Cpp2ILRoot={cpp2il_root.resolve()}",
-                "--",
-                "--metadata",
-                str(metadata_path.resolve()),
-                "--output",
-                str(dump_cs_path.resolve()),
-                "--formatter-output",
-                str(formatter_sidecar_path.resolve()),
-            ],
-            self.logger,
-        )
-        if result.returncode != 0:
-            summary = (
-                result.stderr.strip()
-                or result.stdout.strip()
-                or (f"Process exited with code {result.returncode}.")
-            )
-            raise CnMetadataDumpError(
-                "Failed to dump CN metadata with cn_metadata_exporter: " f"{summary}"
-            )
-        self.logger.info("Dumped CN metadata successfully.")
-
-    @classmethod
-    def _resolve_metadata_path(cls, context: RuntimeContext) -> Path:
-        metadata_path = Path(context.temp_dir) / cls.METADATA_FOLDER / cls.METADATA_NAME
-        if not metadata_path.is_file():
-            raise FileNotFoundError(
-                "Cannot find CN metadata file. Make sure runtime preparation completed successfully.",
-            )
-        return metadata_path
-
-    @staticmethod
-    def _resolve_project_path() -> Path:
-        project_path = (_repo_root() / CN_METADATA_EXPORTER_PROJECT).resolve()
-        if not project_path.is_file():
-            raise FileNotFoundError(
-                f"Cannot find cn_metadata_exporter project: {project_path}.",
-            )
-        return project_path
 
 
 class Cpp2ILSourceResolver:
@@ -493,7 +325,137 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
             _read_exporter_template(EXPORTER_PROGRAM_CS_PATH),
             encoding="utf8",
         )
+        (export_root / "CnMetadataRecoveryInputShim.cs").write_text(
+            _read_exporter_template(EXPORTER_CN_METADATA_RECOVERY_SHIM_CS_PATH),
+            encoding="utf8",
+        )
         return project_path
+
+
+class CnMetadataRecoveryDumpError(RuntimeError):
+    """Raised when the CN metadata recovery dump backend fails."""
+
+
+class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
+    METADATA_FOLDER = "CN_Metadata"
+    RUNTIME_FOLDER = "CN_Runtime"
+    RECOVERY_FOLDER = "CN_MetadataRecovery"
+    FINAL_METADATA_NAME = "global-metadata.standard-v29.dat"
+    BINARY_NAME = "libil2cpp.so"
+
+    def __init__(
+        self,
+        http_client: HttpClientPort,
+        logger: LoggerPort,
+        source_resolver: Cpp2ILSourceResolver | None = None,
+        *,
+        recovery_pipeline: CnMetadataRecoveryPipeline | None = None,
+    ) -> None:
+        super().__init__(http_client, logger, source_resolver)
+        self.recovery_pipeline = recovery_pipeline or CnMetadataRecoveryPipeline()
+
+    def dump(self, context: RuntimeContext, output_dir: str) -> None:
+        base_dir = Path(context.temp_dir)
+        metadata_path = self._resolve_prepared_metadata_path(base_dir)
+        binary_path = self._resolve_prepared_binary_path(base_dir)
+        unity_version = self._resolve_unity_version(base_dir)
+        if not unity_version:
+            raise LookupError(
+                "Cannot determine Unity version for CN metadata recovery backend. "
+                "Set BA_CPP2IL_UNITY_VERSION or ensure globalgamemanagers exists in temp files.",
+            )
+
+        recovery_dir = base_dir / self.RECOVERY_FOLDER
+        try:
+            recovery_result = self.recovery_pipeline.run(
+                protected_metadata=metadata_path.read_bytes(),
+                binary_path=binary_path,
+            )
+        except CnMetadataRecoveryError as exc:
+            raise CnMetadataRecoveryDumpError(
+                "Failed to recover CN metadata. "
+                f"Step: {exc.step}. Input: {metadata_path}. "
+                f"Output: {recovery_dir / self.FINAL_METADATA_NAME}. {exc}"
+            ) from exc
+
+        final_metadata_path = self._write_final_metadata(
+            recovery_dir,
+            recovery_result.standard_v29_metadata,
+        )
+        self.logger.info("Recovered CN metadata successfully.")
+
+        cpp2il_root = self.source_resolver.resolve(context)
+        dump_cs_path = Path(output_dir) / "dump.cs"
+        formatter_sidecar_path = Path(output_dir) / "memorypack_formatters.json"
+        dump_cs_path.parent.mkdir(parents=True, exist_ok=True)
+
+        framework = self._resolve_framework()
+        exporter_project = self._ensure_exporter_project(
+            context,
+            cpp2il_root,
+            framework,
+        )
+        try:
+            subprocess.run(
+                [
+                    "dotnet",
+                    "run",
+                    "--project",
+                    str(exporter_project),
+                    "--framework",
+                    framework,
+                    "--",
+                    f"--binary-path={binary_path.resolve()}",
+                    f"--metadata-path={final_metadata_path.resolve()}",
+                    f"--unity-version={unity_version}",
+                    f"--output={dump_cs_path.resolve()}",
+                    f"--formatter-output={formatter_sidecar_path.resolve()}",
+                    "--enable-cn-metadata-recovery-shim",
+                ],
+                capture_output=True,
+                check=True,
+                text=True,
+                encoding="utf8",
+            )
+        except subprocess.CalledProcessError as exc:
+            raise CnMetadataRecoveryDumpError(
+                "Failed to dump CN metadata recovery il2cpp with Cpp2IL backend: "
+                f"{exc.stderr.strip() or exc}",
+            ) from exc
+
+        self.logger.info("Dumped CN metadata recovery il2cpp binary file successfully.")
+
+    @classmethod
+    def _write_final_metadata(cls, recovery_dir: Path, metadata: bytes) -> Path:
+        recovery_dir.mkdir(parents=True, exist_ok=True)
+        for child in recovery_dir.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        final_metadata_path = recovery_dir / cls.FINAL_METADATA_NAME
+        final_metadata_path.write_bytes(metadata)
+        return final_metadata_path
+
+    @classmethod
+    def _resolve_prepared_metadata_path(cls, temp_dir: Path) -> Path:
+        metadata_path = temp_dir / cls.METADATA_FOLDER / cls.METADATA_NAME
+        if not metadata_path.is_file():
+            raise FileNotFoundError(
+                "Cannot find CN metadata recovery metadata file. "
+                "Make sure CN runtime asset preparation completed successfully."
+            )
+        return metadata_path
+
+    @classmethod
+    def _resolve_prepared_binary_path(cls, temp_dir: Path) -> Path:
+        binary_path = temp_dir / cls.RUNTIME_FOLDER / cls.BINARY_NAME
+        if not binary_path.is_file():
+            raise FileNotFoundError(
+                "Cannot find CN metadata recovery binary file. "
+                "Make sure CN runtime asset preparation extracted libil2cpp.so."
+            )
+        return binary_path
 
 
 BackendFactory = Callable[[HttpClientPort, LoggerPort], Il2CppDumpBackendPort]
@@ -515,7 +477,8 @@ class DumperBackendRegistry:
 def build_default_dumper_backend_registry() -> DumperBackendRegistry:
     registry = DumperBackendRegistry()
     registry.register(
-        "cn", lambda http_client, logger: CnMetadataDumpBackend(http_client, logger)
+        "cn",
+        lambda http_client, logger: CnMetadataRecoveryDumpBackend(http_client, logger),
     )
     registry.register(
         "gl", lambda http_client, logger: Cpp2IlDumpCsBackend(http_client, logger)

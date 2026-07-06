@@ -172,6 +172,7 @@ ba-downloader download --region jp --platform windows
 
 - `--platform` applies only to JP and selects JP platform-specific resources.
 - `--version` applies only to GL. CN/JP automatically resolve the currently available version.
+- CN dump automatically uses the CN metadata recovery backend and keeps the `<Extracted>/Dumps/dump.cs` plus `memorypack_formatters.json` outputs.
 - JP APK files are currently sourced from APKPure. After the Play Store updates, APKPure may take some time to synchronize.
 - The JP profile covers Windows/Android/iOS. JP Android table extraction is the most complete semantic path today. When dump sidecars can automatically produce MemoryPack formatter facts, BAAD exports `StageSaveData.json`, `LogicEffectDAO` JSON, and `GroundNodeLayerFlat.json`; payloads without reliable formatter facts fall back to raw output.
 - JP table extraction requires a current table metadata manifest or access to the JP catalog. Missing metadata no longer falls back to local archive entry names.

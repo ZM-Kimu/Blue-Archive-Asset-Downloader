@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-from io import StringIO
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -11,12 +10,16 @@ import pytest
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
+from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
+    CnMetadataRecoveryError,
+    CnMetadataRecoveryResult,
+)
 from ba_downloader.infrastructure.tools.dump_backend import (
     CPP2IL_COMMIT,
     EXPORTER_CSPROJ_TEMPLATE_PATH,
     EXPORTER_PROGRAM_CS_PATH,
-    CnMetadataDumpBackend,
-    CnMetadataDumpError,
+    CnMetadataRecoveryDumpBackend,
+    CnMetadataRecoveryDumpError,
     Cpp2IlDumpCsBackend,
     Cpp2ILSourceResolver,
     build_default_dumper_backend_registry,
@@ -102,31 +105,6 @@ class RecordingLogger:
         self.error_messages.append(message)
 
 
-class FakePopen:
-    def __init__(
-        self,
-        command: list[str],
-        *,
-        stdout_text: str = "",
-        stderr_text: str = "",
-        returncode: int = 0,
-    ) -> None:
-        self.command = command
-        self.stdout = StringIO(stdout_text)
-        self.stderr = StringIO(stderr_text)
-        self.returncode = returncode
-
-    def wait(self) -> int:
-        return self.returncode
-
-    def __enter__(self) -> FakePopen:
-        return self
-
-    def __exit__(self, exc_type, exc, exc_tb) -> bool:  # type: ignore[no-untyped-def]
-        _ = (exc_type, exc, exc_tb)
-        return False
-
-
 def _build_context(tmp_path: Path, *, region: str = "jp") -> RuntimeContext:
     return RuntimeContext(
         region=region,
@@ -167,7 +145,7 @@ def test_default_dumper_policy_maps_regions_to_expected_backends() -> None:
     )
     assert isinstance(
         registry.resolve("cn")(http_client, logger),
-        CnMetadataDumpBackend,
+        CnMetadataRecoveryDumpBackend,
     )
 
 
@@ -447,7 +425,16 @@ def test_cpp2il_exporter_project_targets_selected_framework(
     assert 'SetTargetFramework="TargetFramework=net10.0"' in project_text
     program_text = (project_path.parent / "Program.cs").read_text(encoding="utf8")
     assert program_text.startswith("using System.Reflection;")
+    assert "if (options.EnableCnMetadataRecoveryShim)" in program_text
+    assert "CnMetadataRecoveryInputShim.Register();" in program_text
     assert "memorypack_union_attrs.json" in program_text
+    shim_text = (project_path.parent / "CnMetadataRecoveryInputShim.cs").read_text(
+        encoding="utf8"
+    )
+    assert "Il2CppBinary.OnRegistrationStructLocationFailure" in shim_text
+    assert "private static bool IsRegistered" in shim_text
+    assert "if (IsRegistered)" in shim_text
+    assert "auto-scanned" in shim_text
 
 
 def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(
@@ -510,7 +497,25 @@ def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(
     ) in run_calls[-1]
 
 
-def test_cn_metadata_backend_uses_metadata_only_exporter(
+class RecordingMetadataRecoveryPipeline:
+    def __init__(self, standard_v29_metadata: bytes = b"standard v29 metadata") -> None:
+        self.standard_v29_metadata = standard_v29_metadata
+        self.calls: list[tuple[bytes, Path]] = []
+
+    def run(
+        self,
+        *,
+        protected_metadata: bytes,
+        binary_path: Path,
+    ) -> CnMetadataRecoveryResult:
+        self.calls.append((protected_metadata, binary_path))
+        return CnMetadataRecoveryResult(
+            standard_v29_metadata=self.standard_v29_metadata,
+            validation_summary={"valid": True, "errorCount": 0, "warningCount": 0},
+        )
+
+
+def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metadata(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -519,143 +524,137 @@ def test_cn_metadata_backend_uses_metadata_only_exporter(
     metadata_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = metadata_dir / "global-metadata.dat"
     metadata_path.write_bytes(b"metadata")
+    runtime_dir = Path(context.temp_dir) / "CN_Runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    binary_path = runtime_dir / "libil2cpp.so"
+    binary_path.write_bytes(b"binary")
+    (runtime_dir / "globalgamemanagers").write_bytes(b"Unity 2021.3.45f1")
+
     logger = RecordingLogger()
     cpp2il_root = tmp_path / "fallback" / "Cpp2IL"
     source_resolver = StaticSourceResolver(cpp2il_root)
-    backend = CnMetadataDumpBackend(DummyHttpClient(), logger, source_resolver)
-    popen_calls: list[list[str]] = []
-
-    def fake_popen(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
-        _ = kwargs
-        popen_calls.append(command)
-        return FakePopen(
-            command,
-            stdout_text="exporter started\nexporter finished\n",
-            stderr_text=(
-                "[############............] [1/2] parse metadata\n"
-                "    member signature build [#############.....] 70% (20147/28491,  20983/s)\n"
-            ),
-        )
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.tools.dump_backend.subprocess.Popen",
-        fake_popen,
+    final_metadata_path = (
+        Path(context.temp_dir)
+        / "CN_MetadataRecovery"
+        / "global-metadata.standard-v29.dat"
     )
+    pipeline = RecordingMetadataRecoveryPipeline()
+    backend = CnMetadataRecoveryDumpBackend(
+        DummyHttpClient(),
+        logger,
+        source_resolver,
+        recovery_pipeline=pipeline,
+    )
+    exporter_project = tmp_path / "DumpCsExporter.csproj"
+    exporter_project.write_text("<Project />", encoding="utf8")
+    run_calls: list[list[str]] = []
+    ensure_calls: list[str] = []
+
+    def fake_run(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
+        _ = kwargs
+        run_calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def fake_ensure_exporter_project(
+        _context: RuntimeContext,
+        _cpp2il_root: Path,
+        framework: str,
+    ) -> Path:
+        ensure_calls.append(framework)
+        return exporter_project
+
     monkeypatch.setattr(
-        CnMetadataDumpBackend,
-        "_resolve_project_path",
-        staticmethod(lambda: tmp_path / "third_party" / "cn_metadata_exporter.csproj"),
+        backend,
+        "_ensure_exporter_project",
+        fake_ensure_exporter_project,
+    )
+    monkeypatch.setattr(backend, "_resolve_framework", lambda: "net10.0")
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.tools.dump_backend.subprocess.run", fake_run
     )
 
     backend.dump(context, str(tmp_path / "Extracted" / "Dumps"))
 
-    assert logger.info_messages[0] == "Trying to dump CN metadata..."
-    assert logger.info_messages[-1] == "Dumped CN metadata successfully."
-    assert "exporter started" in logger.info_messages
-    assert "exporter finished" in logger.info_messages
-    assert "[############............] [1/2] parse metadata" in logger.info_messages
-    assert all(
-        "member signature build" not in message for message in logger.info_messages
-    )
     assert logger.warn_messages == []
-    assert popen_calls == [
+    assert logger.info_messages == [
+        "Recovered CN metadata successfully.",
+        "Dumped CN metadata recovery il2cpp binary file successfully.",
+    ]
+    assert ensure_calls == ["net10.0"]
+    assert pipeline.calls == [(b"metadata", binary_path)]
+    assert final_metadata_path.read_bytes() == b"standard v29 metadata"
+    assert sorted(path.name for path in final_metadata_path.parent.iterdir()) == [
+        "global-metadata.standard-v29.dat"
+    ]
+    assert run_calls == [
         [
             "dotnet",
             "run",
             "--project",
-            str(tmp_path / "third_party" / "cn_metadata_exporter.csproj"),
-            "-c",
-            "Release",
-            f"-p:Cpp2ILRoot={cpp2il_root.resolve()}",
+            str(exporter_project),
+            "--framework",
+            "net10.0",
             "--",
-            "--metadata",
-            str(metadata_path.resolve()),
-            "--output",
-            str((tmp_path / "Extracted" / "Dumps" / "dump.cs").resolve()),
-            "--formatter-output",
-            str(
-                (
-                    tmp_path / "Extracted" / "Dumps" / "memorypack_formatters.json"
-                ).resolve()
-            ),
+            f"--binary-path={binary_path.resolve()}",
+            f"--metadata-path={final_metadata_path.resolve()}",
+            "--unity-version=2021.3.45f1",
+            f"--output={(tmp_path / 'Extracted' / 'Dumps' / 'dump.cs').resolve()}",
+            f"--formatter-output="
+            f"{(tmp_path / 'Extracted' / 'Dumps' / 'memorypack_formatters.json').resolve()}",
+            "--enable-cn-metadata-recovery-shim",
         ]
     ]
     assert source_resolver.contexts == [context]
 
 
-def test_cn_metadata_backend_raises_on_exporter_failure(
-    monkeypatch: pytest.MonkeyPatch,
+def test_cn_metadata_recovery_backend_raises_actionable_pipeline_error(
     tmp_path: Path,
 ) -> None:
+    class FailingPipeline:
+        def run(
+            self,
+            *,
+            protected_metadata: bytes,
+            binary_path: Path,
+        ) -> CnMetadataRecoveryResult:
+            _ = (protected_metadata, binary_path)
+            raise CnMetadataRecoveryError(
+                "sanitize_default_values",
+                "default value section is invalid",
+            )
+
     context = _build_context(tmp_path, region="cn")
     metadata_dir = Path(context.temp_dir) / "CN_Metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
     (metadata_dir / "global-metadata.dat").write_bytes(b"metadata")
+    runtime_dir = Path(context.temp_dir) / "CN_Runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "libil2cpp.so").write_bytes(b"binary")
+    (runtime_dir / "globalgamemanagers").write_bytes(b"Unity 2021.3.45f1")
     logger = RecordingLogger()
-    backend = CnMetadataDumpBackend(
+    backend = CnMetadataRecoveryDumpBackend(
         DummyHttpClient(),
         logger,
         StaticSourceResolver(tmp_path / "Cpp2IL"),
+        recovery_pipeline=FailingPipeline(),
     )
 
-    def fake_popen(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
-        _ = kwargs
-        return FakePopen(
-            command,
-            stdout_text="phase 1\n",
-            stderr_text=(
-                "    member signature build [#############.....] 70% (20147/28491,  20983/s)\n"
-                "dump failed\n"
-            ),
-            returncode=1,
-        )
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.tools.dump_backend.subprocess.Popen",
-        fake_popen,
-    )
-    monkeypatch.setattr(
-        CnMetadataDumpBackend,
-        "_resolve_project_path",
-        staticmethod(lambda: tmp_path / "third_party" / "cn_metadata_exporter.csproj"),
-    )
-
-    with pytest.raises(CnMetadataDumpError, match="dump failed"):
+    with pytest.raises(CnMetadataRecoveryDumpError, match="sanitize_default_values"):
         backend.dump(context, str(tmp_path / "Extracted" / "Dumps"))
-    assert logger.info_messages == [
-        "Trying to dump CN metadata...",
-        "phase 1",
-    ]
-    assert logger.warn_messages == ["dump failed"]
 
 
-def test_cn_metadata_backend_propagates_startup_failure(
-    monkeypatch: pytest.MonkeyPatch,
+def test_cn_metadata_recovery_backend_requires_prepared_metadata_and_binary(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="cn")
     metadata_dir = Path(context.temp_dir) / "CN_Metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
     (metadata_dir / "global-metadata.dat").write_bytes(b"metadata")
-    backend = CnMetadataDumpBackend(
+    backend = CnMetadataRecoveryDumpBackend(
         DummyHttpClient(),
         RecordingLogger(),
         StaticSourceResolver(tmp_path / "Cpp2IL"),
     )
 
-    def fake_popen(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
-        _ = (command, kwargs)
-        raise FileNotFoundError("dotnet not found")
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.tools.dump_backend.subprocess.Popen",
-        fake_popen,
-    )
-    monkeypatch.setattr(
-        CnMetadataDumpBackend,
-        "_resolve_project_path",
-        staticmethod(lambda: tmp_path / "third_party" / "cn_metadata_exporter.csproj"),
-    )
-
-    with pytest.raises(FileNotFoundError, match="dotnet not found"):
+    with pytest.raises(FileNotFoundError, match="CN metadata recovery binary"):
         backend.dump(context, str(tmp_path / "Extracted" / "Dumps"))

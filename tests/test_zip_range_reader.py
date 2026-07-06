@@ -199,13 +199,15 @@ def test_zip_range_reader_raises_when_zip64_eocd_is_detected() -> None:
         read_zip_entries("https://example.invalid/cn.apk", client)
 
 
-def test_cn_runtime_asset_preparer_extracts_metadata_without_full_download(
+def test_cn_runtime_asset_preparer_extracts_runtime_assets_without_full_download(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     archive_bytes = _build_zip_bytes(
         {
             "assets/bin/Data/Managed/Metadata/global-metadata.dat": b"metadata",
+            "lib/arm64-v8a/libil2cpp.so": b"binary",
+            "assets/bin/Data/globalgamemanagers": b"Unity 2021.3.45f1",
             "assets/bin/Data/other.bin": b"payload",
         }
     )
@@ -223,12 +225,16 @@ def test_cn_runtime_asset_preparer_extracts_metadata_without_full_download(
     preparer.prepare(context)
 
     metadata_path = Path(context.temp_dir) / "CN_Metadata" / "global-metadata.dat"
+    binary_path = Path(context.temp_dir) / "CN_Runtime" / "libil2cpp.so"
+    managers_path = Path(context.temp_dir) / "CN_Runtime" / "globalgamemanagers"
     assert metadata_path.read_bytes() == b"metadata"
+    assert binary_path.read_bytes() == b"binary"
+    assert managers_path.read_bytes() == b"Unity 2021.3.45f1"
     assert all(
         call["method"] == "HEAD" or "Range" in call["headers"] for call in client.calls
     )
     assert logger.by_level("info") == [
-        "Preparing CN metadata from APK central directory..."
+        "Preparing CN runtime assets from APK central directory..."
     ]
 
 
@@ -253,6 +259,57 @@ def test_cn_runtime_asset_preparer_raises_when_metadata_entry_is_missing(
 
     with pytest.raises(ZipEntryNotFoundError, match=r"global-metadata\.dat"):
         preparer.prepare(context)
+
+
+def test_cn_runtime_asset_preparer_raises_when_libil2cpp_entry_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    archive_bytes = _build_zip_bytes(
+        {
+            "assets/bin/Data/Managed/Metadata/global-metadata.dat": b"metadata",
+            "assets/bin/Data/other.bin": b"payload",
+        }
+    )
+    client = RangeHttpClient(archive_bytes)
+    preparer = CNRuntimeAssetPreparer(client, RecordingLogger())
+    context = _build_context(tmp_path)
+
+    monkeypatch.setattr(
+        CNRegionProvider,
+        "get_apk_url",
+        lambda self, server="official": "https://example.invalid/cn.apk",
+    )
+
+    with pytest.raises(ZipEntryNotFoundError, match=r"libil2cpp\.so"):
+        preparer.prepare(context)
+
+
+def test_cn_runtime_asset_preparer_allows_missing_globalgamemanagers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    archive_bytes = _build_zip_bytes(
+        {
+            "assets/bin/Data/Managed/Metadata/global-metadata.dat": b"metadata",
+            "lib/arm64-v8a/libil2cpp.so": b"binary",
+        }
+    )
+    client = RangeHttpClient(archive_bytes)
+    preparer = CNRuntimeAssetPreparer(client, RecordingLogger())
+    context = _build_context(tmp_path)
+
+    monkeypatch.setattr(
+        CNRegionProvider,
+        "get_apk_url",
+        lambda self, server="official": "https://example.invalid/cn.apk",
+    )
+
+    preparer.prepare(context)
+
+    assert (
+        Path(context.temp_dir) / "CN_Runtime" / "globalgamemanagers"
+    ).exists() is False
 
 
 def test_cn_runtime_asset_preparer_raises_when_metadata_basename_is_ambiguous(

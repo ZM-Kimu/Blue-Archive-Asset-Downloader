@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run-preflight.ps1
 
 - `jp`：默认使用 `cpp2il_custom`
 - `gl`：默认使用 `cpp2il_custom`
-- `cn`：内部使用 metadata-only `cn_metadata_exporter`
+- `cn`：内部使用 CN metadata recovery pipeline，生成 standard v29 metadata 后再走 `cpp2il_custom`
 
 如果以源码方式运行并希望固定 Cpp2IL 依赖，请使用子模块：
 
@@ -65,15 +65,16 @@ git submodule update --init --recursive
 
 - `./.ba-downloader/tools/`
 
-CN metadata backend 额外依赖仓库内 vendored 的独立 dumper 工程：
+CN dump backend 不再使用旧 `cn_metadata_exporter`，也不提供 metadata-only fallback。当前流程：
 
-- `third_party/cn_metadata_exporter`
+- `CNRuntimeAssetPreparer` 从 APK central directory 准备 `global-metadata.dat`、`lib/arm64-v8a/libil2cpp.so`，并尽量准备 `globalgamemanagers` 用于 Unity version 解析。
+- `CnMetadataRecoveryDumpBackend` 只将 final standard v29 metadata 写入 `<Temp>/CN_MetadataRecovery/global-metadata.standard-v29.dat`。
+- Python recovery API 以 vendored package 形式放在 `ba_downloader.infrastructure.tools.cn_metadata_recovery`，生产运行不依赖 `G:\test_ba`。
+- 最终仍输出 `<Extracted>/Dumps/dump.cs` 与 `memorypack_formatters.json`，供 `SchemaWorkflow.compile()` 使用。
 
-该工程当前以源码快照方式纳入仓库，依赖 `third_party/Cpp2IL/LibCpp2IL`，可单独验证：
+手动验证样本与已确认 hash 记录在：
 
-```shell
-dotnet build third_party/cn_metadata_exporter/cn_metadata_exporter.csproj -c Release
-```
+- `docs/cn-metadata-recovery-dump-backend.md`
 
 ## FlatBuffer 与 MemoryPack schema 说明
 
@@ -102,7 +103,7 @@ FlatBuffer schema 生成失败会中断 compile；MemoryPack schema 生成失败
 
 在各区服格式尚未全部可语义解包前，不做未验证的统一格式猜测。后续当 CN / GL / JP 的 table payload 语义覆盖足够完整时，再将这些来源特定规则收敛为统一 payload router，并以统一路由作为唯一入口。
 
-## 架构边界与复杂度预算
+## 架构边界
 
 当前仓库允许内部 Python API 进行 breaking change，但 CLI 命令、核心参数、默认输出目录默认保持稳定。较大的重构应先补架构或行为测试，再拆实现。
 
@@ -117,7 +118,7 @@ FlatBuffer schema 生成失败会中断 compile；MemoryPack schema 生成失败
 - `regions` 只负责区服 release/catalog 获取和 asset normalization；schema codec 与 Unity 读取细节不得放回 provider facade。
 - `schema` 只负责 dump schema、generated registry 与 binary reader/exporter，不直接驱动下载或提取流程。
 
-复杂度守门在 `tests/test_architecture_complexity.py` 中维护。默认不为历史热点保留 allowlist；如确需临时放行，必须在对应减熵阶段结束时同步收紧预算或移除放行项。
+架构测试只约束过时 import path、跨层依赖方向和 forbidden infrastructure edges；不再使用 LOC 或 branching 数字预算驱动机械拆分。
 
 内部模块按职责拆分：
 
