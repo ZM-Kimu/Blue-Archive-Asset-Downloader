@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ba_downloader.application.profiles import build_region_profile
 from ba_downloader.application.use_cases.download_assets import DownloadAssetsUseCase
+from ba_downloader.bootstrap.region_profiles import (
+    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+    build_application_region_profile,
+)
 from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -61,11 +64,13 @@ def test_download_writes_catalog_table_metadata_manifest(tmp_path: Path) -> None
     service = DownloadAssetsUseCase(
         provider,
         downloader,
-        workflow_profile=build_region_profile(
+        workflow_profile=build_application_region_profile(
+            DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("jp"),
             context,
-            provider,
-            RecordingLogger(),
-            metadata_store,
+            http_client=object(),
+            logger=RecordingLogger(),
+            table_metadata_store=metadata_store,
+            provider=provider,
         ),
     )
 

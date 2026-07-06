@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from ba_downloader.domain.models.asset import AssetCollection, AssetRecord
 from ba_downloader.domain.models.asset_type_selection import (
     ALL_RESOURCE_TYPES,
     ResourceTypeSelection,
 )
+from ba_downloader.domain.models.runtime import RuntimeContext
 
 
 class ResourceQueryService:
@@ -40,6 +43,22 @@ class ResourceQueryService:
             results.add_item(item)
 
         return results
+
+    @staticmethod
+    def filter_existing(
+        resources: AssetCollection,
+        context: RuntimeContext,
+    ) -> AssetCollection:
+        filtered = AssetCollection()
+        raw_dir = Path(context.raw_dir)
+        seen_paths: set[str] = set()
+        for resource in resources:
+            if resource.path in seen_paths:
+                continue
+            if (raw_dir / resource.path).is_file():
+                filtered.add_item(resource)
+                seen_paths.add(resource.path)
+        return filtered
 
     @staticmethod
     def _search_bundle_files(

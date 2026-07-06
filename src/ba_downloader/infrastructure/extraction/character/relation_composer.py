@@ -8,7 +8,6 @@ from typing import Any, Protocol
 import pykakasi
 
 from ba_downloader.domain.models.character import CharacterData
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.extraction.character.relation_sources import (
     CharacterRelationSources,
 )
@@ -26,37 +25,15 @@ class CharacterRelationEnricher(Protocol):
     ) -> None: ...
 
 
-class CnLegacyRelationEnricher:
-    def enrich(
-        self,
-        composer: CharacterRelationComposer,
-        hash_map: dict[int, CharacterData],
-        sources: CharacterRelationSources,
-    ) -> None:
-        composer.apply_costume_data(hash_map, sources.costume_excel)
-        composer.apply_cn_recruit_data(
-            hash_map,
-            sources.shop_recruit,
-            sources.localize_gacha,
-        )
-
-
 @dataclass(frozen=True, slots=True)
 class CharacterRelationCompositionProfile:
     romanize_japanese_names: bool
     enrichers: tuple[CharacterRelationEnricher, ...] = ()
 
 
-def build_character_relation_composition_profile(
-    context: RuntimeContext,
-) -> CharacterRelationCompositionProfile:
-    if context.region == "jp":
-        return CharacterRelationCompositionProfile(romanize_japanese_names=True)
-    if context.region == "cn":
-        return CharacterRelationCompositionProfile(
-            romanize_japanese_names=False,
-            enrichers=(CnLegacyRelationEnricher(),),
-        )
+def build_default_character_relation_composition_profile() -> (
+    CharacterRelationCompositionProfile
+):
     return CharacterRelationCompositionProfile(romanize_japanese_names=False)
 
 
@@ -194,45 +171,6 @@ class CharacterRelationComposer:
 
         return aliases
 
-    def apply_cn_recruit_data(
-        self,
-        hash_map: dict[int, CharacterData],
-        shop_recruit: list[dict[str, Any]],
-        localize_gacha: list[dict[str, Any]],
-    ) -> None:
-        subtitle_by_shop_id = {
-            int(item.get("GachaShopId", 0) or 0): str(item.get("SubTitleKr", ""))
-            for item in localize_gacha
-            if item.get("SubTitleKr")
-        }
-
-        for recruit in shop_recruit:
-            shop_id = int(recruit.get("Id", 0) or 0)
-            subtitle = subtitle_by_shop_id.get(shop_id, "")
-            if not subtitle:
-                continue
-
-            info_character_ids = [
-                int(value)
-                for value in recruit.get("InfoCharacterId", [])
-                if int(value or 0) > 0
-            ]
-            if not info_character_ids:
-                continue
-
-            recruit_names = extract_recruit_names(subtitle)
-            if not recruit_names:
-                continue
-
-            if len(info_character_ids) == 1:
-                append_names(hash_map, info_character_ids[0], {recruit_names[0]})
-                continue
-
-            for char_id, recruit_name in zip(
-                info_character_ids, recruit_names, strict=False
-            ):
-                append_names(hash_map, char_id, {recruit_name})
-
     def apply_scenario_data(
         self,
         hash_map: dict[int, CharacterData],
@@ -336,25 +274,6 @@ def first_non_empty(payload: dict[str, Any], *keys: str) -> str:
         if value:
             return str(value)
     return ""
-
-
-def extract_recruit_names(subtitle: str) -> list[str]:
-    names: list[str] = []
-    for segment in re.split(r"[/\n]+", subtitle):
-        normalized = segment.strip()
-        if not normalized:
-            continue
-
-        normalized = normalized.replace("还可招募", "").strip()
-        normalized = re.sub(r"^【[^】]+】", "", normalized).strip()
-        normalized = re.sub(r"招募概率提升[\uFF01!]*$", "", normalized).strip()
-        normalized = re.sub(r"^[123]★", "", normalized).strip()
-        normalized = re.sub(r"\uFF08[123]★\uFF09$", "", normalized).strip()
-        normalized = normalized.strip("\uff01! ")
-
-        if normalized:
-            names.append(normalized)
-    return names
 
 
 def append_names(

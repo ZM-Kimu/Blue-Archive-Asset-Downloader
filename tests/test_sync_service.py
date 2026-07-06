@@ -4,8 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from ba_downloader.application.profiles import RegionProfile, build_region_profile
+from ba_downloader.application.profiles import RegionProfile
 from ba_downloader.application.use_cases.sync_assets import SyncAssetsUseCase
+from ba_downloader.bootstrap.region_profiles import (
+    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+    build_application_region_profile,
+)
 from ba_downloader.domain.exceptions import DownloadError
 from ba_downloader.domain.models.asset import (
     AssetCollection,
@@ -176,11 +180,13 @@ def _build_profile(
     logger: RecordingLogger,
     metadata_store: RecordingTableMetadataStore | None = None,
 ) -> RegionProfile:
-    return build_region_profile(
+    return build_application_region_profile(
+        DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(context.region),
         context,
-        provider,
-        logger,
-        metadata_store or RecordingTableMetadataStore(),
+        http_client=object(),
+        logger=logger,
+        table_metadata_store=metadata_store or RecordingTableMetadataStore(),
+        provider=provider,
     )
 
 

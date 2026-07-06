@@ -13,6 +13,10 @@ from typing import Any
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
+from ba_downloader.infrastructure.extraction.table.profiles import (
+    TableExtractionProfile,
+    build_default_table_profile_for_context,
+)
 from ba_downloader.infrastructure.extraction.threaded_runner import (
     ExtractionFailure,
     ExtractionFailureError,
@@ -23,6 +27,8 @@ from ba_downloader.infrastructure.runtime.interrupts import (
     emit_cancellation_feedback,
     install_interrupt_handler,
 )
+
+TableProfileFactory = Callable[[RuntimeContext], TableExtractionProfile]
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +67,7 @@ def table_extraction_process_worker(
     queue: multiprocessing.queues.Queue[Any],
     context: RuntimeContext,
     events: multiprocessing.queues.Queue[TableExtractionEvent],
+    table_profile_factory: TableProfileFactory = build_default_table_profile_for_context,
 ) -> None:
     while True:
         try:
@@ -79,7 +86,11 @@ def table_extraction_process_worker(
             def report_progress(status: str, file_path: str = table_file) -> None:
                 events.put(TableExtractionEvent("progress", file_path, status))
 
-            extractor = TableExtractor.from_context(context, logger)
+            extractor = TableExtractor.from_context(
+                context,
+                logger,
+                table_profile=table_profile_factory(context),
+            )
             extractor.extract_table(
                 table_file,
                 progress_callback=report_progress,
@@ -98,11 +109,13 @@ class ProcessTableExtractionRunner:
         *,
         poll_interval_seconds: float,
         interrupt_grace_seconds: float,
+        table_profile_factory: TableProfileFactory = build_default_table_profile_for_context,
         force_exit: Callable[[int], None] | None = None,
     ) -> None:
         self.logger = logger
         self.poll_interval_seconds = poll_interval_seconds
         self.interrupt_grace_seconds = interrupt_grace_seconds
+        self.table_profile_factory = table_profile_factory
         self.force_exit = force_exit or os._exit
 
     def run(
@@ -174,7 +187,7 @@ class ProcessTableExtractionRunner:
         return [
             multiprocessing.Process(
                 target=table_extraction_process_worker,
-                args=(queue, context, events),
+                args=(queue, context, events, self.table_profile_factory),
             )
             for _ in range(process_count)
         ]

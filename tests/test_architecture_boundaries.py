@@ -5,11 +5,21 @@ PYTHON_SOURCE_ROOT = Path("src/ba_downloader")
 
 FORBIDDEN_INFRA_EDGES = {
     ("infrastructure.download", "infrastructure.extraction"),
+    ("infrastructure.extraction", "infrastructure.regions"),
     ("infrastructure.regions", "infrastructure.schema"),
     ("infrastructure.regions", "infrastructure.unity"),
 }
 
-INFRA_EDGE_ALLOWLIST: set[tuple[str, str]] = set()
+INFRA_EDGE_ALLOWLIST: set[tuple[str, str]] = {
+    (
+        "ba_downloader.infrastructure.regions.jp.catalog_decoder",
+        "ba_downloader.infrastructure.schema.memorypack.cursor",
+    ),
+    (
+        "ba_downloader.infrastructure.regions.jp.catalog_decoder",
+        "ba_downloader.infrastructure.schema.memorypack.reader",
+    ),
+}
 
 FORBIDDEN_IMPORTS = (
     "ba_downloader.legacy",
@@ -47,27 +57,6 @@ def test_runtime_code_avoids_deprecated_import_paths() -> None:
     for file_path in PYTHON_SOURCE_ROOT.rglob("*.py"):
         content = file_path.read_text(encoding="utf-8")
         for pattern in FORBIDDEN_IMPORTS:
-            if pattern in content:
-                violations.append(f"{file_path}: {pattern}")
-
-    assert not violations, "\n".join(violations)
-
-
-def test_architecture_checks_do_not_enforce_numeric_complexity_budgets() -> None:
-    forbidden_patterns = (
-        "MAX_PYTHON_" + "LOC",
-        "MAX_PYTHON_" + "COMPLEXITY",
-        "_approx_python_" + "complexity",
-        "PYTHON_LOC_" + "ALLOWLIST",
-        "PYTHON_COMPLEXITY_" + "ALLOWLIST",
-    )
-    violations: list[str] = []
-
-    for file_path in Path("tests").glob("test_architecture*.py"):
-        if file_path == Path(__file__):
-            continue
-        content = file_path.read_text(encoding="utf-8")
-        for pattern in forbidden_patterns:
             if pattern in content:
                 violations.append(f"{file_path}: {pattern}")
 

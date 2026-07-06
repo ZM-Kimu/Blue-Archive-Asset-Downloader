@@ -30,18 +30,21 @@ CN/GL CLI 对外入口仍保留，但内部应被视为 legacy profile。不要�
 - table archive routing 已拆出 handler。
   - `TableArchiveRouter` 只做 route dispatch、metadata password mapping、warning aggregation。
   - `StandardZipArchiveExtractor` 处理普通 zip。
-  - `GlLegacyArchiveExtractor` 处理 GL legacy ground/MGS 兼容。
+  - shared `archive_classifier` 只保留通用标准 archive route；CN/GL legacy classifier 位于 `regions.legacy_table_archives`，JP legacy 拒绝规则位于 `regions.jp.table_archives`。
+  - GL legacy ground/MGS 兼容由 `regions.gl.table_archives` 注入 handler，shared `TableArchiveRouter` 不再 import GL 实现。
   - JP nested/stage/raw 路径分别在 `nested_archives.py`、`memorypack_archives.py`、`raw_archives.py`。
-  - `TableExtractionProfile` 负责为 JP 与 legacy 路径选择 archive registry、payload router、database resolver。
+  - CN/GL/JP 各自的 `regions.<region>.profile` 负责提供 archive registry、payload router、database resolver。
 
 - JP table metadata manifest 不应写入 `.ba-downloader/catalog`。
   - 目标位置是 `context.temp_dir/catalog/jp/{platform}/{version}.table-metadata.json`。
+  - JP table metadata policy 位于 `regions.jp.catalog_metadata`，由 `RegionServiceProfile` 注入 application workflow。
   - 旧 `.ba-downloader/catalog` 缓存只忽略，不迁移、不读取。
   - JP table metadata 缺失且 catalog refresh 失败时直接报错，不再按 archive entry 名称降级兼容。
 
 - JP relation composition 已改为 profile policy。
   - JP romanization 由 composition profile 开启。
   - CN costume/recruit enrichment 由 legacy enricher 注入。
+  - JP DB source profile 位于 `regions.jp.relation`；CN/GL legacy archive source profile 位于 `regions.legacy_relation`。
   - composer 不再按 region 字符串分支。
 
 - JP table profile 已显式拒绝 GL/MGS legacy archive route。
@@ -53,7 +56,7 @@ CN/GL CLI 对外入口仍保留，但内部应被视为 legacy profile。不要�
 
 ### 1. Region workflow/profile
 
-当前方向是让 use case 依赖 `RegionProfile`，而不是散落判断 `context.region`。
+当前方向是让 bootstrap 统一解析 `RegionServiceProfile`，再把 workflow/table/relation/dump/runtime 策略注入 use case 和 shared engine，而不是在底层散落判断 `context.region`。
 
 继续检查：
 
@@ -64,12 +67,12 @@ rg -n "context\.region|region ==|region !=|RuntimeContext\(.*region" src/ba_down
 目标：
 
 - application use case 不直接知道 JP manifest、SQLCipher、runtime preparer 细节。
-- JP profile 提供 schema preparation、table metadata policy、relation source loader、archive handler registry。
+- JP profile 提供 table metadata policy、relation source profile、archive registry、runtime/dump/prerequisite 策略。
 - CN/GL profile 只保留 smoke compatibility 所需能力。
 
 ### 2. Table extraction
 
-当前 `TableArchiveRouter` 仍通过 `TableArchiveKind` 同时表达 JP 和 GL route。下一步可以进一步拆：
+当前 `TableArchiveRouter` 仍通过 `TableArchiveKind` 表达 shared dispatch route，但区服 classifier 已下沉。下一步可以进一步拆：
 
 - JP archive registry：GroundGrid、GroundNodeLayer、GroundStage、ExcelDB、standard zip、raw fallback。
 - GL legacy archive registry：GL ground/MGS/raw compatibility。

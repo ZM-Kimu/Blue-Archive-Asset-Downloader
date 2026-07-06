@@ -6,16 +6,20 @@ from os import path
 from zipfile import BadZipFile
 
 from ba_downloader.infrastructure.extraction.table.archive_classifier import (
-    TableArchiveKind,
+    ROUTE_GROUND_GRID_PATCH,
+    ROUTE_GROUND_NODE_LAYER_PATCH,
+    ROUTE_GROUND_STAGE_PATCH,
+    ROUTE_RAW,
+    ROUTE_RHYTHM_BEATMAP,
+    ROUTE_STANDARD,
     TableArchiveRoute,
+    TableArchiveRouteKey,
     classify_table_archive,
 )
 from ba_downloader.infrastructure.extraction.table.archive_support import (
-    LEGACY_JP_EXCEL_STALE_WARNING_PREFIX,
+    DefaultTableArchiveWarningPolicy,
     TableArchiveServices,
-)
-from ba_downloader.infrastructure.extraction.table.legacy_gl_archives import (
-    GlLegacyArchiveExtractor,
+    TableArchiveWarningPolicy,
 )
 from ba_downloader.infrastructure.extraction.table.memorypack_archives import (
     MemoryPackStageArchiveExtractor,
@@ -45,6 +49,10 @@ ArchiveHandler = Callable[
     ],
     None,
 ]
+ArchiveHandlerFactory = Callable[
+    [TableArchiveServices, RawArchiveExporter],
+    Mapping[TableArchiveRouteKey, ArchiveHandler],
+]
 
 GROUND_GRID_SCHEMA_NAME = "GroundGridFlat.bytes"
 GROUND_NODE_LAYER_SCHEMA_NAME = "GroundNodeLayerFlat.bytes"
@@ -54,7 +62,9 @@ ArchiveClassifier = Callable[[str], TableArchiveRoute]
 @dataclass(frozen=True, slots=True)
 class TableArchiveRegistry:
     classifier: ArchiveClassifier
-    enabled_kinds: frozenset[TableArchiveKind]
+    enabled_kinds: frozenset[TableArchiveRouteKey]
+    handler_factory: ArchiveHandlerFactory | None = None
+    warning_policy: TableArchiveWarningPolicy | None = None
 
 
 class TableArchiveRouter:
@@ -69,21 +79,27 @@ class TableArchiveRouter:
         self.services = services
         self.classifier = registry.classifier if registry is not None else classifier
         self.raw_exporter = raw_exporter or RawArchiveExporter(services)
-        self.standard_extractor = StandardZipArchiveExtractor(services)
-        self.gl_legacy_extractor = GlLegacyArchiveExtractor(services)
+        self.warning_policy = (
+            registry.warning_policy
+            if registry is not None and registry.warning_policy is not None
+            else DefaultTableArchiveWarningPolicy()
+        )
+        self.standard_extractor = StandardZipArchiveExtractor(
+            services,
+            warning_policy=self.warning_policy,
+        )
         self.nested_zip_extractor = NestedZipPatchArchiveExtractor(services)
         self.stage_extractor = MemoryPackStageArchiveExtractor(services)
-        handlers: dict[TableArchiveKind, ArchiveHandler] = {
-            TableArchiveKind.RHYTHM_BEATMAP: self._extract_raw,
-            TableArchiveKind.GROUND_GRID_PATCH: self._extract_ground_grid,
-            TableArchiveKind.GROUND_NODE_LAYER_PATCH: self._extract_ground_node_layer,
-            TableArchiveKind.GROUND_STAGE_PATCH: self._extract_ground_stage,
-            TableArchiveKind.RAW: self._extract_raw,
-            TableArchiveKind.GL_GROUND: self._extract_gl_ground,
-            TableArchiveKind.GL_NUMERIC_STAGE: self._extract_raw,
-            TableArchiveKind.MGS_LOGIC_GROUND: self._extract_mgs_logic_ground,
-            TableArchiveKind.STANDARD: self._extract_standard,
+        handlers: dict[TableArchiveRouteKey, ArchiveHandler] = {
+            ROUTE_RHYTHM_BEATMAP: self._extract_raw,
+            ROUTE_GROUND_GRID_PATCH: self._extract_ground_grid,
+            ROUTE_GROUND_NODE_LAYER_PATCH: self._extract_ground_node_layer,
+            ROUTE_GROUND_STAGE_PATCH: self._extract_ground_stage,
+            ROUTE_RAW: self._extract_raw,
+            ROUTE_STANDARD: self._extract_standard,
         }
+        if registry is not None and registry.handler_factory is not None:
+            handlers.update(registry.handler_factory(services, self.raw_exporter))
         self._handlers = (
             handlers
             if registry is None
@@ -109,7 +125,7 @@ class TableArchiveRouter:
         handler = self._handlers.get(route.kind)
         if handler is None:
             detail = route.info_message or (
-                f"archive kind '{route.kind.value}' is disabled by the active table profile"
+                f"archive route '{route.kind}' is disabled by the active table profile"
             )
             self.services.logger.error(f"Failed to process {archive_name}: {detail}")
             return
@@ -151,21 +167,11 @@ class TableArchiveRouter:
                     f"Preserved {len(unsupported_warnings)} unsupported entries while "
                     f"extracting {archive_name}: {examples}"
                 )
-            legacy_excel_warnings = [
-                warning
-                for warning in warnings
-                if warning.startswith(LEGACY_JP_EXCEL_STALE_WARNING_PREFIX)
-            ]
-            if legacy_excel_warnings:
-                examples = ", ".join(
-                    warning.removeprefix(LEGACY_JP_EXCEL_STALE_WARNING_PREFIX)
-                    for warning in legacy_excel_warnings[:6]
-                )
-                self.services.logger.warn(
-                    f"Skipped {len(legacy_excel_warnings)} stale legacy Excel.zip "
-                    "entries; JP semantic table output should come from ExcelDB.db "
-                    f"or Const outputs. Examples: {examples}"
-                )
+            self.warning_policy.emit_warning_summary(
+                self.services,
+                archive_name,
+                warnings,
+            )
             self.services.logger.warn(
                 f"Skipped {len(warnings)} entries while extracting {archive_name}."
             )
@@ -242,42 +248,6 @@ class TableArchiveRouter:
             should_stop=should_stop,
             progress_callback=progress_callback,
             info_message=route.info_message,
-        )
-
-    def _extract_gl_ground(
-        self,
-        file_name: str,
-        route: TableArchiveRoute,
-        warnings: list[str],
-        should_stop: Callable[[], bool] | None,
-        progress_callback: ProgressCallback | None,
-        inner_password_names: Mapping[str, str],
-    ) -> None:
-        _ = inner_password_names
-        self.gl_legacy_extractor.extract_ground(
-            file_name,
-            schema_name=route.schema_name,
-            warnings=warnings,
-            should_stop=should_stop,
-            progress_callback=progress_callback,
-        )
-
-    def _extract_mgs_logic_ground(
-        self,
-        file_name: str,
-        route: TableArchiveRoute,
-        warnings: list[str],
-        should_stop: Callable[[], bool] | None,
-        progress_callback: ProgressCallback | None,
-        inner_password_names: Mapping[str, str],
-    ) -> None:
-        _ = (route, inner_password_names)
-        self.gl_legacy_extractor.extract_mgs_logic_ground(
-            file_name,
-            grid_schema_name=GROUND_GRID_SCHEMA_NAME,
-            warnings=warnings,
-            should_stop=should_stop,
-            progress_callback=progress_callback,
         )
 
     def _extract_standard(

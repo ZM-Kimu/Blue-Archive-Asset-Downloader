@@ -14,7 +14,7 @@ from ba_downloader.infrastructure.packages import (
     extract_xapk_file,
 )
 from ba_downloader.infrastructure.packages.jp_server_info import JPServerInfoExtractor
-from ba_downloader.infrastructure.regions.jp.profile import build_jp_platform_profile
+from ba_downloader.infrastructure.regions.jp.platform import build_jp_platform_profile
 
 
 class JPBootstrapper:

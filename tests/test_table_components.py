@@ -4,57 +4,132 @@ import sqlite3
 
 import pytest
 
+from ba_downloader.bootstrap.region_profiles import (
+    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+)
 from ba_downloader.infrastructure.extraction.table.archive_classifier import (
-    TableArchiveKind,
-    classify_jp_table_archive,
-    classify_legacy_table_archive,
+    ROUTE_GROUND_GRID_PATCH,
+    ROUTE_GROUND_STAGE_PATCH,
+    ROUTE_RAW,
+    ROUTE_RHYTHM_BEATMAP,
+    ROUTE_STANDARD,
+    ROUTE_UNSUPPORTED,
     classify_table_archive,
 )
 from ba_downloader.infrastructure.extraction.table.payload_router import (
     TablePayloadCodec,
 )
-from ba_downloader.infrastructure.extraction.table.profiles import (
-    build_table_extraction_profile,
+from ba_downloader.infrastructure.regions.jp.table_archives import (
+    classify_jp_table_archive,
+)
+from ba_downloader.infrastructure.regions.legacy_table_archives import (
+    LEGACY_GL_GROUND_ROUTE,
+    LEGACY_GL_NUMERIC_STAGE_ROUTE,
+    LEGACY_MGS_LOGIC_GROUND_ROUTE,
+    classify_legacy_table_archive,
 )
 from ba_downloader.infrastructure.storage.sqlite_reader import TableDatabase
 from support import build_runtime_context
 
 
-def test_table_archive_classifier_preserves_special_archive_routes() -> None:
-    assert (
-        classify_table_archive("RhythmBeatmapData.zip").kind
-        is TableArchiveKind.RHYTHM_BEATMAP
-    )
+def test_table_archive_classifier_preserves_shared_archive_routes() -> None:
+    assert classify_table_archive("RhythmBeatmapData.zip").kind == ROUTE_RHYTHM_BEATMAP
     assert (
         classify_table_archive("TablePatchPack_GroundGrid_11.zip").kind
-        is TableArchiveKind.GROUND_GRID_PATCH
+        == ROUTE_GROUND_GRID_PATCH
     )
     assert (
         classify_table_archive("TablePatchPack_GroundStage_1.zip").kind
-        is TableArchiveKind.GROUND_STAGE_PATCH
+        == ROUTE_GROUND_STAGE_PATCH
     )
-    assert (
-        classify_table_archive("C_sb_01_hyakkiyakomatsuri_p02_Little.zip").kind
-        is TableArchiveKind.RAW
-    )
-    assert (
-        classify_table_archive("1041104_03_s3_boss_02_desertcity_p01_d.zip").kind
-        is TableArchiveKind.GL_NUMERIC_STAGE
-    )
-    assert (
-        classify_table_archive("MGSLogicGroundData.zip").kind
-        is TableArchiveKind.MGS_LOGIC_GROUND
-    )
-    assert classify_table_archive("Excel.zip").kind is TableArchiveKind.STANDARD
+    assert classify_table_archive("Excel.zip").kind == ROUTE_STANDARD
 
 
-def test_table_archive_classifier_preserves_gl_ground_schema_selection() -> None:
-    grid_route = classify_table_archive("sb_02_desertcity_p01_e.zip")
-    node_layer_route = classify_table_archive("sb_02_desertcity_p01_e_nodelayer.zip")
+def test_legacy_table_archive_classifier_preserves_legacy_routes() -> None:
+    assert (
+        classify_legacy_table_archive("C_sb_01_hyakkiyakomatsuri_p02_Little.zip").kind
+        == ROUTE_RAW
+    )
+    assert (
+        classify_legacy_table_archive("1041104_03_s3_boss_02_desertcity_p01_d.zip").kind
+        == LEGACY_GL_NUMERIC_STAGE_ROUTE
+    )
+    assert (
+        classify_legacy_table_archive("MGSLogicGroundData.zip").kind
+        == LEGACY_MGS_LOGIC_GROUND_ROUTE
+    )
 
-    assert grid_route.kind is TableArchiveKind.GL_GROUND
+
+@pytest.mark.parametrize(
+    "archive_name",
+    [
+        "C_sb_01_destroyhyakkiyakomatsuri_p01_Many.zip",
+        "C_sb_01_wildhuntstreet_p02_Many.zip",
+        "C_sb_03_expresstrain_p01_Little.zip",
+        "C_sb_01_hyakkiyakomoviestreet_p01_Many.zip",
+        "C_sb_02_trainroof_p01_d_NoSideTrain.zip",
+        "C_sb_02_trainroof_p01_n_SideTrain.zip",
+        "6062106_eliminateRaid_perorozilla_outdoor_light_insane_start2phase.zip",
+        "EN0006_Eliminate_LightArmor_Hard.zip",
+        "EN0006_VeryHard.zip",
+        "EN0013_Torment_3Phase.zip",
+        "DamageTest_Street_LightArmor.zip",
+        "character_resource_video_03.zip",
+        "chesedscenariotest.zip",
+        "CH0265Test.zip",
+        "BaseMentTest.zip",
+        "combattest_hod01.zip",
+        "EffectCountLimitTest_Limit.zip",
+        "EmojiTest.zip",
+        "AriusStreet_p01_n_Many_ObsTest.zip",
+        "colourtimelinetest.zip",
+        "CameraRotateTest.zip",
+        "ChangeLookTargetTest.zip",
+        "GroundPassiveTest01.zip",
+        "HoldTest.zip",
+        "HoverCraftTest.zip",
+        "hyakkiyako.zip",
+        "newyearpathvisualtest_p01.zip",
+        "NP186Test.zip",
+        "NPCTEST.zip",
+        "OverrideTest_Normal.zip",
+        "playground_obstacleset_little.zip",
+        "RaidTest.zip",
+        "9970_WorldEmojiTest.zip",
+        "CH0265Test2.zip",
+    ],
+)
+def test_legacy_table_archive_classifier_routes_raw_script_archives(
+    archive_name: str,
+) -> None:
+    assert classify_legacy_table_archive(archive_name).kind == ROUTE_RAW
+
+
+@pytest.mark.parametrize(
+    "archive_name",
+    [
+        "1041104_03_s3_boss_02_desertcity_p01_d.zip",
+        "1052101_01_s2_02_deserttrack_p01_n.zip",
+    ],
+)
+def test_legacy_table_archive_classifier_routes_numeric_stage_archives(
+    archive_name: str,
+) -> None:
+    assert (
+        classify_legacy_table_archive(archive_name).kind
+        == LEGACY_GL_NUMERIC_STAGE_ROUTE
+    )
+
+
+def test_legacy_table_archive_classifier_preserves_gl_ground_schema_selection() -> None:
+    grid_route = classify_legacy_table_archive("sb_02_desertcity_p01_e.zip")
+    node_layer_route = classify_legacy_table_archive(
+        "sb_02_desertcity_p01_e_nodelayer.zip"
+    )
+
+    assert grid_route.kind == LEGACY_GL_GROUND_ROUTE
     assert grid_route.schema_name == "GroundGridFlat.bytes"
-    assert node_layer_route.kind is TableArchiveKind.GL_GROUND
+    assert node_layer_route.kind == LEGACY_GL_GROUND_ROUTE
     assert node_layer_route.schema_name == "GroundNodeLayerFlat.bytes"
 
 
@@ -62,21 +137,24 @@ def test_jp_table_archive_classifier_does_not_route_gl_legacy_archives() -> None
     jp_route = classify_jp_table_archive("sb_02_desertcity_p01_e.zip")
     legacy_route = classify_legacy_table_archive("sb_02_desertcity_p01_e.zip")
 
-    assert jp_route.kind is TableArchiveKind.UNSUPPORTED
-    assert legacy_route.kind is TableArchiveKind.GL_GROUND
+    assert jp_route.kind == ROUTE_UNSUPPORTED
+    assert legacy_route.kind == LEGACY_GL_GROUND_ROUTE
     assert legacy_route.schema_name == "GroundGridFlat.bytes"
 
 
 def test_table_extraction_profile_splits_jp_and_legacy_routing(tmp_path) -> None:
-    jp_profile = build_table_extraction_profile(
-        build_runtime_context(tmp_path, region="jp")
-    )
-    cn_profile = build_table_extraction_profile(
-        build_runtime_context(tmp_path, region="cn")
-    )
-    gl_profile = build_table_extraction_profile(
-        build_runtime_context(tmp_path, region="gl")
-    )
+    jp_context = build_runtime_context(tmp_path, region="jp")
+    cn_context = build_runtime_context(tmp_path, region="cn")
+    gl_context = build_runtime_context(tmp_path, region="gl")
+    jp_profile = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
+        "jp"
+    ).table_profile_factory(jp_context)
+    cn_profile = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
+        "cn"
+    ).table_profile_factory(cn_context)
+    gl_profile = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
+        "gl"
+    ).table_profile_factory(gl_context)
 
     jp_route = jp_profile.payload_router.resolve_database_blob(
         "LogicEffectDataDBSchema.db",
@@ -94,12 +172,14 @@ def test_table_extraction_profile_splits_jp_and_legacy_routing(tmp_path) -> None
         "Bytes",
     )
 
-    assert jp_profile.archive_registry.classifier(
-        "sb_02_desertcity_p01_e.zip"
-    ).kind is (TableArchiveKind.UNSUPPORTED)
-    assert cn_profile.archive_registry.classifier(
-        "sb_02_desertcity_p01_e.zip"
-    ).kind is (TableArchiveKind.GL_GROUND)
+    assert (
+        jp_profile.archive_registry.classifier("sb_02_desertcity_p01_e.zip").kind
+        == ROUTE_UNSUPPORTED
+    )
+    assert (
+        cn_profile.archive_registry.classifier("sb_02_desertcity_p01_e.zip").kind
+        == LEGACY_GL_GROUND_ROUTE
+    )
     assert jp_route.codec is TablePayloadCodec.MEMORYPACK
     assert jp_route.allow_partial_memorypack is False
     assert cn_route.codec is TablePayloadCodec.MEMORYPACK

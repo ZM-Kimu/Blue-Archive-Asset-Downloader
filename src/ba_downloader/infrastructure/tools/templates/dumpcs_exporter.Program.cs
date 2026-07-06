@@ -28,7 +28,7 @@ internal static class Program
                 : UnityVersion.Parse(options.UnityVersion);
 
             if (options.EnableCnMetadataRecoveryShim)
-                CnMetadataRecoveryInputShim.Register();
+                RegisterCnMetadataRecoveryShim();
 
             if (!LibCpp2IlMain.LoadFromFile(options.BinaryPath, options.MetadataPath, unityVersion))
                 throw new InvalidOperationException("Failed to load IL2CPP binary and metadata.");
@@ -72,6 +72,19 @@ internal static class Program
             Console.Error.WriteLine(ex.Message);
             return 1;
         }
+    }
+
+    private static void RegisterCnMetadataRecoveryShim()
+    {
+        var shimType = typeof(Program).Assembly.GetType("CnMetadataRecoveryInputShim")
+            ?? throw new InvalidOperationException(
+                "CN metadata recovery shim source was not included in the exporter project.");
+        var register = shimType.GetMethod(
+            "Register",
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(
+                "CN metadata recovery shim does not expose a Register method.");
+        register.Invoke(null, null);
     }
 
     private static void WriteHeader(

@@ -53,6 +53,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run-preflight.ps1
 - `jp`：默认使用 `cpp2il_custom`
 - `gl`：默认使用 `cpp2il_custom`
 - `cn`：内部使用 CN metadata recovery pipeline，生成 standard v29 metadata 后再走 `cpp2il_custom`
+- 具体 backend 由 `bootstrap.region_profiles.RegionServiceProfile` 装配；`SchemaWorkflow` 只消费注入的 backend factory，不再按 region 自行查表。
 
 如果以源码方式运行并希望固定 Cpp2IL 依赖，请使用子模块：
 
@@ -68,7 +69,7 @@ git submodule update --init --recursive
 CN dump backend 不再使用旧 `cn_metadata_exporter`，也不提供 metadata-only fallback。当前流程：
 
 - `CNRuntimeAssetPreparer` 从 APK central directory 准备 `global-metadata.dat`、`lib/arm64-v8a/libil2cpp.so`，并尽量准备 `globalgamemanagers` 用于 Unity version 解析。
-- `CnMetadataRecoveryDumpBackend` 只将 final standard v29 metadata 写入 `<Temp>/CN_MetadataRecovery/global-metadata.standard-v29.dat`。
+- `CnMetadataRecoveryDumpBackend` 位于 `ba_downloader.infrastructure.regions.cn.dump_backend`，只将 final standard v29 metadata 写入 `<Temp>/CN_MetadataRecovery/global-metadata.standard-v29.dat`。
 - Python recovery API 以 vendored package 形式放在 `ba_downloader.infrastructure.tools.cn_metadata_recovery`，生产运行不依赖 `G:\test_ba`。
 - 最终仍输出 `<Extracted>/Dumps/dump.cs` 与 `memorypack_formatters.json`，供 `SchemaWorkflow.compile()` 使用。
 
@@ -100,6 +101,8 @@ FlatBuffer schema 生成失败会中断 compile；MemoryPack schema 生成失败
 - 通用 `ExcelDB.db` 与 `.bytes` payload 继续走 `FlatBufferData` registry。
 - CN 三类 DAO SQLite BLOB 使用 CN 专用 MemoryPack DAO 路由。
 - GL script / boss / eliminateRaid / beatmap 等暂按已确认的 raw 导出或专用解析路径处理。
+- `TableExtractor` 本身只消费 `TableExtractionProfile`；CN/GL/JP profile 分别提供 archive registry、payload router 与 database resolver。共享 `archive_classifier` 只保留标准 zip / patch / raw fallback 的通用 route；CN/GL legacy classifier 位于 `ba_downloader.infrastructure.regions.legacy_table_archives`，JP legacy 拒绝规则位于 `ba_downloader.infrastructure.regions.jp.table_archives`。
+- `TableArchiveRouter` 不再 import 区服实现；GL legacy ground/MGS handlers 位于 `ba_downloader.infrastructure.regions.gl.table_archives`。
 
 在各区服格式尚未全部可语义解包前，不做未验证的统一格式猜测。后续当 CN / GL / JP 的 table payload 语义覆盖足够完整时，再将这些来源特定规则收敛为统一 payload router，并以统一路由作为唯一入口。
 
@@ -109,14 +112,15 @@ FlatBuffer schema 生成失败会中断 compile；MemoryPack schema 生成失败
 
 依赖方向原则：
 
-- `bootstrap` 负责 CLI runtime 装配、region registry、runtime preparer registry；除 CLI 入口外，不应由业务模块反向依赖。
+- `bootstrap` 负责 CLI runtime 装配和 `RegionServiceProfile` registry；除 CLI 入口外，不应由业务模块反向依赖。
 - `application.use_cases` 负责编排 use case，不承载格式解析细节。
 - `domain` 只放稳定值对象、端口和无外部依赖的领域服务，例如 `domain.services.catalog_pipeline`。
 - `download` 只负责下载、校验和下载进度，不直接依赖 table/media/bundle extractor。
 - `infrastructure.extraction` 负责编排和格式导出，按 `bundle` / `media` / `table` / `character` 子包拆分。
 - `infrastructure.packages` 负责 APK / XAPK / ZIP range IO，不承载区服 catalog 语义。
-- `regions` 只负责区服 release/catalog 获取和 asset normalization；schema codec 与 Unity 读取细节不得放回 provider facade。
+- `regions` 负责区服 release/catalog 获取、asset normalization，以及 table/relation/runtime/dump/catalog metadata/prerequisite 策略 profile。通用 extractor/schema/Cpp2IL engine 仍保留在共享模块；区服目录只编排策略，不复制 engine。
 - `schema` 只负责 dump schema、generated registry 与 binary reader/exporter，不直接驱动下载或提取流程。
+- JP catalog decoder 位于 `regions.jp.catalog_decoder`，允许调用共享 MemoryPack reader；provider/profile 不直接依赖 schema package。
 
 架构测试只约束过时 import path、跨层依赖方向和 forbidden infrastructure edges；不再使用 LOC 或 branching 数字预算驱动机械拆分。
 
@@ -125,6 +129,7 @@ FlatBuffer schema 生成失败会中断 compile；MemoryPack schema 生成失败
 - CLI 装配：`ba_downloader.bootstrap`
 - Use cases：`ba_downloader.application.use_cases`
 - Region providers：`ba_downloader.infrastructure.regions.cn|gl|jp`
+- Region service profiles：`ba_downloader.bootstrap.region_profiles` 汇总各区服 profile factory；catalog metadata policy、runtime preparer、dumper backend、table profile、relation profile、extraction prerequisite 均由该 profile 注入
 - Extraction：`ba_downloader.infrastructure.extraction`
 - APK / XAPK / ZIP IO：`ba_downloader.infrastructure.packages`
 - File checksum：`ba_downloader.infrastructure.files.checksum`

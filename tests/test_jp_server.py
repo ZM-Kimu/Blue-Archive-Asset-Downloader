@@ -20,11 +20,11 @@ from ba_downloader.infrastructure.packages.android_package import (
     PackageArchiveError,
     _resolve_filename,
 )
+from ba_downloader.infrastructure.regions.jp.catalog_decoder import JPCatalogDecoder
 from ba_downloader.infrastructure.regions.jp.provider import (
     JPBootstrapper,
     JPRegionProvider,
 )
-from ba_downloader.infrastructure.schema.catalog.jp import JPCatalogDecoder
 from ba_downloader.infrastructure.schema.memorypack.generator import (
     CompileMemoryPackToPython,
 )

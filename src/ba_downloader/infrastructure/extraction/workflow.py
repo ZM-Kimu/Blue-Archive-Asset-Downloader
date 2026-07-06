@@ -21,6 +21,10 @@ from ba_downloader.infrastructure.extraction.bundle.exporter import (
 from ba_downloader.infrastructure.extraction.media.exporter import MediaExtractor
 from ba_downloader.infrastructure.extraction.process_table_runner import (
     ProcessTableExtractionRunner,
+    TableProfileFactory,
+)
+from ba_downloader.infrastructure.extraction.table.profiles import (
+    build_default_table_profile_for_context,
 )
 from ba_downloader.infrastructure.extraction.threaded_runner import (
     ExtractionFailureError,
@@ -42,10 +46,12 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         self,
         logger: LoggerPort,
         *,
+        table_profile_factory: TableProfileFactory = build_default_table_profile_for_context,
         force_exit: Callable[[int], None] | None = None,
     ) -> None:
         self.logger = logger
         self._force_exit = force_exit or os._exit
+        self._table_profile_factory = table_profile_factory
         self._threaded_runner = ThreadedExtractionRunner(
             logger,
             poll_interval_seconds=self.POLL_INTERVAL_SECONDS,
@@ -56,6 +62,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             logger,
             poll_interval_seconds=self.POLL_INTERVAL_SECONDS,
             interrupt_grace_seconds=self.INTERRUPT_GRACE_SECONDS,
+            table_profile_factory=self._table_profile_factory,
             force_exit=self._force_exit,
         )
 

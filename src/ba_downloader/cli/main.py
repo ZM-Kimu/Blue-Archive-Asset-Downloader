@@ -19,6 +19,9 @@ from ba_downloader.bootstrap.container import (
     build_relation_runtime_services,
     build_sync_runtime_services,
 )
+from ba_downloader.bootstrap.region_profiles import (
+    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+)
 from ba_downloader.domain.exceptions import DownloadError, ExtractError, NetworkError
 from ba_downloader.domain.models.region import Platform, Region
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -198,8 +201,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def runtime_context_from_namespace(args: argparse.Namespace) -> RuntimeContext:
+    region = cast(Region, args.region)
+    service_profile = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(region)
     settings = AppSettings(
-        region=cast(Region, args.region),
+        region=region,
         threads=args.threads,
         version=args.version,
         raw_dir=args.raw_dir,
@@ -215,7 +220,7 @@ def runtime_context_from_namespace(args: argparse.Namespace) -> RuntimeContext:
         platform_explicit=getattr(args, "platform_explicit", False),
         jp_sqlcipher_key_hex=getattr(args, "jp_sqlcipher_key_hex", ""),
     )
-    return settings.to_runtime_context()
+    return settings.to_runtime_context(service_profile.settings_policy)
 
 
 def _run_command(

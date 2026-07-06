@@ -1,20 +1,36 @@
 from __future__ import annotations
 
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from os import path
 from pathlib import Path
 from zipfile import ZipFile
 
+from ba_downloader.infrastructure.extraction.table.archive_classifier import (
+    TableArchiveRoute,
+    TableArchiveRouteKey,
+)
 from ba_downloader.infrastructure.extraction.table.archive_support import (
     TableArchiveServices,
 )
+from ba_downloader.infrastructure.extraction.table.archives import (
+    GROUND_GRID_SCHEMA_NAME,
+    ArchiveHandler,
+)
+from ba_downloader.infrastructure.extraction.table.crypto import zip_password
 from ba_downloader.infrastructure.extraction.table.models import (
     ProcessedTableArtifact,
     ProgressCallback,
     TableProcessingError,
 )
-from ba_downloader.infrastructure.schema.crypto import zip_password
+from ba_downloader.infrastructure.extraction.table.raw_archives import (
+    RawArchiveExporter,
+)
+from ba_downloader.infrastructure.regions.legacy_table_archives import (
+    LEGACY_GL_GROUND_ROUTE,
+    LEGACY_GL_NUMERIC_STAGE_ROUTE,
+    LEGACY_MGS_LOGIC_GROUND_ROUTE,
+)
 
 
 class GlLegacyArchiveExtractor:
@@ -135,3 +151,67 @@ class GlLegacyArchiveExtractor:
                         len(item_names),
                         "entries",
                     )
+
+
+def build_gl_legacy_archive_handlers(
+    services: TableArchiveServices,
+    raw_exporter: RawArchiveExporter,
+) -> Mapping[TableArchiveRouteKey, ArchiveHandler]:
+    extractor = GlLegacyArchiveExtractor(services)
+
+    def extract_gl_ground(
+        file_name: str,
+        route: TableArchiveRoute,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None,
+        progress_callback: ProgressCallback | None,
+        inner_password_names: Mapping[str, str],
+    ) -> None:
+        _ = inner_password_names
+        extractor.extract_ground(
+            file_name,
+            schema_name=route.schema_name,
+            warnings=warnings,
+            should_stop=should_stop,
+            progress_callback=progress_callback,
+        )
+
+    def extract_mgs_logic_ground(
+        file_name: str,
+        route: TableArchiveRoute,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None,
+        progress_callback: ProgressCallback | None,
+        inner_password_names: Mapping[str, str],
+    ) -> None:
+        _ = (route, inner_password_names)
+        extractor.extract_mgs_logic_ground(
+            file_name,
+            grid_schema_name=GROUND_GRID_SCHEMA_NAME,
+            warnings=warnings,
+            should_stop=should_stop,
+            progress_callback=progress_callback,
+        )
+
+    def extract_legacy_raw(
+        file_name: str,
+        route: TableArchiveRoute,
+        warnings: list[str],
+        should_stop: Callable[[], bool] | None,
+        progress_callback: ProgressCallback | None,
+        inner_password_names: Mapping[str, str],
+    ) -> None:
+        _ = inner_password_names
+        raw_exporter.extract(
+            file_name,
+            warnings=warnings,
+            should_stop=should_stop,
+            progress_callback=progress_callback,
+            info_message=route.info_message,
+        )
+
+    return {
+        LEGACY_GL_GROUND_ROUTE: extract_gl_ground,
+        LEGACY_GL_NUMERIC_STAGE_ROUTE: extract_legacy_raw,
+        LEGACY_MGS_LOGIC_GROUND_ROUTE: extract_mgs_logic_ground,
+    }

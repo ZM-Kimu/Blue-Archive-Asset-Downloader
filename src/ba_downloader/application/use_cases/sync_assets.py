@@ -37,7 +37,11 @@ class SyncAssetsUseCase:
         self.logger = logger
         self.workflow_profile = workflow_profile
         self.asset_selector = AssetSelectionService(logger)
-        self.relation_search = RelationSearchService(relation_builder_factory, logger)
+        self.relation_search = RelationSearchService(
+            relation_builder_factory,
+            logger,
+            workflow_profile.settings_policy,
+        )
 
     def _prepare_schema(self, context: RuntimeContext) -> None:
         self.schema_preparation.prepare(context)

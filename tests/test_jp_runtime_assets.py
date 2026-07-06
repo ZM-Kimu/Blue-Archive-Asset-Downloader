@@ -9,7 +9,9 @@ import pytest
 from Crypto.Cipher import AES
 from Crypto.PublicKey import RSA
 
-from ba_downloader.bootstrap.registries import DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY
+from ba_downloader.bootstrap.region_profiles import (
+    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+)
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.regions.jp.runtime_assets import (
     JpEncryptedRuntimeExtractor,
@@ -220,8 +222,10 @@ def test_jp_runtime_preparer_restores_libil2cpp_from_libgedenedo(
     assert (runtime_dir / "libil2cpp.so").read_bytes() == b"\x7fELFrestored"
 
 
-def test_default_runtime_preparer_registry_uses_jp_runtime_preparer() -> None:
-    preparer = DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.resolve("jp")(
+def test_default_region_service_profile_uses_jp_runtime_preparer() -> None:
+    preparer = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
+        "jp"
+    ).runtime_asset_preparer_factory(
         http_client=object(),
         logger=RecordingLogger(),
     )

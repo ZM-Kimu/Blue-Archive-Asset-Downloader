@@ -6,7 +6,7 @@ from ba_downloader.domain.models.asset import BootstrapSession, CatalogSource
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.regions.jp.profile import build_jp_platform_profile
+from ba_downloader.infrastructure.regions.jp.platform import build_jp_platform_profile
 
 
 class JPCatalogSourceProvider:

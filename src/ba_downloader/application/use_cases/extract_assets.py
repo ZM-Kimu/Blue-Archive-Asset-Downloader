@@ -35,7 +35,11 @@ class ExtractAssetsUseCase:
             AssetSelectionService(logger) if logger is not None else None
         )
         self.relation_search = (
-            RelationSearchService(relation_builder_factory, logger)
+            RelationSearchService(
+                relation_builder_factory,
+                logger,
+                workflow_profile.settings_policy,
+            )
             if relation_builder_factory is not None and logger is not None
             else None
         )

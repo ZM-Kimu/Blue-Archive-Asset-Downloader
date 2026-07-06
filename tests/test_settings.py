@@ -1,13 +1,20 @@
 from pathlib import Path
 
 from ba_downloader.application.config import AppSettings
+from ba_downloader.bootstrap.region_profiles import (
+    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+)
 from ba_downloader.cli.main import build_parser, runtime_context_from_namespace
 from ba_downloader.domain.models.asset import AssetType
 from support import build_asset_collection, build_runtime_context
 
 
+def _settings_policy(region: str):
+    return DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(region).settings_policy  # type: ignore[arg-type]
+
+
 def test_settings_normalization_defaults() -> None:
-    settings = AppSettings(region="jp").normalized()
+    settings = AppSettings(region="jp").normalized(_settings_policy("jp"))
 
     assert settings.temp_dir == "JP_Android_Temp"
     assert settings.raw_dir == "JP_Android_RawData"
@@ -20,7 +27,7 @@ def test_settings_normalization_defaults() -> None:
 def test_settings_normalization_uses_platform_specific_jp_directories() -> None:
     settings = AppSettings(
         region="jp", platform="windows", platform_explicit=True
-    ).normalized()
+    ).normalized(_settings_policy("jp"))
 
     assert settings.temp_dir == "JP_Windows_Temp"
     assert settings.raw_dir == "JP_Windows_RawData"
@@ -32,7 +39,7 @@ def test_settings_normalization_uses_platform_specific_jp_directories() -> None:
 def test_settings_normalization_keeps_non_jp_default_directories() -> None:
     settings = AppSettings(
         region="gl", platform="ios", platform_explicit=True
-    ).normalized()
+    ).normalized(_settings_policy("gl"))
 
     assert settings.temp_dir == "GL_Temp"
     assert settings.raw_dir == "GL_RawData"
@@ -40,7 +47,7 @@ def test_settings_normalization_keeps_non_jp_default_directories() -> None:
 
 
 def test_settings_normalization_uses_underscored_cn_directories() -> None:
-    settings = AppSettings(region="cn").normalized()
+    settings = AppSettings(region="cn").normalized(_settings_policy("cn"))
 
     assert settings.temp_dir == "CN_Temp"
     assert settings.raw_dir == "CN_RawData"
@@ -53,7 +60,7 @@ def test_settings_normalization_preserves_custom_directories() -> None:
         raw_dir="custom_raw",
         extract_dir="custom_extract",
         temp_dir="custom_temp",
-    ).normalized()
+    ).normalized(_settings_policy("gl"))
 
     assert settings.raw_dir == "custom_raw"
     assert settings.extract_dir == "custom_extract"
@@ -69,7 +76,7 @@ def test_runtime_context_copies_normalized_settings() -> None:
         temp_dir="Temp",
         resource_type=("media",),
         max_retries=2,
-    ).to_runtime_context()
+    ).to_runtime_context(_settings_policy("gl"))
 
     assert runtime_context.region == "gl"
     assert runtime_context.threads == 8
@@ -100,7 +107,9 @@ def test_runtime_context_ignores_jp_sqlcipher_key_environment(
 ) -> None:
     monkeypatch.setenv("_".join(("BA", "JP", "SQLCIPHER", "KEY", "HEX")), "b" * 64)
 
-    runtime_context = AppSettings(region="jp").to_runtime_context()
+    runtime_context = AppSettings(region="jp").to_runtime_context(
+        _settings_policy("jp")
+    )
 
     assert runtime_context.jp_sqlcipher_key_hex == ""
 

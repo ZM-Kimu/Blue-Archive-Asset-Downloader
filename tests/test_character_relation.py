@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from ba_downloader.bootstrap.region_profiles import (
+    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+)
 from ba_downloader.domain.models.character import CharacterData, CharacterRelation
 from ba_downloader.domain.models.database import DBColumn, DBTable
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -13,19 +16,19 @@ from ba_downloader.infrastructure.extraction.character.relation import (
 from ba_downloader.infrastructure.extraction.character.relation_composer import (
     CharacterRelationComposer,
     CharacterRelationCompositionProfile,
-    build_character_relation_composition_profile,
 )
 from ba_downloader.infrastructure.extraction.character.relation_sources import (
     CharacterRelationSourceLoader,
     CharacterRelationSources,
-    JpDbRelationSourceProfile,
-    LegacyArchiveRelationSourceProfile,
-    build_character_relation_source_profile,
 )
 from ba_downloader.infrastructure.extraction.character.relation_store import (
     CharacterRelationSearchIndex,
 )
 from ba_downloader.infrastructure.extraction.table.models import ProcessedTableArtifact
+from ba_downloader.infrastructure.regions.jp.relation import JpDbRelationSourceProfile
+from ba_downloader.infrastructure.regions.legacy_relation import (
+    LegacyArchiveRelationSourceProfile,
+)
 from support import RecordingLogger
 
 
@@ -74,10 +77,10 @@ class FakeTableSource:
 class FakeRelationSourceLoader:
     def __init__(self, sources: CharacterRelationSources) -> None:
         self.sources = sources
-        self.contexts: list[RuntimeContext] = []
+        self.source_profiles: list[object] = []
 
-    def load(self, context: RuntimeContext) -> CharacterRelationSources:
-        self.contexts.append(context)
+    def load(self, source_profile: object) -> CharacterRelationSources:
+        self.source_profiles.append(source_profile)
         return self.sources
 
 
@@ -97,6 +100,10 @@ def _build_context(tmp_path: Path, region: str = "jp") -> RuntimeContext:
         advanced_search=(),
         work_dir=str(tmp_path),
     )
+
+
+def _service_profile(region: str):
+    return DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(region)  # type: ignore[arg-type]
 
 
 def _db_table(name: str, rows: list[dict]) -> DBTable:
@@ -144,7 +151,7 @@ def _compose_relation(
             shop_recruit=shop_recruit,
             localize_gacha=localize_gacha,
         ),
-        build_character_relation_composition_profile(context),
+        _service_profile(region).relation_composition_profile_factory(context),
     )
 
 
@@ -176,7 +183,9 @@ def test_cn_relation_sources_warn_but_continue_when_profile_bytes_missing(
         },
     )
 
-    sources = loader.load(context)
+    sources = loader.load(
+        _service_profile(context.region).relation_source_profile_factory(context)
+    )
 
     assert sources.scenario_db
     assert sources.char_excel == [{"Id": 1001, "DevName": "Arona"}]
@@ -188,12 +197,14 @@ def test_cn_relation_sources_warn_but_continue_when_profile_bytes_missing(
 def test_relation_source_profile_selects_jp_db_and_legacy_archive(
     tmp_path: Path,
 ) -> None:
+    jp_context = _build_context(tmp_path, region="jp")
+    cn_context = _build_context(tmp_path, region="cn")
     assert isinstance(
-        build_character_relation_source_profile(_build_context(tmp_path, region="jp")),
+        _service_profile("jp").relation_source_profile_factory(jp_context),
         JpDbRelationSourceProfile,
     )
     assert isinstance(
-        build_character_relation_source_profile(_build_context(tmp_path, region="cn")),
+        _service_profile("cn").relation_source_profile_factory(cn_context),
         LegacyArchiveRelationSourceProfile,
     )
 
@@ -242,7 +253,9 @@ def test_jp_relation_sources_read_excel_db_schemas_without_excel_zip(
         lambda: pytest.fail("JP relation should read ExcelDB schema tables"),
     )
 
-    sources = loader.load(context)
+    sources = loader.load(
+        _service_profile(context.region).relation_source_profile_factory(context)
+    )
 
     assert table_source.table_names == [
         "ScenarioCharacterNameDBSchema",
@@ -302,7 +315,9 @@ def test_jp_relation_sources_warn_with_schema_name_when_source_is_missing(
         logger,
     )
 
-    sources = loader.load(context)
+    sources = loader.load(
+        _service_profile(context.region).relation_source_profile_factory(context)
+    )
 
     assert sources.scenario_db
     assert sources.char_excel == [{"Id": 1001, "DevName": "Arona"}]
@@ -324,7 +339,9 @@ def test_jp_relation_extract_excel_fails_when_all_db_sources_are_missing(
         LookupError,
         match="all core relation sources are missing",
     ):
-        loader.load(context)
+        loader.load(
+            _service_profile(context.region).relation_source_profile_factory(context)
+        )
 
 
 def test_cn_relation_extract_excel_fails_when_all_core_sources_are_missing(
@@ -357,7 +374,9 @@ def test_cn_relation_extract_excel_fails_when_all_core_sources_are_missing(
         LookupError,
         match="all core relation sources are missing",
     ):
-        loader.load(context)
+        loader.load(
+            _service_profile(context.region).relation_source_profile_factory(context)
+        )
 
 
 def test_relation_uses_cn_profile_fallback_fields() -> None:
@@ -411,7 +430,9 @@ def test_jp_relation_romanization_is_controlled_by_profile_policy() -> None:
 
     jp_relations = composer.compose(
         sources,
-        build_character_relation_composition_profile(_build_context(Path("."), "jp")),
+        _service_profile("jp").relation_composition_profile_factory(
+            _build_context(Path("."), "jp")
+        ),
     )
     legacy_relations = composer.compose(
         sources,
@@ -750,6 +771,9 @@ def test_relation_build_logs_saved_file_path(
         logger,
         table_source=FakeTableSource(tmp_path),
         source_loader=source_loader,
+        relation_source_profile_factory=(
+            _service_profile("jp").relation_source_profile_factory
+        ),
     )
     monkeypatch.chdir(tmp_path)
 

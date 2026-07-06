@@ -7,8 +7,15 @@ from zipfile import ZipFile
 
 import pytest
 
+from ba_downloader.bootstrap.region_profiles import (
+    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+)
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
+from ba_downloader.infrastructure.regions.cn.dump_backend import (
+    CnMetadataRecoveryDumpBackend,
+    CnMetadataRecoveryDumpError,
+)
 from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
 from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
     CnMetadataRecoveryError,
@@ -18,11 +25,8 @@ from ba_downloader.infrastructure.tools.dump_backend import (
     CPP2IL_COMMIT,
     EXPORTER_CSPROJ_TEMPLATE_PATH,
     EXPORTER_PROGRAM_CS_PATH,
-    CnMetadataRecoveryDumpBackend,
-    CnMetadataRecoveryDumpError,
     Cpp2IlDumpCsBackend,
     Cpp2ILSourceResolver,
-    build_default_dumper_backend_registry,
 )
 
 
@@ -131,20 +135,25 @@ def _create_cpp2il_tree(root: Path) -> None:
 
 
 def test_default_dumper_policy_maps_regions_to_expected_backends() -> None:
-    registry = build_default_dumper_backend_registry()
     logger = NullLogger()
     http_client = DummyHttpClient()
 
     assert isinstance(
-        registry.resolve("jp")(http_client, logger),
+        DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("jp").dumper_backend_factory(
+            http_client, logger
+        ),
         Cpp2IlDumpCsBackend,
     )
     assert isinstance(
-        registry.resolve("gl")(http_client, logger),
+        DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("gl").dumper_backend_factory(
+            http_client, logger
+        ),
         Cpp2IlDumpCsBackend,
     )
     assert isinstance(
-        registry.resolve("cn")(http_client, logger),
+        DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("cn").dumper_backend_factory(
+            http_client, logger
+        ),
         CnMetadataRecoveryDumpBackend,
     )
 
@@ -157,25 +166,23 @@ def test_schema_workflow_does_not_fallback_when_jp_backend_fails(
             _ = (context, output_dir)
             raise RuntimeError("jp backend failed")
 
-    class ForbiddenBackend:
-        called = False
-
-        def dump(self, context: RuntimeContext, output_dir: str) -> None:
-            _ = (context, output_dir)
-            ForbiddenBackend.called = True
-
-    class Registry:
-        def resolve(self, region: str):  # type: ignore[no-untyped-def]
-            if region == "jp":
-                return lambda http_client, logger: FailingBackend()
-            return lambda http_client, logger: ForbiddenBackend()
-
-    workflow = SchemaWorkflow(DummyHttpClient(), NullLogger(), Registry())
+    workflow = SchemaWorkflow(
+        DummyHttpClient(),
+        NullLogger(),
+        dumper_backend_factory=lambda _http_client, _logger: FailingBackend(),
+    )
     context = _build_context(tmp_path, region="jp")
 
     with pytest.raises(RuntimeError, match="jp backend failed"):
         workflow.dump(context)
-    assert ForbiddenBackend.called is False
+
+
+def test_schema_workflow_dump_requires_configured_backend(tmp_path: Path) -> None:
+    workflow = SchemaWorkflow(DummyHttpClient(), NullLogger())
+    context = _build_context(tmp_path, region="jp")
+
+    with pytest.raises(ValueError, match="dumper backend"):
+        workflow.dump(context)
 
 
 def test_schema_workflow_builds_supplemental_memorypack_formatters(
@@ -426,15 +433,9 @@ def test_cpp2il_exporter_project_targets_selected_framework(
     program_text = (project_path.parent / "Program.cs").read_text(encoding="utf8")
     assert program_text.startswith("using System.Reflection;")
     assert "if (options.EnableCnMetadataRecoveryShim)" in program_text
-    assert "CnMetadataRecoveryInputShim.Register();" in program_text
+    assert "RegisterCnMetadataRecoveryShim();" in program_text
     assert "memorypack_union_attrs.json" in program_text
-    shim_text = (project_path.parent / "CnMetadataRecoveryInputShim.cs").read_text(
-        encoding="utf8"
-    )
-    assert "Il2CppBinary.OnRegistrationStructLocationFailure" in shim_text
-    assert "private static bool IsRegistered" in shim_text
-    assert "if (IsRegistered)" in shim_text
-    assert "auto-scanned" in shim_text
+    assert not (project_path.parent / "CnMetadataRecoveryInputShim.cs").exists()
 
 
 def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(
@@ -548,7 +549,7 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
     exporter_project = tmp_path / "DumpCsExporter.csproj"
     exporter_project.write_text("<Project />", encoding="utf8")
     run_calls: list[list[str]] = []
-    ensure_calls: list[str] = []
+    ensure_calls: list[tuple[str, tuple[str, ...]]] = []
 
     def fake_run(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
         _ = kwargs
@@ -559,8 +560,14 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
         _context: RuntimeContext,
         _cpp2il_root: Path,
         framework: str,
+        extra_source_templates=None,  # type: ignore[no-untyped-def]
     ) -> Path:
-        ensure_calls.append(framework)
+        ensure_calls.append(
+            (
+                framework,
+                tuple(sorted((extra_source_templates or {}).keys())),
+            )
+        )
         return exporter_project
 
     monkeypatch.setattr(
@@ -580,7 +587,7 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
         "Recovered CN metadata successfully.",
         "Dumped CN metadata recovery il2cpp binary file successfully.",
     ]
-    assert ensure_calls == ["net10.0"]
+    assert ensure_calls == [("net10.0", ("CnMetadataRecoveryInputShim.cs",))]
     assert pipeline.calls == [(b"metadata", binary_path)]
     assert final_metadata_path.read_bytes() == b"standard v29 metadata"
     assert sorted(path.name for path in final_metadata_path.parent.iterdir()) == [

@@ -2,10 +2,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from ba_downloader.application.profiles import build_region_profile
 from ba_downloader.bootstrap.container import (
     DownloadRuntimeServices,
     ExtractRuntimeServices,
+)
+from ba_downloader.bootstrap.region_profiles import (
+    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+    build_application_region_profile,
 )
 from ba_downloader.cli.main import main
 from ba_downloader.domain.exceptions import DownloadError, NetworkError
@@ -37,6 +40,20 @@ class DownloadProvider:
 
     def load_catalog(self, context) -> RegionCatalogResult:  # type: ignore[no-untyped-def]
         return RegionCatalogResult(AssetCollection(), context)
+
+
+JP_SERVICE_PROFILE = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("jp")
+
+
+def _build_workflow_profile(provider: DownloadProvider):
+    return build_application_region_profile(
+        JP_SERVICE_PROFILE,
+        SimpleNamespace(region="jp"),  # type: ignore[arg-type]
+        http_client=object(),
+        logger=ConsoleLogger(),
+        table_metadata_store=NoopTableMetadataStore(),
+        provider=provider,
+    )
 
 
 class RecordingDownloader:
@@ -119,13 +136,9 @@ def test_main_logs_extract_bootstrap_errors_without_traceback(
         logger=ConsoleLogger(),
         http_client=http_client,
         provider=provider,
+        service_profile=JP_SERVICE_PROFILE,
         extract_service=FailingExtractAssetsUseCase(error),
-        workflow_profile=build_region_profile(
-            context=SimpleNamespace(region="jp"),  # type: ignore[arg-type]
-            provider=provider,
-            logger=ConsoleLogger(),
-            table_metadata_store=NoopTableMetadataStore(),
-        ),
+        workflow_profile=_build_workflow_profile(provider),
     )
 
     monkeypatch.setattr(
@@ -152,13 +165,9 @@ def test_download_command_uses_download_only_runtime_services(
         logger=ConsoleLogger(),
         http_client=http_client,
         provider=provider,
+        service_profile=JP_SERVICE_PROFILE,
         downloader=downloader,
-        workflow_profile=build_region_profile(
-            context=SimpleNamespace(region="jp"),  # type: ignore[arg-type]
-            provider=provider,
-            logger=ConsoleLogger(),
-            table_metadata_store=NoopTableMetadataStore(),
-        ),
+        workflow_profile=_build_workflow_profile(provider),
     )
 
     monkeypatch.setattr(

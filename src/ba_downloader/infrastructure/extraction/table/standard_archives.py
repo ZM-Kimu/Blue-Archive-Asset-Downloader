@@ -6,9 +6,9 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from ba_downloader.infrastructure.extraction.table.archive_support import (
-    LEGACY_JP_EXCEL_STALE_ENTRIES,
-    LEGACY_JP_EXCEL_STALE_WARNING_PREFIX,
+    DefaultTableArchiveWarningPolicy,
     TableArchiveServices,
+    TableArchiveWarningPolicy,
 )
 from ba_downloader.infrastructure.extraction.table.models import (
     ProcessedTableArtifact,
@@ -19,8 +19,14 @@ from ba_downloader.infrastructure.schema.crypto import zip_password
 
 
 class StandardZipArchiveExtractor:
-    def __init__(self, services: TableArchiveServices) -> None:
+    def __init__(
+        self,
+        services: TableArchiveServices,
+        *,
+        warning_policy: TableArchiveWarningPolicy | None = None,
+    ) -> None:
         self.services = services
+        self.warning_policy = warning_policy or DefaultTableArchiveWarningPolicy()
 
     def extract(
         self,
@@ -116,23 +122,20 @@ class StandardZipArchiveExtractor:
         first_error: TableProcessingError,
         second_error: TableProcessingError,
     ) -> None:
-        if archive_name == "Excel.zip":
-            if item_name.lower() in LEGACY_JP_EXCEL_STALE_ENTRIES:
-                warnings.append(f"{LEGACY_JP_EXCEL_STALE_WARNING_PREFIX}{item_name}")
-                return
-            self.services.warn_skipped_entry(
-                archive_name,
-                item_name,
-                warnings,
-                "schema/payload unsupported; JP may expose this table via "
-                f"ExcelDB.db DBSchema output. {first_error}; fallback failed "
-                f"({second_error}).",
-            )
+        if self.warning_policy.warn_unsupported_entry(
+            self.services,
+            archive_name,
+            item_name,
+            warnings,
+            first_error,
+            second_error,
+        ):
             return
 
         self.services.warn_skipped_entry(
             archive_name,
             item_name,
             warnings,
-            f"{first_error}; fallback failed ({second_error}).",
+            f"schema/payload unsupported; fallback failed "
+            f"({first_error}; {second_error}).",
         )

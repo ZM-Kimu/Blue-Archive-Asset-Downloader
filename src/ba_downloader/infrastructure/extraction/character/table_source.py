@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -8,6 +9,12 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
 from ba_downloader.infrastructure.extraction.table.models import ProcessedTableArtifact
+from ba_downloader.infrastructure.extraction.table.profiles import (
+    TableExtractionProfile,
+    build_default_table_profile_for_context,
+)
+
+TableProfileFactory = Callable[[RuntimeContext], TableExtractionProfile]
 
 
 class CharacterTableSource(Protocol):
@@ -39,14 +46,18 @@ class TableExtractorCharacterTableSource:
         cls,
         context: RuntimeContext,
         logger: LoggerPort | None = None,
+        table_profile_factory: TableProfileFactory | None = None,
     ) -> TableExtractorCharacterTableSource:
+        active_table_profile_factory = (
+            table_profile_factory or build_default_table_profile_for_context
+        )
         return cls(
             TableExtractor(
                 str(Path(context.raw_dir) / "Table"),
                 str(Path(context.temp_dir) / "Table"),
                 str(Path(context.extract_dir) / "FlatBufferData"),
                 logger=logger,
-                context=context,
+                table_profile=active_table_profile_factory(context),
             )
         )
 

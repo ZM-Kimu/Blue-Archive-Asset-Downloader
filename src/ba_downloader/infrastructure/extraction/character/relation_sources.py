@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, Protocol
 from zipfile import ZipFile
 
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.character.table_source import (
     CharacterTableSource,
@@ -29,11 +28,6 @@ REQUIRED_RELATION_SOURCES = (
     "ScenarioCharacterNameDBSchema",
     "characterexceltable.bytes",
     "localizecharprofileexceltable.bytes",
-)
-JP_REQUIRED_RELATION_SOURCES = (
-    "ScenarioCharacterNameDBSchema",
-    "CharacterDBSchema",
-    "LocalizeCharProfileDBSchema",
 )
 
 
@@ -66,35 +60,22 @@ class CharacterRelationSources:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class DatabaseRelationSourceSpec:
+    scenario_table: str
+    character_table: str
+    profile_table: str
+
+    @property
+    def required_sources(self) -> tuple[str, str, str]:
+        return (self.scenario_table, self.character_table, self.profile_table)
+
+
 class CharacterRelationSourceProfile(Protocol):
     def load(
         self,
         loader: CharacterRelationSourceLoader,
     ) -> CharacterRelationSources: ...
-
-
-class JpDbRelationSourceProfile:
-    def load(
-        self,
-        loader: CharacterRelationSourceLoader,
-    ) -> CharacterRelationSources:
-        return loader._load_jp_excel_db()
-
-
-class LegacyArchiveRelationSourceProfile:
-    def load(
-        self,
-        loader: CharacterRelationSourceLoader,
-    ) -> CharacterRelationSources:
-        return loader._load_archive_excel()
-
-
-def build_character_relation_source_profile(
-    context: RuntimeContext,
-) -> CharacterRelationSourceProfile:
-    if context.region == "jp":
-        return JpDbRelationSourceProfile()
-    return LegacyArchiveRelationSourceProfile()
 
 
 class CharacterRelationSourceLoader:
@@ -106,10 +87,13 @@ class CharacterRelationSourceLoader:
         self._table_source = table_source
         self._logger = logger
 
-    def load(self, context: RuntimeContext) -> CharacterRelationSources:
-        return build_character_relation_source_profile(context).load(self)
+    def load(
+        self,
+        source_profile: CharacterRelationSourceProfile,
+    ) -> CharacterRelationSources:
+        return source_profile.load(self)
 
-    def _load_archive_excel(self) -> CharacterRelationSources:
+    def load_archive_relation_sources(self) -> CharacterRelationSources:
         scenario_db = self.extract_scenario_db()
         extracted_paths = self.extract_excel_bytes_files()
         excel_payloads = self.load_excel_payloads(extracted_paths)
@@ -131,18 +115,21 @@ class CharacterRelationSourceLoader:
             localize_gacha=excel_payloads.get("localizegachashopexceltable.bytes", []),
         )
 
-    def _load_jp_excel_db(self) -> CharacterRelationSources:
-        scenario_db = self.extract_scenario_db()
-        char_excel = self.extract_db_bytes_payloads("CharacterDBSchema")
-        char_profile = self.extract_db_bytes_payloads("LocalizeCharProfileDBSchema")
+    def load_database_relation_sources(
+        self,
+        spec: DatabaseRelationSourceSpec,
+    ) -> CharacterRelationSources:
+        scenario_db = self.extract_db_table(spec.scenario_table)
+        char_excel = self.extract_db_bytes_payloads(spec.character_table)
+        char_profile = self.extract_db_bytes_payloads(spec.profile_table)
 
         self.validate_relation_sources(
             source_payloads={
-                "ScenarioCharacterNameDBSchema": scenario_db,
-                "CharacterDBSchema": char_excel,
-                "LocalizeCharProfileDBSchema": char_profile,
+                spec.scenario_table: scenario_db,
+                spec.character_table: char_excel,
+                spec.profile_table: char_profile,
             },
-            required_sources=JP_REQUIRED_RELATION_SOURCES,
+            required_sources=spec.required_sources,
         )
 
         return CharacterRelationSources(

@@ -3,10 +3,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ba_downloader.application.profiles import RegionProfile, build_region_profile
+from ba_downloader.application.profiles import RegionProfile
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
 from ba_downloader.application.use_cases.schema_preparation import (
     SchemaPreparationService,
+)
+from ba_downloader.bootstrap.region_profiles import (
+    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+    RegionServiceProfile,
+    build_application_region_profile,
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.catalog_metadata import TableMetadataManifestPort
@@ -26,6 +31,7 @@ class BaseRuntimeServices:
     logger: LoggerPort
     http_client: HttpClientPort
     provider: RegionProvider
+    service_profile: RegionServiceProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +63,6 @@ class RelationRuntimeServices(BaseRuntimeServices):
 
 
 def _build_base_services(context: RuntimeContext) -> BaseRuntimeServices:
-    from ba_downloader.bootstrap.registries import DEFAULT_REGION_REGISTRY
     from ba_downloader.infrastructure.http import ResilientHttpClient
     from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
 
@@ -66,18 +71,20 @@ def _build_base_services(context: RuntimeContext) -> BaseRuntimeServices:
         proxy_url=context.proxy_url or None,
         max_retries=context.max_retries,
     )
-    provider_factory = DEFAULT_REGION_REGISTRY.resolve(context.region)
-    provider = provider_factory(http_client=http_client, logger=logger)
+    service_profile = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(context.region)
+    provider = service_profile.provider_factory(http_client, logger)
     return BaseRuntimeServices(
         logger=logger,
         http_client=http_client,
         provider=provider,
+        service_profile=service_profile,
     )
 
 
 def _build_downloader(
     http_client: HttpClientPort,
     logger: LoggerPort,
+    service_profile: RegionServiceProfile,
     *,
     enable_immediate_extraction: bool = False,
 ) -> ResourceDownloaderPort:
@@ -87,7 +94,10 @@ def _build_downloader(
     if enable_immediate_extraction:
         from ba_downloader.infrastructure.extraction import ImmediateResourceExtractor
 
-        immediate_extractor = ImmediateResourceExtractor(logger)
+        immediate_extractor = ImmediateResourceExtractor(
+            logger,
+            table_profile_factory=service_profile.table_profile_factory,
+        )
 
     return ResourceDownloader(
         http_client,
@@ -100,33 +110,48 @@ def _build_runtime_asset_preparer(
     context: RuntimeContext,
     http_client: HttpClientPort,
     logger: LoggerPort,
+    service_profile: RegionServiceProfile,
 ) -> RuntimeAssetPreparerPort:
-    from ba_downloader.bootstrap.registries import (
-        DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY,
-    )
-
-    preparer_factory = DEFAULT_RUNTIME_ASSET_PREPARER_REGISTRY.resolve(context.region)
-    return preparer_factory(http_client=http_client, logger=logger)
+    _ = context
+    return service_profile.runtime_asset_preparer_factory(http_client, logger)
 
 
 def _build_schema_preparation(
     context: RuntimeContext,
     http_client: HttpClientPort,
     logger: LoggerPort,
+    service_profile: RegionServiceProfile,
 ) -> SchemaPreparationPort:
     from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
 
     return SchemaPreparationService(
-        SchemaWorkflow(http_client, logger),
-        _build_runtime_asset_preparer(context, http_client, logger),
+        SchemaWorkflow(
+            http_client,
+            logger,
+            dumper_backend_factory=service_profile.dumper_backend_factory,
+        ),
+        _build_runtime_asset_preparer(context, http_client, logger, service_profile),
     )
 
 
-def _build_relation_builder_factory(logger: LoggerPort) -> RelationBuilderFactory:
+def _build_relation_builder_factory(
+    logger: LoggerPort,
+    service_profile: RegionServiceProfile,
+) -> RelationBuilderFactory:
     from ba_downloader.infrastructure.extraction.character import CharacterNameRelation
 
     def relation_builder_factory(active_context: RuntimeContext) -> RelationBuilderPort:
-        return CharacterNameRelation(active_context, logger)
+        return CharacterNameRelation(
+            active_context,
+            logger,
+            table_profile_factory=service_profile.table_profile_factory,
+            relation_source_profile_factory=(
+                service_profile.relation_source_profile_factory
+            ),
+            relation_composition_profile_factory=(
+                service_profile.relation_composition_profile_factory
+            ),
+        )
 
     return relation_builder_factory
 
@@ -147,21 +172,21 @@ def _build_extract_service(
 ) -> ExtractAssetsUseCase:
     from ba_downloader.infrastructure.extraction import AssetExtractionWorkflow
 
-    prerequisite_service = None
-    if workflow_profile.requires_jp_table_prerequisite:
-        from ba_downloader.infrastructure.extraction.prerequisites import (
-            JpTableExtractionPrerequisite,
-        )
-
-        prerequisite_service = JpTableExtractionPrerequisite(
-            schema_preparation,
-            base.logger,
-        )
+    prerequisite_service = base.service_profile.extraction_prerequisite_factory(
+        schema_preparation,
+        base.logger,
+    )
 
     _ = context
-    relation_builder_factory = _build_relation_builder_factory(base.logger)
+    relation_builder_factory = _build_relation_builder_factory(
+        base.logger,
+        base.service_profile,
+    )
     return ExtractAssetsUseCase(
-        AssetExtractionWorkflow(base.logger),
+        AssetExtractionWorkflow(
+            base.logger,
+            table_profile_factory=base.service_profile.table_profile_factory,
+        ),
         base.logger,
         provider=base.provider,
         relation_builder_factory=relation_builder_factory,
@@ -174,17 +199,24 @@ def build_download_runtime_services(
     context: RuntimeContext,
 ) -> DownloadRuntimeServices:
     base = _build_base_services(context)
-    workflow_profile = build_region_profile(
+    workflow_profile = build_application_region_profile(
+        base.service_profile,
         context,
-        base.provider,
-        base.logger,
-        _build_table_metadata_store(),
+        http_client=base.http_client,
+        logger=base.logger,
+        table_metadata_store=_build_table_metadata_store(),
+        provider=base.provider,
     )
     return DownloadRuntimeServices(
         logger=base.logger,
         http_client=base.http_client,
         provider=base.provider,
-        downloader=_build_downloader(base.http_client, base.logger),
+        service_profile=base.service_profile,
+        downloader=_build_downloader(
+            base.http_client,
+            base.logger,
+            base.service_profile,
+        ),
         workflow_profile=workflow_profile,
     )
 
@@ -197,17 +229,21 @@ def build_extract_runtime_services(
         context,
         base.http_client,
         base.logger,
+        base.service_profile,
     )
-    workflow_profile = build_region_profile(
+    workflow_profile = build_application_region_profile(
+        base.service_profile,
         context,
-        base.provider,
-        base.logger,
-        _build_table_metadata_store(),
+        http_client=base.http_client,
+        logger=base.logger,
+        table_metadata_store=_build_table_metadata_store(),
+        provider=base.provider,
     )
     return ExtractRuntimeServices(
         logger=base.logger,
         http_client=base.http_client,
         provider=base.provider,
+        service_profile=base.service_profile,
         extract_service=_build_extract_service(
             context,
             base,
@@ -224,21 +260,29 @@ def build_sync_runtime_services(context: RuntimeContext) -> SyncRuntimeServices:
         context,
         base.http_client,
         base.logger,
+        base.service_profile,
     )
-    relation_builder_factory = _build_relation_builder_factory(base.logger)
-    workflow_profile = build_region_profile(
-        context,
-        base.provider,
+    relation_builder_factory = _build_relation_builder_factory(
         base.logger,
-        _build_table_metadata_store(),
+        base.service_profile,
+    )
+    workflow_profile = build_application_region_profile(
+        base.service_profile,
+        context,
+        http_client=base.http_client,
+        logger=base.logger,
+        table_metadata_store=_build_table_metadata_store(),
+        provider=base.provider,
     )
     return SyncRuntimeServices(
         logger=base.logger,
         http_client=base.http_client,
         provider=base.provider,
+        service_profile=base.service_profile,
         downloader=_build_downloader(
             base.http_client,
             base.logger,
+            base.service_profile,
             enable_immediate_extraction=context.extract_while_download,
         ),
         extract_service=_build_extract_service(
@@ -261,12 +305,21 @@ def build_relation_runtime_services(
         context,
         base.http_client,
         base.logger,
+        base.service_profile,
     )
     return RelationRuntimeServices(
         logger=base.logger,
         http_client=base.http_client,
         provider=base.provider,
-        downloader=_build_downloader(base.http_client, base.logger),
+        service_profile=base.service_profile,
+        downloader=_build_downloader(
+            base.http_client,
+            base.logger,
+            base.service_profile,
+        ),
         schema_preparation=schema_preparation,
-        relation_builder_factory=_build_relation_builder_factory(base.logger),
+        relation_builder_factory=_build_relation_builder_factory(
+            base.logger,
+            base.service_profile,
+        ),
     )

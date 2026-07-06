@@ -25,10 +25,6 @@ class JpTableExtractionPrerequisite(ExtractionPrerequisitePort):
         context: RuntimeContext,
         resources: AssetCollection | None = None,
     ) -> None:
-        if context.region != "jp":
-            raise ValueError(
-                "JpTableExtractionPrerequisite only supports JP runtime contexts."
-            )
         if "table" not in context.resource_type:
             return
         if not self._has_table_input(context, resources):

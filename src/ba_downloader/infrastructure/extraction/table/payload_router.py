@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
@@ -26,13 +27,6 @@ class TablePayloadRouter(Protocol):
     ) -> TablePayloadRoute: ...
 
 
-MEMORYPACK_DB_ROOT_TYPES = {
-    "LevelSkillDataDBSchema.db": "MX.GameData.DAO.Battle.SkillLogicDAO",
-    "LogicEffectDataDBSchema.db": "MX.GameData.DAO.Battle.LogicEffectDAO",
-    "SkillVisualEffectDataDBSchema.db": "MX.AppData.DAO.Battle.SkillVisualDAO",
-}
-
-
 class FlatBufferTablePayloadRouter:
     def resolve_database_blob(
         self,
@@ -44,7 +38,16 @@ class FlatBufferTablePayloadRouter:
         return TablePayloadRoute(codec=TablePayloadCodec.FLATBUFFER)
 
 
-class JpTablePayloadRouter:
+class MemoryPackTablePayloadRouter:
+    def __init__(
+        self,
+        db_root_types: Mapping[str, str],
+        *,
+        allow_partial_memorypack: bool,
+    ) -> None:
+        self.db_root_types = dict(db_root_types)
+        self.allow_partial_memorypack = allow_partial_memorypack
+
     def resolve_database_blob(
         self,
         db_name: str,
@@ -52,31 +55,10 @@ class JpTablePayloadRouter:
         column_name: str,
     ) -> TablePayloadRoute:
         _ = table_name
-        if column_name == "Bytes" and (
-            root_type := MEMORYPACK_DB_ROOT_TYPES.get(db_name)
-        ):
+        if column_name == "Bytes" and (root_type := self.db_root_types.get(db_name)):
             return TablePayloadRoute(
                 codec=TablePayloadCodec.MEMORYPACK,
                 root_type=root_type,
-                allow_partial_memorypack=False,
-            )
-        return TablePayloadRoute(codec=TablePayloadCodec.FLATBUFFER)
-
-
-class CnLegacyTablePayloadRouter:
-    def resolve_database_blob(
-        self,
-        db_name: str,
-        table_name: str,
-        column_name: str,
-    ) -> TablePayloadRoute:
-        _ = table_name
-        if column_name == "Bytes" and (
-            root_type := MEMORYPACK_DB_ROOT_TYPES.get(db_name)
-        ):
-            return TablePayloadRoute(
-                codec=TablePayloadCodec.MEMORYPACK,
-                root_type=root_type,
-                allow_partial_memorypack=True,
+                allow_partial_memorypack=self.allow_partial_memorypack,
             )
         return TablePayloadRoute(codec=TablePayloadCodec.FLATBUFFER)

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ba_downloader.domain.models.asset import AssetCollection
+from ba_downloader.domain.models.region_profile import RegionSettingsPolicy
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.extract import SchemaPreparationPort
@@ -11,7 +12,6 @@ from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.relation import RelationBuilderPort
 
 RelationBuilderFactory = Callable[[RuntimeContext], RelationBuilderPort]
-VERSION_MANAGED_REGIONS = {"cn", "jp"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,9 +25,11 @@ class RelationSearchService:
         self,
         relation_builder_factory: RelationBuilderFactory,
         logger: LoggerPort,
+        settings_policy: RegionSettingsPolicy,
     ) -> None:
         self.relation_builder_factory = relation_builder_factory
         self.logger = logger
+        self.settings_policy = settings_policy
 
     def resolve_sync_keywords(
         self,
@@ -65,15 +67,15 @@ class RelationSearchService:
         self._require_current_relation(relation_builder, context)
         return relation_builder.search(context, list(context.advanced_search))
 
-    @staticmethod
     def _require_current_relation(
+        self,
         relation_builder: RelationBuilderPort,
         context: RuntimeContext,
     ) -> None:
         if relation_builder.verify_relation_file(context):
             return
 
-        command_args = RelationSearchService._format_relation_command_args(context)
+        command_args = self._format_relation_command_args(context)
         raise LookupError(
             "Character relation file is missing or does not match the current "
             "resource version. Run "
@@ -83,9 +85,8 @@ class RelationSearchService:
             "before using extract --advanced-search."
         )
 
-    @staticmethod
-    def _format_relation_command_args(context: RuntimeContext) -> str:
+    def _format_relation_command_args(self, context: RuntimeContext) -> str:
         version_hint = ""
-        if context.version and context.region not in VERSION_MANAGED_REGIONS:
+        if context.version and self.settings_policy.relation_command_includes_version:
             version_hint = f" --version {context.version}"
         return f"--region {context.region}{version_hint}"

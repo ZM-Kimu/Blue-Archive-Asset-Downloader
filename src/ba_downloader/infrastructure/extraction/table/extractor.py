@@ -29,7 +29,6 @@ from ba_downloader.infrastructure.extraction.table.models import (
 from ba_downloader.infrastructure.extraction.table.profiles import (
     TableExtractionProfile,
     build_default_table_extraction_profile,
-    build_table_extraction_profile,
 )
 from ba_downloader.infrastructure.extraction.table.progress import (
     TableExtractionProgress,
@@ -64,11 +63,8 @@ class TableExtractor:
         database_path_resolver: DatabasePathResolver | None = None,
         table_profile: TableExtractionProfile | None = None,
     ) -> None:
-        active_profile = table_profile or (
-            build_table_extraction_profile(context)
-            if context is not None
-            else build_default_table_extraction_profile()
-        )
+        _ = context
+        active_profile = table_profile or build_default_table_extraction_profile()
         self.table_file_folder = table_file_folder
         self.extract_folder = extract_folder
         self.flatbuffer_data_dir = flatbuffer_data_dir
@@ -114,13 +110,14 @@ class TableExtractor:
         cls,
         context: RuntimeContext,
         logger: LoggerPort | None = None,
+        table_profile: TableExtractionProfile | None = None,
     ) -> TableExtractor:
         return cls(
             str(Path(context.raw_dir) / "Table"),
             str(Path(context.extract_dir) / "Table"),
             str(Path(context.extract_dir) / "FlatBufferData"),
             logger=logger,
-            context=context,
+            table_profile=table_profile,
         )
 
     @staticmethod

@@ -18,9 +18,8 @@ from ba_downloader.infrastructure.schema.memorypack.parser import MemoryPackCSPa
 from ba_downloader.infrastructure.schema.memorypack.supplemental import (
     SupplementalMemoryPackFormatterBuilder,
 )
-from ba_downloader.infrastructure.tools import (
-    DEFAULT_DUMPER_BACKEND_REGISTRY,
-    DumperBackendRegistry,
+from ba_downloader.infrastructure.tools.dump_backend import (
+    BackendFactory,
 )
 
 
@@ -31,16 +30,19 @@ class SchemaWorkflow(SchemaWorkflowPort):
         self,
         http_client: HttpClientPort,
         logger: LoggerPort,
-        dumper_backend_registry: DumperBackendRegistry = DEFAULT_DUMPER_BACKEND_REGISTRY,
+        dumper_backend_factory: BackendFactory | None = None,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
-        self.dumper_backend_registry = dumper_backend_registry
+        self.dumper_backend_factory = dumper_backend_factory
 
     def dump(self, context: RuntimeContext) -> None:
+        if self.dumper_backend_factory is None:
+            raise ValueError(
+                "SchemaWorkflow.dump requires a configured dumper backend factory."
+            )
         extract_path = Path(context.extract_dir) / self.DUMP_PATH
-        backend_factory = self.dumper_backend_registry.resolve(context.region)
-        backend = backend_factory(self.http_client, self.logger)
+        backend = self.dumper_backend_factory(self.http_client, self.logger)
         backend.dump(
             context,
             str(extract_path.resolve()),

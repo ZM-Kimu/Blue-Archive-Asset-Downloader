@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ba_downloader.infrastructure.regions.jp.profile import build_jp_platform_profile
+from ba_downloader.infrastructure.regions.jp.platform import build_jp_platform_profile
 from support import build_runtime_context
 
 

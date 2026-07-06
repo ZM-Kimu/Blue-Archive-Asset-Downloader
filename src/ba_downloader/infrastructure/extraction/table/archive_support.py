@@ -13,17 +13,6 @@ from ba_downloader.infrastructure.extraction.table.models import (
 
 STAGE_SAVE_DATA_ROOT = "MX.Logic.Battles.StageSaveData.StageSaveData"
 STAGE_SAVE_DATA_OUTPUT_NAME = "StageSaveData.json"
-LEGACY_JP_EXCEL_STALE_ENTRIES = frozenset(
-    {
-        "interactiveworldraidcarrierexceltable.bytes",
-        "minigamecardexceltable.bytes",
-        "minigamedreamcollectionscenarioexceltable.bytes",
-        "minigameroadpuzzleexceltable.bytes",
-        "minigameshootingexceltable.bytes",
-        "scenarioresourceinfoexceltable.bytes",
-    }
-)
-LEGACY_JP_EXCEL_STALE_WARNING_PREFIX = "legacy JP Excel.zip stale entry: "
 
 
 def resolve_inner_password_name(
@@ -85,3 +74,44 @@ class TableArchiveServices(Protocol):
         extract_folder: Path,
         processed_file: ProcessedTableArtifact,
     ) -> None: ...
+
+
+class TableArchiveWarningPolicy(Protocol):
+    def warn_unsupported_entry(
+        self,
+        services: TableArchiveServices,
+        archive_name: str,
+        item_name: str,
+        warnings: list[str],
+        first_error: Exception,
+        second_error: Exception,
+    ) -> bool: ...
+
+    def emit_warning_summary(
+        self,
+        services: TableArchiveServices,
+        archive_name: str,
+        warnings: list[str],
+    ) -> None: ...
+
+
+class DefaultTableArchiveWarningPolicy:
+    def warn_unsupported_entry(
+        self,
+        services: TableArchiveServices,
+        archive_name: str,
+        item_name: str,
+        warnings: list[str],
+        first_error: Exception,
+        second_error: Exception,
+    ) -> bool:
+        _ = (services, archive_name, item_name, warnings, first_error, second_error)
+        return False
+
+    def emit_warning_summary(
+        self,
+        services: TableArchiveServices,
+        archive_name: str,
+        warnings: list[str],
+    ) -> None:
+        _ = (services, archive_name, warnings)
