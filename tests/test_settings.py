@@ -85,51 +85,87 @@ def test_runtime_context_copies_normalized_settings() -> None:
     assert runtime_context.platform_explicit is False
 
 
-def test_runtime_context_copies_jp_sqlcipher_key_from_cli() -> None:
+def test_runtime_context_copies_sqlcipher_key_from_cli() -> None:
     parser = build_parser()
     args = parser.parse_args(
         [
             "extract",
             "--region",
             "jp",
-            "--jp-sqlcipher-key-hex",
+            "--sqlcipher-key-hex",
             "a" * 64,
         ]
     )
 
     runtime_context = runtime_context_from_namespace(args)
 
-    assert runtime_context.jp_sqlcipher_key_hex == "a" * 64
+    assert runtime_context.sqlcipher_key_hex == "a" * 64
 
 
-def test_runtime_context_ignores_jp_sqlcipher_key_environment(
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("_".join(("BA", "JP", "SQLCIPHER", "KEY", "HEX")), "b" * 64)
-
-    runtime_context = AppSettings(region="jp").to_runtime_context(
-        _settings_policy("jp")
-    )
-
-    assert runtime_context.jp_sqlcipher_key_hex == ""
-
-
-def test_cli_jp_sqlcipher_key_is_not_affected_by_environment(monkeypatch) -> None:
-    monkeypatch.setenv("_".join(("BA", "JP", "SQLCIPHER", "KEY", "HEX")), "b" * 64)
+def test_runtime_context_copies_sqlcipher_key_from_short_cli_option() -> None:
     parser = build_parser()
     args = parser.parse_args(
         [
             "extract",
             "--region",
             "jp",
-            "--jp-sqlcipher-key-hex",
+            "-kei",
+            "b" * 64,
+        ]
+    )
+
+    runtime_context = runtime_context_from_namespace(args)
+
+    assert runtime_context.sqlcipher_key_hex == "b" * 64
+
+
+def test_runtime_context_ignores_sqlcipher_key_environment(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("_".join(("BA", "SQLCIPHER", "KEY", "HEX")), "b" * 64)
+
+    runtime_context = AppSettings(region="jp").to_runtime_context(
+        _settings_policy("jp")
+    )
+
+    assert runtime_context.sqlcipher_key_hex == ""
+
+
+def test_cli_sqlcipher_key_is_not_affected_by_environment(monkeypatch) -> None:
+    monkeypatch.setenv("_".join(("BA", "SQLCIPHER", "KEY", "HEX")), "b" * 64)
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "extract",
+            "--region",
+            "jp",
+            "--sqlcipher-key-hex",
             "c" * 64,
         ]
     )
 
     runtime_context = runtime_context_from_namespace(args)
 
-    assert runtime_context.jp_sqlcipher_key_hex == "c" * 64
+    assert runtime_context.sqlcipher_key_hex == "c" * 64
+
+
+def test_cli_rejects_region_specific_sqlcipher_key_option() -> None:
+    parser = build_parser()
+
+    try:
+        parser.parse_args(
+            [
+                "extract",
+                "--region",
+                "jp",
+                "--jp-sqlcipher-key-hex",
+                "d" * 64,
+            ]
+        )
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("Expected argparse to reject the old SQLCipher option.")
 
 
 def test_extract_cli_accepts_basic_search_option() -> None:

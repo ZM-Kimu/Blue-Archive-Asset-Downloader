@@ -8,7 +8,7 @@ from ba_downloader.domain.models.asset import (
     RegionCapabilities,
     ResolvedRelease,
 )
-from ba_downloader.domain.models.character import CharacterData, CharacterRelation
+from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
 from ba_downloader.domain.models.database import DBColumn, DBTable, SQLiteDataType
 from ba_downloader.domain.models.region import Platform, Region
 from ba_downloader.domain.models.region_catalog import (
@@ -23,8 +23,8 @@ __all__ = [
     "AssetType",
     "BootstrapSession",
     "CatalogSource",
-    "CharacterData",
-    "CharacterRelation",
+    "CharacterIndex",
+    "CharacterIndexEntry",
     "ChecksumSpec",
     "DBColumn",
     "DBTable",

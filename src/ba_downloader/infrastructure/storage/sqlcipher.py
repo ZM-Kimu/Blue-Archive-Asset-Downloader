@@ -183,14 +183,12 @@ class SqlCipherDatabaseResolver:
 
     def resolve(self, database_path: Path) -> Path:
         database_path = database_path.resolve()
-        if self.context.region != "jp" or is_sqlite_database(database_path):
+        if is_sqlite_database(database_path):
             return database_path
 
-        key_hex = self.context.jp_sqlcipher_key_hex.strip()
+        key_hex = self.context.sqlcipher_key_hex.strip()
         if not key_hex:
-            raise LookupError(
-                "JP encrypted table databases require --jp-sqlcipher-key-hex."
-            )
+            raise LookupError("Encrypted table databases require --sqlcipher-key-hex.")
 
         if database_path in self._cache:
             return self._cache[database_path]

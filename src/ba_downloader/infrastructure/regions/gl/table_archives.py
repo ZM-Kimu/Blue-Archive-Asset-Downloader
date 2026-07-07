@@ -7,16 +7,16 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from ba_downloader.infrastructure.extraction.table.archive_classifier import (
+    ROUTE_RAW,
+    ROUTE_STANDARD,
     TableArchiveRoute,
     TableArchiveRouteKey,
+    classify_table_archive,
 )
 from ba_downloader.infrastructure.extraction.table.archive_support import (
     TableArchiveServices,
 )
-from ba_downloader.infrastructure.extraction.table.archives import (
-    GROUND_GRID_SCHEMA_NAME,
-    ArchiveHandler,
-)
+from ba_downloader.infrastructure.extraction.table.archives import ArchiveHandler
 from ba_downloader.infrastructure.extraction.table.crypto import zip_password
 from ba_downloader.infrastructure.extraction.table.models import (
     ProcessedTableArtifact,
@@ -26,14 +26,51 @@ from ba_downloader.infrastructure.extraction.table.models import (
 from ba_downloader.infrastructure.extraction.table.raw_archives import (
     RawArchiveExporter,
 )
-from ba_downloader.infrastructure.regions.legacy_table_archives import (
-    LEGACY_GL_GROUND_ROUTE,
-    LEGACY_GL_NUMERIC_STAGE_ROUTE,
-    LEGACY_MGS_LOGIC_GROUND_ROUTE,
+from ba_downloader.infrastructure.regions.cn_gl_table_archives import (
+    GROUND_GRID_SCHEMA_NAME,
+    is_c_sb_raw_script_archive,
+    is_eliminate_raid_archive,
+    is_enemy_boss_script_archive,
+    is_ground_archive,
+    is_mgs_logic_ground_archive,
+    is_numeric_stage_archive,
+    is_raw_script_test_archive,
+    resolve_ground_schema_name,
 )
 
+GROUND_FLATBUFFER_ARCHIVE_ROUTE = "ground_flatbuffer_archive"
+MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE = "mgs_logic_ground_mixed_archive"
 
-class GlLegacyArchiveExtractor:
+
+def classify_gl_table_archive(file_name: str) -> TableArchiveRoute:
+    archive_name = path.basename(file_name)
+
+    standard_route = classify_table_archive(archive_name)
+    if standard_route.route_key != ROUTE_STANDARD:
+        return standard_route
+    if is_mgs_logic_ground_archive(archive_name):
+        return TableArchiveRoute(MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE)
+
+    lower_name = archive_name.lower()
+    if is_c_sb_raw_script_archive(lower_name):
+        return TableArchiveRoute(ROUTE_RAW)
+    if is_ground_archive(lower_name):
+        return TableArchiveRoute(
+            GROUND_FLATBUFFER_ARCHIVE_ROUTE,
+            schema_name=resolve_ground_schema_name(lower_name),
+        )
+    if (
+        is_eliminate_raid_archive(lower_name)
+        or is_enemy_boss_script_archive(lower_name)
+        or is_raw_script_test_archive(lower_name)
+        or is_numeric_stage_archive(lower_name)
+    ):
+        return TableArchiveRoute(ROUTE_RAW)
+
+    return TableArchiveRoute(ROUTE_STANDARD)
+
+
+class GlGroundArchiveExtractor:
     def __init__(self, services: TableArchiveServices) -> None:
         self.services = services
 
@@ -153,13 +190,13 @@ class GlLegacyArchiveExtractor:
                     )
 
 
-def build_gl_legacy_archive_handlers(
+def build_gl_table_archive_handlers(
     services: TableArchiveServices,
     raw_exporter: RawArchiveExporter,
 ) -> Mapping[TableArchiveRouteKey, ArchiveHandler]:
-    extractor = GlLegacyArchiveExtractor(services)
+    extractor = GlGroundArchiveExtractor(services)
 
-    def extract_gl_ground(
+    def decode_ground_archive(
         file_name: str,
         route: TableArchiveRoute,
         warnings: list[str],
@@ -176,7 +213,7 @@ def build_gl_legacy_archive_handlers(
             progress_callback=progress_callback,
         )
 
-    def extract_mgs_logic_ground(
+    def decode_mgs_logic_ground_archive(
         file_name: str,
         route: TableArchiveRoute,
         warnings: list[str],
@@ -193,25 +230,9 @@ def build_gl_legacy_archive_handlers(
             progress_callback=progress_callback,
         )
 
-    def extract_legacy_raw(
-        file_name: str,
-        route: TableArchiveRoute,
-        warnings: list[str],
-        should_stop: Callable[[], bool] | None,
-        progress_callback: ProgressCallback | None,
-        inner_password_names: Mapping[str, str],
-    ) -> None:
-        _ = inner_password_names
-        raw_exporter.extract(
-            file_name,
-            warnings=warnings,
-            should_stop=should_stop,
-            progress_callback=progress_callback,
-            info_message=route.info_message,
-        )
+    _ = raw_exporter
 
     return {
-        LEGACY_GL_GROUND_ROUTE: extract_gl_ground,
-        LEGACY_GL_NUMERIC_STAGE_ROUTE: extract_legacy_raw,
-        LEGACY_MGS_LOGIC_GROUND_ROUTE: extract_mgs_logic_ground,
+        GROUND_FLATBUFFER_ARCHIVE_ROUTE: decode_ground_archive,
+        MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE: decode_mgs_logic_ground_archive,
     }

@@ -646,8 +646,14 @@ def test_cn_metadata_recovery_backend_raises_actionable_pipeline_error(
         recovery_pipeline=FailingPipeline(),
     )
 
-    with pytest.raises(CnMetadataRecoveryDumpError, match="sanitize_default_values"):
+    with pytest.raises(
+        CnMetadataRecoveryDumpError, match="sanitize_default_values"
+    ) as exc:
         backend.dump(context, str(tmp_path / "Extracted" / "Dumps"))
+
+    assert "Input:" in str(exc.value)
+    assert "Binary:" in str(exc.value)
+    assert "Output:" in str(exc.value)
 
 
 def test_cn_metadata_recovery_backend_requires_prepared_metadata_and_binary(

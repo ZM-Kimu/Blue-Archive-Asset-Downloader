@@ -136,4 +136,4 @@ class CatalogSource:
 class RegionCapabilities:
     supports_sync: bool = True
     supports_advanced_search: bool = True
-    supports_relation_build: bool = True
+    supports_character_index_build: bool = True

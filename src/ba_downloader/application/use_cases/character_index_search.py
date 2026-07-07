@@ -6,28 +6,28 @@ from dataclasses import dataclass
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.region_profile import RegionSettingsPolicy
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.character_index import CharacterIndexBuilderPort
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.extract import SchemaPreparationPort
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.domain.ports.relation import RelationBuilderPort
 
-RelationBuilderFactory = Callable[[RuntimeContext], RelationBuilderPort]
+CharacterIndexBuilderFactory = Callable[[RuntimeContext], CharacterIndexBuilderPort]
 
 
 @dataclass(frozen=True, slots=True)
-class RelationSearchResult:
+class CharacterIndexSearchResult:
     keywords: list[str]
     schema_prepared: bool
 
 
-class RelationSearchService:
+class CharacterIndexSearchService:
     def __init__(
         self,
-        relation_builder_factory: RelationBuilderFactory,
+        character_index_builder_factory: CharacterIndexBuilderFactory,
         logger: LoggerPort,
         settings_policy: RegionSettingsPolicy,
     ) -> None:
-        self.relation_builder_factory = relation_builder_factory
+        self.character_index_builder_factory = character_index_builder_factory
         self.logger = logger
         self.settings_policy = settings_policy
 
@@ -39,23 +39,23 @@ class RelationSearchService:
         schema_preparation: SchemaPreparationPort,
         downloader: ResourceDownloaderPort,
         schema_prepared: bool,
-    ) -> RelationSearchResult:
+    ) -> CharacterIndexSearchResult:
         if not context.advanced_search:
-            return RelationSearchResult([], schema_prepared)
+            return CharacterIndexSearchResult([], schema_prepared)
 
         self.logger.info("Preparing for advanced search...")
-        relation_builder = self.relation_builder_factory(context)
+        character_index_builder = self.character_index_builder_factory(context)
         active_schema_prepared = schema_prepared
-        if not relation_builder.verify_relation_file(context):
+        if not character_index_builder.verify_index_file(context):
             if not active_schema_prepared:
                 schema_preparation.prepare(context)
                 active_schema_prepared = True
-            excel_resource = relation_builder.get_excel_resources(resources)
+            excel_resource = character_index_builder.get_excel_resources(resources)
             downloader.verify_and_download(excel_resource, context)
-            relation_builder.build(context)
+            character_index_builder.build(context)
 
-        return RelationSearchResult(
-            relation_builder.search(context, list(context.advanced_search)),
+        return CharacterIndexSearchResult(
+            character_index_builder.search(context, list(context.advanced_search)),
             active_schema_prepared,
         )
 
@@ -63,30 +63,33 @@ class RelationSearchService:
         if not context.advanced_search:
             return []
 
-        relation_builder = self.relation_builder_factory(context)
-        self._require_current_relation(relation_builder, context)
-        return relation_builder.search(context, list(context.advanced_search))
+        character_index_builder = self.character_index_builder_factory(context)
+        self._require_current_index(character_index_builder, context)
+        return character_index_builder.search(context, list(context.advanced_search))
 
-    def _require_current_relation(
+    def _require_current_index(
         self,
-        relation_builder: RelationBuilderPort,
+        character_index_builder: CharacterIndexBuilderPort,
         context: RuntimeContext,
     ) -> None:
-        if relation_builder.verify_relation_file(context):
+        if character_index_builder.verify_index_file(context):
             return
 
-        command_args = self._format_relation_command_args(context)
+        command_args = self._format_character_index_command_args(context)
         raise LookupError(
-            "Character relation file is missing or does not match the current "
+            "Character index file is missing or does not match the current "
             "resource version. Run "
-            f"`ba-downloader relation build {command_args}` "
+            f"`ba-downloader character-index build {command_args}` "
             "or "
             f"`ba-downloader sync {command_args} -as <keyword>` "
             "before using extract --advanced-search."
         )
 
-    def _format_relation_command_args(self, context: RuntimeContext) -> str:
+    def _format_character_index_command_args(self, context: RuntimeContext) -> str:
         version_hint = ""
-        if context.version and self.settings_policy.relation_command_includes_version:
+        if (
+            context.version
+            and self.settings_policy.character_index_command_includes_version
+        ):
             version_hint = f" --version {context.version}"
         return f"--region {context.region}{version_hint}"

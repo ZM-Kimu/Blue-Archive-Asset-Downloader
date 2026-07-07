@@ -324,7 +324,7 @@ def parse_blob_constructors(
     return attribute_count, constructors
 
 
-def restore_legacy_attribute_sections(
+def restore_pre29_attribute_sections(
     source: bytes,
     metadata: bytes,
     binary: Path,

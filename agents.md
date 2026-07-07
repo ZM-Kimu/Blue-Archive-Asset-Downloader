@@ -13,7 +13,7 @@
 - Use type hints and prioritize readability; error handling must be traceable and actionable.
 - Avoid import-time side effects, scattered magic values, and direct coupling to implementation details.
 - Do not casually rename, remove, or change existing parameters; when modifying user-visible behavior, update `--help` and `README.md` accordingly.
-- Incompatible changes are allowed by default, but the impact scope, migration method, and risks must be explained in advance.
+- Incompatible changes are allowed, but the impact scope, migration method, and risks must be explained in advance.
 - CLI entry points, command names, and core parameters are considered stable APIs and must be changed cautiously.
 - When uncertain, you must ask the user; if confirmation is unavailable, stop the conversation.
 

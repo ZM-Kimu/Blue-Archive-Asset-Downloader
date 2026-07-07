@@ -5,18 +5,20 @@ from collections.abc import Sequence
 from typing import Any, cast
 
 from ba_downloader.application.config import AppSettings
-from ba_downloader.application.use_cases.build_relation import BuildRelationUseCase
+from ba_downloader.application.use_cases.build_character_index import (
+    BuildCharacterIndexUseCase,
+)
 from ba_downloader.application.use_cases.download_assets import DownloadAssetsUseCase
 from ba_downloader.application.use_cases.sync_assets import SyncAssetsUseCase
 from ba_downloader.bootstrap.container import (
     BaseRuntimeServices,
+    CharacterIndexRuntimeServices,
     DownloadRuntimeServices,
     ExtractRuntimeServices,
-    RelationRuntimeServices,
     SyncRuntimeServices,
+    build_character_index_runtime_services,
     build_download_runtime_services,
     build_extract_runtime_services,
-    build_relation_runtime_services,
     build_sync_runtime_services,
 )
 from ba_downloader.bootstrap.region_profiles import (
@@ -110,9 +112,10 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         help="Maximum retry count for failed downloads.",
     )
     parser.add_argument(
-        "--jp-sqlcipher-key-hex",
+        "--sqlcipher-key-hex",
+        "-kei",
         default="",
-        help="JP SQLCipher raw key as 64 hex characters.",
+        help="SQLCipher raw key as 64 hex characters for encrypted table databases.",
     )
     parser.add_argument(
         "--platform",
@@ -167,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_search_options(
         sync_parser,
-        advanced_help="Search assets by character relation fields (GL/JP sync only).",
+        advanced_help="Search assets by character index fields (GL/JP sync only).",
     )
 
     download_parser = subparsers.add_parser("download", help="Download assets only")
@@ -181,21 +184,21 @@ def build_parser() -> argparse.ArgumentParser:
     _add_search_options(
         extract_parser,
         advanced_help=(
-            "Search existing raw assets by character relation fields "
+            "Search existing raw assets by character index fields "
             "(GL/JP extract only)."
         ),
     )
 
-    relation_parser = subparsers.add_parser(
-        "relation", help="Character relation commands"
+    character_index_parser = subparsers.add_parser(
+        "character-index", help="Character index commands"
     )
-    relation_sub = relation_parser.add_subparsers(
-        dest="relation_command", required=True
+    character_index_sub = character_index_parser.add_subparsers(
+        dest="character_index_command", required=True
     )
-    relation_build = relation_sub.add_parser(
-        "build", help="Build character relation file"
+    character_index_build = character_index_sub.add_parser(
+        "build", help="Build character index file"
     )
-    _add_common_options(relation_build)
+    _add_common_options(character_index_build)
 
     return parser
 
@@ -218,7 +221,7 @@ def runtime_context_from_namespace(args: argparse.Namespace) -> RuntimeContext:
         advanced_search=tuple(getattr(args, "advanced_search", [])),
         platform=cast(Platform, getattr(args, "platform", "android")),
         platform_explicit=getattr(args, "platform_explicit", False),
-        jp_sqlcipher_key_hex=getattr(args, "jp_sqlcipher_key_hex", ""),
+        sqlcipher_key_hex=getattr(args, "sqlcipher_key_hex", ""),
     )
     return settings.to_runtime_context(service_profile.settings_policy)
 
@@ -234,7 +237,7 @@ def _run_command(
             services.downloader,
             services.extract_service,
             services.schema_preparation,
-            services.relation_builder_factory,
+            services.character_index_builder_factory,
             services.logger,
             workflow_profile=services.workflow_profile,
         ).run(context)
@@ -253,15 +256,15 @@ def _run_command(
         return 0
 
     if (
-        args.command == "relation"
-        and args.relation_command == "build"
-        and isinstance(services, RelationRuntimeServices)
+        args.command == "character-index"
+        and args.character_index_command == "build"
+        and isinstance(services, CharacterIndexRuntimeServices)
     ):
-        BuildRelationUseCase(
+        BuildCharacterIndexUseCase(
             services.provider,
             services.downloader,
             services.schema_preparation,
-            services.relation_builder_factory,
+            services.character_index_builder_factory,
         ).build(context)
         return 0
 
@@ -278,8 +281,8 @@ def _build_services(
         return build_download_runtime_services(context)
     if args.command == "extract":
         return build_extract_runtime_services(context)
-    if args.command == "relation" and args.relation_command == "build":
-        return build_relation_runtime_services(context)
+    if args.command == "character-index" and args.character_index_command == "build":
+        return build_character_index_runtime_services(context)
     raise LookupError(f"Unsupported command '{args.command}'.")
 
 

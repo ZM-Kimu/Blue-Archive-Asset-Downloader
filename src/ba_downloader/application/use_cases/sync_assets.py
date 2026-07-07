@@ -5,15 +5,17 @@ from ba_downloader.application.profiles import (
     SyncExtractionMode,
 )
 from ba_downloader.application.use_cases.asset_selection import AssetSelectionService
+from ba_downloader.application.use_cases.character_index_search import (
+    CharacterIndexSearchService,
+)
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
-from ba_downloader.application.use_cases.relation_search import RelationSearchService
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.character_index import CharacterIndexBuilderPort
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.extract import SchemaPreparationPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
-from ba_downloader.domain.ports.relation import RelationBuilderPort
 from ba_downloader.domain.services.resource_query import ResourceQueryService
 
 
@@ -24,7 +26,9 @@ class SyncAssetsUseCase:
         downloader: ResourceDownloaderPort,
         extract_service: ExtractAssetsUseCase,
         schema_preparation: SchemaPreparationPort,
-        relation_builder_factory: Callable[[RuntimeContext], RelationBuilderPort],
+        character_index_builder_factory: Callable[
+            [RuntimeContext], CharacterIndexBuilderPort
+        ],
         logger: LoggerPort,
         *,
         workflow_profile: RegionProfile,
@@ -33,12 +37,12 @@ class SyncAssetsUseCase:
         self.downloader = downloader
         self.extract_service = extract_service
         self.schema_preparation = schema_preparation
-        self.relation_builder_factory = relation_builder_factory
+        self.character_index_builder_factory = character_index_builder_factory
         self.logger = logger
         self.workflow_profile = workflow_profile
         self.asset_selector = AssetSelectionService(logger)
-        self.relation_search = RelationSearchService(
-            relation_builder_factory,
+        self.character_index_search = CharacterIndexSearchService(
+            character_index_builder_factory,
             logger,
             workflow_profile.settings_policy,
         )
@@ -54,14 +58,14 @@ class SyncAssetsUseCase:
     ) -> AssetCollection:
         advanced_keywords: list[str] | None = None
         if context.advanced_search:
-            relation_result = self.relation_search.resolve_sync_keywords(
+            index_result = self.character_index_search.resolve_sync_keywords(
                 resources,
                 context,
                 schema_preparation=self.schema_preparation,
                 downloader=self.downloader,
                 schema_prepared=schema_prepared,
             )
-            advanced_keywords = relation_result.keywords
+            advanced_keywords = index_result.keywords
 
         return self.asset_selector.filter_search_resources(
             resources,

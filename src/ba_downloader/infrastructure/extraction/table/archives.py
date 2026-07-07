@@ -62,7 +62,7 @@ ArchiveClassifier = Callable[[str], TableArchiveRoute]
 @dataclass(frozen=True, slots=True)
 class TableArchiveRegistry:
     classifier: ArchiveClassifier
-    enabled_kinds: frozenset[TableArchiveRouteKey]
+    enabled_routes: frozenset[TableArchiveRouteKey]
     handler_factory: ArchiveHandlerFactory | None = None
     warning_policy: TableArchiveWarningPolicy | None = None
 
@@ -104,9 +104,9 @@ class TableArchiveRouter:
             handlers
             if registry is None
             else {
-                kind: handler
-                for kind, handler in handlers.items()
-                if kind in registry.enabled_kinds
+                route_key: handler
+                for route_key, handler in handlers.items()
+                if route_key in registry.enabled_routes
             }
         )
 
@@ -122,10 +122,10 @@ class TableArchiveRouter:
         warnings: list[str] = []
         route = self.classifier(archive_name)
         inner_password_names = self._inner_password_names_from_metadata(metadata)
-        handler = self._handlers.get(route.kind)
+        handler = self._handlers.get(route.route_key)
         if handler is None:
             detail = route.info_message or (
-                f"archive route '{route.kind}' is disabled by the active table profile"
+                f"archive route '{route.route_key}' is disabled by the active table profile"
             )
             self.services.logger.error(f"Failed to process {archive_name}: {detail}")
             return

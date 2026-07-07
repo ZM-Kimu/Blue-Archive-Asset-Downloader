@@ -35,7 +35,7 @@ def _build_context(tmp_path: Path, *, key_hex: str = RAW_KEY_HEX) -> RuntimeCont
         search=(),
         advanced_search=(),
         work_dir=str(tmp_path),
-        jp_sqlcipher_key_hex=key_hex,
+        sqlcipher_key_hex=key_hex,
     )
 
 
@@ -173,7 +173,7 @@ class NoopProgress:
         _ = (progress_callback, current, total, unit)
 
 
-def test_jp_sqlcipher_database_resolver_exports_encrypted_db_before_reading(
+def test_sqlcipher_database_resolver_exports_encrypted_db_before_reading(
     tmp_path: Path,
 ) -> None:
     encrypted_db = tmp_path / "Raw" / "Table" / "Sample.db"
@@ -202,12 +202,12 @@ def test_jp_sqlcipher_database_resolver_exports_encrypted_db_before_reading(
     assert exporter.calls[0][1].parent == tmp_path / "Temp" / "SQLCipher"
 
 
-def test_jp_sqlcipher_database_resolver_requires_key_for_encrypted_db(
+def test_sqlcipher_database_resolver_requires_key_for_encrypted_db(
     tmp_path: Path,
 ) -> None:
     encrypted_db = tmp_path / "encrypted.db"
     encrypted_db.write_bytes(b"encrypted" * 512)
     resolver = SqlCipherDatabaseResolver(_build_context(tmp_path, key_hex=""))
 
-    with pytest.raises(LookupError, match="--jp-sqlcipher-key-hex"):
+    with pytest.raises(LookupError, match="--sqlcipher-key-hex"):
         resolver.resolve(encrypted_db)

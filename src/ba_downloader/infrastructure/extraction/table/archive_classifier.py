@@ -27,7 +27,7 @@ SHARED_TABLE_ARCHIVE_ROUTE_KEYS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class TableArchiveRoute:
-    kind: TableArchiveRouteKey
+    route_key: TableArchiveRouteKey
     schema_name: str = ""
     info_message: str | None = None
 

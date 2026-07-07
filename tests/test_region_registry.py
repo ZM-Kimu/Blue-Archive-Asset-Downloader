@@ -93,13 +93,17 @@ def test_default_region_service_profiles_expose_table_and_relation_policy_behavi
     assert gl_route.codec is TablePayloadCodec.FLATBUFFER
     assert jp_route.codec is TablePayloadCodec.MEMORYPACK
     assert jp_route.allow_partial_memorypack is False
-    assert callable(cn.relation_source_profile_factory(_context("cn")).load)
-    assert callable(gl.relation_source_profile_factory(_context("gl")).load)
-    assert callable(jp.relation_source_profile_factory(_context("jp")).load)
-    assert cn.relation_composition_profile_factory(_context("cn")).enrichers
-    assert gl.relation_composition_profile_factory(_context("gl")).enrichers == ()
+    assert callable(cn.character_index_source_profile_factory(_context("cn")).load)
+    assert callable(gl.character_index_source_profile_factory(_context("gl")).load)
+    assert callable(jp.character_index_source_profile_factory(_context("jp")).load)
+    assert cn.character_index_composition_profile_factory(_context("cn")).enrichers
     assert (
-        jp.relation_composition_profile_factory(_context("jp")).romanize_japanese_names
+        gl.character_index_composition_profile_factory(_context("gl")).enrichers == ()
+    )
+    assert (
+        jp.character_index_composition_profile_factory(
+            _context("jp")
+        ).romanize_japanese_names
         is True
     )
 

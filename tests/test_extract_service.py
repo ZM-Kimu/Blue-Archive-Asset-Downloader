@@ -24,7 +24,7 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.regions.jp.prerequisites import (
     JpTableExtractionPrerequisite,
 )
-from support import DummyRelationBuilder, RecordingLogger, StaticProvider
+from support import DummyCharacterIndexBuilder, RecordingLogger, StaticProvider
 
 
 class RecordingExtractionWorkflow:
@@ -497,7 +497,7 @@ def test_extract_service_search_extracts_only_existing_filtered_resources(
     service = ExtractAssetsUseCase(
         extraction_workflow,
         provider=provider,
-        relation_builder_factory=lambda _context: DummyRelationBuilder(),
+        character_index_builder_factory=lambda _context: DummyCharacterIndexBuilder(),
         logger=logger,
         workflow_profile=_build_profile(context, provider, logger),
     )
@@ -516,26 +516,26 @@ def test_extract_service_advanced_search_filters_existing_resources(
         advanced_search=("シロコ",),
     )
     _create_existing_bundle(context, "Shiroko.bundle")
-    relation_builder = DummyRelationBuilder(search_results=["Shiroko"])
+    character_index_builder = DummyCharacterIndexBuilder(search_results=["Shiroko"])
     extraction_workflow = RecordingExtractionWorkflow()
     provider = StaticProvider(_build_filter_catalog(context))
     logger = RecordingLogger()
     service = ExtractAssetsUseCase(
         extraction_workflow,
         provider=provider,
-        relation_builder_factory=lambda _context: relation_builder,
+        character_index_builder_factory=lambda _context: character_index_builder,
         logger=logger,
         workflow_profile=_build_profile(context, provider, logger),
     )
 
     service.run(context)
 
-    assert relation_builder.search_calls == [["シロコ"]]
+    assert character_index_builder.search_calls == [["シロコ"]]
     assert extraction_workflow.calls == ["extract_bundles"]
     assert extraction_workflow.resource_calls == [["Bundle/Shiroko.bundle"]]
 
 
-def test_extract_service_advanced_search_requires_current_relation_file(
+def test_extract_service_advanced_search_requires_current_index_file(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path).with_updates(
@@ -543,14 +543,14 @@ def test_extract_service_advanced_search_requires_current_relation_file(
         resource_type=("bundle",),
         advanced_search=("シロコ",),
     )
-    relation_builder = DummyRelationBuilder(relation_file_valid=False)
+    character_index_builder = DummyCharacterIndexBuilder(index_file_valid=False)
     extraction_workflow = RecordingExtractionWorkflow()
     provider = StaticProvider(_build_filter_catalog(context))
     logger = RecordingLogger()
     service = ExtractAssetsUseCase(
         extraction_workflow,
         provider=provider,
-        relation_builder_factory=lambda _context: relation_builder,
+        character_index_builder_factory=lambda _context: character_index_builder,
         logger=logger,
         workflow_profile=_build_profile(context, provider, logger),
     )
@@ -559,11 +559,11 @@ def test_extract_service_advanced_search_requires_current_relation_file(
         service.run(context)
 
     message = str(exc_info.value)
-    assert "Character relation file is missing or does not match" in message
-    assert "ba-downloader relation build --region jp`" in message
+    assert "Character index file is missing or does not match" in message
+    assert "ba-downloader character-index build --region jp`" in message
     assert "ba-downloader sync --region jp -as <keyword>`" in message
     assert "--version" not in message
-    assert relation_builder.search_calls == []
+    assert character_index_builder.search_calls == []
     assert extraction_workflow.calls == []
 
 
@@ -588,7 +588,7 @@ def test_extract_service_advanced_search_respects_region_capabilities(
     service = ExtractAssetsUseCase(
         extraction_workflow,
         provider=provider,
-        relation_builder_factory=lambda _context: DummyRelationBuilder(),
+        character_index_builder_factory=lambda _context: DummyCharacterIndexBuilder(),
         logger=logger,
         workflow_profile=_build_profile(context, provider, logger),
     )

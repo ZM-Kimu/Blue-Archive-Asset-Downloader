@@ -3,22 +3,22 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ba_downloader.domain.models.character import CharacterData
-from ba_downloader.infrastructure.extraction.character.relation_composer import (
-    CharacterRelationComposer,
+from ba_downloader.domain.models.character import CharacterIndexEntry
+from ba_downloader.infrastructure.extraction.character.index_composer import (
+    CharacterIndexComposer,
     append_names,
 )
-from ba_downloader.infrastructure.extraction.character.relation_sources import (
-    CharacterRelationSources,
+from ba_downloader.infrastructure.extraction.character.index_sources import (
+    CharacterIndexSources,
 )
 
 
-class CnLegacyRelationEnricher:
+class CnArchiveCharacterIndexEnricher:
     def enrich(
         self,
-        composer: CharacterRelationComposer,
-        hash_map: dict[int, CharacterData],
-        sources: CharacterRelationSources,
+        composer: CharacterIndexComposer,
+        hash_map: dict[int, CharacterIndexEntry],
+        sources: CharacterIndexSources,
     ) -> None:
         composer.apply_costume_data(hash_map, sources.costume_excel)
         apply_cn_recruit_data(
@@ -29,7 +29,7 @@ class CnLegacyRelationEnricher:
 
 
 def apply_cn_recruit_data(
-    hash_map: dict[int, CharacterData],
+    hash_map: dict[int, CharacterIndexEntry],
     shop_recruit: list[dict[str, Any]],
     localize_gacha: list[dict[str, Any]],
 ) -> None:

@@ -28,7 +28,7 @@ class JPRegionProvider:
     CAPABILITIES = RegionCapabilities(
         supports_sync=True,
         supports_advanced_search=True,
-        supports_relation_build=True,
+        supports_character_index_build=True,
     )
 
     def __init__(

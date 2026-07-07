@@ -22,14 +22,14 @@ class TableExtractionProfile:
     database_path_resolver: DatabasePathResolver | None = None
 
 
-DEFAULT_TABLE_ARCHIVE_KINDS = SHARED_TABLE_ARCHIVE_ROUTE_KEYS
+DEFAULT_TABLE_ARCHIVE_ROUTES = SHARED_TABLE_ARCHIVE_ROUTE_KEYS
 
 
 def build_default_table_extraction_profile() -> TableExtractionProfile:
     return TableExtractionProfile(
         archive_registry=TableArchiveRegistry(
             classifier=classify_table_archive,
-            enabled_kinds=DEFAULT_TABLE_ARCHIVE_KINDS,
+            enabled_routes=DEFAULT_TABLE_ARCHIVE_ROUTES,
         ),
         payload_router=FlatBufferTablePayloadRouter(),
     )

@@ -3,11 +3,11 @@ from typing import Any
 
 
 @dataclass
-class CharacterData:
+class CharacterIndexEntry:
     character_id: int
     dev_name: str = ""
     names: list[str] | None = None
-    file_name: set[str] | None = None
+    file_aliases: set[str] | None = None
     cv: str = ""
     age: int = 0
     height: int = 0
@@ -24,6 +24,6 @@ class CharacterData:
 
 
 @dataclass
-class CharacterRelation:
+class CharacterIndex:
     version: str
-    relations: list[CharacterData]
+    entries: list[CharacterIndexEntry]

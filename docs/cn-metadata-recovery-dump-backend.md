@@ -1,61 +1,37 @@
-# CN metadata recovery dump backend 手动验证
+# CN Metadata Recovery Dump Backend
 
-本文记录 CN dump backend 迁移后的手动验证基线。生产代码不会硬编码样本 hash；该 hash 只作为当前已确认样本的回归参考。
+CN schema dumping uses the in-repo metadata recovery engine before invoking the shared Cpp2IL dump exporter.
 
-## 自动流程
+## Runtime Flow
 
-`ba-downloader sync/extract/relation build --region cn` 会自动：
+`sync`, `extract`, and `character-index build` with `--region cn` prepare:
 
-1. 从 CN APK central directory 准备 `global-metadata.dat`、`lib/arm64-v8a/libil2cpp.so`，并尽量提取 `globalgamemanagers`。
-2. 在内存中运行 vendored CN metadata recovery pipeline。
-3. 只写出 final standard v29 metadata：`<Temp>/CN_MetadataRecovery/global-metadata.standard-v29.dat`。
-4. 使用 Cpp2IL exporter 读取 final v29 metadata 与 `libil2cpp.so`。
-5. 输出 `<Extracted>/Dumps/dump.cs` 与 `<Extracted>/Dumps/memorypack_formatters.json`。
+- protected `global-metadata.dat`
+- `lib/arm64-v8a/libil2cpp.so`
+- optional `globalgamemanagers` for Unity version detection
 
-CLI 参数、命令名和默认输出目录不变。
+The backend then:
 
-## 已确认样本
+1. recovers a standard v29 metadata image in memory;
+2. validates it against the current binary;
+3. writes only `<Temp>/CN_MetadataRecovery/global-metadata.standard-v29.dat`;
+4. invokes the Cpp2IL dump exporter with the CN metadata recovery shim enabled.
 
-来源样本：
+Final BAAD-facing outputs remain:
 
-```text
-G:\test_ba\ylda_2.1.2_24_20250924_063444_02a41
-```
+- `<Extracted>/Dumps/dump.cs`
+- `<Extracted>/Dumps/memorypack_formatters.json`
 
-最终 metadata：
+## Constraints
 
-```text
-G:\test_ba\artifacts\metadata\ylda_metadata_standard29_attrdata_candidate.dat
-SHA256: 1B908500A3F6BC2D100225CEBA745F5282CC8FF362AF5DC518FE1B61E8C2297F
-```
+- The old CN metadata-only dumper is not supported.
+- Production code must not depend on `G:\test_ba`.
+- Recovery parameters such as hidden tail offset and metadata registration VA must be resolved from the current input, not hardcoded from a single sample.
 
-验证结果：
+## Suggested Checks
 
-```text
-0 errors / 0 warnings
-```
-
-Cpp2IL direct load 已确认：
-
-```text
-Using actual IL2CPP Metadata version 29
-CN metadata recovery shim using auto-scanned(score=987, modules=0xA61E4B8) CodeRegistration at 0xAD5DEC8
-Mapping pointers to Il2CppMethodDefinitions...Processed 223135 OK
-Application model created
-Done
-```
-
-## 本地 gate
-
-高价值快速 gate：
-
-```shell
-uv run pytest tests/test_dump_backend.py tests/test_provider_results.py tests/test_zip_range_reader.py tests/test_cn_metadata_recovery_pipeline.py -q
-```
-
-完整 gate：
-
-```shell
+```bash
+uv run pytest tests/test_cn_metadata_recovery_pipeline.py tests/test_dump_backend.py -q
 uv run pytest
 uv run black --check src tests
 uv run ruff check src tests

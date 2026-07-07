@@ -7,46 +7,46 @@ from typing import Any, Protocol
 
 import pykakasi
 
-from ba_downloader.domain.models.character import CharacterData
-from ba_downloader.infrastructure.extraction.character.relation_sources import (
-    CharacterRelationSources,
+from ba_downloader.domain.models.character import CharacterIndexEntry
+from ba_downloader.infrastructure.extraction.character.index_sources import (
+    CharacterIndexSources,
 )
 from ba_downloader.infrastructure.extraction.character.scenario_matching import (
     ScenarioMatchIndex,
 )
 
 
-class CharacterRelationEnricher(Protocol):
+class CharacterIndexEnricher(Protocol):
     def enrich(
         self,
-        composer: CharacterRelationComposer,
-        hash_map: dict[int, CharacterData],
-        sources: CharacterRelationSources,
+        composer: CharacterIndexComposer,
+        hash_map: dict[int, CharacterIndexEntry],
+        sources: CharacterIndexSources,
     ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
-class CharacterRelationCompositionProfile:
+class CharacterIndexCompositionProfile:
     romanize_japanese_names: bool
-    enrichers: tuple[CharacterRelationEnricher, ...] = ()
+    enrichers: tuple[CharacterIndexEnricher, ...] = ()
 
 
-def build_default_character_relation_composition_profile() -> (
-    CharacterRelationCompositionProfile
+def build_default_character_index_composition_profile() -> (
+    CharacterIndexCompositionProfile
 ):
-    return CharacterRelationCompositionProfile(romanize_japanese_names=False)
+    return CharacterIndexCompositionProfile(romanize_japanese_names=False)
 
 
-class CharacterRelationComposer:
+class CharacterIndexComposer:
     def __init__(self) -> None:
         self._kana_converter = pykakasi.kakasi()
 
     def compose(
         self,
-        sources: CharacterRelationSources,
-        profile: CharacterRelationCompositionProfile,
-    ) -> list[CharacterData]:
-        hash_map: dict[int, CharacterData] = {}
+        sources: CharacterIndexSources,
+        profile: CharacterIndexCompositionProfile,
+    ) -> list[CharacterIndexEntry]:
+        hash_map: dict[int, CharacterIndexEntry] = {}
         self.apply_profile_data(hash_map, sources.char_profile, profile)
         self.apply_excel_data(hash_map, sources.char_excel)
         for enricher in profile.enrichers:
@@ -67,13 +67,13 @@ class CharacterRelationComposer:
 
     def apply_profile_data(
         self,
-        hash_map: dict[int, CharacterData],
+        hash_map: dict[int, CharacterIndexEntry],
         char_profile: list[dict[str, Any]],
-        profile: CharacterRelationCompositionProfile,
+        profile: CharacterIndexCompositionProfile,
     ) -> None:
         for character_profile in char_profile:
             names = self.collect_profile_names(character_profile, profile)
-            data = CharacterData(
+            data = CharacterIndexEntry(
                 character_profile.get("CharacterId", 0),
                 names=list(names),
                 cv=first_non_empty(
@@ -107,7 +107,7 @@ class CharacterRelationComposer:
     def collect_profile_names(
         self,
         profile: dict[str, Any],
-        composition_profile: CharacterRelationCompositionProfile,
+        composition_profile: CharacterIndexCompositionProfile,
     ) -> set[str]:
         names: set[str] = set()
         for key in profile:
@@ -129,13 +129,13 @@ class CharacterRelationComposer:
 
     @staticmethod
     def apply_excel_data(
-        hash_map: dict[int, CharacterData],
+        hash_map: dict[int, CharacterIndexEntry],
         char_excel: list[dict[str, Any]],
     ) -> None:
         for excel_entry in char_excel:
             data = hash_map.get(
                 excel_entry.get("Id", -1),
-                CharacterData(excel_entry.get("Id", 0)),
+                CharacterIndexEntry(excel_entry.get("Id", 0)),
             )
             data.dev_name = excel_entry.get("DevName", "")
             data.school_en = excel_entry.get("School", "")
@@ -144,7 +144,7 @@ class CharacterRelationComposer:
 
     def apply_costume_data(
         self,
-        hash_map: dict[int, CharacterData],
+        hash_map: dict[int, CharacterIndexEntry],
         costume_excel: list[dict[str, Any]],
     ) -> None:
         for costume in costume_excel:
@@ -152,7 +152,7 @@ class CharacterRelationComposer:
             if char_id <= 0:
                 continue
 
-            data = hash_map.get(char_id, CharacterData(char_id))
+            data = hash_map.get(char_id, CharacterIndexEntry(char_id))
             if not data.dev_name:
                 data.dev_name = str(costume.get("DevName", ""))
             add_file_aliases(data, self.collect_costume_aliases(costume))
@@ -173,9 +173,9 @@ class CharacterRelationComposer:
 
     def apply_scenario_data(
         self,
-        hash_map: dict[int, CharacterData],
+        hash_map: dict[int, CharacterIndexEntry],
         scenario_db: list[dict[str, Any]],
-        profile: CharacterRelationCompositionProfile,
+        profile: CharacterIndexCompositionProfile,
     ) -> None:
         match_index = ScenarioMatchIndex(hash_map.values())
         for scenario in scenario_db:
@@ -228,7 +228,7 @@ class CharacterRelationComposer:
 
     def register_unmatched_scenario(
         self,
-        hash_map: dict[int, CharacterData],
+        hash_map: dict[int, CharacterIndexEntry],
         match_index: ScenarioMatchIndex,
         scene_data: dict[str, Any],
         scenario_names: set[str],
@@ -242,11 +242,11 @@ class CharacterRelationComposer:
             return
 
         normalized_id = -char_id if char_id in hash_map else char_id
-        char_data = CharacterData(
+        char_data = CharacterIndexEntry(
             normalized_id,
             dev_name=file_name,
             names=sorted(scenario_names),
-            file_name={file_name, name_no_underline},
+            file_aliases={file_name, name_no_underline},
         )
         hash_map[normalized_id] = char_data
         match_index.add_character(char_data)
@@ -254,7 +254,7 @@ class CharacterRelationComposer:
     def collect_scenario_names(
         self,
         scene_data: dict[str, Any],
-        profile: CharacterRelationCompositionProfile,
+        profile: CharacterIndexCompositionProfile,
     ) -> set[str]:
         names: set[str] = set()
         for key in scene_data:
@@ -277,21 +277,21 @@ def first_non_empty(payload: dict[str, Any], *keys: str) -> str:
 
 
 def append_names(
-    hash_map: dict[int, CharacterData],
+    hash_map: dict[int, CharacterIndexEntry],
     char_id: int,
     names: set[str],
 ) -> None:
-    data = hash_map.get(char_id, CharacterData(char_id))
+    data = hash_map.get(char_id, CharacterIndexEntry(char_id))
     merged_names = set(data.names or [])
     merged_names.update(name for name in names if name)
     data.names = sorted(merged_names)
     hash_map[char_id] = data
 
 
-def add_file_aliases(char_data: CharacterData, aliases: set[str]) -> None:
+def add_file_aliases(char_data: CharacterIndexEntry, aliases: set[str]) -> None:
     valid_aliases = {alias for alias in aliases if alias and alias != "Null"}
     if not valid_aliases:
         return
-    if char_data.file_name is None:
-        char_data.file_name = set()
-    char_data.file_name.update(valid_aliases)
+    if char_data.file_aliases is None:
+        char_data.file_aliases = set()
+    char_data.file_aliases.update(valid_aliases)

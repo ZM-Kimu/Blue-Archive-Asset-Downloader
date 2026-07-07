@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable
 
-from ba_downloader.domain.models.character import CharacterData
+from ba_downloader.domain.models.character import CharacterIndexEntry
 
 
 def normalize_lookup_token(value: str) -> str:
@@ -73,7 +73,7 @@ def collect_dev_prefix_aliases(dev_name: str) -> set[str]:
 
 
 def candidate_rank(
-    char_data: CharacterData,
+    char_data: CharacterIndexEntry,
     file_candidates: set[str],
 ) -> tuple[int, int, int, int]:
     dev_exact_aliases = collect_dev_exact_aliases(char_data.dev_name)
@@ -91,9 +91,9 @@ def candidate_rank(
 
 
 def select_best_scenario_candidate(
-    candidates: list[CharacterData],
+    candidates: list[CharacterIndexEntry],
     file_candidates: set[str],
-) -> CharacterData | None:
+) -> CharacterIndexEntry | None:
     unique_candidates = {candidate.character_id: candidate for candidate in candidates}
     if not unique_candidates:
         return None
@@ -114,20 +114,20 @@ def select_best_scenario_candidate(
 
 
 class ScenarioMatchIndex:
-    def __init__(self, characters: Iterable[CharacterData]) -> None:
-        self.name_index: dict[str, list[CharacterData]] = defaultdict(list)
-        self.exact_index: dict[str, list[CharacterData]] = defaultdict(list)
-        self.prefix_index: dict[str, list[tuple[str, CharacterData]]] = defaultdict(
-            list
+    def __init__(self, characters: Iterable[CharacterIndexEntry]) -> None:
+        self.name_index: dict[str, list[CharacterIndexEntry]] = defaultdict(list)
+        self.exact_index: dict[str, list[CharacterIndexEntry]] = defaultdict(list)
+        self.prefix_index: dict[str, list[tuple[str, CharacterIndexEntry]]] = (
+            defaultdict(list)
         )
         for character in characters:
             self.add_character(character)
 
-    def add_character(self, character: CharacterData) -> None:
+    def add_character(self, character: CharacterIndexEntry) -> None:
         for token in normalize_lookup_tokens(set(character.names or [])):
             self.name_index[token].append(character)
 
-        aliases = set(character.file_name or set())
+        aliases = set(character.file_aliases or set())
         exact_references = aliases.union(collect_dev_exact_aliases(character.dev_name))
         for token in normalize_lookup_tokens(exact_references):
             self.exact_index[token].append(character)
@@ -144,7 +144,7 @@ class ScenarioMatchIndex:
         self,
         scenario_names: set[str],
         file_candidates: set[str],
-    ) -> CharacterData | None:
+    ) -> CharacterIndexEntry | None:
         normalized_scenario_names = normalize_lookup_tokens(scenario_names)
         candidate_groups = (
             self._match_names(normalized_scenario_names),
@@ -156,20 +156,26 @@ class ScenarioMatchIndex:
                 return matched
         return None
 
-    def _match_names(self, normalized_scenario_names: set[str]) -> list[CharacterData]:
-        candidates: list[CharacterData] = []
+    def _match_names(
+        self, normalized_scenario_names: set[str]
+    ) -> list[CharacterIndexEntry]:
+        candidates: list[CharacterIndexEntry] = []
         for token in normalized_scenario_names:
             candidates.extend(self.name_index.get(token, []))
         return candidates
 
-    def _match_exact_files(self, file_candidates: set[str]) -> list[CharacterData]:
-        candidates: list[CharacterData] = []
+    def _match_exact_files(
+        self, file_candidates: set[str]
+    ) -> list[CharacterIndexEntry]:
+        candidates: list[CharacterIndexEntry] = []
         for token in normalize_lookup_tokens(file_candidates):
             candidates.extend(self.exact_index.get(token, []))
         return candidates
 
-    def _match_prefix_files(self, file_candidates: set[str]) -> list[CharacterData]:
-        candidates: list[CharacterData] = []
+    def _match_prefix_files(
+        self, file_candidates: set[str]
+    ) -> list[CharacterIndexEntry]:
+        candidates: list[CharacterIndexEntry] = []
         for candidate in file_candidates:
             normalized_candidate = normalize_lookup_token(candidate)
             for end in range(3, len(normalized_candidate) + 1):

@@ -11,8 +11,12 @@ from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.codegen_
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.default_values import (
     sanitize_default_values,
 )
-from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.legacy_attributes import (
-    restore_legacy_attribute_sections,
+from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.parameters import (
+    CnMetadataRecoveryParameters,
+    resolve_cn_metadata_recovery_parameters,
+)
+from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.pre29_attributes import (
+    restore_pre29_attribute_sections,
 )
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.runtime_metadata import (
     restore_runtime_metadata_view,
@@ -40,6 +44,7 @@ class CnMetadataRecoveryState:
     binary_path: Path
     current_metadata: bytes
     restored_metadata: bytes = b""
+    parameters: CnMetadataRecoveryParameters | None = None
     standard_v29_metadata: bytes = b""
     validation_summary: dict[str, object] | None = None
 
@@ -55,9 +60,21 @@ class CnMetadataRecoveryStepSpec:
 
 
 class CnMetadataRecoveryError(RuntimeError):
-    def __init__(self, step: str, message: str) -> None:
+    def __init__(
+        self,
+        step: str,
+        message: str,
+        parameters: CnMetadataRecoveryParameters | None = None,
+    ) -> None:
         self.step = step
-        super().__init__(f"CN metadata recovery step '{step}' failed: {message}")
+        self.detail = message
+        self.parameters = parameters
+        parameter_text = (
+            f" Parameters: {parameters.describe()}." if parameters is not None else ""
+        )
+        super().__init__(
+            f"CN metadata recovery step '{step}' failed: {message}{parameter_text}"
+        )
 
 
 def _restore_runtime_metadata_view_step(state: CnMetadataRecoveryState) -> None:
@@ -79,37 +96,70 @@ def _apply_codegen_module_order_step(state: CnMetadataRecoveryState) -> None:
     state.current_metadata = reordered
 
 
+def _resolve_dynamic_parameters_step(state: CnMetadataRecoveryState) -> None:
+    state.parameters = resolve_cn_metadata_recovery_parameters(
+        state.restored_metadata,
+        state.current_metadata,
+        state.binary_path,
+    )
+
+
+def _require_parameters(
+    state: CnMetadataRecoveryState,
+    step: str,
+) -> CnMetadataRecoveryParameters:
+    if state.parameters is None:
+        raise CnMetadataRecoveryError(
+            step,
+            "dynamic recovery parameters were not resolved",
+        )
+    return state.parameters
+
+
 def _sanitize_default_values_step(state: CnMetadataRecoveryState) -> None:
+    parameters = _require_parameters(state, "sanitize_default_values")
     sanitized, _summary = sanitize_default_values(
         state.binary_path,
         state.current_metadata,
+        parameters.metadata_registration_va,
     )
     state.current_metadata = sanitized
 
 
-def _restore_legacy_attribute_sections_step(state: CnMetadataRecoveryState) -> None:
-    restored, _summary = restore_legacy_attribute_sections(
+def _restore_pre29_attribute_sections_step(state: CnMetadataRecoveryState) -> None:
+    parameters = _require_parameters(state, "restore_pre29_attribute_sections")
+    restored, _summary = restore_pre29_attribute_sections(
         state.restored_metadata,
         state.current_metadata,
         state.binary_path,
+        parameters.metadata_registration_va,
+        tail_offset=parameters.tail_offset,
+        blob_start=parameters.blob_start,
+        exported_types_offset=parameters.exported_types_offset,
     )
     state.current_metadata = restored
 
 
 def _build_standard_v29_metadata_step(state: CnMetadataRecoveryState) -> None:
+    parameters = _require_parameters(state, "build_standard_v29_metadata")
     standard_v29, _summary = build_standard_v29_metadata(
         state.restored_metadata,
         state.current_metadata,
         state.binary_path,
+        parameters.metadata_registration_va,
+        tail_offset=parameters.tail_offset,
+        blob_start=parameters.blob_start,
     )
     state.standard_v29_metadata = standard_v29
     state.current_metadata = standard_v29
 
 
 def _validate_standard_v29_metadata_step(state: CnMetadataRecoveryState) -> None:
+    parameters = _require_parameters(state, "validate_standard_v29_metadata")
     report = validate_standard_metadata(
         state.standard_v29_metadata,
         binary=state.binary_path,
+        metadata_registration_va=parameters.metadata_registration_va,
     )
     summary = dict(report.get("summary", {}))
     state.validation_summary = summary
@@ -117,6 +167,7 @@ def _validate_standard_v29_metadata_step(state: CnMetadataRecoveryState) -> None
         raise CnMetadataRecoveryError(
             "validate_standard_v29_metadata",
             f"standard v29 metadata validation failed: {summary}",
+            parameters,
         )
 
 
@@ -134,12 +185,16 @@ DEFAULT_STEPS: tuple[CnMetadataRecoveryStepSpec, ...] = (
         _apply_codegen_module_order_step,
     ),
     CnMetadataRecoveryStepSpec(
+        "resolve_dynamic_parameters",
+        _resolve_dynamic_parameters_step,
+    ),
+    CnMetadataRecoveryStepSpec(
         "sanitize_default_values",
         _sanitize_default_values_step,
     ),
     CnMetadataRecoveryStepSpec(
-        "restore_legacy_attribute_sections",
-        _restore_legacy_attribute_sections_step,
+        "restore_pre29_attribute_sections",
+        _restore_pre29_attribute_sections_step,
     ),
     CnMetadataRecoveryStepSpec(
         "build_standard_v29_metadata",
@@ -185,12 +240,19 @@ class CnMetadataRecoveryPipeline:
         for step in self.steps:
             try:
                 step.action(state)
-            except CnMetadataRecoveryError:
+            except CnMetadataRecoveryError as exc:
+                if exc.parameters is None and state.parameters is not None:
+                    raise CnMetadataRecoveryError(
+                        exc.step,
+                        exc.detail,
+                        state.parameters,
+                    ) from exc
                 raise
             except Exception as exc:
                 raise CnMetadataRecoveryError(
                     step.name,
                     str(exc) or exc.__class__.__name__,
+                    state.parameters,
                 ) from exc
 
         if not state.standard_v29_metadata:

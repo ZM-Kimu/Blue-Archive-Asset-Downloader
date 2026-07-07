@@ -70,7 +70,7 @@ def build_runtime_context(
         "work_dir": str(tmp_path),
         "platform": platform,
         "platform_explicit": False,
-        "jp_sqlcipher_key_hex": "",
+        "sqlcipher_key_hex": "",
     }
     values.update(overrides)
     return RuntimeContext(**values)
@@ -113,15 +113,15 @@ class StaticProvider:
         return self.result
 
 
-class DummyRelationBuilder:
+class DummyCharacterIndexBuilder:
     def __init__(
         self,
         *,
-        relation_file_valid: bool = True,
+        index_file_valid: bool = True,
         search_results: list[str] | None = None,
         excel_resources: AssetCollection | None = None,
     ) -> None:
-        self.relation_file_valid = relation_file_valid
+        self.index_file_valid = index_file_valid
         self.search_results = search_results or ["Shiroko"]
         self.excel_resources = excel_resources
         self.build_calls: list[RuntimeContext] = []
@@ -130,7 +130,7 @@ class DummyRelationBuilder:
 
     def build(self, context: RuntimeContext) -> None:
         self.build_calls.append(context)
-        self.relation_file_valid = True
+        self.index_file_valid = True
 
     def get_excel_resources(self, resources: AssetCollection) -> AssetCollection:
         return self.excel_resources or resources
@@ -140,7 +140,7 @@ class DummyRelationBuilder:
         self.search_calls.append(list(search_terms))
         return self.search_results
 
-    def verify_relation_file(self, context: RuntimeContext) -> bool:
+    def verify_index_file(self, context: RuntimeContext) -> bool:
         _ = context
         self.verify_calls += 1
-        return self.relation_file_valid
+        return self.index_file_valid

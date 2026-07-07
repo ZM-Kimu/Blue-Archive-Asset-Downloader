@@ -15,15 +15,15 @@ from ba_downloader.bootstrap.region_profiles import (
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.catalog_metadata import TableMetadataManifestPort
+from ba_downloader.domain.ports.character_index import CharacterIndexBuilderPort
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.extract import SchemaPreparationPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
-from ba_downloader.domain.ports.relation import RelationBuilderPort
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 
-RelationBuilderFactory = Callable[[RuntimeContext], RelationBuilderPort]
+CharacterIndexBuilderFactory = Callable[[RuntimeContext], CharacterIndexBuilderPort]
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,15 +51,15 @@ class SyncRuntimeServices(BaseRuntimeServices):
     downloader: ResourceDownloaderPort
     extract_service: ExtractAssetsUseCase
     schema_preparation: SchemaPreparationPort
-    relation_builder_factory: RelationBuilderFactory
+    character_index_builder_factory: CharacterIndexBuilderFactory
     workflow_profile: RegionProfile
 
 
 @dataclass(frozen=True, slots=True)
-class RelationRuntimeServices(BaseRuntimeServices):
+class CharacterIndexRuntimeServices(BaseRuntimeServices):
     downloader: ResourceDownloaderPort
     schema_preparation: SchemaPreparationPort
-    relation_builder_factory: RelationBuilderFactory
+    character_index_builder_factory: CharacterIndexBuilderFactory
 
 
 def _build_base_services(context: RuntimeContext) -> BaseRuntimeServices:
@@ -134,26 +134,28 @@ def _build_schema_preparation(
     )
 
 
-def _build_relation_builder_factory(
+def _build_character_index_builder_factory(
     logger: LoggerPort,
     service_profile: RegionServiceProfile,
-) -> RelationBuilderFactory:
-    from ba_downloader.infrastructure.extraction.character import CharacterNameRelation
+) -> CharacterIndexBuilderFactory:
+    from ba_downloader.infrastructure.extraction.character import CharacterIndexBuilder
 
-    def relation_builder_factory(active_context: RuntimeContext) -> RelationBuilderPort:
-        return CharacterNameRelation(
+    def character_index_builder_factory(
+        active_context: RuntimeContext,
+    ) -> CharacterIndexBuilderPort:
+        return CharacterIndexBuilder(
             active_context,
             logger,
             table_profile_factory=service_profile.table_profile_factory,
-            relation_source_profile_factory=(
-                service_profile.relation_source_profile_factory
+            character_index_source_profile_factory=(
+                service_profile.character_index_source_profile_factory
             ),
-            relation_composition_profile_factory=(
-                service_profile.relation_composition_profile_factory
+            character_index_composition_profile_factory=(
+                service_profile.character_index_composition_profile_factory
             ),
         )
 
-    return relation_builder_factory
+    return character_index_builder_factory
 
 
 def _build_table_metadata_store() -> TableMetadataManifestPort:
@@ -178,7 +180,7 @@ def _build_extract_service(
     )
 
     _ = context
-    relation_builder_factory = _build_relation_builder_factory(
+    character_index_builder_factory = _build_character_index_builder_factory(
         base.logger,
         base.service_profile,
     )
@@ -189,7 +191,7 @@ def _build_extract_service(
         ),
         base.logger,
         provider=base.provider,
-        relation_builder_factory=relation_builder_factory,
+        character_index_builder_factory=character_index_builder_factory,
         prerequisite_service=prerequisite_service,
         workflow_profile=workflow_profile,
     )
@@ -262,7 +264,7 @@ def build_sync_runtime_services(context: RuntimeContext) -> SyncRuntimeServices:
         base.logger,
         base.service_profile,
     )
-    relation_builder_factory = _build_relation_builder_factory(
+    character_index_builder_factory = _build_character_index_builder_factory(
         base.logger,
         base.service_profile,
     )
@@ -292,14 +294,14 @@ def build_sync_runtime_services(context: RuntimeContext) -> SyncRuntimeServices:
             workflow_profile,
         ),
         schema_preparation=schema_preparation,
-        relation_builder_factory=relation_builder_factory,
+        character_index_builder_factory=character_index_builder_factory,
         workflow_profile=workflow_profile,
     )
 
 
-def build_relation_runtime_services(
+def build_character_index_runtime_services(
     context: RuntimeContext,
-) -> RelationRuntimeServices:
+) -> CharacterIndexRuntimeServices:
     base = _build_base_services(context)
     schema_preparation = _build_schema_preparation(
         context,
@@ -307,7 +309,7 @@ def build_relation_runtime_services(
         base.logger,
         base.service_profile,
     )
-    return RelationRuntimeServices(
+    return CharacterIndexRuntimeServices(
         logger=base.logger,
         http_client=base.http_client,
         provider=base.provider,
@@ -318,7 +320,7 @@ def build_relation_runtime_services(
             base.service_profile,
         ),
         schema_preparation=schema_preparation,
-        relation_builder_factory=_build_relation_builder_factory(
+        character_index_builder_factory=_build_character_index_builder_factory(
             base.logger,
             base.service_profile,
         ),

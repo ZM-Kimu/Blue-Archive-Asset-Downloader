@@ -11,8 +11,8 @@
 
 ## 主要功能
 - **资源解开**：在日本服务器中包含几乎完整的支持。
-- **CN 阶段成果**：当前 `download --region cn`、`sync --region cn`、`relation build --region cn` 已可用；`--advanced-search` 仍未开放。
-- **JP 阶段成果**：当前 `download --region jp`、`sync --region jp`、`relation build --region jp` 已可用；`--advanced-search` 仍未开放。
+- **CN 阶段成果**：当前 `download --region cn`、`sync --region cn`、`character-index build --region cn` 已可用；`--advanced-search` 仍未开放。
+- **JP 阶段成果**：当前 `download --region jp`、`sync --region jp`、`character-index build --region jp` 已可用；`--advanced-search` 仍未开放。
 
 
 ## 资源类型
@@ -27,15 +27,15 @@
 
 - Bundle
 - Media
-- Table（部分尚不可用）
+- Table
 
 #### **注意**：尽管部分区域支持下载不同版本的资源，但是该程序不保证能够提取过时版本的资源文件。
 
 ## 环境要求
 
 - Windows/Linux
-- Python 3.10 或更高版本
-- [.NET10 SDK](https://dotnet.microsoft.com/download) (用于提取 table)
+- Python UV 环境管理器 或 Python 3.10 及更高版本
+- [.NET10 SDK  (用于提取 table)](https://dotnet.microsoft.com/download)
 
 ## 先决条件
 
@@ -73,12 +73,12 @@ ba-downloader <subcommand> [options]
 - `ba-downloader sync [options]`: 下载并解开全部内容
 - `ba-downloader download [options]`: 下载全部内容
 - `ba-downloader extract [options]`: 解开已下载的内容
-- `ba-downloader relation build [options]`: 构建角色信息表
+- `ba-downloader character-index build [options]`: 构建角色信息表
 
 使用下列命令运行完整下载与提取流程（示例）：
 
 ```shell
-ba-downloader sync --region gl
+ba-downloader sync --region jp
 ```
 
 或者，使用以下命令仅下载资源而不进行提取（示例）：
@@ -96,25 +96,25 @@ python -m ba_downloader sync --region jp
 
 ## **基本参数**
 **`*`** :**必选的选项**
-| 参数                       | 缩&nbsp;写 | 说明                                                                                     | 默认值             | 示例                             |
-| -------------------------- | ---------- | ---------------------------------------------------------------------------------------- | ------------------ | -------------------------------- |
-| **`--region`**`*`          | `-r`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                                 | 无                 | `-r jp`                          |
-| `--threads`                | `-t`       | **同时下载或解压的线程数**                                                               | `20`               | `-t 50`                          |
-| `--version`                | `-v`       | **需要下载的资源版本号**（仅 GL 生效；JP 不支持指定版本）                                | 无                 | `-v 1.2.3`                       |
-| `--platform`               | `-p`       | **资源所属平台**：`windows`、`android`、`ios`（仅 JP 生效）                              | `android`          | `-p windows`                     |
-| `--raw-dir`                | `-rd`      | **指定未处理文件的位置**                                                                 | `"RawData"`        | `-rd raw_folder`                 |
-| `--extract-dir`            | `-ed`      | **指定已提取文件的位置**                                                                 | `"Extracted"`      | `-ed output_folder`              |
-| `--temp-dir`               | `-td`      | **指定临时文件的位置**                                                                   | `"Temp"`           | `-td temp_dir`                   |
-| `--extract-while-download` | `-ewd`     | **是否在下载时便提取文件**（仅 `sync` 可用；较慢，在资源数量较多时酌情使用）             | `False`            | `--extract-while-download`       |
-| `--resource-type`          | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                                          | `all`              | `--resource-type media table`    |
-| `--proxy`                  | `-px`      | **设置 HTTP 代理**                                                                       | 无（使用系统代理） | `-px http://127.0.0.1:8080`      |
-| `--max-retries`            | `-mr`      | **下载失败时的最大重试次数**                                                             | `5`                | `--max-retries 3`                |
-| `--jp-sqlcipher-key-hex`   | 无         | **JP 的 SQL key**                                                                        | 无                 | `--jp-sqlcipher-key-hex <64hex>` |
-| `--search`                 | `-s`       | **普通检索**，指定需要检索、下载或解压的文件关键词（`sync`、`download`、`extract` 可用） | 无                 | `-s aris shiroko`                |
-| `--advanced-search`        | `-as`      | **高级检索**，指定角色关键词（GL/JP 的 `sync`、`extract` 可用，需要 .NET 环境）          | 无                 | `-as yume cv=小倉唯`             |
+| 参数                       | 缩&nbsp;写 | 说明                                                                                     | 默认值             | 示例                          |
+| -------------------------- | ---------- | ---------------------------------------------------------------------------------------- | ------------------ | ----------------------------- |
+| **`--region`**`*`          | `-r`       | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                                 | 无                 | `-r jp`                       |
+| `--threads`                | `-t`       | **同时下载或解压的线程数**                                                               | `20`               | `-t 50`                       |
+| `--version`                | `-v`       | **需要下载的资源版本号**（仅 GL 生效；JP 不支持指定版本）                                | 无                 | `-v 1.2.3`                    |
+| `--platform`               | `-p`       | **资源所属平台**：`windows`、`android`、`ios`（仅 JP 生效）                              | `android`          | `-p windows`                  |
+| `--raw-dir`                | `-rd`      | **指定未处理文件的位置**                                                                 | `"RawData"`        | `-rd raw_folder`              |
+| `--extract-dir`            | `-ed`      | **指定已提取文件的位置**                                                                 | `"Extracted"`      | `-ed output_folder`           |
+| `--temp-dir`               | `-td`      | **指定临时文件的位置**                                                                   | `"Temp"`           | `-td temp_dir`                |
+| `--extract-while-download` | `-ewd`     | **是否在下载时便提取文件**（仅 `sync` 可用；较慢，在资源数量较多时酌情使用）             | `False`            | `--extract-while-download`    |
+| `--resource-type`          | `-rt`      | **资源类型**：`table`、`media`、`bundle`、`all`                                          | `all`              | `--resource-type media table` |
+| `--proxy`                  | `-px`      | **设置 HTTP 代理**                                                                       | 无（使用系统代理） | `-px http://127.0.0.1:8080`   |
+| `--max-retries`            | `-mr`      | **下载失败时的最大重试次数**                                                             | `5`                | `--max-retries 3`             |
+| `--sqlcipher-key-hex`      | `-kei`     | **SQLCipher raw key**（用于解开 table 数据库）                                           | 无                 | `-kei <64hex>`                |
+| `--search`                 | `-s`       | **普通检索**，指定需要检索、下载或解压的文件关键词（`sync`、`download`、`extract` 可用） | 无                 | `-s aris shiroko`             |
+| `--advanced-search`        | `-as`      | **高级检索**，指定角色关键词（需要 .NET 环境）                                           | 无                 | `-as yume cv=小倉唯`          |
 
-`--search` 与 `--advanced-search` 互斥；同一次命令请只选择一种检索模式。
-**CN 服务器目前不支持高级检索。**
+`--search` 与 `--advanced-search` 互斥；同一次命令请只选择一种检索模式；搜索均以 Of All 模式匹配。
+
 高级检索支持的检索条件：
 - `[*]` **角色名称**
 - `cv` **声优**
@@ -122,17 +122,17 @@ python -m ba_downloader sync --region jp
 - `height` **身高**
 - `birthday` **生日**
 - `illustrator` **作画者**
-- `school` **所属学园**（包括但不限于）：
+- `school` **所属学园**（包括但不限于，具体枚举位于 Flatbuffer）：
   - `RedWinter`、`Trinity`、`Gehenna`、`Abydos`、`Millennium`、`Arius`
   - `Shanhaijing`、`Valkyrie`、`WildHunt`、`SRT`、`SCHALE`、`ETC`
   - `Tokiwadai`、`Sakugawa`
-- `club` **所属社团**（包括但不限于）：
+- `club` **所属社团**（包括但不限于，具体枚举位于 Flatbuffer）：
   - `Engineer`、`CleanNClearing`、`KnightsHospitaller`、`IndeGEHENNA`
   - `IndeMILLENNIUM`、`IndeHyakkiyako`、`IndeShanhaijing`、`IndeTrinity`
   - `FoodService`、`Countermeasure`、`BookClub`、`MatsuriOffice` ...
 
 ---
-#### 并且，在不同的服务器中亦支持不同的名称检索方式，具体内容请参照`<Region>CharacterRelation.json`。
+#### 并且，在不同的服务器中亦支持不同的名称检索方式，具体内容请参照`<Region>CharacterIndex.json`。
 - 示例：
   > sync
   >```sh
@@ -155,9 +155,9 @@ python -m ba_downloader sync --region jp
 - `Temp`: 存储临时文件或非主要文件。如：Apk文件等。
 - `RawData`: 存储经由Catalog下载的文件。如：Bundle、Media、Table等。
 - `Extracted`: 存储已提取的文件。如：Bundle、Media、Table与Dumps等。
-- `CharacterRelation.json`: 角色信息，可通过 `ba-downloader relation build --region <region>` 生成。
+- `CharacterIndex.json`: 角色信息索引，可通过 `ba-downloader character-index build --region <region>` 生成，或附加 `-as` 参数自动生成。
 
-示例：
+资源平台示例：
 
 ```shell
 ba-downloader download --region jp --platform windows

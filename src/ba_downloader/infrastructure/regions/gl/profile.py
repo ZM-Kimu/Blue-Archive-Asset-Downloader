@@ -8,11 +8,11 @@ from ba_downloader.domain.models.region_profile import (
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.extraction.character.relation_composer import (
-    CharacterRelationCompositionProfile,
+from ba_downloader.infrastructure.extraction.character.index_composer import (
+    CharacterIndexCompositionProfile,
 )
-from ba_downloader.infrastructure.extraction.character.relation_sources import (
-    CharacterRelationSourceProfile,
+from ba_downloader.infrastructure.extraction.character.index_sources import (
+    CharacterIndexSourceProfile,
 )
 from ba_downloader.infrastructure.extraction.table.archive_classifier import (
     ROUTE_GROUND_GRID_PATCH,
@@ -29,21 +29,18 @@ from ba_downloader.infrastructure.extraction.table.payload_router import (
 from ba_downloader.infrastructure.extraction.table.profiles import (
     TableExtractionProfile,
 )
+from ba_downloader.infrastructure.regions.archive_character_index import (
+    ArchiveCharacterIndexSourceProfile,
+)
 from ba_downloader.infrastructure.regions.gl.provider import (
     GLRegionProvider,
     GLRuntimeAssetPreparer,
 )
 from ba_downloader.infrastructure.regions.gl.table_archives import (
-    build_gl_legacy_archive_handlers,
-)
-from ba_downloader.infrastructure.regions.legacy_relation import (
-    LegacyArchiveRelationSourceProfile,
-)
-from ba_downloader.infrastructure.regions.legacy_table_archives import (
-    LEGACY_GL_GROUND_ROUTE,
-    LEGACY_GL_NUMERIC_STAGE_ROUTE,
-    LEGACY_MGS_LOGIC_GROUND_ROUTE,
-    classify_legacy_table_archive,
+    GROUND_FLATBUFFER_ARCHIVE_ROUTE,
+    MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE,
+    build_gl_table_archive_handlers,
+    classify_gl_table_archive,
 )
 from ba_downloader.infrastructure.tools.dump_backend import Cpp2IlDumpCsBackend
 
@@ -51,7 +48,7 @@ GL_WORKFLOW_POLICY = RegionWorkflowPolicy(
     prepares_schema_for_sync=True,
     sync_extraction_mode=SyncExtractionMode.direct,
 )
-GL_SETTINGS_POLICY = RegionSettingsPolicy(relation_command_includes_version=True)
+GL_SETTINGS_POLICY = RegionSettingsPolicy(character_index_command_includes_version=True)
 GL_TABLE_ARCHIVE_KINDS = frozenset(
     {
         ROUTE_RHYTHM_BEATMAP,
@@ -60,9 +57,8 @@ GL_TABLE_ARCHIVE_KINDS = frozenset(
         ROUTE_GROUND_STAGE_PATCH,
         ROUTE_RAW,
         ROUTE_STANDARD,
-        LEGACY_GL_GROUND_ROUTE,
-        LEGACY_GL_NUMERIC_STAGE_ROUTE,
-        LEGACY_MGS_LOGIC_GROUND_ROUTE,
+        GROUND_FLATBUFFER_ARCHIVE_ROUTE,
+        MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE,
     }
 )
 
@@ -94,23 +90,23 @@ def build_table_extraction_profile(
     _ = context
     return TableExtractionProfile(
         archive_registry=TableArchiveRegistry(
-            classifier=classify_legacy_table_archive,
-            enabled_kinds=GL_TABLE_ARCHIVE_KINDS,
-            handler_factory=build_gl_legacy_archive_handlers,
+            classifier=classify_gl_table_archive,
+            enabled_routes=GL_TABLE_ARCHIVE_KINDS,
+            handler_factory=build_gl_table_archive_handlers,
         ),
         payload_router=FlatBufferTablePayloadRouter(),
     )
 
 
-def build_relation_source_profile(
+def build_character_index_source_profile(
     context: RuntimeContext,
-) -> CharacterRelationSourceProfile:
+) -> CharacterIndexSourceProfile:
     _ = context
-    return LegacyArchiveRelationSourceProfile()
+    return ArchiveCharacterIndexSourceProfile()
 
 
-def build_relation_composition_profile(
+def build_character_index_composition_profile(
     context: RuntimeContext,
-) -> CharacterRelationCompositionProfile:
+) -> CharacterIndexCompositionProfile:
     _ = context
-    return CharacterRelationCompositionProfile(romanize_japanese_names=False)
+    return CharacterIndexCompositionProfile(romanize_japanese_names=False)

@@ -17,11 +17,11 @@ from ba_downloader.domain.ports.extract import (
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
-from ba_downloader.infrastructure.extraction.character.relation_composer import (
-    CharacterRelationCompositionProfile,
+from ba_downloader.infrastructure.extraction.character.index_composer import (
+    CharacterIndexCompositionProfile,
 )
-from ba_downloader.infrastructure.extraction.character.relation_sources import (
-    CharacterRelationSourceProfile,
+from ba_downloader.infrastructure.extraction.character.index_sources import (
+    CharacterIndexSourceProfile,
 )
 from ba_downloader.infrastructure.extraction.table.archive_classifier import (
     ROUTE_GROUND_GRID_PATCH,
@@ -42,11 +42,13 @@ from ba_downloader.infrastructure.regions.jp.catalog_decoder import JPCatalogDec
 from ba_downloader.infrastructure.regions.jp.catalog_metadata import (
     JpTableCatalogMetadataPolicy,
 )
+from ba_downloader.infrastructure.regions.jp.character_index import (
+    JpDbCharacterIndexSourceProfile,
+)
 from ba_downloader.infrastructure.regions.jp.prerequisites import (
     JpTableExtractionPrerequisite,
 )
 from ba_downloader.infrastructure.regions.jp.provider import JPRegionProvider
-from ba_downloader.infrastructure.regions.jp.relation import JpDbRelationSourceProfile
 from ba_downloader.infrastructure.regions.jp.runtime_assets import (
     JPRuntimeAssetPreparer,
 )
@@ -65,10 +67,10 @@ JP_WORKFLOW_POLICY = RegionWorkflowPolicy(
 JP_SETTINGS_POLICY = RegionSettingsPolicy(
     include_platform_in_default_dirs=True,
     retain_sqlcipher_key_hex=True,
-    relation_command_includes_version=False,
+    character_index_command_includes_version=False,
 )
 
-JP_TABLE_ARCHIVE_KINDS = frozenset(
+JP_TABLE_ARCHIVE_ROUTES = frozenset(
     {
         ROUTE_RHYTHM_BEATMAP,
         ROUTE_GROUND_GRID_PATCH,
@@ -117,7 +119,7 @@ def build_table_extraction_profile(
     return TableExtractionProfile(
         archive_registry=TableArchiveRegistry(
             classifier=classify_jp_table_archive,
-            enabled_kinds=JP_TABLE_ARCHIVE_KINDS,
+            enabled_routes=JP_TABLE_ARCHIVE_ROUTES,
             warning_policy=JpTableArchiveWarningPolicy(),
         ),
         payload_router=MemoryPackTablePayloadRouter(
@@ -128,18 +130,18 @@ def build_table_extraction_profile(
     )
 
 
-def build_relation_source_profile(
+def build_character_index_source_profile(
     context: RuntimeContext,
-) -> CharacterRelationSourceProfile:
+) -> CharacterIndexSourceProfile:
     _ = context
-    return JpDbRelationSourceProfile()
+    return JpDbCharacterIndexSourceProfile()
 
 
-def build_relation_composition_profile(
+def build_character_index_composition_profile(
     context: RuntimeContext,
-) -> CharacterRelationCompositionProfile:
+) -> CharacterIndexCompositionProfile:
     _ = context
-    return CharacterRelationCompositionProfile(romanize_japanese_names=True)
+    return CharacterIndexCompositionProfile(romanize_japanese_names=True)
 
 
 def build_extraction_prerequisite(

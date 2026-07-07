@@ -24,7 +24,7 @@ OPTIONAL_BYTES_FILES = (
     "shoprecruitexceltable.bytes",
     "localizegachashopexceltable.bytes",
 )
-REQUIRED_RELATION_SOURCES = (
+REQUIRED_INDEX_SOURCES = (
     "ScenarioCharacterNameDBSchema",
     "characterexceltable.bytes",
     "localizecharprofileexceltable.bytes",
@@ -32,7 +32,7 @@ REQUIRED_RELATION_SOURCES = (
 
 
 @dataclass(frozen=True)
-class CharacterRelationSources:
+class CharacterIndexSources:
     scenario_db: list[dict[str, Any]]
     char_profile: list[dict[str, Any]]
     char_excel: list[dict[str, Any]]
@@ -61,7 +61,7 @@ class CharacterRelationSources:
 
 
 @dataclass(frozen=True, slots=True)
-class DatabaseRelationSourceSpec:
+class DatabaseIndexSourceSpec:
     scenario_table: str
     character_table: str
     profile_table: str
@@ -71,14 +71,14 @@ class DatabaseRelationSourceSpec:
         return (self.scenario_table, self.character_table, self.profile_table)
 
 
-class CharacterRelationSourceProfile(Protocol):
+class CharacterIndexSourceProfile(Protocol):
     def load(
         self,
-        loader: CharacterRelationSourceLoader,
-    ) -> CharacterRelationSources: ...
+        loader: CharacterIndexSourceLoader,
+    ) -> CharacterIndexSources: ...
 
 
-class CharacterRelationSourceLoader:
+class CharacterIndexSourceLoader:
     def __init__(
         self,
         table_source: CharacterTableSource,
@@ -89,24 +89,24 @@ class CharacterRelationSourceLoader:
 
     def load(
         self,
-        source_profile: CharacterRelationSourceProfile,
-    ) -> CharacterRelationSources:
+        source_profile: CharacterIndexSourceProfile,
+    ) -> CharacterIndexSources:
         return source_profile.load(self)
 
-    def load_archive_relation_sources(self) -> CharacterRelationSources:
+    def load_archive_index_sources(self) -> CharacterIndexSources:
         scenario_db = self.extract_scenario_db()
         extracted_paths = self.extract_excel_bytes_files()
         excel_payloads = self.load_excel_payloads(extracted_paths)
 
-        self.validate_relation_sources(
+        self.validate_index_sources(
             source_payloads={
                 "ScenarioCharacterNameDBSchema": scenario_db,
                 **excel_payloads,
             },
-            required_sources=REQUIRED_RELATION_SOURCES,
+            required_sources=REQUIRED_INDEX_SOURCES,
         )
 
-        return CharacterRelationSources(
+        return CharacterIndexSources(
             scenario_db=scenario_db,
             char_profile=excel_payloads.get("localizecharprofileexceltable.bytes", []),
             char_excel=excel_payloads.get("characterexceltable.bytes", []),
@@ -115,15 +115,15 @@ class CharacterRelationSourceLoader:
             localize_gacha=excel_payloads.get("localizegachashopexceltable.bytes", []),
         )
 
-    def load_database_relation_sources(
+    def load_database_index_sources(
         self,
-        spec: DatabaseRelationSourceSpec,
-    ) -> CharacterRelationSources:
+        spec: DatabaseIndexSourceSpec,
+    ) -> CharacterIndexSources:
         scenario_db = self.extract_db_table(spec.scenario_table)
         char_excel = self.extract_db_bytes_payloads(spec.character_table)
         char_profile = self.extract_db_bytes_payloads(spec.profile_table)
 
-        self.validate_relation_sources(
+        self.validate_index_sources(
             source_payloads={
                 spec.scenario_table: scenario_db,
                 spec.character_table: char_excel,
@@ -132,7 +132,7 @@ class CharacterRelationSourceLoader:
             required_sources=spec.required_sources,
         )
 
-        return CharacterRelationSources(
+        return CharacterIndexSources(
             scenario_db=scenario_db,
             char_profile=char_profile,
             char_excel=char_excel,
@@ -204,7 +204,7 @@ class CharacterRelationSourceLoader:
                 self._logger.warn(f"Failed to process {file_name}: {exc}")
         return payloads
 
-    def validate_relation_sources(
+    def validate_index_sources(
         self,
         *,
         source_payloads: dict[str, list[dict[str, Any]]],
@@ -217,14 +217,14 @@ class CharacterRelationSourceLoader:
 
         if len(missing_sources) == len(required_sources):
             raise LookupError(
-                "Relation build failed because all core relation sources are missing."
+                "Character index build failed because all core index sources are missing."
             )
 
         if missing_sources:
             missing_text = ", ".join(missing_sources)
             self._logger.warn(
-                f"Some relation sources are missing or invalid: {missing_text}. "
-                "Name relation might be incomplete."
+                f"Some character index sources are missing or invalid: {missing_text}. "
+                "Character index might be incomplete."
             )
 
 

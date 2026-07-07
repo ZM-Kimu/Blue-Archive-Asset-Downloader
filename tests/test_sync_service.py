@@ -17,7 +17,7 @@ from ba_downloader.domain.models.asset import (
 )
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
-from support import DummyRelationBuilder, RecordingLogger, StaticProvider
+from support import DummyCharacterIndexBuilder, RecordingLogger, StaticProvider
 
 
 class FailingDownloader:
@@ -202,7 +202,7 @@ def test_sync_does_not_extract_after_download_failure(tmp_path: Path) -> None:
         downloader,
         extract_service,  # type: ignore[arg-type]
         schema_preparation,
-        lambda _context: DummyRelationBuilder(),
+        lambda _context: DummyCharacterIndexBuilder(),
         logger,
         workflow_profile=_build_profile(context, provider, logger),
     )
@@ -233,7 +233,7 @@ def test_jp_sync_passes_catalog_resources_to_post_download_extract(
         downloader,
         extract_service,  # type: ignore[arg-type]
         schema_preparation,
-        lambda _context: DummyRelationBuilder(),
+        lambda _context: DummyCharacterIndexBuilder(),
         logger,
         workflow_profile=_build_profile(context, provider, logger, metadata_store),
     )
@@ -256,7 +256,7 @@ def test_jp_sync_advanced_search_uses_relation_keywords(tmp_path: Path) -> None:
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
-    relation_builder = DummyRelationBuilder()
+    character_index_builder = DummyCharacterIndexBuilder()
     provider = StaticProvider(_build_search_catalog(context))
     logger = RecordingLogger()
     service = SyncAssetsUseCase(
@@ -264,7 +264,7 @@ def test_jp_sync_advanced_search_uses_relation_keywords(tmp_path: Path) -> None:
         downloader,
         extract_service,  # type: ignore[arg-type]
         schema_preparation,
-        lambda _context: relation_builder,
+        lambda _context: character_index_builder,
         logger,
         workflow_profile=_build_profile(context, provider, logger),
     )
@@ -272,7 +272,7 @@ def test_jp_sync_advanced_search_uses_relation_keywords(tmp_path: Path) -> None:
     service.run(context)
 
     assert schema_preparation.calls == ["prepare"]
-    assert relation_builder.search_calls == [["シロコ"]]
+    assert character_index_builder.search_calls == [["シロコ"]]
     assert downloader.calls == [["Bundle/Shiroko.bundle"]]
     assert extract_service.calls == ["run_post_download"]
     assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
@@ -295,8 +295,8 @@ def test_jp_sync_advanced_search_builds_missing_relation(tmp_path: Path) -> None
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
-    relation_builder = DummyRelationBuilder(
-        relation_file_valid=False,
+    character_index_builder = DummyCharacterIndexBuilder(
+        index_file_valid=False,
         excel_resources=excel_resources,
     )
     provider = StaticProvider(_build_search_catalog(context))
@@ -306,7 +306,7 @@ def test_jp_sync_advanced_search_builds_missing_relation(tmp_path: Path) -> None
         downloader,
         extract_service,  # type: ignore[arg-type]
         schema_preparation,
-        lambda _context: relation_builder,
+        lambda _context: character_index_builder,
         logger,
         workflow_profile=_build_profile(context, provider, logger),
     )
@@ -314,8 +314,8 @@ def test_jp_sync_advanced_search_builds_missing_relation(tmp_path: Path) -> None
     service.run(context)
 
     assert schema_preparation.calls == ["prepare"]
-    assert relation_builder.build_calls == [context]
-    assert relation_builder.search_calls == [["シロコ"]]
+    assert character_index_builder.build_calls == [context]
+    assert character_index_builder.search_calls == [["シロコ"]]
     assert downloader.calls == [["Table/Excel.zip"], ["Bundle/Shiroko.bundle"]]
     assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
 
@@ -335,7 +335,7 @@ def test_jp_sync_search_extracts_only_filtered_resources(tmp_path: Path) -> None
         downloader,
         extract_service,  # type: ignore[arg-type]
         schema_preparation,
-        lambda _context: DummyRelationBuilder(),
+        lambda _context: DummyCharacterIndexBuilder(),
         logger,
         workflow_profile=_build_profile(context, provider, logger),
     )
@@ -357,8 +357,8 @@ def test_jp_sync_advanced_search_with_no_relation_matches_downloads_nothing(
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
-    relation_builder = DummyRelationBuilder()
-    relation_builder.search_results = []
+    character_index_builder = DummyCharacterIndexBuilder()
+    character_index_builder.search_results = []
     logger = RecordingLogger()
     provider = StaticProvider(_build_search_catalog(context))
     service = SyncAssetsUseCase(
@@ -366,17 +366,17 @@ def test_jp_sync_advanced_search_with_no_relation_matches_downloads_nothing(
         downloader,
         extract_service,  # type: ignore[arg-type]
         schema_preparation,
-        lambda _context: relation_builder,
+        lambda _context: character_index_builder,
         logger,
         workflow_profile=_build_profile(context, provider, logger),
     )
 
     service.run(context)
 
-    assert relation_builder.search_calls == [["thisnotavailidcharname"]]
+    assert character_index_builder.search_calls == [["thisnotavailidcharname"]]
     assert downloader.calls == [[]]
     assert extract_service.calls == ["run_post_download"]
     assert extract_service.resource_calls == [[]]
     assert logger.by_level("warn") == [
-        "Advanced search found no matching character relation entries."
+        "Advanced search found no matching character index entries."
     ]

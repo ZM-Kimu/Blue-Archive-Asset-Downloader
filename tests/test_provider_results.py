@@ -439,7 +439,7 @@ def test_cn_provider_builds_assets_without_downloading_apk(
     ]
     assert provider.get_capabilities().supports_sync is True
     assert provider.get_capabilities().supports_advanced_search is False
-    assert provider.get_capabilities().supports_relation_build is True
+    assert provider.get_capabilities().supports_character_index_build is True
     assert [item.checksum.algorithm for item in result.resources] == [
         "md5",
         "md5",

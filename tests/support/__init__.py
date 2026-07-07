@@ -1,5 +1,5 @@
 from .fixtures import (
-    DummyRelationBuilder,
+    DummyCharacterIndexBuilder,
     RecordingLogger,
     StaticProvider,
     build_asset_collection,
@@ -7,7 +7,7 @@ from .fixtures import (
 )
 
 __all__ = [
-    "DummyRelationBuilder",
+    "DummyCharacterIndexBuilder",
     "RecordingLogger",
     "StaticProvider",
     "build_asset_collection",

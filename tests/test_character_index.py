@@ -7,27 +7,29 @@ import pytest
 from ba_downloader.bootstrap.region_profiles import (
     DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
 )
-from ba_downloader.domain.models.character import CharacterData, CharacterRelation
+from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
 from ba_downloader.domain.models.database import DBColumn, DBTable
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.infrastructure.extraction.character.relation import (
-    CharacterNameRelation,
+from ba_downloader.infrastructure.extraction.character.character_index import (
+    CharacterIndexBuilder,
 )
-from ba_downloader.infrastructure.extraction.character.relation_composer import (
-    CharacterRelationComposer,
-    CharacterRelationCompositionProfile,
+from ba_downloader.infrastructure.extraction.character.index_composer import (
+    CharacterIndexComposer,
+    CharacterIndexCompositionProfile,
 )
-from ba_downloader.infrastructure.extraction.character.relation_sources import (
-    CharacterRelationSourceLoader,
-    CharacterRelationSources,
+from ba_downloader.infrastructure.extraction.character.index_sources import (
+    CharacterIndexSourceLoader,
+    CharacterIndexSources,
 )
-from ba_downloader.infrastructure.extraction.character.relation_store import (
-    CharacterRelationSearchIndex,
+from ba_downloader.infrastructure.extraction.character.index_store import (
+    CharacterIndexSearcher,
 )
 from ba_downloader.infrastructure.extraction.table.models import ProcessedTableArtifact
-from ba_downloader.infrastructure.regions.jp.relation import JpDbRelationSourceProfile
-from ba_downloader.infrastructure.regions.legacy_relation import (
-    LegacyArchiveRelationSourceProfile,
+from ba_downloader.infrastructure.regions.archive_character_index import (
+    ArchiveCharacterIndexSourceProfile,
+)
+from ba_downloader.infrastructure.regions.jp.character_index import (
+    JpDbCharacterIndexSourceProfile,
 )
 from support import RecordingLogger
 
@@ -74,12 +76,12 @@ class FakeTableSource:
         )
 
 
-class FakeRelationSourceLoader:
-    def __init__(self, sources: CharacterRelationSources) -> None:
+class FakeIndexSourceLoader:
+    def __init__(self, sources: CharacterIndexSources) -> None:
         self.sources = sources
         self.source_profiles: list[object] = []
 
-    def load(self, source_profile: object) -> CharacterRelationSources:
+    def load(self, source_profile: object) -> CharacterIndexSources:
         self.source_profiles.append(source_profile)
         return self.sources
 
@@ -120,8 +122,8 @@ def _sources(
     costume_excel: list[dict] | None = None,
     shop_recruit: list[dict] | None = None,
     localize_gacha: list[dict] | None = None,
-) -> CharacterRelationSources:
-    return CharacterRelationSources(
+) -> CharacterIndexSources:
+    return CharacterIndexSources(
         scenario_db=scenario_db or [],
         char_profile=char_profile or [],
         char_excel=char_excel or [],
@@ -131,7 +133,7 @@ def _sources(
     )
 
 
-def _compose_relation(
+def _compose_index_entries(
     region: str,
     *,
     scenario_db: list[dict] | None = None,
@@ -140,9 +142,9 @@ def _compose_relation(
     costume_excel: list[dict] | None = None,
     shop_recruit: list[dict] | None = None,
     localize_gacha: list[dict] | None = None,
-) -> list[CharacterData]:
+) -> list[CharacterIndexEntry]:
     context = _build_context(Path("."), region=region)
-    return CharacterRelationComposer().compose(
+    return CharacterIndexComposer().compose(
         _sources(
             scenario_db=scenario_db,
             char_profile=char_profile,
@@ -151,17 +153,17 @@ def _compose_relation(
             shop_recruit=shop_recruit,
             localize_gacha=localize_gacha,
         ),
-        _service_profile(region).relation_composition_profile_factory(context),
+        _service_profile(region).character_index_composition_profile_factory(context),
     )
 
 
-def test_cn_relation_sources_warn_but_continue_when_profile_bytes_missing(
+def test_cn_index_sources_warn_but_continue_when_profile_bytes_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     logger = RecordingLogger()
     context = _build_context(tmp_path, region="cn")
-    loader = CharacterRelationSourceLoader(FakeTableSource(tmp_path), logger)
+    loader = CharacterIndexSourceLoader(FakeTableSource(tmp_path), logger)
 
     monkeypatch.setattr(
         loader,
@@ -184,32 +186,32 @@ def test_cn_relation_sources_warn_but_continue_when_profile_bytes_missing(
     )
 
     sources = loader.load(
-        _service_profile(context.region).relation_source_profile_factory(context)
+        _service_profile(context.region).character_index_source_profile_factory(context)
     )
 
     assert sources.scenario_db
     assert sources.char_excel == [{"Id": 1001, "DevName": "Arona"}]
     assert logger.by_level("warn") == [
-        "Some relation sources are missing or invalid: localizecharprofileexceltable.bytes. Name relation might be incomplete."
+        "Some character index sources are missing or invalid: localizecharprofileexceltable.bytes. Character index might be incomplete."
     ]
 
 
-def test_relation_source_profile_selects_jp_db_and_legacy_archive(
+def test_index_source_profile_selects_jp_db_and_archive_sources(
     tmp_path: Path,
 ) -> None:
     jp_context = _build_context(tmp_path, region="jp")
     cn_context = _build_context(tmp_path, region="cn")
     assert isinstance(
-        _service_profile("jp").relation_source_profile_factory(jp_context),
-        JpDbRelationSourceProfile,
+        _service_profile("jp").character_index_source_profile_factory(jp_context),
+        JpDbCharacterIndexSourceProfile,
     )
     assert isinstance(
-        _service_profile("cn").relation_source_profile_factory(cn_context),
-        LegacyArchiveRelationSourceProfile,
+        _service_profile("cn").character_index_source_profile_factory(cn_context),
+        ArchiveCharacterIndexSourceProfile,
     )
 
 
-def test_jp_relation_sources_read_excel_db_schemas_without_excel_zip(
+def test_jp_index_sources_read_excel_db_schemas_without_excel_zip(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -246,15 +248,15 @@ def test_jp_relation_sources_read_excel_db_schemas_without_excel_zip(
         },
     )
     context = _build_context(tmp_path, region="jp")
-    loader = CharacterRelationSourceLoader(table_source, logger)
+    loader = CharacterIndexSourceLoader(table_source, logger)
     monkeypatch.setattr(
         loader,
         "extract_excel_bytes_files",
-        lambda: pytest.fail("JP relation should read ExcelDB schema tables"),
+        lambda: pytest.fail("JP character index should read ExcelDB schema tables"),
     )
 
     sources = loader.load(
-        _service_profile(context.region).relation_source_profile_factory(context)
+        _service_profile(context.region).character_index_source_profile_factory(context)
     )
 
     assert table_source.table_names == [
@@ -293,12 +295,12 @@ def test_jp_relation_sources_read_excel_db_schemas_without_excel_zip(
     assert logger.by_level("warn") == []
 
 
-def test_jp_relation_sources_warn_with_schema_name_when_source_is_missing(
+def test_jp_index_sources_warn_with_schema_name_when_source_is_missing(
     tmp_path: Path,
 ) -> None:
     logger = RecordingLogger()
     context = _build_context(tmp_path, region="jp")
-    loader = CharacterRelationSourceLoader(
+    loader = CharacterIndexSourceLoader(
         FakeTableSource(
             tmp_path,
             {
@@ -316,40 +318,42 @@ def test_jp_relation_sources_warn_with_schema_name_when_source_is_missing(
     )
 
     sources = loader.load(
-        _service_profile(context.region).relation_source_profile_factory(context)
+        _service_profile(context.region).character_index_source_profile_factory(context)
     )
 
     assert sources.scenario_db
     assert sources.char_excel == [{"Id": 1001, "DevName": "Arona"}]
     assert logger.by_level("warn") == [
-        "Some relation sources are missing or invalid: LocalizeCharProfileDBSchema. Name relation might be incomplete."
+        "Some character index sources are missing or invalid: LocalizeCharProfileDBSchema. Character index might be incomplete."
     ]
 
 
-def test_jp_relation_extract_excel_fails_when_all_db_sources_are_missing(
+def test_jp_index_extract_excel_fails_when_all_db_sources_are_missing(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="jp")
-    loader = CharacterRelationSourceLoader(
+    loader = CharacterIndexSourceLoader(
         FakeTableSource(tmp_path),
         RecordingLogger(),
     )
 
     with pytest.raises(
         LookupError,
-        match="all core relation sources are missing",
+        match="all core index sources are missing",
     ):
         loader.load(
-            _service_profile(context.region).relation_source_profile_factory(context)
+            _service_profile(context.region).character_index_source_profile_factory(
+                context
+            )
         )
 
 
-def test_cn_relation_extract_excel_fails_when_all_core_sources_are_missing(
+def test_cn_index_extract_excel_fails_when_all_core_sources_are_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="cn")
-    loader = CharacterRelationSourceLoader(
+    loader = CharacterIndexSourceLoader(
         FakeTableSource(tmp_path),
         RecordingLogger(),
     )
@@ -372,15 +376,17 @@ def test_cn_relation_extract_excel_fails_when_all_core_sources_are_missing(
 
     with pytest.raises(
         LookupError,
-        match="all core relation sources are missing",
+        match="all core index sources are missing",
     ):
         loader.load(
-            _service_profile(context.region).relation_source_profile_factory(context)
+            _service_profile(context.region).character_index_source_profile_factory(
+                context
+            )
         )
 
 
-def test_relation_uses_cn_profile_fallback_fields() -> None:
-    relations = _compose_relation(
+def test_index_uses_cn_profile_fallback_fields() -> None:
+    entries = _compose_index_entries(
         "cn",
         scenario_db=[],
         char_profile=[
@@ -406,17 +412,17 @@ def test_relation_uses_cn_profile_fallback_fields() -> None:
         localize_gacha=[],
     )
 
-    relation_by_id = {item.character_id: item for item in relations}
-    assert relation_by_id[10003].cv == "本渡枫/米糊"
-    assert relation_by_id[10003].age == 16
-    assert relation_by_id[10003].height == 158
-    assert relation_by_id[10003].birthday == "11/27"
-    assert relation_by_id[10003].illustrator == "Hwansang"
-    assert relation_by_id[10003].school_en == "Trinity"
-    assert relation_by_id[10003].club_en == "RemedialClass"
+    entry_by_id = {item.character_id: item for item in entries}
+    assert entry_by_id[10003].cv == "本渡枫/米糊"
+    assert entry_by_id[10003].age == 16
+    assert entry_by_id[10003].height == 158
+    assert entry_by_id[10003].birthday == "11/27"
+    assert entry_by_id[10003].illustrator == "Hwansang"
+    assert entry_by_id[10003].school_en == "Trinity"
+    assert entry_by_id[10003].club_en == "RemedialClass"
 
 
-def test_jp_relation_romanization_is_controlled_by_profile_policy() -> None:
+def test_jp_index_romanization_is_controlled_by_profile_policy() -> None:
     sources = _sources(
         char_profile=[
             {
@@ -426,28 +432,28 @@ def test_jp_relation_romanization_is_controlled_by_profile_policy() -> None:
             }
         ],
     )
-    composer = CharacterRelationComposer()
+    composer = CharacterIndexComposer()
 
-    jp_relations = composer.compose(
+    jp_entries = composer.compose(
         sources,
-        _service_profile("jp").relation_composition_profile_factory(
+        _service_profile("jp").character_index_composition_profile_factory(
             _build_context(Path("."), "jp")
         ),
     )
-    legacy_relations = composer.compose(
+    non_romanized_entries = composer.compose(
         sources,
-        CharacterRelationCompositionProfile(
+        CharacterIndexCompositionProfile(
             romanize_japanese_names=False,
             enrichers=(),
         ),
     )
 
-    assert "hifumi" in {name.lower() for name in jp_relations[0].names}
-    assert "hifumi" not in {name.lower() for name in legacy_relations[0].names}
+    assert "hifumi" in {name.lower() for name in jp_entries[0].names}
+    assert "hifumi" not in {name.lower() for name in non_romanized_entries[0].names}
 
 
-def test_relation_applies_cn_gacha_names_and_costume_aliases() -> None:
-    relations = _compose_relation(
+def test_index_applies_cn_gacha_names_and_costume_aliases() -> None:
+    entries = _compose_index_entries(
         "cn",
         scenario_db=[],
         char_profile=[{"CharacterId": 10003}],
@@ -469,13 +475,13 @@ def test_relation_applies_cn_gacha_names_and_costume_aliases() -> None:
         ],
     )
 
-    relation_by_id = {item.character_id: item for item in relations}
-    assert relation_by_id[10003].names == ["日富美"]
-    assert relation_by_id[10003].file_name == {"Hihumi"}
+    entry_by_id = {item.character_id: item for item in entries}
+    assert entry_by_id[10003].names == ["日富美"]
+    assert entry_by_id[10003].file_aliases == {"Hihumi"}
 
 
-def test_relation_merges_scenario_aliases_without_scenario_names() -> None:
-    relations = _compose_relation(
+def test_index_merges_scenario_aliases_without_scenario_names() -> None:
+    entries = _compose_index_entries(
         "cn",
         scenario_db=[
             {
@@ -501,17 +507,17 @@ def test_relation_merges_scenario_aliases_without_scenario_names() -> None:
         localize_gacha=[],
     )
 
-    relation_by_id = {item.character_id: item for item in relations}
-    assert relation_by_id[10003].file_name == {
+    entry_by_id = {item.character_id: item for item in entries}
+    assert entry_by_id[10003].file_aliases == {
         "Hihumi",
         "HihumiRobber",
         "Hihumi_Robber",
     }
-    assert 4200835236 not in relation_by_id
+    assert 4200835236 not in entry_by_id
 
 
-def test_jp_relation_does_not_match_non_latin_names_by_empty_token() -> None:
-    relations = _compose_relation(
+def test_jp_index_does_not_match_non_latin_names_by_empty_token() -> None:
+    entries = _compose_index_entries(
         "jp",
         scenario_db=[
             {
@@ -535,15 +541,15 @@ def test_jp_relation_does_not_match_non_latin_names_by_empty_token() -> None:
         localize_gacha=[],
     )
 
-    relation_by_id = {item.character_id: item for item in relations}
-    assert sorted(relation_by_id) == [16004, 4200835236]
-    assert relation_by_id[16004].file_name is None
-    assert relation_by_id[4200835236].file_name == {"Hina"}
-    assert relation_by_id[4200835236].names == ["hina", "ヒナ"]
+    entry_by_id = {item.character_id: item for item in entries}
+    assert sorted(entry_by_id) == [16004, 4200835236]
+    assert entry_by_id[16004].file_aliases is None
+    assert entry_by_id[4200835236].file_aliases == {"Hina"}
+    assert entry_by_id[4200835236].names == ["hina", "ヒナ"]
 
 
-def test_jp_relation_matches_kana_scenario_name_with_hepburn() -> None:
-    relations = _compose_relation(
+def test_jp_index_matches_kana_scenario_name_with_hepburn() -> None:
+    entries = _compose_index_entries(
         "jp",
         scenario_db=[
             {
@@ -567,12 +573,12 @@ def test_jp_relation_matches_kana_scenario_name_with_hepburn() -> None:
         localize_gacha=[],
     )
 
-    relation_by_id = {item.character_id: item for item in relations}
-    assert relation_by_id[10003].file_name == {"Hihumi"}
+    entry_by_id = {item.character_id: item for item in entries}
+    assert entry_by_id[10003].file_aliases == {"Hihumi"}
 
 
-def test_jp_relation_keeps_long_alias_prefix_match_for_variants() -> None:
-    relations = _compose_relation(
+def test_jp_index_keeps_long_alias_prefix_match_for_variants() -> None:
+    entries = _compose_index_entries(
         "jp",
         scenario_db=[
             {
@@ -603,16 +609,16 @@ def test_jp_relation_keeps_long_alias_prefix_match_for_variants() -> None:
         localize_gacha=[],
     )
 
-    relation_by_id = {item.character_id: item for item in relations}
-    assert relation_by_id[10003].file_name == {
+    entry_by_id = {item.character_id: item for item in entries}
+    assert entry_by_id[10003].file_aliases == {
         "Hihumi",
         "HihumiRobber",
         "Hihumi_Robber",
     }
 
 
-def test_jp_relation_prefers_exact_file_match_over_prefix_match() -> None:
-    relations = _compose_relation(
+def test_jp_index_prefers_exact_file_match_over_prefix_match() -> None:
+    entries = _compose_index_entries(
         "jp",
         scenario_db=[
             {
@@ -644,13 +650,13 @@ def test_jp_relation_prefers_exact_file_match_over_prefix_match() -> None:
         localize_gacha=[],
     )
 
-    relation_by_id = {item.character_id: item for item in relations}
-    assert relation_by_id[10004].file_name is None
-    assert relation_by_id[10043].file_name == {"Hinata"}
+    entry_by_id = {item.character_id: item for item in entries}
+    assert entry_by_id[10004].file_aliases is None
+    assert entry_by_id[10043].file_aliases == {"Hinata"}
 
 
-def test_jp_relation_registers_yume_scenario_only_portraits() -> None:
-    relations = _compose_relation(
+def test_jp_index_registers_yume_scenario_only_portraits() -> None:
+    entries = _compose_index_entries(
         "jp",
         scenario_db=[
             {
@@ -675,13 +681,13 @@ def test_jp_relation_registers_yume_scenario_only_portraits() -> None:
         localize_gacha=[],
     )
 
-    assert len(relations) == 1
-    assert relations[0].names == ["yume", "ユメ"]
-    assert relations[0].file_name == {"CH0157", "NP0166"}
+    assert len(entries) == 1
+    assert entries[0].names == ["yume", "ユメ"]
+    assert entries[0].file_aliases == {"CH0157", "NP0166"}
 
 
-def test_jp_relation_registers_decagram_scenario_only_portrait() -> None:
-    relations = _compose_relation(
+def test_jp_index_registers_decagram_scenario_only_portrait() -> None:
+    entries = _compose_index_entries(
         "jp",
         scenario_db=[
             {
@@ -699,14 +705,14 @@ def test_jp_relation_registers_decagram_scenario_only_portrait() -> None:
         localize_gacha=[],
     )
 
-    relation_by_id = {item.character_id: item for item in relations}
-    assert relation_by_id[48056105].dev_name == "NP0274"
-    assert relation_by_id[48056105].file_name == {"NP0274"}
-    assert "デカグラマトン" in relation_by_id[48056105].names
+    entry_by_id = {item.character_id: item for item in entries}
+    assert entry_by_id[48056105].dev_name == "NP0274"
+    assert entry_by_id[48056105].file_aliases == {"NP0274"}
+    assert "デカグラマトン" in entry_by_id[48056105].names
 
 
-def test_relation_search_matches_dev_name() -> None:
-    relations = _compose_relation(
+def test_character_index_search_matches_dev_name() -> None:
+    entries = _compose_index_entries(
         "jp",
         scenario_db=[],
         char_profile=[],
@@ -715,25 +721,27 @@ def test_relation_search_matches_dev_name() -> None:
         shop_recruit=[],
         localize_gacha=[],
     )
-    character_relation = CharacterRelation("JP1.0.0", relations)
+    character_index = CharacterIndex("JP1.0.0", entries)
 
-    keywords = CharacterRelationSearchIndex().search(
-        character_relation,
+    keywords = CharacterIndexSearcher().search(
+        character_index,
         ["decagram"],
     )
 
     assert keywords == ["Droid_Decagram_Shield_M"]
 
 
-def test_relation_search_index_matches_names_files_dev_name_and_attributes() -> None:
-    relation = CharacterRelation(
+def test_character_index_search_index_matches_names_files_dev_name_and_attributes() -> (
+    None
+):
+    index = CharacterIndex(
         "JP1.0.0",
         [
-            CharacterData(
+            CharacterIndexEntry(
                 10003,
                 dev_name="Hihumi_default",
                 names=["Ajitani Hifumi", "Hifumi"],
-                file_name={"Hihumi"},
+                file_aliases={"Hihumi"},
                 cv="Hondo Kaede",
                 age=16,
                 height=158,
@@ -744,43 +752,43 @@ def test_relation_search_index_matches_names_files_dev_name_and_attributes() -> 
             )
         ],
     )
-    search_index = CharacterRelationSearchIndex()
+    searcher = CharacterIndexSearcher()
 
-    assert search_index.search(relation, ["hifumi"]) == ["Hihumi", "Hihumi_default"]
-    assert search_index.search(relation, ["cv=hondo kaede"]) == [
+    assert searcher.search(index, ["hifumi"]) == ["Hihumi", "Hihumi_default"]
+    assert searcher.search(index, ["cv=hondo kaede"]) == [
         "Hihumi",
         "Hihumi_default",
     ]
-    assert search_index.search(relation, ["school=trinity"]) == [
+    assert searcher.search(index, ["school=trinity"]) == [
         "Hihumi",
         "Hihumi_default",
     ]
 
 
-def test_relation_build_logs_saved_file_path(
+def test_index_build_logs_saved_file_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     logger = RecordingLogger()
     context = _build_context(tmp_path, region="jp")
-    source_loader = FakeRelationSourceLoader(
+    source_loader = FakeIndexSourceLoader(
         _sources(char_excel=[{"Id": 10003, "DevName": "Hihumi_default"}])
     )
-    relation = CharacterNameRelation(
+    index_builder = CharacterIndexBuilder(
         context,
         logger,
         table_source=FakeTableSource(tmp_path),
         source_loader=source_loader,
-        relation_source_profile_factory=(
-            _service_profile("jp").relation_source_profile_factory
+        character_index_source_profile_factory=(
+            _service_profile("jp").character_index_source_profile_factory
         ),
     )
     monkeypatch.chdir(tmp_path)
 
-    relation.build()
+    index_builder.build()
 
-    relation_path = tmp_path / "JPCharacterRelation.json"
-    assert relation_path.exists()
+    index_path = tmp_path / "JPCharacterIndex.json"
+    assert index_path.exists()
     assert logger.by_level("info")[-1] == (
-        f"Character relation file saved to {relation_path.resolve()}."
+        f"Character index file saved to {index_path.resolve()}."
     )

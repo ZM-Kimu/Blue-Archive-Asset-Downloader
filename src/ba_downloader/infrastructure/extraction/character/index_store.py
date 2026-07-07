@@ -4,99 +4,102 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from ba_downloader.domain.models.character import CharacterData, CharacterRelation
+from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
 
-RELATION_NAME = "CharacterRelation.json"
+INDEX_NAME = "CharacterIndex.json"
 
 
-class CharacterRelationFileStore:
+class CharacterIndexFileStore:
     def __init__(
         self,
         logger: LoggerPort,
-        relation_name: str = RELATION_NAME,
+        index_name: str = INDEX_NAME,
     ) -> None:
         self._logger = logger
-        self._relation_name = relation_name
+        self._index_name = index_name
 
     def save(
         self,
         version: str,
         region: str,
-        data: list[CharacterData],
+        data: list[CharacterIndexEntry],
     ) -> Path:
         normalized_region = region.upper()
-        relation_path = Path(normalized_region + self._relation_name).resolve()
-        with relation_path.open("w", encoding="utf8") as file_handle:
+        index_path = Path(normalized_region + self._index_name).resolve()
+        with index_path.open("w", encoding="utf8") as file_handle:
             json.dump(
-                asdict(CharacterRelation(normalized_region + version, data)),
+                asdict(CharacterIndex(normalized_region + version, data)),
                 file_handle,
                 indent=4,
                 ensure_ascii=False,
-                default=CharacterData.serialize,
+                default=CharacterIndexEntry.serialize,
             )
-        return relation_path
+        return index_path
 
     def verify(self, context: RuntimeContext) -> bool:
-        relation_path = self._relation_file_name(context)
+        index_path = self._index_file_name(context)
         try:
-            with Path(relation_path).open(encoding="utf8") as file_handle:
+            with Path(index_path).open(encoding="utf8") as file_handle:
                 payload = json.load(file_handle)
         except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
             return False
         return payload.get("version", "") == (context.region.upper() + context.version)
 
-    def load(self, context: RuntimeContext) -> CharacterRelation:
-        return self.load_path(self._relation_file_name(context), context)
+    def load(self, context: RuntimeContext) -> CharacterIndex:
+        return self.load_path(self._index_file_name(context), context)
 
     def load_path(
         self,
-        relation_file: str | Path,
+        index_file: str | Path,
         context: RuntimeContext,
-    ) -> CharacterRelation:
-        relation_path = Path(relation_file)
-        if not relation_path.exists():
-            raise FileNotFoundError("Character relation file does not exist.")
+    ) -> CharacterIndex:
+        index_path = Path(index_file)
+        if not index_path.exists():
+            raise FileNotFoundError("Character index file does not exist.")
 
         if not self.verify(context):
             self._logger.warn(
-                "The character relation version does not match the latest game version."
+                "The character index version does not match the latest game version."
             )
 
-        relation = CharacterRelation("", [])
-        with relation_path.open(encoding="utf8") as file_handle:
-            relation_json = json.load(file_handle)
-        relation.version = relation_json.get("version", "")
-        for payload in relation_json.get("relations", []):
-            relation.relations.append(CharacterData(**payload))
-        return relation
+        index = CharacterIndex("", [])
+        with index_path.open(encoding="utf8") as file_handle:
+            index_json = json.load(file_handle)
+        entries = index_json.get("entries")
+        if not isinstance(entries, list):
+            raise ValueError("Character index payload must contain an 'entries' list.")
+        index.version = index_json.get("version", "")
+        for payload in entries:
+            index.entries.append(CharacterIndexEntry(**payload))
+        return index
 
-    def _relation_file_name(self, context: RuntimeContext) -> str:
-        return context.region.upper() + self._relation_name
+    def _index_file_name(self, context: RuntimeContext) -> str:
+        return context.region.upper() + self._index_name
 
 
-class CharacterRelationSearchIndex:
+class CharacterIndexSearcher:
     def search(
         self,
-        relation: CharacterRelation,
+        index: CharacterIndex,
         search_terms: list[str],
     ) -> list[str]:
         search_keywords: list[str] = []
         keywords = [term.lower() for term in search_terms if "=" not in term]
         char_attr = self._parse_attribute_terms(search_terms)
 
-        for char in relation.relations:
-            file_names = list(char.file_name or [])
+        for char in index.entries:
+            file_aliases = list(char.file_aliases or [])
             char_names = list(char.names or [])
             if self._match_character(
                 char,
                 char_names,
-                file_names,
+                file_aliases,
                 keywords,
                 char_attr,
             ):
-                search_keywords.extend(file_names)
+                search_keywords.extend(file_aliases)
                 if char.dev_name:
                     search_keywords.append(char.dev_name)
 
@@ -121,14 +124,14 @@ class CharacterRelationSearchIndex:
 
     @staticmethod
     def _match_character(
-        char: CharacterData,
+        char: CharacterIndexEntry,
         char_names: list[str],
-        file_names: list[str],
+        file_aliases: list[str],
         keywords: list[str],
         char_attr: dict[str, str],
     ) -> bool:
         lowered_names = [name.lower() for name in char_names]
-        lowered_files = [file_name.lower() for file_name in file_names]
+        lowered_files = [file_alias.lower() for file_alias in file_aliases]
         lowered_dev_name = char.dev_name.lower()
         return any(
             [

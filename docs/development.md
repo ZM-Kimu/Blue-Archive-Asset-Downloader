@@ -1,236 +1,62 @@
-# 开发与维护说明
+# Development Notes
 
-本文档面向仓库维护者。
+This document keeps only the project rules needed for day-to-day maintenance.
 
-## 开发环境
+## Environment
 
-- Python 3.10 或更高版本
-- `.NET10 SDK`
-- `uv`（推荐）
+- Python 3.10+
+- `uv`
+- .NET 10 SDK
+- Initialized Git submodules
 
-初始化开发环境：
-
-```shell
+```bash
 uv sync --group dev
 ```
 
-如需启用提交前检查：
+## Checks
 
-```shell
-uv run pre-commit install --hook-type pre-commit --hook-type pre-push
-```
+Run focused tests while editing, then run the full gate before handing off broad changes.
 
-## 静态检查与预检
-
-当前仓库使用以下工具：
-
-- `ruff`
-- `mypy`
-- `pylint`
-- `black`（通过 `pre-commit` 处理改动文件）
-
-常用本地检查命令：
-
-```shell
-uv run ruff check .
+```bash
+uv run pytest
+uv run black --check src tests
+uv run ruff check src tests
 uv run mypy
-uv run pylint --rcfile .pylintrc src/ba_downloader scripts
-powershell -ExecutionPolicy Bypass -File scripts/run-preflight.ps1
+git diff --check
 ```
 
-`scripts/run-preflight.ps1` 当前会执行：
+Use `scripts/preflight_check.ps1` when a single local gate is more convenient.
 
-- `python -m compileall src tests scripts`
-- `uv run ruff check .`
-- `uv run mypy`
-- `uv run pylint --rcfile .pylintrc src/ba_downloader scripts`（advisory，不阻断）
-- `uv run pytest -q`
+## Architecture
 
-## Dumper 与 Cpp2IL 说明
+- CLI parses arguments and delegates to application use cases.
+- Application code owns user workflows and stable settings models.
+- Bootstrap resolves a region service profile for CN, GL, or JP.
+- Region profiles own catalog providers, runtime preparation, dump backend selection, table routing, and character index source policy.
+- Shared extraction code must stay region-neutral and consume profile-provided strategies.
+- CN metadata recovery stays in `infrastructure.tools.cn_metadata_recovery` as a reusable engine; the CN region backend only orchestrates it.
+- Cpp2IL exporter generation is shared, but region-specific shims must be injected by the requesting region backend.
 
-当前 dumper backend 策略：
+## Boundaries
 
-- `jp`：默认使用 `cpp2il_custom`
-- `gl`：默认使用 `cpp2il_custom`
-- `cn`：内部使用 CN metadata recovery pipeline，生成 standard v29 metadata 后再走 `cpp2il_custom`
-- 具体 backend 由 `bootstrap.region_profiles.RegionServiceProfile` 装配；`SchemaWorkflow` 只消费注入的 backend factory，不再按 region 自行查表。
+- Do not make shared extraction import concrete CN/GL/JP region modules.
+- Do not put region-specific route names, schema names, or command hints in shared engines.
+- Do not add numeric LOC or branching budgets. Keep code readable by ownership, not by mechanical splitting.
+- Internal Python import paths may change; CLI commands and default output contracts need deliberate migration notes.
 
-如果以源码方式运行并希望固定 Cpp2IL 依赖，请使用子模块：
+## Outputs
 
-```shell
-git clone --recurse-submodules <repo-url>
-git submodule update --init --recursive
-```
+Schema workflows produce:
 
-`pip` 安装场景下如果缺失 `third_party/Cpp2IL`，程序会自动下载固定 commit 的 Cpp2IL 源码到本地工具缓存：
+- `<Extracted>/Dumps/dump.cs`
+- `<Extracted>/Dumps/memorypack_formatters.json`
 
-- `./.ba-downloader/tools/`
+Character index workflows produce:
 
-CN dump backend 不再使用旧 `cn_metadata_exporter`，也不提供 metadata-only fallback。当前流程：
+- `<REGION>CharacterIndex.json`
 
-- `CNRuntimeAssetPreparer` 从 APK central directory 准备 `global-metadata.dat`、`lib/arm64-v8a/libil2cpp.so`，并尽量准备 `globalgamemanagers` 用于 Unity version 解析。
-- `CnMetadataRecoveryDumpBackend` 位于 `ba_downloader.infrastructure.regions.cn.dump_backend`，只将 final standard v29 metadata 写入 `<Temp>/CN_MetadataRecovery/global-metadata.standard-v29.dat`。
-- Python recovery API 以 vendored package 形式放在 `ba_downloader.infrastructure.tools.cn_metadata_recovery`，生产运行不依赖 `G:\test_ba`。
-- 最终仍输出 `<Extracted>/Dumps/dump.cs` 与 `memorypack_formatters.json`，供 `SchemaWorkflow.compile()` 使用。
+Table extraction writes JSON under `<Extracted>/Table/` according to the active region profile.
 
-手动验证样本与已确认 hash 记录在：
+## Compatibility Notes
 
-- `docs/cn-metadata-recovery-dump-backend.md`
-
-## FlatBuffer 与 MemoryPack schema 说明
-
-`SchemaWorkflow.compile()` 会从 `dump.cs` 中生成两类运行时 schema：
-
-- `FlatBufferData`：FlatBuffer descriptor-first schema registry。Table 解析直接加载 `_registry.py`，通过 generic reader/exporter 解码 payload；旧 `FlatData/dump_wrapper.py` 不再是运行时依赖，旧内部别名 `CSParser` / `CompileToPython` 已移除。
-- `MemoryPackData`：实验性的 MemoryPack annotation schema。JP catalog decoder 在该 registry 可用时会优先使用 generic `MemoryPackReader`，registry 缺失或解码失败时回退到现有专用 decoder；该流程仍不影响 FlatBuffer table 解析主路径。
-
-- FlatBuffer 输出目录：`<Extracted>/FlatBufferData`
-- MemoryPack 输出目录：`<Extracted>/MemoryPackData`
-- MemoryPack formatter sidecar：`<Extracted>/Dumps/memorypack_formatters.json`。该文件记录可追踪的 formatter 元数据；若 formatter 布局仍为 unresolved，DB BLOB 解码会保留 raw fallback，而不会假装语义解析成功。
-- 产物形态：每个 MemoryPack 类型一个 dataclass module，字段使用 `typing.Annotated`
-- 类型表达：`dump.cs` 中的 C# enum 会生成 Python `IntEnum`；可解析的 schema 引用会写成真实类型引用，例如 `dict[str, Media] | None`
-- 循环引用：生成器会保留 annotation 中的类型名，并对循环 import 使用 `TYPE_CHECKING` fallback，确保生成模块可导入
-- 当前用途：JP catalog MemoryPack payload 的优先解码路径，以及后续 MemoryPack payload inspect / typed JSON 导出的 schema 基础
-
-FlatBuffer schema 生成失败会中断 compile；MemoryPack schema 生成失败只会记录 warning 并继续原有流程。
-
-### Table payload 路由策略
-
-当前 table payload 解包仍采用“已验证来源优先”的阶段性策略：
-
-- 通用 `ExcelDB.db` 与 `.bytes` payload 继续走 `FlatBufferData` registry。
-- CN 三类 DAO SQLite BLOB 使用 CN 专用 MemoryPack DAO 路由。
-- GL script / boss / eliminateRaid / beatmap 等暂按已确认的 raw 导出或专用解析路径处理。
-- `TableExtractor` 本身只消费 `TableExtractionProfile`；CN/GL/JP profile 分别提供 archive registry、payload router 与 database resolver。共享 `archive_classifier` 只保留标准 zip / patch / raw fallback 的通用 route；CN/GL legacy classifier 位于 `ba_downloader.infrastructure.regions.legacy_table_archives`，JP legacy 拒绝规则位于 `ba_downloader.infrastructure.regions.jp.table_archives`。
-- `TableArchiveRouter` 不再 import 区服实现；GL legacy ground/MGS handlers 位于 `ba_downloader.infrastructure.regions.gl.table_archives`。
-
-在各区服格式尚未全部可语义解包前，不做未验证的统一格式猜测。后续当 CN / GL / JP 的 table payload 语义覆盖足够完整时，再将这些来源特定规则收敛为统一 payload router，并以统一路由作为唯一入口。
-
-## 架构边界
-
-当前仓库允许内部 Python API 进行 breaking change，但 CLI 命令、核心参数、默认输出目录默认保持稳定。较大的重构应先补架构或行为测试，再拆实现。
-
-依赖方向原则：
-
-- `bootstrap` 负责 CLI runtime 装配和 `RegionServiceProfile` registry；除 CLI 入口外，不应由业务模块反向依赖。
-- `application.use_cases` 负责编排 use case，不承载格式解析细节。
-- `domain` 只放稳定值对象、端口和无外部依赖的领域服务，例如 `domain.services.catalog_pipeline`。
-- `download` 只负责下载、校验和下载进度，不直接依赖 table/media/bundle extractor。
-- `infrastructure.extraction` 负责编排和格式导出，按 `bundle` / `media` / `table` / `character` 子包拆分。
-- `infrastructure.packages` 负责 APK / XAPK / ZIP range IO，不承载区服 catalog 语义。
-- `regions` 负责区服 release/catalog 获取、asset normalization，以及 table/relation/runtime/dump/catalog metadata/prerequisite 策略 profile。通用 extractor/schema/Cpp2IL engine 仍保留在共享模块；区服目录只编排策略，不复制 engine。
-- `schema` 只负责 dump schema、generated registry 与 binary reader/exporter，不直接驱动下载或提取流程。
-- JP catalog decoder 位于 `regions.jp.catalog_decoder`，允许调用共享 MemoryPack reader；provider/profile 不直接依赖 schema package。
-
-架构测试只约束过时 import path、跨层依赖方向和 forbidden infrastructure edges；不再使用 LOC 或 branching 数字预算驱动机械拆分。
-
-内部模块按职责拆分：
-
-- CLI 装配：`ba_downloader.bootstrap`
-- Use cases：`ba_downloader.application.use_cases`
-- Region providers：`ba_downloader.infrastructure.regions.cn|gl|jp`
-- Region service profiles：`ba_downloader.bootstrap.region_profiles` 汇总各区服 profile factory；catalog metadata policy、runtime preparer、dumper backend、table profile、relation profile、extraction prerequisite 均由该 profile 注入
-- Extraction：`ba_downloader.infrastructure.extraction`
-- APK / XAPK / ZIP IO：`ba_downloader.infrastructure.packages`
-- File checksum：`ba_downloader.infrastructure.files.checksum`
-- FlatBuffer：`ba_downloader.infrastructure.schema.flatbuffer`
-- MemoryPack：`ba_downloader.infrastructure.schema.memorypack`
-- 共享能力：`ba_downloader.infrastructure.schema.common`
-- dump / IL2CPP / runtime probe 等外部工具仍位于 `ba_downloader.infrastructure.tools`
-
-旧的 schema 内部入口 `ba_downloader.infrastructure.tools.flatbuffer_*`、`ba_downloader.infrastructure.tools.memorypack_*`、`CSParser`、`CompileToPython`、`GeneratedDumpWrapperError` 均不再支持；内部调用请迁移到 `ba_downloader.infrastructure.schema.*`。
-
-旧的内部路径不提供 shim，包括：
-
-- `ba_downloader.application.services.*` -> `ba_downloader.application.use_cases.*`
-- `ba_downloader.application.catalog_pipeline` -> `ba_downloader.domain.services.catalog_pipeline`
-- `ba_downloader.infrastructure.regions.providers.*` -> `ba_downloader.infrastructure.regions.<region>.provider`
-- `ba_downloader.infrastructure.extractors.*` / `ba_downloader.infrastructure.extract.*` -> `ba_downloader.infrastructure.extraction.*`
-- `ba_downloader.infrastructure.apk.*` -> `ba_downloader.infrastructure.packages.*`
-- 旧 `ba_downloader.shared` 命名空间已移除；checksum 放在 `ba_downloader.infrastructure.files.checksum`，schema/table crypto 放在对应 infrastructure 模块。
-
-## GL 特殊 payload 备注
-
-GL `Table/` 中的 `eliminateRaid` payload 当前已经支持 raw 导出，但尚未实现语义解析。专项分析记录见：
-
-- `docs/gl-eliminate-raid.md`
-
-## 分支与发版
-
-当前仓库采用 `main-only` 流程：
-
-- `main`：唯一长期分支
-- `feature/*`、`fix/*`、`docs/*`、`chore/*`：日常短期开发分支
-- `release/vX.Y.Z`：正式发版短期分支
-- `hotfix/*`：已发布版本的紧急修复短期分支
-
-### 日常开发流程
-
-开始工作前先同步主线：
-
-```shell
-git checkout main
-git pull --ff-only
-```
-
-从 `main` 拉出短期分支进行开发：
-
-```shell
-git checkout -b feat/example-change
-```
-
-提交前运行本地预检：
-
-```shell
-powershell -ExecutionPolicy Bypass -File scripts/run-preflight.ps1
-```
-
-推送短期分支并创建到 `main` 的真实 PR。普通开发 PR 统一使用 squash merge，并在合并后删除源分支。
-
-仓库设置层面应保持：
-
-- `main` 只允许通过 PR 合并
-- CI 必须通过后才能合并
-- direct push / force-push 默认为关闭，管理员仅在紧急救火时例外处理
-
-### 正式发版流程
-
-从最新 `main` 拉出 release 分支：
-
-```shell
-git checkout main
-git pull --ff-only
-git checkout -b release/v2.0.1
-```
-
-在 release 分支上运行发版脚本：
-
-```shell
-powershell -ExecutionPolicy Bypass -File scripts/release.ps1
-```
-
-仅预演流程而不写入文件：
-
-```shell
-powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -NonInteractive -DryRun -SkipPreflight -SkipCommit -AllowDirtyWorkingTree
-```
-
-发版脚本会：
-
-1. 更新 `pyproject.toml` 与 `README.md` 中的版本号。
-2. 重新生成 `CHANGELOG.md` 的 `Unreleased` 区块。
-3. 将当前 `Unreleased` 封版为 `vX.Y.Z - YYYY-MM-DD`，并重建空的 `Unreleased`。
-4. 执行完整 preflight。
-5. 创建 `chore(release): prepare vX.Y.Z` 提交。
-
-完成后，推送 `release/vX.Y.Z` 并人工创建 `release/vX.Y.Z -> main` 的 PR。PR 合并到 `main` 后，GitHub Actions 会：
-
-1. 读取 `pyproject.toml` 的版本号。
-2. 自动创建 `vX.Y.Z` tag。
-3. 使用 `CHANGELOG.md` 对应版本节作为 GitHub Release 正文。
-
-release PR 合并后应删除 `release/vX.Y.Z` 分支。
-
-### 热修复流程
-
-已发布版本需要补丁时，从最新 `main` 拉出 `hotfix/*` 分支修复，修复后正常 PR 合并回 `main`。需要补丁发版时，再从更新后的 `main` 拉新的 `release/vX.Y.Z+1` 分支，重复正式发版流程。
+Breaking internal refactors are acceptable when they simplify ownership. Public CLI changes must update `--help`, `README.md`, and `docs/README.en.md`, and the migration risk must be called out in the change summary.

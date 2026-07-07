@@ -27,11 +27,11 @@ from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
-from ba_downloader.infrastructure.extraction.character.relation_composer import (
-    CharacterRelationCompositionProfile,
+from ba_downloader.infrastructure.extraction.character.index_composer import (
+    CharacterIndexCompositionProfile,
 )
-from ba_downloader.infrastructure.extraction.character.relation_sources import (
-    CharacterRelationSourceProfile,
+from ba_downloader.infrastructure.extraction.character.index_sources import (
+    CharacterIndexSourceProfile,
 )
 from ba_downloader.infrastructure.extraction.table.profiles import (
     TableExtractionProfile,
@@ -47,13 +47,13 @@ DumperBackendFactory = Callable[
     Il2CppDumpBackendPort,
 ]
 TableProfileFactory = Callable[[RuntimeContext], TableExtractionProfile]
-RelationSourceProfileFactory = Callable[
+CharacterIndexSourceProfileFactory = Callable[
     [RuntimeContext],
-    CharacterRelationSourceProfile,
+    CharacterIndexSourceProfile,
 ]
-RelationCompositionProfileFactory = Callable[
+CharacterIndexCompositionProfileFactory = Callable[
     [RuntimeContext],
-    CharacterRelationCompositionProfile,
+    CharacterIndexCompositionProfile,
 ]
 ExtractionPrerequisiteFactory = Callable[
     [SchemaPreparationPort, LoggerPort],
@@ -92,8 +92,8 @@ class RegionServiceProfile:
     runtime_asset_preparer_factory: RuntimeAssetPreparerFactory
     dumper_backend_factory: DumperBackendFactory
     table_profile_factory: TableProfileFactory
-    relation_source_profile_factory: RelationSourceProfileFactory
-    relation_composition_profile_factory: RelationCompositionProfileFactory
+    character_index_source_profile_factory: CharacterIndexSourceProfileFactory
+    character_index_composition_profile_factory: CharacterIndexCompositionProfileFactory
     extraction_prerequisite_factory: ExtractionPrerequisiteFactory = (
         _no_extraction_prerequisite
     )
@@ -161,9 +161,9 @@ def _build_cn_service_profile() -> RegionServiceProfile:
         runtime_asset_preparer_factory=cn_profile.build_runtime_asset_preparer,
         dumper_backend_factory=cn_profile.build_dumper_backend,
         table_profile_factory=cn_profile.build_table_extraction_profile,
-        relation_source_profile_factory=cn_profile.build_relation_source_profile,
-        relation_composition_profile_factory=(
-            cn_profile.build_relation_composition_profile
+        character_index_source_profile_factory=cn_profile.build_character_index_source_profile,
+        character_index_composition_profile_factory=(
+            cn_profile.build_character_index_composition_profile
         ),
     )
 
@@ -179,9 +179,9 @@ def _build_gl_service_profile() -> RegionServiceProfile:
         runtime_asset_preparer_factory=gl_profile.build_runtime_asset_preparer,
         dumper_backend_factory=gl_profile.build_dumper_backend,
         table_profile_factory=gl_profile.build_table_extraction_profile,
-        relation_source_profile_factory=gl_profile.build_relation_source_profile,
-        relation_composition_profile_factory=(
-            gl_profile.build_relation_composition_profile
+        character_index_source_profile_factory=gl_profile.build_character_index_source_profile,
+        character_index_composition_profile_factory=(
+            gl_profile.build_character_index_composition_profile
         ),
     )
 
@@ -197,8 +197,8 @@ def _build_jp_service_profile() -> RegionServiceProfile:
         runtime_asset_preparer_factory=jp_profile.build_runtime_asset_preparer,
         dumper_backend_factory=jp_profile.build_dumper_backend,
         table_profile_factory=jp_profile.build_table_extraction_profile,
-        relation_source_profile_factory=jp_profile.build_relation_source_profile,
-        relation_composition_profile_factory=jp_profile.build_relation_composition_profile,
+        character_index_source_profile_factory=jp_profile.build_character_index_source_profile,
+        character_index_composition_profile_factory=jp_profile.build_character_index_composition_profile,
         extraction_prerequisite_factory=jp_profile.build_extraction_prerequisite,
         catalog_metadata_policy_factory=jp_profile.build_catalog_metadata_policy,
     )

@@ -65,6 +65,7 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
             raise CnMetadataRecoveryDumpError(
                 "Failed to recover CN metadata. "
                 f"Step: {exc.step}. Input: {metadata_path}. "
+                f"Binary: {binary_path}. "
                 f"Output: {recovery_dir / self.FINAL_METADATA_NAME}. {exc}"
             ) from exc
 

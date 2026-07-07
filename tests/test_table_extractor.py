@@ -299,6 +299,39 @@ def test_table_extractor_processes_generated_flat_buffer_data_from_directory(
     assert json.loads(processed.data.decode("utf8")) == [{}]
 
 
+def test_cn_extract_zip_file_preserves_legacy_ground_archives_as_raw(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(region="cn")
+    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    _create_flat_buffer_data_package(flatbuffer_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    with ZipFile(table_dir / "sb_02_desertcity_p01_e.zip", "w") as archive:
+        archive.writestr("GroundGridFlat.bytes", b"raw-ground-grid")
+
+    logger = RecordingLogger()
+    extractor = TableExtractor(
+        str(table_dir),
+        str(Path(context.extract_dir) / "Table"),
+        str(flatbuffer_data_dir),
+        logger=logger,
+        context=context,
+        table_profile=_table_profile(context),
+    )
+
+    extractor.extract_zip_file("sb_02_desertcity_p01_e.zip")
+
+    output_path = (
+        Path(context.extract_dir)
+        / "Table"
+        / "sb_02_desertcity_p01_e"
+        / "GroundGridFlat.bytes"
+    )
+    assert output_path.read_bytes() == b"raw-ground-grid"
+    assert logger.error_messages == []
+
+
 def test_extract_zip_file_synthesizes_missing_excel_table_wrapper(
     tmp_path: Path,
 ) -> None:
@@ -856,7 +889,7 @@ def test_extract_zip_file_warns_with_explicit_processing_failures(
     assert not (Path(context.extract_dir) / "Excel").exists()
 
 
-def test_extract_zip_file_summarizes_jp_stale_legacy_excel_entries(
+def test_extract_zip_file_summarizes_jp_stale_excel_entries(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -886,7 +919,7 @@ def test_extract_zip_file_summarizes_jp_stale_legacy_excel_entries(
     extractor.extract_zip_file("Excel.zip")
 
     assert any(
-        "stale legacy Excel.zip entries" in message for message in logger.warn_messages
+        "stale JP Excel.zip entries" in message for message in logger.warn_messages
     )
     assert not any(
         "very long payload trace" in message for message in logger.warn_messages

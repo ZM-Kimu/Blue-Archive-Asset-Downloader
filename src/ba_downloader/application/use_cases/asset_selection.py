@@ -29,7 +29,7 @@ class AssetSelectionService:
 
         if context.advanced_search and not keywords:
             self.logger.warn(
-                "Advanced search found no matching character relation entries."
+                "Advanced search found no matching character index entries."
             )
             return AssetCollection()
 

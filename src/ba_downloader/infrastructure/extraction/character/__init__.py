@@ -1,5 +1,5 @@
-from ba_downloader.infrastructure.extraction.character.relation import (
-    CharacterNameRelation,
+from ba_downloader.infrastructure.extraction.character.character_index import (
+    CharacterIndexBuilder,
 )
 
-__all__ = ["CharacterNameRelation"]
+__all__ = ["CharacterIndexBuilder"]

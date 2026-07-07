@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,18 @@ from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
 from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
     __all__ as cn_metadata_recovery_exports,
 )
+from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.codegen_registration import (
+    LoadSegment,
+)
+from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.parameters import (
+    CnMetadataRecoveryParameters,
+    resolve_exported_type_definitions_offset,
+    resolve_hidden_tail_offset,
+    resolve_metadata_registration_va,
+)
+from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.standardize import (
+    CUSTOM_SECTIONS,
+)
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.pipeline import (
     CnMetadataRecoveryState,
     CnMetadataRecoveryStepSpec,
@@ -21,19 +34,195 @@ EXPECTED_STEP_ORDER = [
     "restore_runtime_metadata_view",
     "standardize_custom_layout",
     "apply_codegen_module_order",
+    "resolve_dynamic_parameters",
     "sanitize_default_values",
-    "restore_legacy_attribute_sections",
+    "restore_pre29_attribute_sections",
     "build_standard_v29_metadata",
     "validate_standard_v29_metadata",
 ]
 
 
+class FakeRelocatedElf:
+    def __init__(self, data: bytes) -> None:
+        self.data = bytearray(data)
+        self.loads = [LoadSegment(0x1000, len(data), 0, len(data), 4)]
+
+    def va_to_offset(self, va: int) -> int | None:
+        offset = va - 0x1000
+        if 0 <= offset < len(self.data):
+            return offset
+        return None
+
+    def offset_to_va(self, offset: int) -> int | None:
+        if 0 <= offset < len(self.data):
+            return 0x1000 + offset
+        return None
+
+    def read_u64_offset(self, offset: int) -> int:
+        return struct.unpack_from("<Q", self.data, offset)[0]
+
+
+def _metadata_with_custom_sections(
+    sections: dict[int, tuple[int, int]],
+    *,
+    size: int = 0x400,
+) -> bytes:
+    buf = bytearray(size)
+    for header_offset, (section_offset, section_size) in sections.items():
+        struct.pack_into("<II", buf, header_offset, section_offset, section_size)
+    return bytes(buf)
+
+
+def _pack_metadata_registration(
+    data: bytearray,
+    offset: int,
+    *,
+    type_count: int,
+    type_ptrs_va: int,
+) -> None:
+    values = [0] * 16
+    values[0] = 2
+    values[1] = 0x1500
+    values[2] = 3
+    values[3] = 0x1520
+    values[4] = 4
+    values[5] = 0x1540
+    values[6] = type_count
+    values[7] = type_ptrs_va
+    values[8] = 5
+    values[9] = 0x1560
+    values[10] = 6
+    values[11] = 0x1580
+    values[12] = 7
+    values[13] = 0x15A0
+    struct.pack_into("<16Q", data, offset, *values)
+
+
+def _pack_type_table(
+    data: bytearray,
+    table_offset: int,
+    record_offsets: list[int],
+) -> None:
+    for index, record_offset in enumerate(record_offsets):
+        struct.pack_into("<Q", data, table_offset + index * 8, 0x1000 + record_offset)
+        struct.pack_into("<Q", data, record_offset, index)
+        struct.pack_into("<I", data, record_offset + 8, 0x00120000)
+
+
+def test_cn_metadata_recovery_resolves_hidden_tail_offset_from_custom_sections() -> (
+    None
+):
+    metadata = _metadata_with_custom_sections(
+        {
+            0x20: (0x100, 0x20),
+            0x28: (0x180, 0x18),
+            0xB8: (0x220, 0x30),
+        }
+    )
+
+    assert resolve_hidden_tail_offset(metadata) == 0x250
+
+
+def test_cn_metadata_recovery_resolves_exported_type_offset_from_tail_end() -> None:
+    image_ranges_offset = 0x180
+    hidden_tail_offset = 0x240
+    metadata = bytearray(
+        _metadata_with_custom_sections(
+            {
+                CUSTOM_SECTIONS["imageRanges"]: (image_ranges_offset, 0x50),
+                0xB8: (hidden_tail_offset - 0x20, 0x20),
+            },
+            size=hidden_tail_offset + 0x120,
+        )
+    )
+    struct.pack_into(
+        "<10I", metadata, image_ranges_offset, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0
+    )
+    struct.pack_into(
+        "<10I",
+        metadata,
+        image_ranges_offset + 0x28,
+        0,
+        0,
+        0,
+        0,
+        4,
+        6,
+        0,
+        0,
+        0,
+        0,
+    )
+
+    assert (
+        resolve_exported_type_definitions_offset(bytes(metadata), hidden_tail_offset)
+        == 0x120 - 40
+    )
+
+
+def test_cn_metadata_recovery_scans_metadata_registration_va() -> None:
+    data = bytearray(0x2000)
+    _pack_metadata_registration(data, 0x100, type_count=2, type_ptrs_va=0x1400)
+    _pack_metadata_registration(data, 0x300, type_count=8, type_ptrs_va=0x1600)
+    for offset in (0x1500, 0x1520, 0x1540, 0x1560, 0x1580, 0x15A0):
+        struct.pack_into("<Q", data, offset - 0x1000, 1)
+    _pack_type_table(
+        data,
+        0x600,
+        [0x700, 0x710, 0x720, 0x730, 0x740, 0x750, 0x760, 0x770],
+    )
+
+    assert resolve_metadata_registration_va(FakeRelocatedElf(bytes(data)), 6) == 0x1300
+
+
+def test_cn_metadata_recovery_metadata_registration_scan_requires_candidate() -> None:
+    with pytest.raises(ValueError, match="failed to resolve"):
+        resolve_metadata_registration_va(FakeRelocatedElf(bytes(bytearray(0x800))), 6)
+
+
+def test_cn_metadata_recovery_metadata_registration_scan_rejects_ambiguous_candidates() -> (
+    None
+):
+    data = bytearray(0x3000)
+    _pack_metadata_registration(data, 0x300, type_count=8, type_ptrs_va=0x1600)
+    _pack_metadata_registration(data, 0x500, type_count=8, type_ptrs_va=0x1800)
+    for offset in (0x1500, 0x1520, 0x1540, 0x1560, 0x1580, 0x15A0):
+        struct.pack_into("<Q", data, offset - 0x1000, 1)
+    _pack_type_table(
+        data,
+        0x600,
+        [0x900, 0x910, 0x920, 0x930, 0x940, 0x950, 0x960, 0x970],
+    )
+    _pack_type_table(
+        data,
+        0x800,
+        [0x1100, 0x1110, 0x1120, 0x1130, 0x1140, 0x1150, 0x1160, 0x1170],
+    )
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        resolve_metadata_registration_va(FakeRelocatedElf(bytes(data)), 6)
+
+
 def test_cn_metadata_recovery_pipeline_runs_steps_in_memory(tmp_path: Path) -> None:
     calls: list[str] = []
+    parameters = CnMetadataRecoveryParameters(
+        tail_offset=0x100,
+        metadata_registration_va=0x200,
+        exported_types_offset=0x300,
+    )
 
     def make_step(name: str):
         def step(state: CnMetadataRecoveryState) -> None:
             calls.append(name)
+            if name == "resolve_dynamic_parameters":
+                state.parameters = parameters
+            if name in {
+                "sanitize_default_values",
+                "restore_pre29_attribute_sections",
+                "build_standard_v29_metadata",
+                "validate_standard_v29_metadata",
+            }:
+                assert state.parameters is parameters
             state.current_metadata = state.current_metadata + f"|{name}".encode("ascii")
             if name == "build_standard_v29_metadata":
                 state.standard_v29_metadata = b"standard-v29"

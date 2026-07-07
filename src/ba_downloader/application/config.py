@@ -28,7 +28,7 @@ class AppSettings:
     work_dir: str = ""
     platform: Platform = "android"
     platform_explicit: bool = False
-    jp_sqlcipher_key_hex: str = ""
+    sqlcipher_key_hex: str = ""
 
     def normalized(self, settings_policy: RegionSettingsPolicy) -> AppSettings:
         region = cast(Region, self.region.lower())
@@ -46,8 +46,8 @@ class AppSettings:
             value.lower() for value in self.resource_type
         ).as_strings()
 
-        jp_sqlcipher_key_hex = (
-            self.jp_sqlcipher_key_hex.strip()
+        sqlcipher_key_hex = (
+            self.sqlcipher_key_hex.strip()
             if settings_policy.retain_sqlcipher_key_hex
             else ""
         )
@@ -68,7 +68,7 @@ class AppSettings:
             work_dir=self.work_dir or getcwd(),
             platform=platform,
             platform_explicit=self.platform_explicit,
-            jp_sqlcipher_key_hex=jp_sqlcipher_key_hex,
+            sqlcipher_key_hex=sqlcipher_key_hex,
         )
 
     def to_runtime_context(
@@ -91,5 +91,5 @@ class AppSettings:
             work_dir=normalized.work_dir,
             platform=normalized.platform,
             platform_explicit=normalized.platform_explicit,
-            jp_sqlcipher_key_hex=normalized.jp_sqlcipher_key_hex,
+            sqlcipher_key_hex=normalized.sqlcipher_key_hex,
         )

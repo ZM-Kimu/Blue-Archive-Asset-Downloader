@@ -150,7 +150,7 @@ def test_jp_provider_supports_advanced_search() -> None:
 
     assert capabilities.supports_sync is True
     assert capabilities.supports_advanced_search is True
-    assert capabilities.supports_relation_build is True
+    assert capabilities.supports_character_index_build is True
 
 
 def _write_table_bundle(writer: MemoryPackWriter, bundle: dict[str, Any]) -> None:

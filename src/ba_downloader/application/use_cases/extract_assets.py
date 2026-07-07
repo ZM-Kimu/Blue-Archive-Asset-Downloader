@@ -1,8 +1,8 @@
 from ba_downloader.application.profiles import RegionProfile
 from ba_downloader.application.use_cases.asset_selection import AssetSelectionService
-from ba_downloader.application.use_cases.relation_search import (
-    RelationBuilderFactory,
-    RelationSearchService,
+from ba_downloader.application.use_cases.character_index_search import (
+    CharacterIndexBuilderFactory,
+    CharacterIndexSearchService,
 )
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -22,7 +22,7 @@ class ExtractAssetsUseCase:
         logger: LoggerPort | None = None,
         *,
         provider: RegionProvider | None = None,
-        relation_builder_factory: RelationBuilderFactory | None = None,
+        character_index_builder_factory: CharacterIndexBuilderFactory | None = None,
         prerequisite_service: ExtractionPrerequisitePort | None = None,
         workflow_profile: RegionProfile,
     ) -> None:
@@ -34,13 +34,13 @@ class ExtractAssetsUseCase:
         self.asset_selector = (
             AssetSelectionService(logger) if logger is not None else None
         )
-        self.relation_search = (
-            RelationSearchService(
-                relation_builder_factory,
+        self.character_index_search = (
+            CharacterIndexSearchService(
+                character_index_builder_factory,
                 logger,
                 workflow_profile.settings_policy,
             )
-            if relation_builder_factory is not None and logger is not None
+            if character_index_builder_factory is not None and logger is not None
             else None
         )
 
@@ -81,12 +81,12 @@ class ExtractAssetsUseCase:
         if self.asset_selector is not None:
             advanced_keywords = None
             if context.advanced_search:
-                if self.relation_search is None:
+                if self.character_index_search is None:
                     raise LookupError(
-                        "Extract advanced search requires a configured relation builder."
+                        "Extract advanced search requires a configured character-index builder."
                     )
-                advanced_keywords = self.relation_search.resolve_existing_keywords(
-                    context
+                advanced_keywords = (
+                    self.character_index_search.resolve_existing_keywords(context)
                 )
             return self.asset_selector.filter_search_resources(
                 resources,
@@ -96,7 +96,7 @@ class ExtractAssetsUseCase:
 
         if context.advanced_search:
             raise LookupError(
-                "Extract advanced search requires a configured relation builder."
+                "Extract advanced search requires a configured character-index builder."
             )
         if context.search:
             return ResourceQueryService.search_name(resources, context.search)

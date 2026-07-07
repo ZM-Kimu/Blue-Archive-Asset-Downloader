@@ -30,7 +30,7 @@ class GLRegionProvider:
     CAPABILITIES = RegionCapabilities(
         supports_sync=True,
         supports_advanced_search=True,
-        supports_relation_build=True,
+        supports_character_index_build=True,
     )
     CATALOG_URL = "https://api-pub.nexon.com/patch/v1.1/version-check"
     UPTODOWN_URL = "https://blue-archive-global.en.uptodown.com/android"
