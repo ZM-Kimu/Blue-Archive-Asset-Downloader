@@ -79,10 +79,11 @@ def test_cn_extract_reports_corrupt_bundle_failures_without_traceback(
     result = _run_cn_extract(repo_root, raw_dir, extract_dir, temp_dir)
     output = _normalize_console_output(result.stdout + result.stderr)
 
-    assert result.returncode == 0
+    assert result.returncode == 1
     assert "Failed to extract bundle" in output
     assert "corrupt.bundle" in output
     assert "Extracted bundles with 1 errors." in output
+    assert "bundle extraction failed for 1 file" in output
     assert "Extracted bundles successfully." not in output
     assert "Traceback (most recent call last):" not in output
     assert "Process Process-" not in output
@@ -104,7 +105,9 @@ def test_cn_extract_summarizes_multiple_bundle_failures(
     result = _run_cn_extract(repo_root, raw_dir, extract_dir, temp_dir)
     output = _normalize_console_output(result.stdout + result.stderr)
 
-    assert result.returncode == 0
+    assert result.returncode == 1
     assert output.count("Failed to extract bundle") >= 2
     assert "Extracted bundles with 2 errors." in output
+    assert "bundle extraction failed for 2 files" in output
     assert "Extracted bundles successfully." not in output
+    assert "Traceback (most recent call last):" not in output

@@ -1,3 +1,4 @@
+from ba_downloader.application.profiles import RegionProfile
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.region import RegionProvider
@@ -9,13 +10,20 @@ class DownloadAssetsUseCase:
         self,
         provider: RegionProvider,
         downloader: ResourceDownloaderPort,
+        *,
+        workflow_profile: RegionProfile,
     ) -> None:
         self.provider = provider
         self.downloader = downloader
+        self.workflow_profile = workflow_profile
 
     def run(self, context: RuntimeContext) -> RuntimeContext:
         catalog = self.provider.load_catalog(context)
         resources = catalog.resources
+        self.workflow_profile.catalog_metadata.on_catalog_loaded(
+            catalog.context,
+            resources,
+        )
         if catalog.context.search:
             resources = ResourceQueryService.search_name(
                 resources, catalog.context.search

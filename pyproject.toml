@@ -18,6 +18,7 @@ dependencies = [
     "UnityPy==1.25.0",
     "xxhash",
     "pycryptodome",
+    "pyelftools",
     "flatbuffers",
     "pykakasi",
 ]
@@ -74,5 +75,5 @@ pretty = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["UnityPy", "pykakasi", "xxhash", "curl_cffi", "curl_cffi.*", "Crypto.*", "flatbuffers", "flatbuffers.*"]
+module = ["UnityPy", "pykakasi", "xxhash", "curl_cffi", "curl_cffi.*", "Crypto.*", "elftools", "elftools.*", "flatbuffers", "flatbuffers.*"]
 ignore_missing_imports = true

@@ -2,44 +2,45 @@
 
 # Blue Archive Asset Downloader
 
-This project downloads and extracts Blue Archive assets from multiple regions. It currently supports the CN, GL, and JP servers.
+This project downloads and extracts Blue Archive assets from different servers. It currently supports the CN, GL, and JP servers.
 
 <a href="../README.md">中文</a>
 
 </div>
 
 
-<!-- ## Features
-- **Asset extraction**: Nearly complete support is available for the JP server.
-- **CN milestone status**: `download --region cn`, `sync --region cn`, and `relation build --region cn` are currently available; `--advanced-search` is still unavailable.
-- **JP milestone status**: `download --region jp`, `sync --region jp`, and `relation build --region jp` are currently available; `--advanced-search` is still unavailable. -->
+## Main Features
+
+- **Asset extraction**: JP currently has nearly complete support.
+- **CN milestone status**: `download --region cn`, `sync --region cn`, and `character-index build --region cn` are currently available; `--advanced-search` is still unavailable.
+- **JP milestone status**: `download --region jp`, `sync --region jp`, and `character-index build --region jp` are currently available; `--advanced-search` is still unavailable.
 
 
 ## Resource Types
 
-Downloadable resource categories:
+Downloadable file types:
 
 - Bundle
 - Media
 - Table
 
-Extractable resource categories:
+Extractable file types:
 
 - Bundle
 - Media
-- Table (partially unavailable)
+- Table
 
-#### **Note**: Although some regions support downloading different resource versions, this tool does not guarantee that outdated resource files can still be extracted.
+#### **Note**: Although some regions support downloading resources from different versions, this program does not guarantee that outdated resource files can still be extracted.
 
 ## Requirements
 
 - Windows/Linux
-- Python 3.10 or later
-- [.NET10 SDK](https://dotnet.microsoft.com/download) (install for table extraction)
+- Python UV environment manager or Python 3.10 and later
+- [.NET10 SDK (for extracting table data)](https://dotnet.microsoft.com/download)
 
 ## Prerequisites
 
-When running from source, use a clone flow that includes submodules:
+When running from source, use a clone flow with submodules:
 
 ```shell
 git clone --recurse-submodules https://github.com/ZM-Kimu/Blue-Archive-Asset-Downloader
@@ -49,7 +50,7 @@ uv sync
 
 - If `third_party/Cpp2IL` is missing locally, some dumper flows will try to download the source automatically.
 
-Make sure Python is installed, then install the required dependencies:
+Make sure Python is installed, then install the required libraries:
 
 ```shell
 uv sync
@@ -71,24 +72,24 @@ ba-downloader <subcommand> [options]
 
 Subcommands:
 
-- `ba-downloader sync [options]`: Download and extract all resources
-- `ba-downloader download [options]`: Download all resources
-- `ba-downloader extract [options]`: Extract existing raw resources
-<!-- - `ba-downloader relation build [options]`: Build the character relation file -->
+- `ba-downloader sync [options]`: Download and extract all content
+- `ba-downloader download [options]`: Download all content
+- `ba-downloader extract [options]`: Extract downloaded content
+- `ba-downloader character-index build [options]`: Build the character information index
 
-Run the full download-and-extract workflow with:
+Run the full download and extraction flow with:
 
 ```shell
-ba-downloader sync --region gl
+ba-downloader sync --region jp
 ```
 
-Or download resources only with:
+Or download resources without extracting them:
 
 ```shell
 ba-downloader download --region jp
 ```
 
-You can also use the module entrypoint:
+You can also use the module entry point:
 
 ```shell
 python -m ba_downloader sync --region jp
@@ -96,55 +97,60 @@ python -m ba_downloader sync --region jp
 
 
 ## **Basic Parameters**
+
 **`*`**: **required option**
 
 | Parameter                  | Short Form | Description                                                                                       | Default             | Example                       |
 | -------------------------- | ---------- | ------------------------------------------------------------------------------------------------- | ------------------- | ----------------------------- |
 | **`--region`**`*`          | `-r`       | **Server region**: `cn` (China), `gl` (Global), `jp` (Japan)                                      | None                | `-r jp`                       |
 | `--threads`                | `-t`       | **Number of concurrent download or extraction workers**                                           | `20`                | `-t 50`                       |
-| `--version`                | `-v`       | **Resource version to download** (effective for GL only)                                          | None                | `-v 1.2.3`                    |
-| `--platform`               | `-p`       | **Resource platform**: `windows`, `android`, `ios` (effective for JP only)                        | `android`           | `-p windows`                  |
-| `--raw-dir`                | `-rd`      | **Directory for raw downloaded files**                                                            | `"RawData"`         | `-rd raw_folder`              |
-| `--extract-dir`            | `-ed`      | **Directory for extracted output**                                                                | `"Extracted"`       | `-ed output_folder`           |
-| `--temp-dir`               | `-td`      | **Directory for temporary files**                                                                 | `"Temp"`            | `-td temp_dir`                |
-| `--extract-while-download` | `-ewd`     | **Extract files while downloading** (available only for `sync`; use carefully for large datasets) | `False`             | `--extract-while-download`    |
-| `--resource-type`          | `-rt`      | **Resource types**: `table`, `media`, `bundle`, `all`                                             | `all`               | `--resource-type media table` |
+| `--version`                | `-v`       | **Resource version to download** (GL only; JP does not support specifying versions)               | None                | `-v 1.2.3`                    |
+| `--platform`               | `-p`       | **Resource platform**: `windows`, `android`, `ios` (JP only)                                      | `android`           | `-p windows`                  |
+| `--raw-dir`                | `-rd`      | **Location for raw files**                                                                        | `"RawData"`         | `-rd raw_folder`              |
+| `--extract-dir`            | `-ed`      | **Location for extracted files**                                                                  | `"Extracted"`       | `-ed output_folder`           |
+| `--temp-dir`               | `-td`      | **Location for temporary files**                                                                  | `"Temp"`            | `-td temp_dir`                |
+| `--extract-while-download` | `-ewd`     | **Extract files while downloading** (only available for `sync`; slower and should be used carefully with many resources) | `False`             | `--extract-while-download`    |
+| `--resource-type`          | `-rt`      | **Resource type**: `table`, `media`, `bundle`, `all`                                              | `all`               | `--resource-type media table` |
 | `--proxy`                  | `-px`      | **HTTP proxy**                                                                                    | None (system proxy) | `-px http://127.0.0.1:8080`   |
 | `--max-retries`            | `-mr`      | **Maximum retry count for failed downloads**                                                      | `5`                 | `--max-retries 3`             |
-| `--search`                 | `-s`       | **Basic search**: keywords used to filter files for download (`sync` and `download` only)         |
+| `--sqlcipher-key-hex`      | `-kei`     | **SQLCipher raw key** (for opening table databases)                                               | None                | `-kei <64hex>`                |
+| `--search`                 | `-s`       | **Basic search**, file keywords for searching, downloading, or extracting (`sync`, `download`, and `extract` are supported) | None                | `-s aris shiroko`             |
+| `--advanced-search`        | `-as`      | **Advanced search**, character keywords (requires a .NET environment)                             | None                | `-as yume cv=小倉唯`          |
 
-<!-- | `--advanced-search`        | `-as`      | **Advanced search**: character-oriented filters (`sync` only; currently supported by GL only and requires a .NET environment) | -->
+`--search` and `--advanced-search` are mutually exclusive. Use only one search mode in a single command. Searches use Of All matching mode.
 
-<!-- **Advanced-search fields (currently unsupported on CN):**
+Advanced-search fields:
+
 - `[*]` **Character name**
 - `cv` **Voice actor**
 - `age` **Age**
 - `height` **Height**
 - `birthday` **Birthday**
 - `illustrator` **Illustrator**
-- `school` **School** (including but not limited to):
+- `school` **School** (including but not limited to; the actual enum is in FlatBuffer):
   - `RedWinter`, `Trinity`, `Gehenna`, `Abydos`, `Millennium`, `Arius`
   - `Shanhaijing`, `Valkyrie`, `WildHunt`, `SRT`, `SCHALE`, `ETC`
   - `Tokiwadai`, `Sakugawa`
-- `club` **Club** (including but not limited to):
+- `club` **Club** (including but not limited to; the actual enum is in FlatBuffer):
   - `Engineer`, `CleanNClearing`, `KnightsHospitaller`, `IndeGEHENNA`
   - `IndeMILLENNIUM`, `IndeHyakkiyako`, `IndeShanhaijing`, `IndeTrinity`
   - `FoodService`, `Countermeasure`, `BookClub`, `MatsuriOffice` ...
 
 ---
-#### Different regions also support different naming styles for search. See `<Region>CharacterRelation.json` for the actual data.
+
+#### Different servers support different name search forms. See `<Region>CharacterIndex.json` for details.
+
 - Example:
   > sync
   >```sh
   >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ ibuki
-  >``` -->
+  >```
 
-  <!--
   > japan
   >```sh
   >ba-downloader sync --region jp -as yume 百合園セイア 호시노 cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
   >```
-  -->
+
 - Basic search:
   > package name only
   >```sh
@@ -152,17 +158,14 @@ python -m ba_downloader sync --region jp
   >```
 
 
-## Output
+## Default Output
 
-- `Temp`: Stores temporary files or non-primary files, such as APK packages.
+- `Temp`: Stores temporary files or non-primary files, such as APK files.
 - `RawData`: Stores files downloaded from catalogs, such as Bundle, Media, and Table files.
-- `Extracted`: Stores extracted output, such as Bundle, Media, Table, and Dumps files.
-<!-- - `CharacterRelation.json`: Character metadata; it can be generated with `ba-downloader relation build --region <region>`. -->
+- `Extracted`: Stores extracted files, such as Bundle, Media, Table, and Dumps files.
+- `CharacterIndex.json`: Character information index. It can be generated with `ba-downloader character-index build --region <region>`, or generated automatically by adding `-as`.
 
-JP default directories are separated by platform:
-- **Example:** `--platform android`: `JP_Android_RawData` / `JP_Android_Extracted` / `JP_Android_Temp`
-
-Example:
+Resource platform example:
 
 ```shell
 ba-downloader download --region jp --platform windows
@@ -171,33 +174,37 @@ ba-downloader download --region jp --platform windows
 
 ## Notes
 
-- `--platform` applies only to JP and selects JP platform-specific resources.
-- JP APK files are currently sourced from APKPure. After the Play Store updates, APKPure may take some time to synchronize. Official PC package parsing may be added later.
+- `--platform` only applies to JP and selects the JP resource platform.
+- `--version` only applies to GL; CN/JP automatically resolve the currently available version.
+- CN dump automatically uses the CN metadata recovery backend and keeps the `<Extracted>/Dumps/dump.cs` and `memorypack_formatters.json` outputs.
+- JP APK files come from APKPure. After the Play Store updates, APKPure may need some time to synchronize the version.
 - Resource catalogs may be unavailable during server maintenance windows.
-- A proxy may be required in some regions to download assets from specific servers.
-- Bundle extraction is based on UnityPy. If you need more detailed extraction results, use [AssetRipper](https://github.com/AssetRipper/AssetRipper) or [AssetStudio](https://github.com/Perfare/AssetStudio).
+- Some regions may require a proxy server to download game resources from specific servers.
+- Bundle extraction is based on UnityPy. For more detailed results, use [AssetRipper](https://github.com/AssetRipper/AssetRipper) or [AssetStudio](https://github.com/Perfare/AssetStudio).
+- Extraction methods change often, so interfaces may change frequently. Directly calling internal methods is not recommended.
 
 ## TODO
 
-- `v2.2.0`
-  - Improve JP extraction (requires a key)
-  - Add a new bundle extractor
+- `v2.3.0`
+  - New Bundle extractor
+  - Fetch latest available resources from the launcher
 
 ## About
 
 Blue Archive Asset Downloader v2.1.0.
 
-✨ Powered by Codex ✨
+Technical support: Codex
 
-This project is licensed under the [MIT License](../LICENSE).
+This project uses the [MIT License](../LICENSE).
 
-Parts of this project reference:
+Some content references:
+
 - [Blue-Archive---Asset-Downloader](https://github.com/K0lb3/Blue-Archive---Asset-Downloader)
 - [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL)
 
 ## Disclaimer
 
-This repository is provided for educational and demonstration purposes only and does not host any actual game assets. Please note that all content downloaded through this project should only be used for legal and legitimate purposes. The developers are not liable for any direct or indirect loss, damage, legal liability, or other consequences arising from use of this project. Users assume all risks associated with using this project and must ensure compliance with all applicable laws and regulations. If anyone uses this project for any unauthorized or illegal activity, the developers bear no responsibility. Users are responsible for their own actions and should understand the risks involved in using this project.
+This repository is for learning and demonstration purposes only and does not host any actual resources. All content downloaded through this project should be used only for legal and legitimate purposes. The developers are not liable for any direct or indirect loss, damage, legal liability, or other consequence arising from use of this project. Users use this project at their own risk and must comply with all relevant laws and regulations. If anyone uses this project for unauthorized or illegal activities, the developers bear no responsibility. Users are responsible for their own actions and should understand the risks involved in using this project.
 
 “蔚蓝档案” is a registered trademark of Shanghai Xingxiao Network Technology Co., Ltd. All rights reserved.
 

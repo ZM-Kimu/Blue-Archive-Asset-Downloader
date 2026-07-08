@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
@@ -19,11 +20,11 @@ from ba_downloader.infrastructure.http.client import (
 def test_http_client_falls_back_to_browser_for_blocked_responses(monkeypatch) -> None:
     client = ResilientHttpClient(max_retries=0)
 
-    def fake_httpx(*args, **kwargs):
+    def fake_httpx(*_args: object, **_kwargs: object):
         request = httpx.Request("GET", "https://example.com")
         return httpx.Response(403, request=request, content=b"blocked")
 
-    def fake_browser(*args, **kwargs):
+    def fake_browser(*_args: object, **_kwargs: object):
         return SimpleNamespace(
             status_code=200,
             headers={"Content-Type": "application/json"},
@@ -46,7 +47,7 @@ def test_http_client_download_falls_back_to_browser(
     client = ResilientHttpClient(max_retries=0)
     destination = tmp_path / "archive.xapk"
 
-    def fake_download_with_httpx(*args, **kwargs):
+    def fake_download_with_httpx(*_args: object, **_kwargs: object):
         destination.write_text("Cloudflare", encoding="utf-8")
         return SimpleNamespace(
             path=str(destination),
@@ -56,7 +57,7 @@ def test_http_client_download_falls_back_to_browser(
             url="https://example.com/archive.xapk",
         )
 
-    def fake_download_with_browser(*args, **kwargs):
+    def fake_download_with_browser(*_args: object, **_kwargs: object):
         destination.write_bytes(b"binary")
         return SimpleNamespace(
             path=str(destination),
@@ -84,7 +85,7 @@ def test_http_client_download_uses_updated_default_timeout(
     destination = tmp_path / "archive.bin"
     captured: dict[str, float] = {}
 
-    def fake_download_with_httpx(*args, **kwargs):
+    def fake_download_with_httpx(*_args: object, **kwargs: Any):
         captured["timeout"] = kwargs["timeout"]
         destination.write_bytes(b"binary")
         return SimpleNamespace(
@@ -111,8 +112,7 @@ def test_http_client_browser_request_does_not_retry_programming_errors(
     client = ResilientHttpClient(max_retries=3)
     attempts = {"count": 0}
 
-    def fake_browser_request(*args, **kwargs):  # type: ignore[no-untyped-def]
-        _ = (args, kwargs)
+    def fake_browser_request(*_args: object, **_kwargs: object):
         attempts["count"] += 1
         raise ValueError("bad serialization")
 

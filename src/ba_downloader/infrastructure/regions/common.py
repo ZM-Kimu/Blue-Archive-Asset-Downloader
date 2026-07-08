@@ -11,7 +11,7 @@ from ba_downloader.domain.ports.logging import LoggerPort
 SYNC_AND_RELATION_CAPABILITIES = RegionCapabilities(
     supports_sync=True,
     supports_advanced_search=False,
-    supports_relation_build=True,
+    supports_character_index_build=True,
 )
 
 
@@ -46,13 +46,11 @@ def build_region_catalog_result(
     *,
     resources: AssetCollection,
     context: RuntimeContext,
-    capabilities: RegionCapabilities,
 ) -> RegionCatalogResult:
     logger.info(f"Catalog: {resources}.")
     return RegionCatalogResult(
         resources=resources,
         context=context,
-        capabilities=capabilities,
     )
 
 

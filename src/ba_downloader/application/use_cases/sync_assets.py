@@ -1,14 +1,21 @@
 from collections.abc import Callable
 
+from ba_downloader.application.profiles import (
+    RegionProfile,
+    SyncExtractionMode,
+)
+from ba_downloader.application.use_cases.asset_selection import AssetSelectionService
+from ba_downloader.application.use_cases.character_index_search import (
+    CharacterIndexSearchService,
+)
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.character_index import CharacterIndexBuilderPort
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
-from ba_downloader.domain.ports.extract import SchemaWorkflowPort
+from ba_downloader.domain.ports.extract import SchemaPreparationPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
-from ba_downloader.domain.ports.relation import RelationBuilderPort
-from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 from ba_downloader.domain.services.resource_query import ResourceQueryService
 
 
@@ -18,62 +25,62 @@ class SyncAssetsUseCase:
         provider: RegionProvider,
         downloader: ResourceDownloaderPort,
         extract_service: ExtractAssetsUseCase,
-        schema_workflow: SchemaWorkflowPort,
-        runtime_asset_preparer: RuntimeAssetPreparerPort,
-        relation_builder_factory: Callable[[RuntimeContext], RelationBuilderPort],
+        schema_preparation: SchemaPreparationPort,
+        character_index_builder_factory: Callable[
+            [RuntimeContext], CharacterIndexBuilderPort
+        ],
         logger: LoggerPort,
+        *,
+        workflow_profile: RegionProfile,
     ) -> None:
         self.provider = provider
         self.downloader = downloader
         self.extract_service = extract_service
-        self.schema_workflow = schema_workflow
-        self.runtime_asset_preparer = runtime_asset_preparer
-        self.relation_builder_factory = relation_builder_factory
+        self.schema_preparation = schema_preparation
+        self.character_index_builder_factory = character_index_builder_factory
         self.logger = logger
+        self.workflow_profile = workflow_profile
+        self.asset_selector = AssetSelectionService(logger)
+        self.character_index_search = CharacterIndexSearchService(
+            character_index_builder_factory,
+            logger,
+            workflow_profile.settings_policy,
+        )
 
-    def _dump_and_compile(self, context: RuntimeContext) -> None:
-        self.runtime_asset_preparer.prepare(context)
-        self.schema_workflow.dump(context)
-        self.schema_workflow.compile(context)
+    def _prepare_schema(self, context: RuntimeContext) -> None:
+        self.schema_preparation.prepare(context)
 
     def _search_resource(
         self,
         resources: AssetCollection,
         context: RuntimeContext,
-        dumped: bool,
+        schema_prepared: bool,
     ) -> AssetCollection:
-        keywords: list[str] = []
-        relation_builder = self.relation_builder_factory(context)
+        advanced_keywords: list[str] | None = None
         if context.advanced_search:
-            self.logger.info("Preparing for advanced search...")
-            if not relation_builder.verify_relation_file(context):
-                if not dumped:
-                    self._dump_and_compile(context)
-                    dumped = True
-                excel_resource = relation_builder.get_excel_resources(resources)
-                self.downloader.verify_and_download(excel_resource, context)
-                relation_builder.build(context)
-
-            keywords = relation_builder.search(
+            index_result = self.character_index_search.resolve_sync_keywords(
+                resources,
                 context,
-                list(context.advanced_search),
+                schema_preparation=self.schema_preparation,
+                downloader=self.downloader,
+                schema_prepared=schema_prepared,
             )
+            advanced_keywords = index_result.keywords
 
-        if context.search:
-            keywords = list(context.search)
-
-        if keywords:
-            resources = ResourceQueryService.search_name(resources, keywords)
-
-        return resources
+        return self.asset_selector.filter_search_resources(
+            resources,
+            context,
+            advanced_keywords=advanced_keywords,
+        )
 
     def _filter_and_download(
         self,
         resources: AssetCollection,
         context: RuntimeContext,
-    ) -> None:
+    ) -> AssetCollection:
         filtered = ResourceQueryService.filter_type(resources, context.resource_type)
         self.downloader.verify_and_download(filtered, context)
+        return filtered
 
     def run(self, context: RuntimeContext) -> RuntimeContext:
         capabilities = self.provider.get_capabilities()
@@ -89,26 +96,24 @@ class SyncAssetsUseCase:
         catalog = self.provider.load_catalog(context)
         active_context = catalog.context
         resources = catalog.resources
+        self.workflow_profile.catalog_metadata.on_catalog_loaded(
+            active_context,
+            resources,
+        )
 
-        if active_context.region == "gl":
-            self._dump_and_compile(active_context)
-            if active_context.search or active_context.advanced_search:
-                resources = self._search_resource(resources, active_context, True)
-            self._filter_and_download(resources, active_context)
-            self.extract_service.run(active_context)
-            return active_context
-
-        if active_context.region in {"jp", "cn"}:
-            self._dump_and_compile(active_context)
-            if active_context.search or active_context.advanced_search:
-                resources = self._search_resource(resources, active_context, True)
-            self._filter_and_download(resources, active_context)
-            self.extract_service.run_post_download(active_context)
-            return active_context
+        if self.workflow_profile.prepares_schema_for_sync:
+            self._prepare_schema(active_context)
 
         if active_context.search or active_context.advanced_search:
-            resources = self._search_resource(resources, active_context, False)
+            resources = self._search_resource(
+                resources,
+                active_context,
+                self.workflow_profile.prepares_schema_for_sync,
+            )
 
-        self._filter_and_download(resources, active_context)
-        self.extract_service.run_post_download(active_context)
+        filtered = self._filter_and_download(resources, active_context)
+        if self.workflow_profile.sync_extraction_mode is SyncExtractionMode.direct:
+            self.extract_service.run(active_context, filtered)
+        else:
+            self.extract_service.run_post_download(active_context, filtered)
         return active_context

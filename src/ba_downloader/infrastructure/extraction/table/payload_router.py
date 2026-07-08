@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import ClassVar
+from typing import Protocol
 
 
 class TablePayloadCodec(Enum):
@@ -17,21 +18,35 @@ class TablePayloadRoute:
     allow_partial_memorypack: bool = False
 
 
-class TablePayloadRouter:
-    """Route known table BLOB payloads to the currently verified codec.
+class TablePayloadRouter(Protocol):
+    def resolve_database_blob(
+        self,
+        db_name: str,
+        table_name: str,
+        column_name: str,
+    ) -> TablePayloadRoute: ...
 
-    This is intentionally source-specific for now. CN/GL/JP table payloads still
-    have region-specific container and serialization differences, so each route
-    must be backed by a verified extractor. Once those formats are covered well
-    enough, this class should become the single unified payload router instead of
-    a collection of regional special cases.
-    """
 
-    CN_MEMORYPACK_DB_ROOT_TYPES: ClassVar[dict[str, str]] = {
-        "LevelSkillDataDBSchema.db": "MX.GameData.DAO.Battle.SkillLogicDAO",
-        "LogicEffectDataDBSchema.db": "MX.GameData.DAO.Battle.LogicEffectDAO",
-        "SkillVisualEffectDataDBSchema.db": "MX.AppData.DAO.Battle.SkillVisualDAO",
-    }
+class FlatBufferTablePayloadRouter:
+    def resolve_database_blob(
+        self,
+        db_name: str,
+        table_name: str,
+        column_name: str,
+    ) -> TablePayloadRoute:
+        _ = (db_name, table_name, column_name)
+        return TablePayloadRoute(codec=TablePayloadCodec.FLATBUFFER)
+
+
+class MemoryPackTablePayloadRouter:
+    def __init__(
+        self,
+        db_root_types: Mapping[str, str],
+        *,
+        allow_partial_memorypack: bool,
+    ) -> None:
+        self.db_root_types = dict(db_root_types)
+        self.allow_partial_memorypack = allow_partial_memorypack
 
     def resolve_database_blob(
         self,
@@ -40,12 +55,10 @@ class TablePayloadRouter:
         column_name: str,
     ) -> TablePayloadRoute:
         _ = table_name
-        if column_name == "Bytes" and (
-            root_type := self.CN_MEMORYPACK_DB_ROOT_TYPES.get(db_name)
-        ):
+        if column_name == "Bytes" and (root_type := self.db_root_types.get(db_name)):
             return TablePayloadRoute(
                 codec=TablePayloadCodec.MEMORYPACK,
                 root_type=root_type,
-                allow_partial_memorypack=True,
+                allow_partial_memorypack=self.allow_partial_memorypack,
             )
         return TablePayloadRoute(codec=TablePayloadCodec.FLATBUFFER)

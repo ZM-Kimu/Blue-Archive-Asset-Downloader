@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import py_compile
+import struct
 from dataclasses import is_dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -20,6 +21,9 @@ from ba_downloader.infrastructure.schema.memorypack.parser import MemoryPackCSPa
 from ba_downloader.infrastructure.schema.memorypack.reader import (
     MemoryPackReader,
     MemoryPackSchemaRegistry,
+)
+from ba_downloader.infrastructure.schema.memorypack.supplemental import (
+    SupplementalMemoryPackFormatterBuilder,
 )
 from generated_modules import load_generated_module
 
@@ -692,6 +696,308 @@ def test_memorypack_reader_decodes_formatter_object_header_and_byte_union_tag(
     }
 
 
+def test_memorypack_reader_decodes_formatter_special_wire_types(
+    tmp_path: Path,
+) -> None:
+    sidecar_path = tmp_path / "memorypack_formatters.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "formatters": [
+                    {
+                        "target_type": "Sample.Root",
+                        "kind": "object",
+                        "object_header": True,
+                        "members": [
+                            {
+                                "name": "MaybeId",
+                                "cs_type": "System.Nullable`1<System.Int64>",
+                            },
+                            {"name": "Position2D", "cs_type": "UnityEngine.Vector2"},
+                            {"name": "Position3D", "cs_type": "UnityEngine.Vector3"},
+                            {"name": "Marker", "cs_type": "System.Char"},
+                            {
+                                "name": "UnknownEnum",
+                                "cs_type": "FlatData.UnknownEnum",
+                                "wire_type": "int32_enum",
+                            },
+                            {
+                                "name": "Shape",
+                                "cs_type": "MX.Logic.Battles.ShapeSpecification",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf8",
+    )
+    formatter_registry = MemoryPackFormatterRegistry.from_file(sidecar_path)
+    schema_registry = MemoryPackSchemaRegistry(types={}, enums={})
+
+    payload = bytearray()
+    payload.append(6)
+    payload.extend(b"\x01\x00\x00\x00\x00\x00\x00\x00")
+    payload.extend((123).to_bytes(8, "little", signed=True))
+    payload.extend(_f32(1.5))
+    payload.extend(_f32(2.5))
+    payload.extend(_f32(3.5))
+    payload.extend(_f32(4.5))
+    payload.extend(_f32(5.5))
+    payload.extend(ord("Z").to_bytes(2, "little"))
+    payload.extend((7).to_bytes(4, "little", signed=True))
+    payload.extend((2).to_bytes(4, "little", signed=True))
+    payload.extend(_f32(10.0))
+    payload.extend(_f32(20.0))
+    payload.extend((30).to_bytes(4, "little", signed=True))
+    payload.extend(_f32(40.0))
+    payload.extend(_f32(50.0))
+    payload.extend(_f32(60.0))
+    payload.extend((70).to_bytes(4, "little", signed=True))
+    payload.extend(_f32(80.0))
+    payload.extend((90).to_bytes(4, "little", signed=True))
+    payload.extend(_f32(100.0))
+    payload.extend(_f32(110.0))
+
+    result = MemoryPackReader(bytes(payload)).read_formatter_object(
+        "Sample.Root",
+        schema_registry,
+        formatter_registry,
+    )
+
+    assert result["MaybeId"] == 123
+    assert result["Position2D"] == {"x": 1.5, "y": 2.5}
+    assert result["Position3D"] == {"x": 3.5, "y": 4.5, "z": 5.5}
+    assert result["Marker"] == "Z"
+    assert result["UnknownEnum"] == 7
+    assert result["Shape"] == {
+        "__type__": "ShapeSpecification",
+        "__unmanaged__": True,
+        "Type": 2,
+        "PositionOffset": {"x": 10.0, "y": 20.0},
+        "AngleOffset": 30,
+        "CircleRadius": 40.0,
+        "DonutOuterRadius": 50.0,
+        "DonutInnerRadius": 60.0,
+        "DonutAngle": 70,
+        "FanRadius": 80.0,
+        "FanAngle": 90,
+        "OBBWidth": 100.0,
+        "OBBHeight": 110.0,
+    }
+
+
+def test_memorypack_reader_decodes_null_formatter_union(
+    tmp_path: Path,
+) -> None:
+    sidecar_path = tmp_path / "memorypack_formatters.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "formatters": [
+                    {
+                        "target_type": "Sample.Base",
+                        "kind": "union",
+                        "tag_type": "byte",
+                        "union_tags": {"1": "Sample.Child"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf8",
+    )
+
+    result = MemoryPackReader(b"\xff\xff").read_formatter_object(
+        "Sample.Base",
+        MemoryPackSchemaRegistry(types={}, enums={}),
+        MemoryPackFormatterRegistry.from_file(sidecar_path),
+    )
+
+    assert result == {
+        "__union_root__": "Sample.Base",
+        "__union_tag__": 255,
+        "__value__": None,
+    }
+
+
+def test_supplemental_formatter_builder_merges_union_and_wire_members(
+    tmp_path: Path,
+) -> None:
+    dump_path = tmp_path / "dump.cs"
+    dump_path.write_text(
+        """
+// Namespace: MX.GameData.DAO.Battle
+public abstract class LogicEffectDAO : MemoryPack.IMemoryPackable`1<MX.GameData.DAO.Battle.LogicEffectDAO>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 1 Token: 0x02000001
+{
+    // Fields
+    public System.Int32 Level; // Token: 0x04000001
+    public System.String GroupId; // Token: 0x04000002
+    public FlatData.LogicEffectCategory Category; // Token: 0x04000003
+    public System.String TemplateId; // Token: 0x04000004
+    public System.Int32 Channel; // Token: 0x04000005
+    public System.Int64 ApplyRate; // Token: 0x04000006
+    public System.String CommonVisualId; // Token: 0x04000007
+    public System.UInt32 CommonVisualHash; // Token: 0x04000008
+    public System.Int32 PriorityWhenSameFrame; // Token: 0x04000009
+    public System.Boolean CanTargetTSAInteractingCharacter; // Token: 0x0400000A
+}
+
+// Namespace: MX.GameData.DAO.Battle
+public class DamageEffectDAO : MX.GameData.DAO.Battle.LogicEffectDAO, MemoryPack.IMemoryPackable`1<MX.GameData.DAO.Battle.DamageEffectDAO>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 2 Token: 0x02000002
+{
+    // Fields
+    public System.Int64 Amount; // Token: 0x0400000B
+}
+
+// Namespace: MX.Logic.Battles
+public class GroundCommandSetLimitBreakGauge : MX.Logic.Battles.GroundCommand, MemoryPack.IMemoryPackable`1<MX.Logic.Battles.GroundCommandSetLimitBreakGauge>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 3 Token: 0x02000003
+{
+    // Fields
+    public System.String PrefabPath; // Token: 0x0400000C
+}
+""".strip(),
+        encoding="utf8",
+    )
+    memorypack_data_dir = tmp_path / "MemoryPackData"
+    parser = MemoryPackCSParser(str(dump_path))
+    CompileMemoryPackToPython(
+        parser.parse_types(),
+        str(memorypack_data_dir),
+        parser.parse_enums(),
+    ).create_schema_files()
+    sidecar_path = tmp_path / "memorypack_formatters.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "formatters": [
+                    {
+                        "target_type": "MX.GameData.DAO.Battle.LogicEffectDAO",
+                        "kind": "union",
+                        "tag_type": "byte",
+                        "union_tags": {"17": "MX.GameData.DAO.Battle.DamageEffectDAO"},
+                    },
+                    {
+                        "target_type": "MX.Logic.Battles.GroundCommand",
+                        "kind": "union",
+                        "tag_type": "byte",
+                        "union_tags": {
+                            "34": "MX.Logic.Battles.GroundCommandSetLimitBreakGauge"
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf8",
+    )
+
+    SupplementalMemoryPackFormatterBuilder(
+        dump_cs_path=dump_path,
+        memorypack_data_dir=memorypack_data_dir,
+        sidecar_path=sidecar_path,
+    ).build()
+    registry = MemoryPackFormatterRegistry.from_file(sidecar_path)
+
+    damage = registry.resolve("MX.GameData.DAO.Battle.DamageEffectDAO")
+    assert damage is not None
+    assert [member.name for member in damage.members[:11]] == [
+        "Level",
+        "GroupId",
+        "Category",
+        "TemplateId",
+        "Channel",
+        "ApplyRate",
+        "CommonVisualId",
+        "CommonVisualHash",
+        "PriorityWhenSameFrame",
+        "CanTargetTSAInteractingCharacter",
+        "Amount",
+    ]
+    assert damage.members[2].wire_type == "int32_enum"
+
+    command = registry.resolve("MX.Logic.Battles.GroundCommandSetLimitBreakGauge")
+    assert command is not None
+    assert [member.name for member in command.members] == ["PrefabPath"]
+
+
+def test_supplemental_formatter_builder_requires_runtime_union_sidecar(
+    tmp_path: Path,
+) -> None:
+    dump_path = _write_dump(
+        tmp_path,
+        """// Namespace: MX.GameData.DAO.Battle
+public abstract class LogicEffectDAO : MemoryPack.IMemoryPackable`1<MX.GameData.DAO.Battle.LogicEffectDAO>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 10 Token: 0x0200000A
+{
+}
+
+// Namespace: MX.GameData.DAO.Battle
+public class DamageEffectDAO : MX.GameData.DAO.Battle.LogicEffectDAO, MemoryPack.IMemoryPackable`1<MX.GameData.DAO.Battle.DamageEffectDAO>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 11 Token: 0x0200000B
+{
+    // Properties
+    public System.String TemplateId { get; set; } // Token: 0x17000001
+}
+""",
+    )
+    data_dir = tmp_path / "MemoryPackData"
+    parser = MemoryPackCSParser(str(dump_path))
+    CompileMemoryPackToPython(
+        parser.parse_types(),
+        str(data_dir),
+        parser.parse_enums(),
+    ).create_schema_files()
+    sidecar_path = tmp_path / "memorypack_formatters.json"
+
+    assert not SupplementalMemoryPackFormatterBuilder(
+        dump_cs_path=dump_path,
+        memorypack_data_dir=data_dir,
+        sidecar_path=sidecar_path,
+    ).build()
+    assert not sidecar_path.exists()
+
+    union_attrs_path = tmp_path / "memorypack_union_attrs.json"
+    union_attrs_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "targets": [
+                    {
+                        "full_name": "MX.GameData.DAO.Battle.LogicEffectDAO",
+                        "custom_attributes": [
+                            {
+                                "attribute_type": (
+                                    "MemoryPack.MemoryPackUnionAttribute"
+                                ),
+                                "tag": 17,
+                                "union_type": (
+                                    "MX.GameData.DAO.Battle.DamageEffectDAO"
+                                ),
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf8",
+    )
+
+    assert SupplementalMemoryPackFormatterBuilder(
+        dump_cs_path=dump_path,
+        memorypack_data_dir=data_dir,
+        sidecar_path=sidecar_path,
+    ).build()
+
+    registry = MemoryPackFormatterRegistry.from_file(sidecar_path)
+    root = registry.resolve("MX.GameData.DAO.Battle.LogicEffectDAO")
+    damage = registry.resolve("MX.GameData.DAO.Battle.DamageEffectDAO")
+    assert root is not None
+    assert root.union_tags is not None
+    assert root.union_tags[17] == "MX.GameData.DAO.Battle.DamageEffectDAO"
+    assert damage is not None
+    assert [member.name for member in damage.members] == ["TemplateId"]
+
+
 def test_memorypack_reader_rejects_unconsumed_formatter_payload(
     tmp_path: Path,
 ) -> None:
@@ -732,6 +1038,10 @@ def _mp_utf8_string(value: str) -> bytes:
     payload.extend(len(raw).to_bytes(4, "little", signed=True))
     payload.extend(raw)
     return bytes(payload)
+
+
+def _f32(value: float) -> bytes:
+    return struct.pack("<f", value)
 
 
 def _mp_empty_collection() -> bytes:

@@ -1,44 +1,10 @@
 from __future__ import annotations
 
-import importlib
-import inspect
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-import pytest
-
-
-def test_tools_package_no_longer_exports_legacy_flatbuffer_aliases() -> None:
-    import ba_downloader.infrastructure.tools as tools
-
-    assert not hasattr(tools, "CSParser")
-    assert not hasattr(tools, "CompileToPython")
-    assert not hasattr(tools, "CompileFlatBufferToPython")
-    assert not hasattr(tools, "CompileMemoryPackToPython")
-    assert not hasattr(tools, "FlatBufferCSParser")
-    assert not hasattr(tools, "FlatBufferExporter")
-    assert not hasattr(tools, "FlatBufferReader")
-    assert not hasattr(tools, "MemoryPackCSParser")
-    assert not hasattr(tools, "MemoryPackReader")
-
-    removed_schema_modules = (
-        "flatbuffer_codegen",
-        "flatbuffer_descriptors",
-        "flatbuffer_generator",
-        "flatbuffer_parser",
-        "flatbuffer_reader",
-        "flatbuffer_workflow",
-        "generated_registry",
-        "memorypack_codegen",
-        "memorypack_descriptors",
-        "memorypack_generator",
-        "memorypack_parser",
-        "memorypack_reader",
-        "schema_codegen",
-        "schema_csharp",
-    )
-    for module_name in removed_schema_modules:
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module(f"ba_downloader.infrastructure.tools.{module_name}")
+from typing import Any
 
 
 def test_schema_package_exposes_flatbuffer_and_memorypack_apis() -> None:
@@ -63,29 +29,6 @@ def test_schema_package_exposes_flatbuffer_and_memorypack_apis() -> None:
     assert MemoryPackCSParser.__name__ == "MemoryPackCSParser"
     assert MemoryPackReader.__name__ == "MemoryPackReader"
     assert MemoryPackSchemaRegistry.__name__ == "MemoryPackSchemaRegistry"
-
-
-def test_schema_workflow_no_longer_uses_flatbuffer_only_naming() -> None:
-    from ba_downloader.domain.ports import extract
-    from ba_downloader.infrastructure import schema
-    from ba_downloader.infrastructure.schema import workflow
-
-    assert hasattr(extract, "SchemaWorkflowPort")
-    assert not hasattr(extract, "FlatbufferWorkflowPort")
-    assert hasattr(schema, "SchemaWorkflow")
-    assert hasattr(workflow, "SchemaWorkflow")
-    assert not hasattr(schema, "FlatbufferWorkflow")
-    assert not hasattr(workflow, "FlatbufferWorkflow")
-
-
-def test_table_extractor_no_longer_uses_flat_data_dir_name() -> None:
-    from ba_downloader.infrastructure.extraction import table
-    from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
-
-    signature = inspect.signature(TableExtractor)
-
-    assert "flat_data_dir" not in signature.parameters
-    assert not hasattr(table, "GeneratedDumpWrapperError")
 
 
 def test_generated_schema_registry_loads_class_and_module_name_registries(
@@ -144,3 +87,152 @@ def test_generated_schema_registry_loads_class_and_module_name_registries(
         module_registry.types["Media.Service.MediaCatalog"].__name__ == "MediaCatalog"
     )
     assert module_registry.resolve_type("MediaCatalog").__name__ == "MediaCatalog"
+
+
+def test_generated_schema_registry_reloads_same_directory_after_regeneration(
+    tmp_path: Path,
+) -> None:
+    from ba_downloader.infrastructure.schema.common.generated_registry import (
+        GeneratedSchemaRegistry,
+    )
+
+    registry_dir = tmp_path / "FlatBufferData"
+    registry_dir.mkdir()
+    (registry_dir / "__init__.py").write_text("", encoding="utf8")
+    (registry_dir / "Sample.py").write_text(
+        "class Sample:\n    version = 'old'\n",
+        encoding="utf8",
+    )
+    (registry_dir / "_registry.py").write_text(
+        "from .Sample import Sample\n"
+        'FLATBUFFER_TYPES = {"Sample": Sample}\n'
+        "FLATBUFFER_ENUMS = {}\n",
+        encoding="utf8",
+    )
+
+    old_registry = GeneratedSchemaRegistry.from_directory(
+        registry_dir,
+        type_registry_name="FLATBUFFER_TYPES",
+        enum_registry_name="FLATBUFFER_ENUMS",
+        package_prefix="test_reload_schema",
+    )
+    assert old_registry.types["Sample"].version == "old"
+
+    (registry_dir / "Sample.py").write_text(
+        "class Sample:\n    version = 'new'\n",
+        encoding="utf8",
+    )
+
+    new_registry = GeneratedSchemaRegistry.from_directory(
+        registry_dir,
+        type_registry_name="FLATBUFFER_TYPES",
+        enum_registry_name="FLATBUFFER_ENUMS",
+        package_prefix="test_reload_schema",
+    )
+
+    assert new_registry.types["Sample"].version == "new"
+
+
+def test_generated_schema_registry_serializes_parallel_schema_loads(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    from ba_downloader.infrastructure.schema.common import generated_registry
+    from ba_downloader.infrastructure.schema.common.generated_registry import (
+        GeneratedSchemaRegistry,
+    )
+
+    registry_dir = tmp_path / "FlatBufferData"
+    registry_dir.mkdir()
+    (registry_dir / "__init__.py").write_text("", encoding="utf8")
+    (registry_dir / "Sample.py").write_text(
+        "class Sample:\n    pass\n",
+        encoding="utf8",
+    )
+    (registry_dir / "_registry.py").write_text(
+        "from .Sample import Sample\n"
+        'FLATBUFFER_TYPES = {"Sample": Sample}\n'
+        "FLATBUFFER_ENUMS = {}\n",
+        encoding="utf8",
+    )
+
+    active_cleanups = 0
+    max_active_cleanups = 0
+    cleanup_calls = 0
+    cleanup_lock = threading.Lock()
+
+    def slow_clear_generated_bytecode(package_dir: Path) -> None:
+        nonlocal active_cleanups, max_active_cleanups, cleanup_calls
+        _ = package_dir
+        with cleanup_lock:
+            active_cleanups += 1
+            cleanup_calls += 1
+            max_active_cleanups = max(max_active_cleanups, active_cleanups)
+        time.sleep(0.05)
+        with cleanup_lock:
+            active_cleanups -= 1
+
+    monkeypatch.setattr(
+        generated_registry,
+        "_clear_generated_bytecode",
+        slow_clear_generated_bytecode,
+    )
+
+    def load_registry() -> str:
+        registry = GeneratedSchemaRegistry.from_directory(
+            registry_dir,
+            type_registry_name="FLATBUFFER_TYPES",
+            enum_registry_name="FLATBUFFER_ENUMS",
+            package_prefix="test_parallel_schema",
+        )
+        return registry.types["Sample"].__name__
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: load_registry(), range(8)))
+
+    assert results == ["Sample"] * 8
+    assert max_active_cleanups == 1
+    assert cleanup_calls == 1
+
+
+def test_generated_schema_registry_ignores_blocked_bytecode_cleanup(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    import shutil
+
+    from ba_downloader.infrastructure.schema.common.generated_registry import (
+        GeneratedSchemaRegistry,
+    )
+
+    registry_dir = tmp_path / "FlatBufferData"
+    registry_dir.mkdir()
+    (registry_dir / "__init__.py").write_text("", encoding="utf8")
+    (registry_dir / "Sample.py").write_text(
+        "class Sample:\n    pass\n",
+        encoding="utf8",
+    )
+    (registry_dir / "_registry.py").write_text(
+        "from .Sample import Sample\n"
+        'FLATBUFFER_TYPES = {"Sample": Sample}\n'
+        "FLATBUFFER_ENUMS = {}\n",
+        encoding="utf8",
+    )
+    pycache_dir = registry_dir / "__pycache__"
+    pycache_dir.mkdir()
+    (pycache_dir / "Sample.cpython-313.pyc").write_bytes(b"locked")
+
+    def blocked_rmtree(path: Path) -> None:
+        _ = path
+        raise PermissionError("locked pycache")
+
+    monkeypatch.setattr(shutil, "rmtree", blocked_rmtree)
+
+    registry = GeneratedSchemaRegistry.from_directory(
+        registry_dir,
+        type_registry_name="FLATBUFFER_TYPES",
+        enum_registry_name="FLATBUFFER_ENUMS",
+        package_prefix="test_blocked_pycache_schema",
+    )
+
+    assert registry.types["Sample"].__name__ == "Sample"

@@ -8,21 +8,12 @@ from struct import Struct
 from typing import TypeVar
 
 import xxhash
-from Crypto.Cipher import AES
-from Crypto.Protocol.KDF import PBKDF2
-from Crypto.Random import get_random_bytes
-from Crypto.Util.Padding import pad, unpad
 from Crypto.Util.strxor import strxor
 
 
 def xxh32_intdigest(data: bytes | str, seed: int = 0) -> int:
     payload = data.encode("utf8") if isinstance(data, str) else data
     return xxhash.xxh32_intdigest(payload, seed)
-
-
-def xxh64_intdigest(data: bytes | str, seed: int = 0) -> int:
-    payload = data.encode("utf8") if isinstance(data, str) else data
-    return xxhash.xxh64_intdigest(payload, seed)
 
 
 T = TypeVar("T", int, float)
@@ -36,23 +27,12 @@ ULONG = Struct("<Q")
 FLOAT = Struct("<f")
 DOUBLE = Struct("<d")
 
-AES_BLOCK_SIZE = 128 // 8
-AES_KEY_SIZE = 128 // 8
-PBKDF2_DERIVATION_ITERATIONS = 1000
-
 
 def calculate_hash(name: bytes | str) -> int:
     """Calculate a 32-bit hash using xxhash with UTF-8 encoding if needed."""
     if isinstance(name, str):
         name = name.encode("utf8")
     return xxh32_intdigest(name)
-
-
-def calculate_hash64(name: bytes | str) -> int:
-    """Calculate a 64-bit hash using xxhash with UTF-8 encoding if needed."""
-    if isinstance(name, str):
-        name = name.encode("utf8")
-    return xxh64_intdigest(name)
 
 
 def zip_password(key: str) -> bytes:
@@ -135,16 +115,6 @@ def convert_double(value: float, key: bytes = b"") -> float:
     return (convert_long(int(value), key) * 0.00001 if value else 0.0) if key else value
 
 
-def encrypt_float(value: float, key: bytes = b"") -> float:
-    """Encrypt float value to integer-like format using XOR if a key is provided."""
-    return (convert_int(int(value * 100000), key) if value else 0.0) if key else value
-
-
-def encrypt_double(value: float, key: bytes = b"") -> float:
-    """Encrypt double value to integer-like format using XOR if a key is provided."""
-    return (convert_long(int(value * 100000), key) if value else 0.0) if key else value
-
-
 def convert_string(value: bytes | str, key: bytes = b"") -> str:
     """Decrypt or decode a base64 string or raw bytes, depending on the input."""
     if not value:
@@ -159,61 +129,6 @@ def convert_string(value: bytes | str, key: bytes = b"") -> str:
             return value.decode("utf8")
 
     return ""
-
-
-def encrypt_string(value: str, key: bytes) -> str | bytes:
-    """Encrypt a string using XOR and base64 encoding."""
-    if not value or len(value) < 8:
-        return value.encode() if value else b""
-
-    raw = value.encode("utf16")
-    return b64encode(xor(raw, key)).decode()
-
-
-def aes_encrypt(plain_text: str, encrypt_phrase: str) -> str:
-    """Encrypts a plain text string using AES encryption (CBC mode) with a passphrase.
-
-    Args:
-        plain_text (str): The text to be encrypted.
-        encrypt_phrase (str): The phrase used to derive the encryption key.
-
-    Returns:
-        str: A Base64-encoded string containing the salt, IV, and encrypted data.
-    """
-    salt = get_random_bytes(AES_KEY_SIZE)  # Key random salt .
-    iv = get_random_bytes(AES_BLOCK_SIZE)  # Initialize aes block vector.
-
-    derived = PBKDF2(
-        encrypt_phrase, salt, AES_KEY_SIZE, count=PBKDF2_DERIVATION_ITERATIONS
-    )
-    cipher = AES.new(key=derived[:AES_KEY_SIZE], iv=iv, mode=AES.MODE_CBC)
-    data = pad(cipher.encrypt(plain_text.encode("utf8")), AES_BLOCK_SIZE, style="pkcs7")
-    return b64encode(salt + iv + data).decode("utf8")
-
-
-def aes_decrypt(cipher_text: str | bytes, encrypt_phrase: str) -> str:
-    """Decrypts a Base64-encoded AES-encrypted string back to its original plain text.
-
-
-    Args:
-        cipher_text (str): The Base64-encoded string containing the salt, IV, and encrypted data.
-        encrypt_phrase (str): The phrase used to derive the encryption key (must match encryption phrase).
-
-    Returns:
-        str: The decrypted plain text.
-    """
-    raw_cipher = b64decode(cipher_text)
-    salt = raw_cipher[:AES_KEY_SIZE]
-    iv = raw_cipher[AES_KEY_SIZE : AES_KEY_SIZE + AES_BLOCK_SIZE]
-    raw_cipher = raw_cipher[AES_KEY_SIZE + AES_BLOCK_SIZE :]
-
-    derived = PBKDF2(
-        encrypt_phrase, salt, AES_KEY_SIZE, count=PBKDF2_DERIVATION_ITERATIONS
-    )
-    cipher = AES.new(key=derived[:AES_KEY_SIZE], iv=iv, mode=AES.MODE_CBC)
-    return unpad(cipher.decrypt(raw_cipher), AES_BLOCK_SIZE, style="pkcs7").decode(
-        "utf-8"
-    )
 
 
 class MersenneTwister:

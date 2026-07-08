@@ -8,7 +8,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     wait,
 )
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from threading import Event, Lock
 
@@ -133,7 +133,6 @@ class ResourceDownloader(ResourceDownloaderPort):
         workers = min(max(context.threads, 1), max(len(resources), 1))
         stop_event = Event()
         executor = ThreadPoolExecutor(max_workers=workers)
-        future_map: dict[Future[tuple[AssetRecord, bool]], AssetRecord] = {}
 
         try:
             with (
@@ -143,13 +142,12 @@ class ResourceDownloader(ResourceDownloaderPort):
                     "Verifying assets...",
                 ) as progress,
             ):
-                future_map = {
-                    executor.submit(self._verify_resource, resource, context): resource
+                pending_futures = {
+                    executor.submit(self._verify_resource, resource, context)
                     for resource in resources
                 }
                 self._drain_verification_futures(
-                    set(future_map),
-                    future_map,
+                    pending_futures,
                     stop_event,
                     progress,
                     pending,
@@ -276,7 +274,6 @@ class ResourceDownloader(ResourceDownloaderPort):
     def _drain_verification_futures(
         self,
         pending_futures: set[Future[tuple[AssetRecord, bool]]],
-        future_map: dict[Future[tuple[AssetRecord, bool]], AssetRecord],
         stop_event: Event,
         progress: RichProgressReporter,
         pending: list[AssetRecord],
@@ -328,6 +325,7 @@ class ResourceDownloader(ResourceDownloaderPort):
         context: RuntimeContext,
     ) -> tuple[AssetRecord, bool]:
         asset_path = Path(context.raw_dir) / resource.path
+        asset_path = self._canonicalize_existing_case_path(asset_path)
         if not asset_path.exists():
             return resource, False
         return resource, self._get_validation_error(asset_path, resource) is None
@@ -415,6 +413,7 @@ class ResourceDownloader(ResourceDownloaderPort):
     ) -> AssetRecord:
         asset_path = Path(context.raw_dir) / resource.path
         asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path = self._canonicalize_existing_case_path(asset_path)
         if self._is_apk_entry_resource(resource):
             zip_entry = self._resolve_apk_zip_entry(resource)
             extract_zip_entry(
@@ -440,6 +439,56 @@ class ResourceDownloader(ResourceDownloaderPort):
 
         self._validate_downloaded_resource(asset_path, resource)
         return resource
+
+    @classmethod
+    def _canonicalize_existing_case_path(cls, asset_path: Path) -> Path:
+        parent = asset_path.parent
+        if not parent.is_dir():
+            return asset_path
+
+        try:
+            entries = list(parent.iterdir())
+        except OSError:
+            return asset_path
+
+        for entry in entries:
+            if entry.name == asset_path.name:
+                return asset_path
+
+        matched_entry = next(
+            (
+                entry
+                for entry in entries
+                if entry.name.casefold() == asset_path.name.casefold()
+            ),
+            None,
+        )
+        if matched_entry is None:
+            return asset_path
+
+        temp_path = cls._case_rename_temp_path(asset_path)
+        if temp_path is None:
+            return asset_path
+        try:
+            matched_entry.rename(temp_path)
+            temp_path.rename(asset_path)
+        except OSError:
+            with suppress(OSError):
+                if temp_path.exists():
+                    temp_path.rename(matched_entry)
+            return asset_path
+        return asset_path
+
+    @staticmethod
+    def _case_rename_temp_path(asset_path: Path) -> Path | None:
+        parent = asset_path.parent
+        for index in range(100):
+            temp_path = parent / (
+                f".{asset_path.name}.casefix-{os.getpid()}-{index}.tmp"
+            )
+            if not temp_path.exists():
+                return temp_path
+        return None
 
     def _validate_downloaded_resource(
         self, asset_path: Path, resource: AssetRecord

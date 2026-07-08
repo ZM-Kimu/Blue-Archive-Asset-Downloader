@@ -263,9 +263,7 @@ def test_download_resources_tracks_aggregate_bytes(monkeypatch, tmp_path: Path) 
     assert callable(client.download_calls[0]["should_stop"])
 
 
-def test_handle_interrupt_closes_client_and_force_exits_on_second_interrupt(
-    tmp_path: Path,
-) -> None:
+def test_handle_interrupt_closes_client_and_force_exits_on_second_interrupt() -> None:
     client = RecordingHttpClient()
     exit_codes: list[int] = []
     downloader = ResourceDownloader(client, NullLogger(), force_exit=exit_codes.append)
@@ -897,6 +895,36 @@ def test_verify_resource_accepts_jp_crc_decimal_strings(tmp_path: Path) -> None:
 
     assert returned_resource == resource
     assert verified is True
+
+
+def test_verify_resource_canonicalizes_existing_case_only_path(
+    tmp_path: Path,
+) -> None:
+    downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
+    context = _build_context(tmp_path)
+    payload = b"table payload"
+    lower_path = _write_asset_file(
+        context,
+        "Table/tablepatchpack_groundstage_1.zip",
+        payload,
+    )
+    checksum = str(calculate_crc(str(lower_path)))
+    resources = AssetCollection()
+    resources.add(
+        "https://example.com/Table/TablePatchPack_GroundStage_1.zip",
+        "Table/TablePatchPack_GroundStage_1.zip",
+        len(payload),
+        checksum,
+        "crc",
+        AssetType.table,
+    )
+    resource = resources[0]
+
+    _, verified = downloader._verify_resource(resource, context)
+
+    table_names = {item.name for item in (Path(context.raw_dir) / "Table").iterdir()}
+    assert verified is True
+    assert table_names == {"TablePatchPack_GroundStage_1.zip"}
 
 
 def test_verify_resource_accepts_crc_hex_strings(tmp_path: Path) -> None:

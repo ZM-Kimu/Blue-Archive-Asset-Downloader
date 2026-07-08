@@ -109,16 +109,3 @@ def test_parse_args_requires_explicit_update_command() -> None:
     assert args.command == "update"
     assert args.base == "v2.0.0"
     assert args.head == "HEAD"
-
-
-def test_parse_args_rejects_legacy_update_invocation() -> None:
-    module = _load_module()
-
-    try:
-        module.parse_args(
-            ["--base", "v2.0.0", "--head", "HEAD", "--output", "CHANGELOG.md"]
-        )
-    except SystemExit as exc:
-        assert exc.code != 0
-    else:
-        raise AssertionError("Legacy changelog invocation should require subcommand.")

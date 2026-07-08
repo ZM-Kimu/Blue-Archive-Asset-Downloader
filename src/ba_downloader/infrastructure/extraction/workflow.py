@@ -2,17 +2,15 @@ from __future__ import annotations
 
 import multiprocessing
 import os
-import sqlite3
 from collections.abc import Callable, Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from multiprocessing import Queue, freeze_support
 from pathlib import Path
 from queue import Empty
 from threading import Event
 from typing import Any
-from zipfile import BadZipFile
 
+from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import AssetExtractionPort
 from ba_downloader.domain.ports.logging import LoggerPort
@@ -21,14 +19,22 @@ from ba_downloader.infrastructure.extraction.bundle.exporter import (
     BundleLogEvent,
 )
 from ba_downloader.infrastructure.extraction.media.exporter import MediaExtractor
-from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
+from ba_downloader.infrastructure.extraction.process_table_runner import (
+    ProcessTableExtractionRunner,
+    TableProfileFactory,
+)
+from ba_downloader.infrastructure.extraction.table.profiles import (
+    build_default_table_profile_for_context,
+)
+from ba_downloader.infrastructure.extraction.threaded_runner import (
+    ExtractionFailureError,
+    ThreadedExtractionRunner,
+)
 from ba_downloader.infrastructure.progress.rich_progress import RichProgressReporter
 from ba_downloader.infrastructure.runtime.interrupts import (
     CancellationFeedbackState,
-    build_future_wait_policy,
     emit_cancellation_feedback,
     install_interrupt_handler,
-    wait_for_operation_futures,
 )
 
 
@@ -40,29 +46,42 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         self,
         logger: LoggerPort,
         *,
+        table_profile_factory: TableProfileFactory = build_default_table_profile_for_context,
         force_exit: Callable[[int], None] | None = None,
     ) -> None:
         self.logger = logger
         self._force_exit = force_exit or os._exit
-        self._wait_policy = build_future_wait_policy(
-            self.logger,
-            self.POLL_INTERVAL_SECONDS,
-            self.INTERRUPT_GRACE_SECONDS,
-            "Extraction",
+        self._table_profile_factory = table_profile_factory
+        self._threaded_runner = ThreadedExtractionRunner(
+            logger,
+            poll_interval_seconds=self.POLL_INTERVAL_SECONDS,
+            interrupt_grace_seconds=self.INTERRUPT_GRACE_SECONDS,
+            force_exit=self._force_exit,
+        )
+        self._process_table_runner = ProcessTableExtractionRunner(
+            logger,
+            poll_interval_seconds=self.POLL_INTERVAL_SECONDS,
+            interrupt_grace_seconds=self.INTERRUPT_GRACE_SECONDS,
+            table_profile_factory=self._table_profile_factory,
+            force_exit=self._force_exit,
         )
 
-    def extract_bundles(self, context: RuntimeContext) -> None:
-        bundle_folder = Path(context.raw_dir) / "Bundle"
-        if not bundle_folder.exists():
+    def extract_bundles(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None:
+        bundles = [
+            str(bundle_path)
+            for bundle_path in self._resolve_bundle_files(context, resources)
+        ]
+        if not bundles:
             return
 
         freeze_support()
         queue: multiprocessing.queues.Queue[str] = Queue()
         log_event_queue: multiprocessing.queues.Queue[BundleLogEvent] = Queue()
         error_count = multiprocessing.Value("i", 0)
-        bundles = [
-            str(bundle_folder / bundle.name) for bundle in bundle_folder.iterdir()
-        ]
         for bundle in bundles:
             queue.put(bundle)
 
@@ -76,6 +95,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         )
 
         try:
+            failure_count = 0
             with (
                 self._install_interrupt_handler(
                     stop_event,
@@ -88,7 +108,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 ) as progress,
             ):
                 self._start_bundle_processes(processes)
-                self._monitor_bundle_extraction(
+                failure_count = self._monitor_bundle_extraction(
                     queue=queue,
                     bundles=bundles,
                     processes=processes,
@@ -110,109 +130,159 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             )
             if stop_event.is_set():
                 raise KeyboardInterrupt()
+            if failure_count:
+                raise ExtractionFailureError.from_count(
+                    "bundle extraction",
+                    failure_count,
+                )
 
-    def extract_media(self, context: RuntimeContext) -> None:
-        media_folder = Path(context.raw_dir) / "Media"
-        if not media_folder.exists():
-            return
-
-        files = [str(file_path) for file_path in media_folder.rglob("*.zip")]
+    def extract_media(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None:
+        files = [
+            str(file_path)
+            for file_path in self._resolve_media_files(context, resources)
+        ]
         if not files:
             return
 
         extractor = MediaExtractor(context)
-        stop_event = Event()
-        future_map: dict[Future[None], str] = {}
-        executor = ThreadPoolExecutor(
-            max_workers=min(max(context.threads, 1), len(files))
+        self._threaded_runner.run(
+            files,
+            context,
+            progress_title="Extracting media...",
+            operation_name="media extraction",
+            task=lambda zip_path, should_stop, progress_callback: extractor.extract_zip(
+                zip_path,
+                should_stop=should_stop,
+                progress_callback=progress_callback,
+            ),
         )
 
-        try:
-            with (
-                self._install_interrupt_handler(stop_event),
-                RichProgressReporter(
-                    len(files),
-                    "Extracting media...",
-                    extract_mode=True,
-                ) as progress,
-            ):
-                future_map = {
-                    executor.submit(
-                        extractor.extract_zip,
-                        zip_path,
-                        should_stop=stop_event.is_set,
-                        progress_callback=self._build_sub_progress_callback(
-                            progress,
-                            zip_path,
-                        ),
-                    ): zip_path
-                    for zip_path in files
-                }
-                self._drain_extraction_futures(
-                    set(future_map),
-                    future_map,
-                    stop_event,
-                    progress,
-                    "media extraction",
-                )
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-            if stop_event.is_set():
-                raise KeyboardInterrupt()
-
-    def extract_tables(self, context: RuntimeContext) -> None:
-        table_folder = Path(context.raw_dir) / "Table"
-        if not table_folder.exists():
-            return
-
-        extractor = TableExtractor.from_context(context, self.logger)
-        Path(extractor.extract_folder).mkdir(parents=True, exist_ok=True)
+    def extract_tables(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None = None,
+    ) -> None:
         table_files = [
-            file_path.name
-            for file_path in table_folder.iterdir()
-            if file_path.is_file()
+            table_path.name
+            for table_path in self._resolve_table_files(context, resources)
         ]
         if not table_files:
             return
 
-        stop_event = Event()
-        future_map: dict[Future[None], str] = {}
-        executor = ThreadPoolExecutor(
-            max_workers=min(max(context.threads, 1), len(table_files))
-        )
+        table_file_metadata = self._resolve_table_file_metadata(context, resources)
+        Path(context.extract_dir, "Table").mkdir(parents=True, exist_ok=True)
+        if table_file_metadata:
+            self._process_table_runner.run(
+                table_files,
+                context,
+                metadata_by_file=table_file_metadata,
+            )
+            return
 
-        try:
-            with (
-                self._install_interrupt_handler(stop_event),
-                RichProgressReporter(
-                    len(table_files),
-                    "Extracting table files...",
-                    extract_mode=True,
-                ) as progress,
-            ):
-                future_map = {
-                    executor.submit(
-                        extractor.extract_table,
-                        table_file,
-                        should_stop=stop_event.is_set,
-                        progress_callback=self._build_sub_progress_callback(
-                            progress,
-                            table_file,
-                        ),
-                    ): table_file
-                    for table_file in table_files
-                }
-                self._drain_extraction_futures(
-                    set(future_map),
-                    future_map,
-                    stop_event,
-                    progress,
-                    "table extraction",
+        self._process_table_runner.run(table_files, context)
+
+    def _resolve_bundle_files(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None,
+    ) -> list[Path]:
+        if resources is not None:
+            return self._resolve_existing_resource_files(
+                context,
+                resources,
+                AssetType.bundle,
+            )
+
+        bundle_folder = Path(context.raw_dir) / "Bundle"
+        if not bundle_folder.exists():
+            return []
+        return [
+            bundle_folder / bundle.name
+            for bundle in bundle_folder.iterdir()
+            if bundle.is_file()
+        ]
+
+    def _resolve_media_files(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None,
+    ) -> list[Path]:
+        if resources is not None:
+            return [
+                file_path
+                for file_path in self._resolve_existing_resource_files(
+                    context,
+                    resources,
+                    AssetType.media,
                 )
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-            if stop_event.is_set():
-                raise KeyboardInterrupt()
+                if file_path.suffix.lower() == ".zip"
+            ]
+
+        media_folder = Path(context.raw_dir) / "Media"
+        if not media_folder.exists():
+            return []
+        return list(media_folder.rglob("*.zip"))
+
+    def _resolve_table_files(
+        self,
+        context: RuntimeContext,
+        resources: AssetCollection | None,
+    ) -> list[Path]:
+        if resources is not None:
+            return self._resolve_existing_resource_files(
+                context,
+                resources,
+                AssetType.table,
+            )
+
+        table_folder = Path(context.raw_dir) / "Table"
+        if not table_folder.exists():
+            return []
+        return [
+            file_path for file_path in table_folder.iterdir() if file_path.is_file()
+        ]
+
+    @staticmethod
+    def _resolve_existing_resource_files(
+        context: RuntimeContext,
+        resources: AssetCollection,
+        asset_type: AssetType,
+    ) -> list[Path]:
+        raw_dir = Path(context.raw_dir)
+        files: list[Path] = []
+        seen_paths: set[Path] = set()
+        for resource in resources:
+            if resource.asset_type is not asset_type:
+                continue
+            file_path = raw_dir / resource.path
+            if file_path in seen_paths or not file_path.is_file():
+                continue
+            files.append(file_path)
+            seen_paths.add(file_path)
+        return files
+
+    @staticmethod
+    def _resolve_table_file_metadata(
+        context: RuntimeContext,
+        resources: AssetCollection | None,
+    ) -> dict[str, dict[str, object]]:
+        if resources is None:
+            return {}
+        raw_dir = Path(context.raw_dir)
+        result: dict[str, dict[str, object]] = {}
+        for resource in resources:
+            if resource.asset_type is not AssetType.table:
+                continue
+            file_path = raw_dir / resource.path
+            if not file_path.is_file():
+                continue
+            if resource.metadata:
+                result.setdefault(file_path.name, dict(resource.metadata))
+        return result
 
     @contextmanager
     def _install_interrupt_handler(
@@ -271,9 +341,10 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         stop_event: Event,
         error_count: Any,
         log_events: multiprocessing.queues.Queue[BundleLogEvent],
-    ) -> None:
+    ) -> int:
         cancellation_state = CancellationFeedbackState()
         completed_bundles = 0
+        failure_count = 0
         progress.set_status(f"0/{len(bundles)} bundles")
         while self._has_pending_bundle_work(queue, processes):
             self._drain_bundle_log_events(log_events)
@@ -310,6 +381,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             else:
                 self.logger.info("Extracted bundles successfully.")
         self._drain_bundle_log_events(log_events)
+        return failure_count
 
     def _drain_bundle_log_events(
         self,
@@ -371,66 +443,3 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 join_thread()
             except (AssertionError, OSError, RuntimeError, ValueError):
                 return
-
-    def _drain_extraction_futures(
-        self,
-        pending_futures: set[Future[None]],
-        future_map: dict[Future[None], str],
-        stop_event: Event,
-        progress: RichProgressReporter,
-        operation_name: str,
-    ) -> None:
-        cancellation_state = CancellationFeedbackState()
-        completed_files = 0
-        total_files = len(future_map)
-        progress.set_status(f"0/{total_files} files")
-
-        while pending_futures:
-            done_futures, pending_futures = wait_for_operation_futures(
-                pending_futures,
-                stop_event,
-                self._wait_policy,
-                cancellation_state,
-                operation_name,
-            )
-
-            for future in done_futures:
-                if future.cancelled():
-                    continue
-                file_path = future_map[future]
-                progress.set_description(f"Extracting {Path(file_path).name}")
-                try:
-                    future.result()
-                except RuntimeError as exc:
-                    if stop_event.is_set() and self._is_cancelled_error(exc):
-                        continue
-                    self.logger.error(f"Failed to extract {file_path}: {exc}")
-                except (
-                    BadZipFile,
-                    LookupError,
-                    OSError,
-                    sqlite3.Error,
-                    TypeError,
-                    ValueError,
-                ) as exc:
-                    self.logger.error(f"Failed to extract {file_path}: {exc}")
-                except Exception as exc:  # pylint: disable=broad-exception-caught
-                    self.logger.error(f"Failed to extract {file_path}: {exc}")
-                progress.advance()
-                completed_files += 1
-                progress.set_status(f"{completed_files}/{total_files} files")
-
-    @staticmethod
-    def _build_sub_progress_callback(
-        progress: RichProgressReporter,
-        file_path: str,
-    ) -> Callable[[str], None]:
-        def update_progress(status: str) -> None:
-            progress.set_description(f"Extracting {Path(file_path).name}")
-            progress.set_secondary_status(status)
-
-        return update_progress
-
-    @staticmethod
-    def _is_cancelled_error(exc: Exception) -> bool:
-        return "extraction cancelled by user" in str(exc).lower()

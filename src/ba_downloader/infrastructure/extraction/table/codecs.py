@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import struct
+from dataclasses import make_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, cast
 
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.table.models import (
@@ -15,12 +16,17 @@ from ba_downloader.infrastructure.extraction.table.models import (
     UnsupportedSchemaError,
 )
 from ba_downloader.infrastructure.extraction.table.payload_router import (
+    FlatBufferTablePayloadRouter,
     TablePayloadRouter,
 )
 from ba_downloader.infrastructure.schema.common.generated_registry import (
     GeneratedSchemaRegistry,
 )
 from ba_downloader.infrastructure.schema.crypto import create_key, xor_with_key
+from ba_downloader.infrastructure.schema.flatbuffer.descriptors import (
+    FlatBufferField,
+    FlatBufferTypeMetadata,
+)
 from ba_downloader.infrastructure.schema.flatbuffer.reader import FlatBufferExporter
 from ba_downloader.infrastructure.schema.memorypack.formatters import (
     MemoryPackFormatterRegistry,
@@ -34,6 +40,7 @@ from ba_downloader.infrastructure.schema.memorypack.reader import (
 class TablePayloadCodecAdapter:
     MEMORYPACK_FORMATTER_SIDECAR_NAME = "memorypack_formatters.json"
     RAW_SIDECAR_ENTRY_SUFFIXES = frozenset({".bin", ".txt"})
+    COMPACT_JSON_MIN_BYTES = 1_000_000
 
     def __init__(
         self,
@@ -54,12 +61,13 @@ class TablePayloadCodecAdapter:
             / self.MEMORYPACK_FORMATTER_SIDECAR_NAME
         )
         self.logger = logger
-        self.payload_router = payload_router or TablePayloadRouter()
+        self.payload_router = payload_router or FlatBufferTablePayloadRouter()
         self.lower_schema_registry: dict[str, Any] = {}
         self.flatbuffer_exporter: FlatBufferExporter
         self.memorypack_schema_registry = MemoryPackSchemaRegistry(types={}, enums={})
         self.memorypack_formatter_registry: MemoryPackFormatterRegistry | None = None
         self._memorypack_warning_keys: set[tuple[str, str, str, str, str]] = set()
+        self._synthetic_table_schemas: dict[str, type[Any]] = {}
         self.load_modules()
 
     def load_modules(self) -> None:
@@ -148,14 +156,59 @@ class TablePayloadCodecAdapter:
         return self.dump_flatbuffer_payload(flatbuffer_schema, data)
 
     def resolve_flatbuffer_schema(self, file_name: str) -> Any:
-        flatbuffer_schema = self.lower_schema_registry.get(
-            file_name.removesuffix(".bytes").lower()
-        )
+        schema_key = file_name.removesuffix(".bytes").lower()
+        flatbuffer_schema = self.lower_schema_registry.get(schema_key)
+        if flatbuffer_schema is None:
+            flatbuffer_schema = self.resolve_synthetic_table_schema(schema_key)
         if flatbuffer_schema is None:
             raise UnsupportedSchemaError(
                 f"Unsupported schema for {file_name}: generated FlatBufferData schema is missing."
             )
         return flatbuffer_schema
+
+    def resolve_synthetic_table_schema(self, schema_key: str) -> type[Any] | None:
+        if schema_key in self._synthetic_table_schemas:
+            return self._synthetic_table_schemas[schema_key]
+        if not schema_key.endswith("exceltable"):
+            return None
+
+        row_key = schema_key.removesuffix("table")
+        row_schema = self.lower_schema_registry.get(row_key)
+        if row_schema is None:
+            return None
+
+        table_name = f"{row_schema.__name__}Table"
+        metadata = FlatBufferTypeMetadata(
+            name=table_name,
+            namespace="Synthetic",
+            kind="struct",
+            original_name=table_name,
+            type_def_index=-1,
+            token="",
+        )
+        field = FlatBufferField(
+            index=0,
+            cs_type=row_schema.__name__,
+            type_name=table_name,
+            namespace="Synthetic",
+            member_token="",
+            original_name="DataList",
+            is_vector=True,
+        )
+        row_list_annotation = list.__class_getitem__(row_schema)
+        data_list_annotation = cast(Any, Annotated)[row_list_annotation, field]
+        table_schema = make_dataclass(
+            table_name,
+            [
+                (
+                    "DataList",
+                    data_list_annotation,
+                )
+            ],
+        )
+        table_schema.__flatbuffer_type__ = metadata  # type: ignore[attr-defined]
+        self._synthetic_table_schemas[schema_key] = table_schema
+        return table_schema
 
     def dump_encrypted_table(
         self, flatbuffer_schema: Any, data: bytes
@@ -247,13 +300,63 @@ class TablePayloadCodecAdapter:
         if detect_type or file_name.endswith(".bytes"):
             file_dict, normalized_name = self.process_bytes_file(file_name, file_data)
             return ProcessedTableArtifact(
-                json.dumps(file_dict, indent=4, ensure_ascii=False).encode("utf8"),
+                self.dump_json_artifact(
+                    file_dict,
+                    compact=normalized_name == "GroundGridFlat.json",
+                ),
                 normalized_name,
             )
 
         raise UnsupportedSchemaError(
             f"Unsupported entry {file_name} in {archive_name}: no matching table processor."
         )
+
+    def process_memorypack_payload(
+        self,
+        root_type: str,
+        file_data: bytes,
+        output_name: str,
+        *,
+        compact: bool = False,
+    ) -> ProcessedTableArtifact:
+        if self.memorypack_formatter_registry is None:
+            raise UnsupportedSchemaError(
+                f"MemoryPack formatter sidecar is missing for {root_type}."
+            )
+        formatter = self.memorypack_formatter_registry.resolve(root_type)
+        if formatter is None or not formatter.is_available:
+            raise UnsupportedSchemaError(
+                f"MemoryPack formatter layout is unavailable for {root_type}."
+            )
+        try:
+            value = MemoryPackReader(file_data).read_formatter_object(
+                root_type,
+                self.memorypack_schema_registry,
+                self.memorypack_formatter_registry,
+            )
+        except (EOFError, TypeError, ValueError, struct.error) as exc:
+            raise MalformedTablePayloadError(
+                f"Malformed MemoryPack payload for {root_type}: {exc}"
+            ) from exc
+        return ProcessedTableArtifact(
+            self.dump_json_artifact(value, compact=compact),
+            output_name,
+        )
+
+    def dump_json_artifact(
+        self,
+        value: dict[str, Any] | list[Any],
+        *,
+        compact: bool = False,
+    ) -> bytes:
+        compact_json = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if compact or len(compact_json.encode("utf8")) >= self.COMPACT_JSON_MIN_BYTES:
+            return compact_json.encode("utf8")
+        return json.dumps(value, indent=4, ensure_ascii=False).encode("utf8")
 
     def convert_memorypack_database_value(
         self,

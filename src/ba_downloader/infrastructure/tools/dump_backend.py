@@ -1,19 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
-import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TextIO
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
-from ba_downloader.domain.models.region import Region
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import Il2CppDumpBackendPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.infrastructure.runtime.assets import RuntimeAssetLocator
 from ba_downloader.infrastructure.tools.runtime_probe import (
     get_installed_dotnet_sdk_major_versions,
 )
@@ -22,23 +21,21 @@ CPP2IL_COMMIT = "6af99f218501529af84202243aedb7089f5307dc"
 CPP2IL_ARCHIVE_URL = (
     f"https://github.com/SamboyCoding/Cpp2IL/archive/{CPP2IL_COMMIT}.zip"
 )
+CPP2IL_ARCHIVE_SHA256 = (
+    "968f043b28c53c3bedebe1da8fed432e9ec52deb1d2b19021f3a0964d854d32c"
+)
+CPP2IL_MAX_ARCHIVE_FILES = 20_000
+CPP2IL_MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 CPP2IL_PROJECT = Path("Cpp2IL") / "Cpp2IL.csproj"
 LIBCPP2IL_PROJECT = Path("LibCpp2IL") / "LibCpp2IL.csproj"
 EXPORTER_PROJECT_NAME = "dumpcs_exporter"
 UNITY_VERSION_PATTERN = re.compile(r"(20\d{2}\.\d+\.\d+[a-z]\d+)", re.IGNORECASE)
-CN_EXPORTER_STAGE_PATTERN = re.compile(r"^\[[#\.]+\]\s+\[\d+/\d+\]\s+.+$")
-CN_EXPORTER_LOOP_PATTERN = re.compile(
-    r"^\s+.+\s+\[[#\.]+\]\s+\d{1,3}%\s+\(\d+/\d+,\s+.+\)$"
-)
 
 EXPORTER_TEMPLATE_DIR = Path(__file__).with_name("templates")
 EXPORTER_CSPROJ_TEMPLATE_PATH = (
     EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.csproj.template"
 )
 EXPORTER_PROGRAM_CS_PATH = EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.Program.cs"
-CN_METADATA_EXPORTER_PROJECT = (
-    Path("third_party") / "cn_metadata_exporter" / "cn_metadata_exporter.csproj"
-)
 
 
 def _read_exporter_template(template_path: Path) -> str:
@@ -49,171 +46,6 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
-def _find_first_match(base_dir: Path, file_names: tuple[str, ...]) -> Path | None:
-    for file_name in file_names:
-        matches = list(base_dir.rglob(file_name))
-        if matches:
-            return matches[0]
-    return None
-
-
-class _StreamingProcessResult:
-    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-
-def _classify_cn_exporter_stderr_line(line: str) -> str:
-    if CN_EXPORTER_LOOP_PATTERN.match(line):
-        return "suppress"
-    if CN_EXPORTER_STAGE_PATTERN.match(line):
-        return "info"
-    return "warn"
-
-
-def _forward_process_stream(
-    stream: TextIO | None,
-    logger: LoggerPort,
-    collector: list[str],
-    *,
-    is_stderr: bool = False,
-) -> None:
-    if stream is None:
-        return
-
-    try:
-        for raw_line in iter(stream.readline, ""):
-            line = raw_line.rstrip("\r\n")
-            if not line:
-                continue
-            if not is_stderr:
-                collector.append(line)
-                logger.info(line)
-                continue
-
-            classification = _classify_cn_exporter_stderr_line(line)
-            if classification == "suppress":
-                continue
-            collector.append(line)
-            if classification == "info":
-                logger.info(line)
-            else:
-                logger.warn(line)
-    finally:
-        stream.close()
-
-
-def _run_streaming_process(
-    command: list[str],
-    logger: LoggerPort,
-) -> _StreamingProcessResult:
-    with subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf8",
-        errors="replace",
-        bufsize=1,
-    ) as process:
-        stdout_lines: list[str] = []
-        stderr_lines: list[str] = []
-        threads = [
-            threading.Thread(
-                target=_forward_process_stream,
-                args=(process.stdout, logger, stdout_lines),
-            ),
-            threading.Thread(
-                target=_forward_process_stream,
-                args=(process.stderr, logger, stderr_lines),
-                kwargs={"is_stderr": True},
-            ),
-        ]
-        for thread in threads:
-            thread.start()
-
-        returncode = process.wait()
-
-        for thread in threads:
-            thread.join()
-
-        return _StreamingProcessResult(
-            returncode=returncode,
-            stdout="\n".join(stdout_lines),
-            stderr="\n".join(stderr_lines),
-        )
-
-
-class CnMetadataDumpError(RuntimeError):
-    """Raised when the CN metadata dump backend fails."""
-
-
-class CnMetadataDumpBackend(Il2CppDumpBackendPort):
-    METADATA_FOLDER = "CN_Metadata"
-    METADATA_NAME = "global-metadata.dat"
-
-    def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
-        self.http_client = http_client
-        self.logger = logger
-
-    def dump(self, context: RuntimeContext, output_dir: str) -> None:
-        _ = self.http_client
-        metadata_path = self._resolve_metadata_path(context)
-        project_path = self._resolve_project_path()
-        dump_cs_path = Path(output_dir) / "dump.cs"
-        formatter_sidecar_path = Path(output_dir) / "memorypack_formatters.json"
-        dump_cs_path.parent.mkdir(parents=True, exist_ok=True)
-
-        self.logger.info("Trying to dump CN metadata...")
-        result = _run_streaming_process(
-            [
-                "dotnet",
-                "run",
-                "--project",
-                str(project_path),
-                "-c",
-                "Release",
-                "--",
-                "--metadata",
-                str(metadata_path.resolve()),
-                "--output",
-                str(dump_cs_path.resolve()),
-                "--formatter-output",
-                str(formatter_sidecar_path.resolve()),
-            ],
-            self.logger,
-        )
-        if result.returncode != 0:
-            summary = (
-                result.stderr.strip()
-                or result.stdout.strip()
-                or (f"Process exited with code {result.returncode}.")
-            )
-            raise CnMetadataDumpError(
-                "Failed to dump CN metadata with cn_metadata_exporter: " f"{summary}"
-            )
-        self.logger.info("Dumped CN metadata successfully.")
-
-    @classmethod
-    def _resolve_metadata_path(cls, context: RuntimeContext) -> Path:
-        metadata_path = Path(context.temp_dir) / cls.METADATA_FOLDER / cls.METADATA_NAME
-        if not metadata_path.is_file():
-            raise FileNotFoundError(
-                "Cannot find CN metadata file. Make sure runtime preparation completed successfully.",
-            )
-        return metadata_path
-
-    @staticmethod
-    def _resolve_project_path() -> Path:
-        project_path = (_repo_root() / CN_METADATA_EXPORTER_PROJECT).resolve()
-        if not project_path.is_file():
-            raise FileNotFoundError(
-                f"Cannot find cn_metadata_exporter project: {project_path}.",
-            )
-        return project_path
-
-
 class Cpp2ILSourceResolver:
     def __init__(
         self,
@@ -221,11 +53,17 @@ class Cpp2ILSourceResolver:
         logger: LoggerPort,
         commit: str = CPP2IL_COMMIT,
         archive_url: str = CPP2IL_ARCHIVE_URL,
+        archive_sha256: str = CPP2IL_ARCHIVE_SHA256,
+        max_archive_files: int = CPP2IL_MAX_ARCHIVE_FILES,
+        max_archive_bytes: int = CPP2IL_MAX_ARCHIVE_BYTES,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
         self.commit = commit
         self.archive_url = archive_url
+        self.archive_sha256 = archive_sha256
+        self.max_archive_files = max_archive_files
+        self.max_archive_bytes = max_archive_bytes
 
     def resolve(self, context: RuntimeContext) -> Path:
         submodule_root = _repo_root() / "third_party" / "Cpp2IL"
@@ -239,7 +77,10 @@ class Cpp2ILSourceResolver:
         self.logger.warn(
             "Cpp2IL source is missing. Downloading fallback source package..."
         )
-        self._download_to_cache(cache_root)
+        self._download_to_cache(
+            cache_root,
+            max_attempts=max(1, context.max_retries + 1),
+        )
         if self._is_valid_cpp2il_root(cache_root):
             return cache_root
         raise FileNotFoundError("Unable to resolve a valid Cpp2IL source tree.")
@@ -256,41 +97,97 @@ class Cpp2ILSourceResolver:
     def _is_valid_cpp2il_root(root: Path) -> bool:
         return (root / CPP2IL_PROJECT).exists() and (root / LIBCPP2IL_PROJECT).exists()
 
-    def _download_to_cache(self, cache_root: Path) -> None:
+    def _download_to_cache(self, cache_root: Path, *, max_attempts: int) -> None:
         cache_root.parent.mkdir(parents=True, exist_ok=True)
         archive_path = cache_root.parent / f"cpp2il-{self.commit}.zip"
         extract_dir = cache_root.parent / f"cpp2il-{self.commit}-extract"
+        last_error: BaseException | None = None
 
-        if extract_dir.exists():
-            shutil.rmtree(extract_dir)
+        for attempt in range(1, max_attempts + 1):
+            if extract_dir.exists():
+                shutil.rmtree(extract_dir)
+            if archive_path.exists():
+                archive_path.unlink()
+
+            self.http_client.download_to_file(self.archive_url, str(archive_path))
+            try:
+                self._verify_archive_checksum(archive_path)
+                with ZipFile(archive_path, "r") as archive:
+                    self._safe_extract_archive(archive, extract_dir)
+            except (BadZipFile, ValueError) as exc:
+                last_error = exc
+                if archive_path.exists():
+                    archive_path.unlink()
+                if extract_dir.exists():
+                    shutil.rmtree(extract_dir)
+                if attempt < max_attempts:
+                    continue
+                raise FileNotFoundError(
+                    "Failed to download Cpp2IL source archive. "
+                    "Retry the download or initialize the Cpp2IL submodule. "
+                    f"Details: {last_error}"
+                ) from last_error
+
+            source_root = next(
+                (
+                    path
+                    for path in extract_dir.iterdir()
+                    if path.is_dir() and self._is_valid_cpp2il_root(path)
+                ),
+                None,
+            )
+            if source_root is None:
+                raise FileNotFoundError(
+                    "Downloaded Cpp2IL archive does not contain expected project files.",
+                )
+
+            if cache_root.exists():
+                shutil.rmtree(cache_root)
+            shutil.move(str(source_root), str(cache_root))
+
+            if archive_path.exists():
+                archive_path.unlink()
+            if extract_dir.exists():
+                shutil.rmtree(extract_dir)
+            return
+
         if archive_path.exists():
             archive_path.unlink()
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
 
-        self.http_client.download_to_file(self.archive_url, str(archive_path))
-        with ZipFile(archive_path, "r") as archive:
-            archive.extractall(extract_dir)
-
-        source_root = next(
-            (
-                path
-                for path in extract_dir.iterdir()
-                if path.is_dir() and self._is_valid_cpp2il_root(path)
-            ),
-            None,
-        )
-        if source_root is None:
-            raise FileNotFoundError(
-                "Downloaded Cpp2IL archive does not contain expected project files.",
+    def _verify_archive_checksum(self, archive_path: Path) -> None:
+        if not self.archive_sha256:
+            return
+        digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        if digest.lower() != self.archive_sha256.lower():
+            raise ValueError(
+                "Cpp2IL source archive checksum mismatch: "
+                f"expected {self.archive_sha256}, got {digest}."
             )
 
-        if cache_root.exists():
-            shutil.rmtree(cache_root)
-        shutil.move(str(source_root), str(cache_root))
+    def _safe_extract_archive(self, archive: ZipFile, extract_dir: Path) -> None:
+        extract_root = extract_dir.resolve()
+        total_size = 0
+        infos = archive.infolist()
+        if len(infos) > self.max_archive_files:
+            raise ValueError(f"Cpp2IL source archive has too many files: {len(infos)}.")
 
-        if archive_path.exists():
-            archive_path.unlink()
-        if extract_dir.exists():
-            shutil.rmtree(extract_dir)
+        for info in infos:
+            total_size += max(info.file_size, 0)
+            if total_size > self.max_archive_bytes:
+                raise ValueError(
+                    "Cpp2IL source archive exceeds maximum extracted size."
+                )
+            target_path = (extract_dir / info.filename).resolve()
+            try:
+                target_path.relative_to(extract_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Cpp2IL source archive contains unsafe path: {info.filename}"
+                ) from exc
+
+        archive.extractall(extract_dir)
 
 
 class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
@@ -313,14 +210,15 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
 
     def dump(self, context: RuntimeContext, output_dir: str) -> None:
         base_dir = Path(context.temp_dir)
-        binary_path = _find_first_match(base_dir, self.BINARY_CANDIDATES)
-        metadata_path = _find_first_match(base_dir, (self.METADATA_NAME,))
+        locator = RuntimeAssetLocator(base_dir)
+        binary_path = locator.find_first(self.BINARY_CANDIDATES)
+        metadata_path = locator.find_first((self.METADATA_NAME,))
         if not binary_path or not metadata_path:
             raise FileNotFoundError(
                 "Cannot find binary file or global-metadata file for Cpp2IL backend.",
             )
 
-        unity_version = self._resolve_unity_version(context, base_dir)
+        unity_version = self._resolve_unity_version(base_dir)
         if not unity_version:
             raise LookupError(
                 "Cannot determine Unity version for Cpp2IL backend. "
@@ -367,7 +265,7 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
 
         self.logger.info("Dumped il2cpp binary file successfully.")
 
-    def _resolve_unity_version(self, context: RuntimeContext, temp_dir: Path) -> str:
+    def _resolve_unity_version(self, temp_dir: Path) -> str:
         import os
 
         if env_value := os.getenv(self.UNITY_VERSION_ENV, "").strip():
@@ -398,6 +296,7 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
         context: RuntimeContext,
         cpp2il_root: Path,
         target_framework: str,
+        extra_source_templates: Mapping[str, Path] | None = None,
     ) -> Path:
         export_root = (
             Path(context.work_dir) / ".ba-downloader" / "tools" / EXPORTER_PROJECT_NAME
@@ -419,37 +318,12 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
             _read_exporter_template(EXPORTER_PROGRAM_CS_PATH),
             encoding="utf8",
         )
+        for source_name, template_path in (extra_source_templates or {}).items():
+            (export_root / source_name).write_text(
+                _read_exporter_template(template_path),
+                encoding="utf8",
+            )
         return project_path
 
 
 BackendFactory = Callable[[HttpClientPort, LoggerPort], Il2CppDumpBackendPort]
-
-
-class DumperBackendRegistry:
-    def __init__(self) -> None:
-        self._factories: dict[Region, BackendFactory] = {}
-
-    def register(self, region: Region, factory: BackendFactory) -> None:
-        self._factories[region] = factory
-
-    def resolve(self, region: Region) -> BackendFactory:
-        if region not in self._factories:
-            raise KeyError(f"Region '{region}' is not registered.")
-        return self._factories[region]
-
-
-def build_default_dumper_backend_registry() -> DumperBackendRegistry:
-    registry = DumperBackendRegistry()
-    registry.register(
-        "cn", lambda http_client, logger: CnMetadataDumpBackend(http_client, logger)
-    )
-    registry.register(
-        "gl", lambda http_client, logger: Cpp2IlDumpCsBackend(http_client, logger)
-    )
-    registry.register(
-        "jp", lambda http_client, logger: Cpp2IlDumpCsBackend(http_client, logger)
-    )
-    return registry
-
-
-DEFAULT_DUMPER_BACKEND_REGISTRY = build_default_dumper_backend_registry()

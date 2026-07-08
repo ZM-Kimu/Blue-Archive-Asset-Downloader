@@ -1,204 +1,70 @@
 from __future__ import annotations
 
-import zlib
-from collections.abc import Callable
-from io import BytesIO
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from os import path
-from pathlib import Path
-from typing import Protocol
-from zipfile import BadZipFile, ZipFile
+from zipfile import BadZipFile
 
-from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.table.archive_classifier import (
-    TableArchiveClassifier,
-    TableArchiveKind,
+    ROUTE_GROUND_GRID_PATCH,
+    ROUTE_GROUND_NODE_LAYER_PATCH,
+    ROUTE_GROUND_STAGE_PATCH,
+    ROUTE_RAW,
+    ROUTE_RHYTHM_BEATMAP,
+    ROUTE_STANDARD,
+    TableArchiveRoute,
+    TableArchiveRouteKey,
+    classify_table_archive,
+)
+from ba_downloader.infrastructure.extraction.table.archive_support import (
+    DefaultTableArchiveWarningPolicy,
+    TableArchiveServices,
+    TableArchiveWarningPolicy,
+)
+from ba_downloader.infrastructure.extraction.table.memorypack_archives import (
+    MemoryPackStageArchiveExtractor,
 )
 from ba_downloader.infrastructure.extraction.table.models import (
     CANCELLED_EXTRACTION_MESSAGE,
-    ProcessedTableArtifact,
     ProgressCallback,
-    TableProcessingError,
 )
-from ba_downloader.infrastructure.schema.crypto import zip_password
+from ba_downloader.infrastructure.extraction.table.nested_archives import (
+    NestedZipPatchArchiveExtractor,
+)
+from ba_downloader.infrastructure.extraction.table.raw_archives import (
+    RawArchiveExporter,
+)
+from ba_downloader.infrastructure.extraction.table.standard_archives import (
+    StandardZipArchiveExtractor,
+)
+
+ArchiveHandler = Callable[
+    [
+        str,
+        TableArchiveRoute,
+        list[str],
+        Callable[[], bool] | None,
+        ProgressCallback | None,
+        Mapping[str, str],
+    ],
+    None,
+]
+ArchiveHandlerFactory = Callable[
+    [TableArchiveServices, RawArchiveExporter],
+    Mapping[TableArchiveRouteKey, ArchiveHandler],
+]
+
+GROUND_GRID_SCHEMA_NAME = "GroundGridFlat.bytes"
+GROUND_NODE_LAYER_SCHEMA_NAME = "GroundNodeLayerFlat.bytes"
+ArchiveClassifier = Callable[[str], TableArchiveRoute]
 
 
-class TableArchiveServices(Protocol):
-    table_file_folder: str
-    extract_folder: str
-    logger: LoggerPort
-
-    def _ensure_not_cancelled(
-        self,
-        should_stop: Callable[[], bool] | None,
-    ) -> None: ...
-
-    def _notify_progress(
-        self,
-        progress_callback: ProgressCallback | None,
-        current: int,
-        total: int,
-        unit: str,
-    ) -> None: ...
-
-    def _warn_skipped_entry(
-        self,
-        archive_name: str,
-        entry_name: str,
-        warnings: list[str],
-        error: str,
-    ) -> None: ...
-
-    def _process_zip_file(
-        self,
-        archive_name: str,
-        file_name: str,
-        file_data: bytes,
-        *,
-        detect_type: bool = False,
-    ) -> ProcessedTableArtifact: ...
-
-    def _write_processed_file(
-        self,
-        extract_folder: Path,
-        processed_file: ProcessedTableArtifact,
-    ) -> None: ...
-
-
-class RawArchiveExporter:
-    def __init__(self, services: TableArchiveServices) -> None:
-        self.services = services
-
-    def extract(
-        self,
-        file_name: str,
-        *,
-        warnings: list[str],
-        should_stop: Callable[[], bool] | None = None,
-        progress_callback: ProgressCallback | None = None,
-        info_message: str | None = None,
-    ) -> None:
-        archive_name = path.basename(file_name)
-        extract_folder = Path(self.services.extract_folder) / archive_name.removesuffix(
-            ".zip"
-        )
-
-        with ZipFile(
-            path.join(self.services.table_file_folder, file_name), "r"
-        ) as archive:
-            archive.setpassword(zip_password(archive_name))
-            item_names = archive.namelist()
-            for index, item_name in enumerate(item_names, start=1):
-                try:
-                    self.services._ensure_not_cancelled(should_stop)
-                    try:
-                        item_data = archive.read(item_name)
-                    except (RuntimeError, OSError, ValueError, zlib.error) as exc:
-                        self.services._warn_skipped_entry(
-                            archive_name,
-                            item_name,
-                            warnings,
-                            str(exc),
-                        )
-                        continue
-
-                    self.services._write_processed_file(
-                        extract_folder,
-                        ProcessedTableArtifact(
-                            data=item_data,
-                            file_name=path.basename(item_name),
-                        ),
-                    )
-                finally:
-                    self.services._notify_progress(
-                        progress_callback,
-                        index,
-                        len(item_names),
-                        "entries",
-                    )
-
-        if info_message:
-            self.services.logger.info(info_message)
-
-    def extract_ground_stage_patch(
-        self,
-        file_name: str,
-        *,
-        warnings: list[str],
-        should_stop: Callable[[], bool] | None = None,
-        progress_callback: ProgressCallback | None = None,
-    ) -> None:
-        archive_name = path.basename(file_name)
-        outer_extract_folder = Path(self.services.extract_folder) / (
-            archive_name.removesuffix(".zip")
-        )
-
-        with ZipFile(
-            path.join(self.services.table_file_folder, file_name), "r"
-        ) as archive:
-            archive.setpassword(zip_password(archive_name))
-            item_names = archive.namelist()
-            for index, item_name in enumerate(item_names, start=1):
-                try:
-                    self.services._ensure_not_cancelled(should_stop)
-                    item_data = archive.read(item_name)
-                    try:
-                        self.extract_ground_stage_inner_archive(
-                            archive_name=archive_name,
-                            item_name=item_name,
-                            item_data=item_data,
-                            extract_folder=outer_extract_folder,
-                            warnings=warnings,
-                            should_stop=should_stop,
-                        )
-                    except BadZipFile as exc:
-                        self.services._warn_skipped_entry(
-                            archive_name,
-                            item_name,
-                            warnings,
-                            str(exc),
-                        )
-                finally:
-                    self.services._notify_progress(
-                        progress_callback,
-                        index,
-                        len(item_names),
-                        "entries",
-                    )
-
-        self.services.logger.info(
-            f"Extracted raw GroundStage payloads from {archive_name}; semantic parser is not implemented yet."
-        )
-
-    def extract_ground_stage_inner_archive(
-        self,
-        *,
-        archive_name: str,
-        item_name: str,
-        item_data: bytes,
-        extract_folder: Path,
-        warnings: list[str],
-        should_stop: Callable[[], bool] | None = None,
-    ) -> None:
-        with ZipFile(BytesIO(item_data), "r") as inner_archive:
-            inner_archive.setpassword(zip_password(path.basename(item_name)))
-            for inner_item_name in inner_archive.namelist():
-                self.services._ensure_not_cancelled(should_stop)
-                try:
-                    inner_item_data = inner_archive.read(inner_item_name)
-                except (RuntimeError, OSError, ValueError, zlib.error) as exc:
-                    self.services._warn_skipped_entry(
-                        archive_name,
-                        f"{item_name}/{inner_item_name}",
-                        warnings,
-                        str(exc),
-                    )
-                    continue
-
-                self.services._ensure_not_cancelled(should_stop)
-                self.services._write_processed_file(
-                    extract_folder / Path(item_name).stem,
-                    ProcessedTableArtifact(inner_item_data, inner_item_name),
-                )
+@dataclass(frozen=True, slots=True)
+class TableArchiveRegistry:
+    classifier: ArchiveClassifier
+    enabled_routes: frozenset[TableArchiveRouteKey]
+    handler_factory: ArchiveHandlerFactory | None = None
+    warning_policy: TableArchiveWarningPolicy | None = None
 
 
 class TableArchiveRouter:
@@ -206,12 +72,43 @@ class TableArchiveRouter:
         self,
         services: TableArchiveServices,
         *,
-        classifier: TableArchiveClassifier | None = None,
+        classifier: ArchiveClassifier = classify_table_archive,
+        registry: TableArchiveRegistry | None = None,
         raw_exporter: RawArchiveExporter | None = None,
     ) -> None:
         self.services = services
-        self.classifier = classifier or TableArchiveClassifier()
+        self.classifier = registry.classifier if registry is not None else classifier
         self.raw_exporter = raw_exporter or RawArchiveExporter(services)
+        self.warning_policy = (
+            registry.warning_policy
+            if registry is not None and registry.warning_policy is not None
+            else DefaultTableArchiveWarningPolicy()
+        )
+        self.standard_extractor = StandardZipArchiveExtractor(
+            services,
+            warning_policy=self.warning_policy,
+        )
+        self.nested_zip_extractor = NestedZipPatchArchiveExtractor(services)
+        self.stage_extractor = MemoryPackStageArchiveExtractor(services)
+        handlers: dict[TableArchiveRouteKey, ArchiveHandler] = {
+            ROUTE_RHYTHM_BEATMAP: self._extract_raw,
+            ROUTE_GROUND_GRID_PATCH: self._extract_ground_grid,
+            ROUTE_GROUND_NODE_LAYER_PATCH: self._extract_ground_node_layer,
+            ROUTE_GROUND_STAGE_PATCH: self._extract_ground_stage,
+            ROUTE_RAW: self._extract_raw,
+            ROUTE_STANDARD: self._extract_standard,
+        }
+        if registry is not None and registry.handler_factory is not None:
+            handlers.update(registry.handler_factory(services, self.raw_exporter))
+        self._handlers = (
+            handlers
+            if registry is None
+            else {
+                route_key: handler
+                for route_key, handler in handlers.items()
+                if route_key in registry.enabled_routes
+            }
+        )
 
     def extract_zip_file(
         self,
@@ -219,72 +116,29 @@ class TableArchiveRouter:
         *,
         should_stop: Callable[[], bool] | None = None,
         progress_callback: ProgressCallback | None = None,
+        metadata: Mapping[str, object] | None = None,
     ) -> None:
         archive_name = path.basename(file_name)
         warnings: list[str] = []
-        route = self.classifier.classify(archive_name)
-
-        if route.kind is TableArchiveKind.RHYTHM_BEATMAP:
-            self.raw_exporter.extract(
-                file_name,
-                warnings=warnings,
-                should_stop=should_stop,
-                progress_callback=progress_callback,
-                info_message=route.info_message,
+        route = self.classifier(archive_name)
+        inner_password_names = self._inner_password_names_from_metadata(metadata)
+        handler = self._handlers.get(route.route_key)
+        if handler is None:
+            detail = route.info_message or (
+                f"archive route '{route.route_key}' is disabled by the active table profile"
             )
+            self.services.logger.error(f"Failed to process {archive_name}: {detail}")
             return
 
         try:
-            if route.kind is TableArchiveKind.GROUND_GRID_PATCH:
-                self.extract_ground_grid_patch_archive(
-                    file_name,
-                    warnings=warnings,
-                    should_stop=should_stop,
-                    progress_callback=progress_callback,
-                )
-            elif route.kind is TableArchiveKind.GROUND_STAGE_PATCH:
-                self.raw_exporter.extract_ground_stage_patch(
-                    file_name,
-                    warnings=warnings,
-                    should_stop=should_stop,
-                    progress_callback=progress_callback,
-                )
-            elif route.kind is TableArchiveKind.RAW:
-                self.raw_exporter.extract(
-                    file_name,
-                    warnings=warnings,
-                    should_stop=should_stop,
-                    progress_callback=progress_callback,
-                )
-            elif route.kind is TableArchiveKind.GL_GROUND:
-                self.extract_gl_ground_archive(
-                    file_name,
-                    route.schema_name,
-                    warnings=warnings,
-                    should_stop=should_stop,
-                    progress_callback=progress_callback,
-                )
-            elif route.kind is TableArchiveKind.GL_NUMERIC_STAGE:
-                self.raw_exporter.extract(
-                    file_name,
-                    warnings=warnings,
-                    should_stop=should_stop,
-                    progress_callback=progress_callback,
-                )
-            elif route.kind is TableArchiveKind.MGS_LOGIC_GROUND:
-                self.extract_mgs_logic_ground_archive(
-                    file_name,
-                    warnings=warnings,
-                    should_stop=should_stop,
-                    progress_callback=progress_callback,
-                )
-            else:
-                self.extract_standard_zip_archive(
-                    file_name,
-                    warnings=warnings,
-                    should_stop=should_stop,
-                    progress_callback=progress_callback,
-                )
+            handler(
+                file_name,
+                route,
+                warnings,
+                should_stop,
+                progress_callback,
+                inner_password_names,
+            )
         except RuntimeError as exc:
             if str(exc) == CANCELLED_EXTRACTION_MESSAGE:
                 raise
@@ -295,297 +149,136 @@ class TableArchiveRouter:
             return
 
         if warnings:
+            encrypted_warnings = [
+                warning for warning in warnings if "_encrypted" in warning
+            ]
+            if encrypted_warnings:
+                examples = ", ".join(encrypted_warnings[:3])
+                self.services.logger.warn(
+                    f"Preserved {len(encrypted_warnings)} encrypted entries while "
+                    f"extracting {archive_name}: {examples}"
+                )
+            unsupported_warnings = [
+                warning for warning in warnings if "_unsupported" in warning
+            ]
+            if unsupported_warnings:
+                examples = ", ".join(unsupported_warnings[:3])
+                self.services.logger.warn(
+                    f"Preserved {len(unsupported_warnings)} unsupported entries while "
+                    f"extracting {archive_name}: {examples}"
+                )
+            self.warning_policy.emit_warning_summary(
+                self.services,
+                archive_name,
+                warnings,
+            )
             self.services.logger.warn(
                 f"Skipped {len(warnings)} entries while extracting {archive_name}."
             )
 
-    def extract_standard_zip_archive(
+    def _extract_ground_grid(
         self,
         file_name: str,
-        *,
+        route: TableArchiveRoute,
         warnings: list[str],
-        should_stop: Callable[[], bool] | None = None,
-        progress_callback: ProgressCallback | None = None,
+        should_stop: Callable[[], bool] | None,
+        progress_callback: ProgressCallback | None,
+        inner_password_names: Mapping[str, str],
     ) -> None:
-        archive_name = path.basename(file_name)
-        extract_folder = Path(self.services.extract_folder) / archive_name.removesuffix(
-            ".zip"
+        _ = route
+        self.nested_zip_extractor.extract(
+            file_name,
+            schema_name=GROUND_GRID_SCHEMA_NAME,
+            warnings=warnings,
+            should_stop=should_stop,
+            progress_callback=progress_callback,
+            inner_password_names=inner_password_names,
         )
-        with ZipFile(
-            path.join(self.services.table_file_folder, file_name), "r"
-        ) as archive:
-            archive.setpassword(zip_password(archive_name))
-            item_names = archive.namelist()
-            for index, item_name in enumerate(item_names, start=1):
-                try:
-                    self.services._ensure_not_cancelled(should_stop)
-                    self.extract_zip_entry(
-                        archive_name=archive_name,
-                        item_name=item_name,
-                        archive=archive,
-                        extract_folder=extract_folder,
-                        warnings=warnings,
-                        should_stop=should_stop,
-                    )
-                finally:
-                    self.services._notify_progress(
-                        progress_callback,
-                        index,
-                        len(item_names),
-                        "entries",
-                    )
 
-    def extract_ground_grid_patch_archive(
+    def _extract_ground_node_layer(
         self,
         file_name: str,
-        *,
+        route: TableArchiveRoute,
         warnings: list[str],
-        should_stop: Callable[[], bool] | None = None,
-        progress_callback: ProgressCallback | None = None,
+        should_stop: Callable[[], bool] | None,
+        progress_callback: ProgressCallback | None,
+        inner_password_names: Mapping[str, str],
     ) -> None:
-        archive_name = path.basename(file_name)
-        outer_extract_folder = Path(self.services.extract_folder) / (
-            archive_name.removesuffix(".zip")
+        _ = route
+        self.nested_zip_extractor.extract(
+            file_name,
+            schema_name=GROUND_NODE_LAYER_SCHEMA_NAME,
+            warnings=warnings,
+            should_stop=should_stop,
+            progress_callback=progress_callback,
+            inner_password_names=inner_password_names,
         )
 
-        with ZipFile(
-            path.join(self.services.table_file_folder, file_name), "r"
-        ) as archive:
-            archive.setpassword(zip_password(archive_name))
-            item_names = archive.namelist()
-            for index, item_name in enumerate(item_names, start=1):
-                try:
-                    self.services._ensure_not_cancelled(should_stop)
-                    item_data = archive.read(item_name)
-                    try:
-                        self.extract_ground_grid_inner_archive(
-                            archive_name=archive_name,
-                            item_name=item_name,
-                            item_data=item_data,
-                            extract_folder=outer_extract_folder,
-                            warnings=warnings,
-                            should_stop=should_stop,
-                        )
-                    except BadZipFile as exc:
-                        self.services._warn_skipped_entry(
-                            archive_name,
-                            item_name,
-                            warnings,
-                            str(exc),
-                        )
-                finally:
-                    self.services._notify_progress(
-                        progress_callback,
-                        index,
-                        len(item_names),
-                        "entries",
-                    )
-
-    def extract_ground_grid_inner_archive(
-        self,
-        *,
-        archive_name: str,
-        item_name: str,
-        item_data: bytes,
-        extract_folder: Path,
-        warnings: list[str],
-        should_stop: Callable[[], bool] | None = None,
-    ) -> None:
-        with ZipFile(BytesIO(item_data), "r") as inner_archive:
-            inner_archive.setpassword(zip_password(path.basename(item_name)))
-            for inner_item_name in inner_archive.namelist():
-                self.services._ensure_not_cancelled(should_stop)
-                try:
-                    inner_item_data = inner_archive.read(inner_item_name)
-                except (RuntimeError, OSError, ValueError, zlib.error) as exc:
-                    self.services._warn_skipped_entry(
-                        archive_name,
-                        f"{item_name}/{inner_item_name}",
-                        warnings,
-                        str(exc),
-                    )
-                    continue
-                try:
-                    processed_file = self.services._process_zip_file(
-                        archive_name,
-                        TableArchiveClassifier.GROUND_GRID_SCHEMA_NAME,
-                        inner_item_data,
-                        detect_type=True,
-                    )
-                except TableProcessingError as exc:
-                    self.services._warn_skipped_entry(
-                        archive_name,
-                        f"{item_name}/{inner_item_name}",
-                        warnings,
-                        str(exc),
-                    )
-                    continue
-
-                self.services._ensure_not_cancelled(should_stop)
-                self.services._write_processed_file(
-                    extract_folder / Path(item_name).stem,
-                    processed_file,
-                )
-
-    def extract_gl_ground_archive(
+    def _extract_ground_stage(
         self,
         file_name: str,
-        schema_name: str,
-        *,
+        route: TableArchiveRoute,
         warnings: list[str],
-        should_stop: Callable[[], bool] | None = None,
-        progress_callback: ProgressCallback | None = None,
+        should_stop: Callable[[], bool] | None,
+        progress_callback: ProgressCallback | None,
+        inner_password_names: Mapping[str, str],
     ) -> None:
-        archive_name = path.basename(file_name)
-        extract_folder = Path(self.services.extract_folder) / archive_name.removesuffix(
-            ".zip"
+        _ = route
+        self.stage_extractor.extract(
+            file_name,
+            warnings=warnings,
+            should_stop=should_stop,
+            progress_callback=progress_callback,
+            inner_password_names=inner_password_names,
         )
 
-        with ZipFile(
-            path.join(self.services.table_file_folder, file_name), "r"
-        ) as archive:
-            archive.setpassword(zip_password(archive_name))
-            item_names = archive.namelist()
-            for index, item_name in enumerate(item_names, start=1):
-                try:
-                    self.services._ensure_not_cancelled(should_stop)
-                    try:
-                        item_data = archive.read(item_name)
-                    except (RuntimeError, OSError, ValueError, zlib.error) as exc:
-                        self.services._warn_skipped_entry(
-                            archive_name,
-                            item_name,
-                            warnings,
-                            str(exc),
-                        )
-                        continue
-
-                    try:
-                        processed_file = self.services._process_zip_file(
-                            archive_name,
-                            schema_name,
-                            item_data,
-                            detect_type=True,
-                        )
-                    except TableProcessingError as exc:
-                        self.services._warn_skipped_entry(
-                            archive_name,
-                            item_name,
-                            warnings,
-                            str(exc),
-                        )
-                        continue
-
-                    self.services._ensure_not_cancelled(should_stop)
-                    self.services._write_processed_file(extract_folder, processed_file)
-                finally:
-                    self.services._notify_progress(
-                        progress_callback,
-                        index,
-                        len(item_names),
-                        "entries",
-                    )
-
-    def extract_mgs_logic_ground_archive(
+    def _extract_raw(
         self,
         file_name: str,
-        *,
+        route: TableArchiveRoute,
         warnings: list[str],
-        should_stop: Callable[[], bool] | None = None,
-        progress_callback: ProgressCallback | None = None,
+        should_stop: Callable[[], bool] | None,
+        progress_callback: ProgressCallback | None,
+        inner_password_names: Mapping[str, str],
     ) -> None:
-        archive_name = path.basename(file_name)
-        extract_folder = Path(self.services.extract_folder) / archive_name.removesuffix(
-            ".zip"
+        _ = inner_password_names
+        self.raw_exporter.extract(
+            file_name,
+            warnings=warnings,
+            should_stop=should_stop,
+            progress_callback=progress_callback,
+            info_message=route.info_message,
         )
 
-        with ZipFile(
-            path.join(self.services.table_file_folder, file_name), "r"
-        ) as archive:
-            archive.setpassword(zip_password(archive_name))
-            item_names = archive.namelist()
-            for index, item_name in enumerate(item_names, start=1):
-                try:
-                    self.services._ensure_not_cancelled(should_stop)
-                    try:
-                        item_data = archive.read(item_name)
-                    except (RuntimeError, OSError, ValueError, zlib.error) as exc:
-                        self.services._warn_skipped_entry(
-                            archive_name,
-                            item_name,
-                            warnings,
-                            str(exc),
-                        )
-                        continue
-
-                    try:
-                        processed_file = self.services._process_zip_file(
-                            archive_name,
-                            TableArchiveClassifier.GROUND_GRID_SCHEMA_NAME,
-                            item_data,
-                            detect_type=True,
-                        )
-                    except TableProcessingError:
-                        processed_file = ProcessedTableArtifact(
-                            data=item_data,
-                            file_name=path.basename(item_name),
-                        )
-
-                    self.services._ensure_not_cancelled(should_stop)
-                    self.services._write_processed_file(extract_folder, processed_file)
-                finally:
-                    self.services._notify_progress(
-                        progress_callback,
-                        index,
-                        len(item_names),
-                        "entries",
-                    )
-
-    def extract_zip_entry(
+    def _extract_standard(
         self,
-        *,
-        archive_name: str,
-        item_name: str,
-        archive: ZipFile,
-        extract_folder: Path,
+        file_name: str,
+        route: TableArchiveRoute,
         warnings: list[str],
-        should_stop: Callable[[], bool] | None = None,
+        should_stop: Callable[[], bool] | None,
+        progress_callback: ProgressCallback | None,
+        inner_password_names: Mapping[str, str],
     ) -> None:
-        self.services._ensure_not_cancelled(should_stop)
-        item_data = archive.read(item_name)
+        _ = (route, inner_password_names)
+        self.standard_extractor.extract(
+            file_name,
+            warnings=warnings,
+            should_stop=should_stop,
+            progress_callback=progress_callback,
+        )
 
-        try:
-            processed_file = self.services._process_zip_file(
-                archive_name,
-                item_name,
-                item_data,
-            )
-        except TableProcessingError as first_error:
-            try:
-                detect_name = (
-                    f"{archive_name.removesuffix('.zip')}Flat"
-                    if "RootMotion" in archive_name
-                    else item_name
-                )
-                processed_file = self.services._process_zip_file(
-                    archive_name,
-                    detect_name,
-                    item_data,
-                    detect_type=True,
-                )
-                if "RootMotion" in archive_name:
-                    processed_file = ProcessedTableArtifact(
-                        processed_file.data,
-                        item_name,
-                    )
-            except TableProcessingError as second_error:
-                self.services._warn_skipped_entry(
-                    archive_name,
-                    item_name,
-                    warnings,
-                    f"{first_error}; fallback failed ({second_error}).",
-                )
-                return
-
-        self.services._ensure_not_cancelled(should_stop)
-        self.services._write_processed_file(extract_folder, processed_file)
+    @staticmethod
+    def _inner_password_names_from_metadata(
+        metadata: Mapping[str, object] | None,
+    ) -> dict[str, str]:
+        if metadata is None:
+            return {}
+        includes = metadata.get("includes")
+        if not isinstance(includes, Sequence) or isinstance(includes, (str, bytes)):
+            return {}
+        result: dict[str, str] = {}
+        for item in includes:
+            item_basename = path.basename(str(item))
+            if item_basename:
+                result[item_basename.lower()] = item_basename
+        return result

@@ -18,10 +18,12 @@ from ba_downloader.domain.ports.http import HttpClientPort, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 from ba_downloader.infrastructure.packages import (
+    ZipEntry,
     extract_zip_entry,
     find_zip_entry,
     read_zip_entries,
 )
+from ba_downloader.infrastructure.packages.zip_range_reader import ZipEntryNotFoundError
 from ba_downloader.infrastructure.regions.common import (
     SYNC_AND_RELATION_CAPABILITIES,
     build_region_catalog_result,
@@ -72,7 +74,6 @@ class CNRegionProvider:
             self.logger,
             resources=resources,
             context=resolved_context,
-            capabilities=self.get_capabilities(),
         )
 
     def get_apk_url(self, server: Literal["official", "bili"] = "official") -> str:
@@ -286,8 +287,13 @@ class CNRegionProvider:
 
 class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
     METADATA_ENTRY_PATH = "assets/bin/Data/Managed/Metadata/global-metadata.dat"
+    BINARY_ENTRY_PATH = "lib/arm64-v8a/libil2cpp.so"
+    GLOBAL_GAME_MANAGERS_ENTRY_PATH = "assets/bin/Data/globalgamemanagers"
     METADATA_NAME = "global-metadata.dat"
+    BINARY_NAME = "libil2cpp.so"
+    GLOBAL_GAME_MANAGERS_NAME = "globalgamemanagers"
     METADATA_FOLDER = "CN_Metadata"
+    RUNTIME_FOLDER = "CN_Runtime"
 
     def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
         self.http_client = http_client
@@ -295,24 +301,59 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
 
     def prepare(self, context: RuntimeContext) -> None:
         metadata_path = self.metadata_output_path(context)
-        if metadata_path.exists():
+        binary_path = self.binary_output_path(context)
+        managers_path = self.globalgamemanagers_output_path(context)
+        if metadata_path.exists() and binary_path.exists():
             return
 
-        self.logger.info("Preparing CN metadata from APK central directory...")
+        self.logger.info("Preparing CN runtime assets from APK central directory...")
         apk_url = CNRegionProvider(self.http_client, self.logger).get_apk_url()
         entries = read_zip_entries(apk_url, self.http_client)
-        entry = find_zip_entry(
+        metadata_entry = find_zip_entry(
             entries,
             preferred_path=self.METADATA_ENTRY_PATH,
             fallback_name=self.METADATA_NAME,
         )
-        extract_zip_entry(apk_url, entry, metadata_path, self.http_client)
+        binary_entry = find_zip_entry(
+            entries,
+            preferred_path=self.BINARY_ENTRY_PATH,
+            fallback_name=self.BINARY_NAME,
+        )
+        extract_zip_entry(apk_url, metadata_entry, metadata_path, self.http_client)
+        extract_zip_entry(apk_url, binary_entry, binary_path, self.http_client)
+
+        if managers_entry := self._find_optional_globalgamemanagers(entries):
+            extract_zip_entry(apk_url, managers_entry, managers_path, self.http_client)
 
         if not metadata_path.exists():
             raise FileNotFoundError("Unable to prepare CN metadata from the APK.")
+        if not binary_path.exists():
+            raise FileNotFoundError("Unable to prepare CN libil2cpp.so from the APK.")
 
     def metadata_output_path(self, context: RuntimeContext) -> Path:
         return Path(context.temp_dir) / self.METADATA_FOLDER / self.METADATA_NAME
+
+    def binary_output_path(self, context: RuntimeContext) -> Path:
+        return Path(context.temp_dir) / self.RUNTIME_FOLDER / self.BINARY_NAME
+
+    def globalgamemanagers_output_path(self, context: RuntimeContext) -> Path:
+        return (
+            Path(context.temp_dir)
+            / self.RUNTIME_FOLDER
+            / self.GLOBAL_GAME_MANAGERS_NAME
+        )
+
+    def _find_optional_globalgamemanagers(
+        self, entries: list[ZipEntry]
+    ) -> ZipEntry | None:
+        try:
+            return find_zip_entry(
+                entries,
+                preferred_path=self.GLOBAL_GAME_MANAGERS_ENTRY_PATH,
+                fallback_name=self.GLOBAL_GAME_MANAGERS_NAME,
+            )
+        except ZipEntryNotFoundError:
+            return None
 
 
 class CNCatalogDecoder:

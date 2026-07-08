@@ -77,6 +77,10 @@ class SchemaObjectReader:
 
     def read_member_value(self, cs_type: str, annotation: Any) -> Any:
         normalized = MemoryPackCSParser._normalize_cs_type(cs_type)
+        special_value = self._read_special_value(normalized)
+        if special_value is not _UNHANDLED:
+            return special_value
+
         collection_value = self._read_collection_value(normalized, annotation)
         if collection_value is not _UNHANDLED:
             return collection_value
@@ -93,6 +97,72 @@ class SchemaObjectReader:
         if isinstance(object_type, type) and is_dataclass(object_type):
             return self.read_object(object_type)
         raise TypeError(f"Unsupported MemoryPack member type: {cs_type}.")
+
+    def _read_special_value(self, normalized: str) -> Any:
+        if nullable_inner := MemoryPackCSParser._extract_generic_inner(
+            normalized,
+            ("System.Nullable", "Nullable"),
+        ):
+            return self._read_nullable_value(nullable_inner)
+
+        if normalized in {"char", "System.Char"}:
+            return chr(self._cursor.read_uint16())
+        if normalized == "UnityEngine.Vector2":
+            return self._read_vector2()
+        if normalized == "UnityEngine.Vector3":
+            return self._read_vector3()
+        if normalized.rsplit(".", maxsplit=1)[-1] == "ShapeSpecification":
+            return self._read_shape_specification()
+        return _UNHANDLED
+
+    def _read_nullable_value(self, inner_type: str) -> Any:
+        normalized_inner = MemoryPackCSParser._normalize_cs_type(inner_type)
+        if normalized_inner in {"long", "System.Int64"}:
+            raw_has_value = self._cursor.read_uint8()
+            self._cursor._read_exact(7)
+            int_value = self._cursor.read_int64()
+            return int_value if raw_has_value else None
+        if normalized_inner == "UnityEngine.Vector2":
+            raw_has_value = self._cursor.read_uint8()
+            self._cursor._read_exact(3)
+            vector2_value = self._read_vector2()
+            return vector2_value if raw_has_value else None
+        if normalized_inner == "UnityEngine.Vector3":
+            raw_has_value = self._cursor.read_uint8()
+            self._cursor._read_exact(3)
+            vector3_value = self._read_vector3()
+            return vector3_value if raw_has_value else None
+        raise TypeError(f"Unsupported MemoryPack nullable member type: {inner_type}.")
+
+    def _read_vector2(self) -> dict[str, float]:
+        return {
+            "x": self._cursor.read_float32(),
+            "y": self._cursor.read_float32(),
+        }
+
+    def _read_vector3(self) -> dict[str, float]:
+        return {
+            "x": self._cursor.read_float32(),
+            "y": self._cursor.read_float32(),
+            "z": self._cursor.read_float32(),
+        }
+
+    def _read_shape_specification(self) -> dict[str, Any]:
+        return {
+            "__type__": "ShapeSpecification",
+            "__unmanaged__": True,
+            "Type": self._cursor.read_int32(),
+            "PositionOffset": self._read_vector2(),
+            "AngleOffset": self._cursor.read_int32(),
+            "CircleRadius": self._cursor.read_float32(),
+            "DonutOuterRadius": self._cursor.read_float32(),
+            "DonutInnerRadius": self._cursor.read_float32(),
+            "DonutAngle": self._cursor.read_int32(),
+            "FanRadius": self._cursor.read_float32(),
+            "FanAngle": self._cursor.read_int32(),
+            "OBBWidth": self._cursor.read_float32(),
+            "OBBHeight": self._cursor.read_float32(),
+        }
 
     def _read_collection_value(self, normalized: str, annotation: Any) -> Any:
         list_inner = MemoryPackCSParser._extract_generic_inner(

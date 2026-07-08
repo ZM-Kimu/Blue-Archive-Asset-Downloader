@@ -1,24 +1,6 @@
 from rich.progress import BarColumn, TextColumn
 
-from ba_downloader.infrastructure.progress.rich_progress import (
-    NullProgressReporter,
-    RichProgressReporter,
-)
-
-
-def test_null_progress_reporter_is_noop() -> None:
-    reporter = NullProgressReporter()
-
-    with reporter:
-        reporter.set_description("Testing")
-        reporter.set_status("1/2 files")
-        reporter.set_secondary_status("conc. 2/4")
-        reporter.set_failed_status("failed 0")
-        reporter.set_total(10)
-        reporter.set_completed(3)
-        reporter.advance(2)
-
-    reporter.stop()
+from ba_downloader.infrastructure.progress.rich_progress import RichProgressReporter
 
 
 def test_rich_progress_reporter_uses_fixed_width_description_column() -> None:

@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from ba_downloader.domain.models.asset import AssetCollection, AssetRecord
+from ba_downloader.domain.models.asset_type_selection import (
+    ALL_RESOURCE_TYPES,
+    ResourceTypeSelection,
+)
+from ba_downloader.domain.models.runtime import RuntimeContext
 
 
 class ResourceQueryService:
@@ -9,12 +16,13 @@ class ResourceQueryService:
         resource: AssetCollection,
         resource_type: list[str] | tuple[str, ...],
     ) -> AssetCollection:
-        if len(resource_type) == 3:
+        selection = ResourceTypeSelection.from_values(resource_type)
+        if selection.types == ALL_RESOURCE_TYPES:
             return resource
 
         filtered = AssetCollection()
         for item in resource:
-            if item.asset_type.value in resource_type:
+            if selection.contains(item.asset_type):
                 filtered.add_item(item)
 
         return filtered
@@ -37,6 +45,22 @@ class ResourceQueryService:
         return results
 
     @staticmethod
+    def filter_existing(
+        resources: AssetCollection,
+        context: RuntimeContext,
+    ) -> AssetCollection:
+        filtered = AssetCollection()
+        raw_dir = Path(context.raw_dir)
+        seen_paths: set[str] = set()
+        for resource in resources:
+            if resource.path in seen_paths:
+                continue
+            if (raw_dir / resource.path).is_file():
+                filtered.add_item(resource)
+                seen_paths.add(resource.path)
+        return filtered
+
+    @staticmethod
     def _search_bundle_files(
         resource: AssetCollection,
         keyword: str,
@@ -50,34 +74,3 @@ class ResourceQueryService:
                 for bundle_name in item.metadata.get("bundle_files", [])
             )
         ]
-
-
-def full_text_filter(
-    keywords: str,
-    character_map: dict[str, object],
-    content_list: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    filtered_contents: list[dict[str, object]] = []
-    keyword_list = keywords.split(",").copy()
-    key_mapping = character_map["keyword_mapping"]
-    file_mapping = character_map["source_file_mapping"]
-
-    if not isinstance(key_mapping, dict) or not isinstance(file_mapping, dict):
-        return filtered_contents
-
-    for keyword in keyword_list.copy():
-        for mapped_key, mapped_value in key_mapping.items():
-            if keyword.lower() in str(mapped_value).lower():
-                keyword_list.append(str(mapped_key).lower())
-
-    for keyword in keyword_list.copy():
-        for mapped_file, mapped_value in file_mapping.items():
-            if keyword.lower() in str(mapped_value).lower():
-                keyword_list.append(str(mapped_file).lower())
-
-    for content in content_list:
-        content_path = str(content.get("path", "")).lower()
-        if any(keyword.lower() in content_path for keyword in keyword_list):
-            filtered_contents.append(content)
-
-    return filtered_contents

@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- No unreleased changes recorded.
+### Fixes
+- restore JP Android libil2cpp from encrypted runtime payloads
+- support JP SQLCipher raw-key table database export
 
 
 ## v2.1.0 - 2026-05-26

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from threading import Lock
 from typing import Protocol, cast
@@ -11,6 +11,10 @@ from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.bundle.exporter import BundleExtractor
 from ba_downloader.infrastructure.extraction.media.exporter import MediaExtractor
 from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
+from ba_downloader.infrastructure.extraction.table.profiles import (
+    TableExtractionProfile,
+    build_default_table_extraction_profile,
+)
 
 
 class _BundleExtractor(Protocol):
@@ -26,12 +30,29 @@ class _MediaExtractor(Protocol):
 
 
 class _TableExtractor(Protocol):
-    def extract_table(self, file_path: str) -> None: ...
+    def extract_table(
+        self,
+        file_path: str,
+        *,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None: ...
 
 
 _BundleFactory = Callable[[RuntimeContext, LoggerPort | None], _BundleExtractor]
 _MediaFactory = Callable[[RuntimeContext], _MediaExtractor]
 _TableFactory = Callable[[RuntimeContext, LoggerPort | None], _TableExtractor]
+TableProfileFactory = Callable[[RuntimeContext], TableExtractionProfile]
+
+
+def build_default_table_extractor(
+    context: RuntimeContext,
+    logger: LoggerPort | None = None,
+) -> TableExtractor:
+    return TableExtractor.from_context(
+        context,
+        logger,
+        table_profile=build_default_table_extraction_profile(),
+    )
 
 
 class ImmediateResourceExtractor:
@@ -43,14 +64,35 @@ class ImmediateResourceExtractor:
         *,
         bundle_factory: _BundleFactory = BundleExtractor,
         media_factory: _MediaFactory = MediaExtractor,
-        table_factory: _TableFactory = TableExtractor.from_context,
+        table_factory: _TableFactory = build_default_table_extractor,
+        table_profile_factory: TableProfileFactory | None = None,
     ) -> None:
         self.logger = logger
         self._bundle_factory = bundle_factory
         self._media_factory = media_factory
-        self._table_factory = table_factory
+        self._table_factory = (
+            table_factory
+            if table_profile_factory is None
+            else self._build_profile_table_factory(table_profile_factory)
+        )
         self._bundle_lock = Lock()
         self._extractor_cache: dict[tuple[str, str, str, str], object] = {}
+
+    @staticmethod
+    def _build_profile_table_factory(
+        table_profile_factory: TableProfileFactory,
+    ) -> _TableFactory:
+        def build_table_extractor(
+            context: RuntimeContext,
+            logger: LoggerPort | None = None,
+        ) -> TableExtractor:
+            return TableExtractor.from_context(
+                context,
+                logger,
+                table_profile=table_profile_factory(context),
+            )
+
+        return build_table_extractor
 
     def __call__(self, resource: AssetRecord, context: RuntimeContext) -> None:
         resource_path = str(Path(context.raw_dir) / resource.path)
@@ -68,7 +110,10 @@ class ImmediateResourceExtractor:
             return
 
         if resource.asset_type is AssetType.table:
-            self._get_table_extractor(context).extract_table(resource_path)
+            self._get_table_extractor(context).extract_table(
+                resource_path,
+                metadata=resource.metadata,
+            )
 
     def _get_bundle_extractor(self, context: RuntimeContext) -> _BundleExtractor:
         cache_key = self._cache_key("bundle", context)

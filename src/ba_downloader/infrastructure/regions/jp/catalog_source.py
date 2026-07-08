@@ -6,7 +6,7 @@ from ba_downloader.domain.models.asset import BootstrapSession, CatalogSource
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.regions.jp.models import resolve_jp_patch_pack_dir
+from ba_downloader.infrastructure.regions.jp.platform import build_jp_platform_profile
 
 
 class JPCatalogSourceProvider:
@@ -21,7 +21,7 @@ class JPCatalogSourceProvider:
     ) -> list[CatalogSource]:
         base_url = session.catalog_root.rstrip("/") + "/"
         sources: list[CatalogSource] = []
-        bundle_patch_dir = resolve_jp_patch_pack_dir(context.platform)
+        bundle_patch_dir = build_jp_platform_profile(context).bundle_patch_dir
 
         targets = (
             ("table", urljoin(base_url, "TableBundles/TableCatalog.bytes")),
