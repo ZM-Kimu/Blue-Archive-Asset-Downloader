@@ -11,8 +11,8 @@
 
 ## 主要功能
 - **资源解开**：在日本服务器中包含几乎完整的支持。
-- **CN 阶段成果**：当前 `download --region cn`、`sync --region cn`、`character-index build --region cn` 已可用；`--advanced-search` 仍未开放。
-- **JP 阶段成果**：当前 `download --region jp`、`sync --region jp`、`character-index build --region jp` 已可用；`--advanced-search` 仍未开放。
+- **CN 阶段成果**：当前 `download --region cn`、`sync --region cn`、`character-index build --region cn` 与 `--advanced-search` 已可用。
+- **JP 阶段成果**：当前 `download --region jp`、`sync --region jp`、`character-index build --region jp` 与 `--advanced-search` 已可用。
 
 
 ## 资源类型
@@ -134,14 +134,19 @@ python -m ba_downloader sync --region jp
 ---
 #### 并且，在不同的服务器中亦支持不同的名称检索方式，具体内容请参照`<Region>CharacterIndex.json`。
 - 示例：
-  > sync
-  >```sh
-  >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ ibuki
-  >```
-
   > japan
   >```sh
   >ba-downloader sync --region jp -as yume 百合園セイア 호시노 cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
+  >```
+
+  > global
+  >```sh
+  >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ mika
+  >```
+
+  > china
+  >```sh
+  >ba-downloader sync --region cn -as 伊吹 黑服
   >```
 
 - 普通检索：

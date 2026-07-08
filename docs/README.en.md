@@ -12,8 +12,8 @@ This project downloads and extracts Blue Archive assets from different servers. 
 ## Main Features
 
 - **Asset extraction**: JP currently has nearly complete support.
-- **CN milestone status**: `download --region cn`, `sync --region cn`, and `character-index build --region cn` are currently available; `--advanced-search` is still unavailable.
-- **JP milestone status**: `download --region jp`, `sync --region jp`, and `character-index build --region jp` are currently available; `--advanced-search` is still unavailable.
+- **CN milestone status**: `download --region cn`, `sync --region cn`, `character-index build --region cn`, and `--advanced-search` are currently available.
+- **JP milestone status**: `download --region jp`, `sync --region jp`, `character-index build --region jp`, and `--advanced-search` are currently available.
 
 
 ## Resource Types

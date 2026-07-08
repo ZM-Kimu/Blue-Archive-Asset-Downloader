@@ -25,7 +25,6 @@ from ba_downloader.infrastructure.packages import (
 )
 from ba_downloader.infrastructure.packages.zip_range_reader import ZipEntryNotFoundError
 from ba_downloader.infrastructure.regions.common import (
-    SYNC_AND_RELATION_CAPABILITIES,
     build_region_catalog_result,
     coerce_int,
     join_catalog_url,
@@ -34,7 +33,11 @@ from ba_downloader.infrastructure.regions.common import (
 
 
 class CNRegionProvider:
-    CAPABILITIES = SYNC_AND_RELATION_CAPABILITIES
+    CAPABILITIES = RegionCapabilities(
+        supports_sync=True,
+        supports_advanced_search=True,
+        supports_character_index_build=True,
+    )
     APK_MEDIA_SOURCE = "apk_entry"
     APK_MEDIA_PREFIXES: ClassVar[tuple[str, ...]] = ("assets/video/",)
 
