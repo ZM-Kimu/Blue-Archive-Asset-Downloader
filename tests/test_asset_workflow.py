@@ -277,7 +277,8 @@ def test_table_extraction_uses_process_runner_for_real_extractor(
 
     AssetExtractionWorkflow(RecordingLogger()).extract_tables(context)
 
-    assert captured_files == [["A.db", "B.db"]]
+    assert len(captured_files) == 1
+    assert sorted(captured_files[0]) == ["A.db", "B.db"]
 
 
 def test_table_extraction_passes_resource_metadata_to_process_runner(

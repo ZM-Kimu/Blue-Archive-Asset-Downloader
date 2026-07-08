@@ -5,7 +5,7 @@ import json
 import struct
 from dataclasses import make_dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.table.models import (
@@ -196,7 +196,7 @@ class TablePayloadCodecAdapter:
             is_vector=True,
         )
         row_list_annotation = list.__class_getitem__(row_schema)
-        data_list_annotation = Annotated.__getitem__((row_list_annotation, field))
+        data_list_annotation = cast(Any, Annotated)[row_list_annotation, field]
         table_schema = make_dataclass(
             table_name,
             [
