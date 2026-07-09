@@ -1,10 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 disassembly/
-frida/
 *.apk
-third_party/cn_metadata_exporter/bin/
-third_party/cn_metadata_exporter/obj/
 
 # Distribution / packaging
 .Python
@@ -106,7 +103,7 @@ assets/asset_list.txt
 *Extracted/
 *RawData/
 *Temp/
-FlatData/
 *CharacterRelation.json
+*CharacterIndex.json
 .vscode/
 .ba-downloader/

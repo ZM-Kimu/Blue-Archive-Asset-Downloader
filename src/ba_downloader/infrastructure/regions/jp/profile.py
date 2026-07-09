@@ -52,6 +52,9 @@ from ba_downloader.infrastructure.regions.jp.provider import JPRegionProvider
 from ba_downloader.infrastructure.regions.jp.runtime_assets import (
     JPRuntimeAssetPreparer,
 )
+from ba_downloader.infrastructure.regions.jp.sqlcipher_key import (
+    JpSqlCipherKeyProvider,
+)
 from ba_downloader.infrastructure.regions.jp.table_archives import (
     JpTableArchiveWarningPolicy,
     classify_jp_table_archive,
@@ -126,7 +129,10 @@ def build_table_extraction_profile(
             JP_MEMORYPACK_DB_ROOT_TYPES,
             allow_partial_memorypack=False,
         ),
-        database_path_resolver=SqlCipherDatabaseResolver(context),
+        database_path_resolver=SqlCipherDatabaseResolver(
+            context,
+            key_provider=JpSqlCipherKeyProvider(context),
+        ),
     )
 
 

@@ -59,7 +59,7 @@ def test_default_region_service_profiles_build_core_factories() -> None:
         assert callable(dumper.dump)
 
 
-def test_default_region_service_profiles_expose_table_and_relation_policy_behavior() -> (
+def test_default_region_service_profiles_expose_table_and_index_policy_behavior() -> (
     None
 ):
     cn = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("cn")

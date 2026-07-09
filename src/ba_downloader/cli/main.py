@@ -115,7 +115,10 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         "--sqlcipher-key-hex",
         "-kei",
         default="",
-        help="SQLCipher raw key as 64 hex characters for encrypted table databases.",
+        help=(
+            "SQLCipher raw key override as 64 hex characters; "
+            "JP fetches the default key when omitted."
+        ),
     )
     parser.add_argument(
         "--platform",
@@ -170,7 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_search_options(
         sync_parser,
-        advanced_help="Search assets by character index fields (GL/JP sync only).",
+        advanced_help="Search assets by character index fields.",
     )
 
     download_parser = subparsers.add_parser("download", help="Download assets only")
@@ -183,10 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(extract_parser)
     _add_search_options(
         extract_parser,
-        advanced_help=(
-            "Search existing raw assets by character index fields "
-            "(GL/JP extract only)."
-        ),
+        advanced_help="Search existing raw assets by character index fields.",
     )
 
     character_index_parser = subparsers.add_parser(

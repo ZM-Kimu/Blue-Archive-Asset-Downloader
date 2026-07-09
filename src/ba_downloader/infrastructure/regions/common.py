@@ -3,16 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from urllib.parse import urljoin
 
-from ba_downloader.domain.models.asset import AssetCollection, RegionCapabilities
+from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
-
-SYNC_AND_RELATION_CAPABILITIES = RegionCapabilities(
-    supports_sync=True,
-    supports_advanced_search=False,
-    supports_character_index_build=True,
-)
 
 
 def coerce_int(value: object) -> int:

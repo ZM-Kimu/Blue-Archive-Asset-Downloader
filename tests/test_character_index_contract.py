@@ -23,7 +23,7 @@ def test_character_index_build_command_parses() -> None:
     assert args.region == "jp"
 
 
-def test_relation_build_command_is_removed() -> None:
+def test_removed_pre_index_build_command_is_rejected() -> None:
     parser = build_parser()
 
     with pytest.raises(SystemExit) as exc_info:
@@ -75,7 +75,7 @@ def test_character_index_store_writes_entries_schema(
     }
 
 
-def test_character_index_store_rejects_legacy_relation_schema(
+def test_character_index_store_rejects_pre_index_schema(
     tmp_path: Path,
 ) -> None:
     index_path = tmp_path / "JPCharacterIndex.json"
@@ -89,7 +89,7 @@ def test_character_index_store_rejects_legacy_relation_schema(
         store.load_path(index_path, build_runtime_context(tmp_path, region="jp"))
 
 
-def test_character_index_store_does_not_read_old_relation_file(
+def test_character_index_store_does_not_read_pre_index_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:

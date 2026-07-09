@@ -248,7 +248,7 @@ def test_jp_sync_passes_catalog_resources_to_post_download_extract(
     ]
 
 
-def test_jp_sync_advanced_search_uses_relation_keywords(tmp_path: Path) -> None:
+def test_jp_sync_advanced_search_uses_character_index_keywords(tmp_path: Path) -> None:
     context = _build_context(tmp_path).with_updates(
         region="jp",
         advanced_search=("シロコ",),
@@ -278,7 +278,39 @@ def test_jp_sync_advanced_search_uses_relation_keywords(tmp_path: Path) -> None:
     assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
 
 
-def test_jp_sync_advanced_search_builds_missing_relation(tmp_path: Path) -> None:
+def test_cn_sync_advanced_search_uses_character_index_keywords(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path).with_updates(
+        region="cn",
+        advanced_search=("伊吹",),
+    )
+    downloader = RecordingDownloader()
+    extract_service = RecordingExtractAssetsUseCase()
+    schema_preparation = RecordingSchemaPreparation()
+    character_index_builder = DummyCharacterIndexBuilder()
+    provider = StaticProvider(_build_search_catalog(context))
+    logger = RecordingLogger()
+    service = SyncAssetsUseCase(
+        provider,
+        downloader,
+        extract_service,  # type: ignore[arg-type]
+        schema_preparation,
+        lambda _context: character_index_builder,
+        logger,
+        workflow_profile=_build_profile(context, provider, logger),
+    )
+
+    service.run(context)
+
+    assert schema_preparation.calls == ["prepare"]
+    assert character_index_builder.search_calls == [["伊吹"]]
+    assert downloader.calls == [["Bundle/Shiroko.bundle"]]
+    assert extract_service.calls == ["run_post_download"]
+    assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
+
+
+def test_jp_sync_advanced_search_builds_missing_character_index(tmp_path: Path) -> None:
     context = _build_context(tmp_path).with_updates(
         region="jp",
         advanced_search=("シロコ",),
@@ -347,7 +379,7 @@ def test_jp_sync_search_extracts_only_filtered_resources(tmp_path: Path) -> None
     assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
 
 
-def test_jp_sync_advanced_search_with_no_relation_matches_downloads_nothing(
+def test_jp_sync_advanced_search_with_no_character_index_matches_downloads_nothing(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path).with_updates(

@@ -2,18 +2,11 @@
 
 # Blue Archive Asset Downloader
 
-This project downloads and extracts Blue Archive assets from different servers. It currently supports the CN, GL, and JP servers.
+This project downloads and extracts Blue Archive assets from different servers. It currently supports CN, GL, and JP.
 
 <a href="../README.md">中文</a>
 
 </div>
-
-
-## Main Features
-
-- **Asset extraction**: JP currently has nearly complete support.
-- **CN milestone status**: `download --region cn`, `sync --region cn`, and `character-index build --region cn` are currently available; `--advanced-search` is still unavailable.
-- **JP milestone status**: `download --region jp`, `sync --region jp`, and `character-index build --region jp` are currently available; `--advanced-search` is still unavailable.
 
 
 ## Resource Types
@@ -28,7 +21,7 @@ Extractable file types:
 
 - Bundle
 - Media
-- Table
+- Table (GL is not available yet)
 
 #### **Note**: Although some regions support downloading resources from different versions, this program does not guarantee that outdated resource files can still be extracted.
 
@@ -113,11 +106,11 @@ python -m ba_downloader sync --region jp
 | `--resource-type`          | `-rt`      | **Resource type**: `table`, `media`, `bundle`, `all`                                              | `all`               | `--resource-type media table` |
 | `--proxy`                  | `-px`      | **HTTP proxy**                                                                                    | None (system proxy) | `-px http://127.0.0.1:8080`   |
 | `--max-retries`            | `-mr`      | **Maximum retry count for failed downloads**                                                      | `5`                 | `--max-retries 3`             |
-| `--sqlcipher-key-hex`      | `-kei`     | **SQLCipher raw key** (for opening table databases)                                               | None                | `-kei <64hex>`                |
+| `--sqlcipher-key-hex`      | `-kei`     | **SQL raw key**                                                                                   | Internal/automatic  | `-kei <64hex>`                |
 | `--search`                 | `-s`       | **Basic search**, file keywords for searching, downloading, or extracting (`sync`, `download`, and `extract` are supported) | None                | `-s aris shiroko`             |
-| `--advanced-search`        | `-as`      | **Advanced search**, character keywords (requires a .NET environment)                             | None                | `-as yume cv=小倉唯`          |
+| `--advanced-search`        | `-as`      | **Advanced search**, character information terms (requires a .NET environment)                    | None                | `-as yume cv=小倉唯`          |
 
-`--search` and `--advanced-search` are mutually exclusive. Use only one search mode in a single command. Searches use Of All matching mode.
+`--search` and `--advanced-search` are mutually exclusive. Searches use Any matching. The concrete `school` and `club` enums can be checked in `FlatBufferData`.
 
 Advanced-search fields:
 
@@ -127,28 +120,30 @@ Advanced-search fields:
 - `height` **Height**
 - `birthday` **Birthday**
 - `illustrator` **Illustrator**
-- `school` **School** (including but not limited to; the actual enum is in FlatBuffer):
-  - `RedWinter`, `Trinity`, `Gehenna`, `Abydos`, `Millennium`, `Arius`
-  - `Shanhaijing`, `Valkyrie`, `WildHunt`, `SRT`, `SCHALE`, `ETC`
-  - `Tokiwadai`, `Sakugawa`
-- `club` **Club** (including but not limited to; the actual enum is in FlatBuffer):
+- `school` **School**:
+  - `RedWinter`, `Trinity`, `Gehenna`, `Abydos`, `Millennium`, `Arius` ...
+- `club` **Club**:
   - `Engineer`, `CleanNClearing`, `KnightsHospitaller`, `IndeGEHENNA`
-  - `IndeMILLENNIUM`, `IndeHyakkiyako`, `IndeShanhaijing`, `IndeTrinity`
   - `FoodService`, `Countermeasure`, `BookClub`, `MatsuriOffice` ...
 
 ---
 
 #### Different servers support different name search forms. See `<Region>CharacterIndex.json` for details.
 
-- Example:
-  > sync
-  >```sh
-  >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ ibuki
-  >```
-
+- Examples:
   > japan
   >```sh
-  >ba-downloader sync --region jp -as yume 百合園セイア 호시노 cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
+  >ba-downloader sync --region jp -as yume 百合園セイア 호시노
+  >```
+
+  > japan with conditions (characters matching any condition)
+  >```sh
+  >ba-downloader sync --region jp -as cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
+  >```
+
+  > china
+  >```sh
+  >ba-downloader sync --region cn -as 伊吹 心奈 黑服
   >```
 
 - Basic search:
@@ -188,6 +183,7 @@ ba-downloader download --region jp --platform windows
 - `v2.3.0`
   - New Bundle extractor
   - Fetch latest available resources from the launcher
+  - Handle GL table extraction
 
 ## About
 
@@ -195,12 +191,16 @@ Blue Archive Asset Downloader v2.1.0.
 
 Technical support: Codex
 
-This project uses the [MIT License](../LICENSE).
+Technical assistance thanks:
+
+- [KitanoSakurana](https://github.com/KitanoSakurana)
 
 Some content references:
 
 - [Blue-Archive---Asset-Downloader](https://github.com/K0lb3/Blue-Archive---Asset-Downloader)
 - [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL)
+
+This project uses the [MIT License](../LICENSE).
 
 ## Disclaimer
 

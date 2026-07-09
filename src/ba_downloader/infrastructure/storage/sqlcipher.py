@@ -163,6 +163,10 @@ class SqlCipherExporter(Protocol):
     def export(self, input_path: Path, output_path: Path, key_hex: str) -> None: ...
 
 
+class SqlCipherKeyProvider(Protocol):
+    def get_key_hex(self) -> str: ...
+
+
 def is_sqlite_database(path: Path) -> bool:
     try:
         return path.read_bytes()[: len(SQLITE_HEADER)] == SQLITE_HEADER
@@ -176,23 +180,23 @@ class SqlCipherDatabaseResolver:
         context: RuntimeContext,
         *,
         exporter: SqlCipherExporter | None = None,
+        key_provider: SqlCipherKeyProvider | None = None,
     ) -> None:
         self.context = context
         self.exporter = exporter or SqlCipherRawExporter()
+        self.key_provider = key_provider
         self._cache: dict[Path, Path] = {}
+        self._resolved_key_hex: str | None = None
 
     def resolve(self, database_path: Path) -> Path:
         database_path = database_path.resolve()
         if is_sqlite_database(database_path):
             return database_path
 
-        key_hex = self.context.sqlcipher_key_hex.strip()
-        if not key_hex:
-            raise LookupError("Encrypted table databases require --sqlcipher-key-hex.")
-
         if database_path in self._cache:
             return self._cache[database_path]
 
+        key_hex = self._resolve_key_hex()
         output_path = (
             Path(self.context.temp_dir)
             / "SQLCipher"
@@ -201,3 +205,33 @@ class SqlCipherDatabaseResolver:
         self.exporter.export(database_path, output_path, key_hex)
         self._cache[database_path] = output_path
         return output_path
+
+    def _resolve_key_hex(self) -> str:
+        manual_key_hex = self.context.sqlcipher_key_hex.strip()
+        if manual_key_hex:
+            return manual_key_hex
+        if self._resolved_key_hex is not None:
+            return self._resolved_key_hex
+        if self.key_provider is None:
+            raise LookupError("Encrypted table databases require --sqlcipher-key-hex.")
+
+        try:
+            key_hex = self.key_provider.get_key_hex().strip()
+        except LookupError:
+            raise
+        except Exception as exc:
+            raise LookupError(
+                "Failed to resolve SQLCipher key automatically. "
+                "Pass --sqlcipher-key-hex to override."
+            ) from exc
+
+        try:
+            SqlCipherRawExporter._decode_raw_key(key_hex)
+        except SqlCipherRawExportError as exc:
+            raise LookupError(
+                "Automatic SQLCipher key must be a 64-character hex string. "
+                "Pass --sqlcipher-key-hex to override."
+            ) from exc
+
+        self._resolved_key_hex = key_hex
+        return key_hex

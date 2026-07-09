@@ -4,12 +4,17 @@ import hashlib
 import hmac
 import sqlite3
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from Crypto.Cipher import AES
 
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.http import HttpResponse
 from ba_downloader.infrastructure.extraction.table.database import TableDatabaseReader
+from ba_downloader.infrastructure.regions.jp.profile import (
+    build_table_extraction_profile,
+)
 from ba_downloader.infrastructure.storage.sqlcipher import (
     SQLITE_HEADER,
     SqlCipherDatabaseResolver,
@@ -165,6 +170,16 @@ class CopyingExporter:
         output_path.write_bytes(self.plaintext_path.read_bytes())
 
 
+class RecordingKeyProvider:
+    def __init__(self, key_hex: str = RAW_KEY_HEX) -> None:
+        self.key_hex = key_hex
+        self.calls = 0
+
+    def get_key_hex(self) -> str:
+        self.calls += 1
+        return self.key_hex
+
+
 class NoopProgress:
     def ensure_not_cancelled(self, should_stop):  # type: ignore[no-untyped-def]
         _ = should_stop
@@ -211,3 +226,162 @@ def test_sqlcipher_database_resolver_requires_key_for_encrypted_db(
 
     with pytest.raises(LookupError, match="--sqlcipher-key-hex"):
         resolver.resolve(encrypted_db)
+
+
+def test_sqlcipher_database_resolver_prefers_manual_key_over_provider(
+    tmp_path: Path,
+) -> None:
+    encrypted_db = tmp_path / "encrypted.db"
+    encrypted_db.write_bytes(b"encrypted" * 512)
+    plaintext_db = tmp_path / "plain.db"
+    _write_sqlite_db(plaintext_db)
+    exporter = CopyingExporter(plaintext_db)
+    provider = RecordingKeyProvider("11" * 32)
+
+    resolver = SqlCipherDatabaseResolver(
+        _build_context(tmp_path),
+        exporter=exporter,
+        key_provider=provider,
+    )
+
+    resolver.resolve(encrypted_db)
+
+    assert provider.calls == 0
+    assert exporter.calls[0][2] == RAW_KEY_HEX
+
+
+def test_sqlcipher_database_resolver_uses_provider_key_when_manual_key_is_missing(
+    tmp_path: Path,
+) -> None:
+    first_db = tmp_path / "first.db"
+    second_db = tmp_path / "second.db"
+    first_db.write_bytes(b"encrypted" * 512)
+    second_db.write_bytes(b"encrypted" * 512)
+    plaintext_db = tmp_path / "plain.db"
+    _write_sqlite_db(plaintext_db)
+    exporter = CopyingExporter(plaintext_db)
+    provider = RecordingKeyProvider(RAW_KEY_HEX + "\n")
+    resolver = SqlCipherDatabaseResolver(
+        _build_context(tmp_path, key_hex=""),
+        exporter=exporter,
+        key_provider=provider,
+    )
+
+    resolver.resolve(first_db)
+    resolver.resolve(second_db)
+
+    assert provider.calls == 1
+    assert [call[2] for call in exporter.calls] == [RAW_KEY_HEX, RAW_KEY_HEX]
+
+
+def test_sqlcipher_database_resolver_does_not_fetch_provider_for_plain_sqlite(
+    tmp_path: Path,
+) -> None:
+    plain_db = tmp_path / "plain.db"
+    _write_sqlite_db(plain_db)
+    provider = RecordingKeyProvider()
+    resolver = SqlCipherDatabaseResolver(
+        _build_context(tmp_path, key_hex=""),
+        key_provider=provider,
+    )
+
+    assert resolver.resolve(plain_db) == plain_db.resolve()
+    assert provider.calls == 0
+
+
+def test_sqlcipher_database_resolver_rejects_invalid_provider_key(
+    tmp_path: Path,
+) -> None:
+    encrypted_db = tmp_path / "encrypted.db"
+    encrypted_db.write_bytes(b"encrypted" * 512)
+    invalid_key = "not-a-64-hex-key"
+    resolver = SqlCipherDatabaseResolver(
+        _build_context(tmp_path, key_hex=""),
+        key_provider=RecordingKeyProvider(invalid_key),
+    )
+
+    with pytest.raises(LookupError) as exc_info:
+        resolver.resolve(encrypted_db)
+
+    message = str(exc_info.value)
+    assert "64" in message
+    assert "--sqlcipher-key-hex" in message
+    assert invalid_key not in message
+
+
+def test_jp_sqlcipher_key_provider_uses_runtime_http_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ba_downloader.infrastructure.regions.jp.sqlcipher_key import (
+        JP_SQLCIPHER_KEY_URL,
+        JpSqlCipherKeyProvider,
+    )
+
+    class FakeHttpClient:
+        instances: ClassVar[list[FakeHttpClient]] = []
+
+        def __init__(
+            self,
+            *,
+            proxy_url: str | None = None,
+            max_retries: int = 5,
+        ) -> None:
+            self.proxy_url = proxy_url
+            self.max_retries = max_retries
+            self.requests: list[tuple[str, str, float]] = []
+            self.closed = False
+            FakeHttpClient.instances.append(self)
+
+        def request(
+            self,
+            method: str,
+            url: str,
+            *,
+            timeout: float = 10.0,
+            **kwargs: object,
+        ) -> HttpResponse:
+            _ = kwargs
+            self.requests.append((method, url, timeout))
+            return HttpResponse(
+                status_code=200,
+                headers={"Content-Type": "text/plain; charset=utf-8"},
+                content=f"{RAW_KEY_HEX}\n".encode(),
+                url=url,
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.regions.jp.sqlcipher_key.ResilientHttpClient",
+        FakeHttpClient,
+    )
+    context = _build_context(tmp_path, key_hex="").with_updates(
+        proxy_url="http://127.0.0.1:8080",
+        max_retries=7,
+    )
+
+    key_hex = JpSqlCipherKeyProvider(context).get_key_hex()
+
+    assert key_hex == RAW_KEY_HEX
+    assert len(FakeHttpClient.instances) == 1
+    client = FakeHttpClient.instances[0]
+    assert client.proxy_url == "http://127.0.0.1:8080"
+    assert client.max_retries == 7
+    assert client.requests == [("GET", JP_SQLCIPHER_KEY_URL, 10.0)]
+    assert client.closed is True
+
+
+def test_jp_table_profile_configures_sqlcipher_key_provider(
+    tmp_path: Path,
+) -> None:
+    from ba_downloader.infrastructure.regions.jp.sqlcipher_key import (
+        JpSqlCipherKeyProvider,
+    )
+
+    profile = build_table_extraction_profile(_build_context(tmp_path, key_hex=""))
+
+    resolver = profile.database_path_resolver
+    assert isinstance(resolver, SqlCipherDatabaseResolver)
+    assert isinstance(resolver.key_provider, JpSqlCipherKeyProvider)

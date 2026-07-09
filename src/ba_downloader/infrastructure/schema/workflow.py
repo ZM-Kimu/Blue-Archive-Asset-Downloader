@@ -87,16 +87,11 @@ class SchemaWorkflow(SchemaWorkflowPort):
         sidecar_path = dumps_dir / "memorypack_formatters.json"
         try:
             self.logger.info("Building MemoryPack semantic formatter sidecar...")
-            updated = SupplementalMemoryPackFormatterBuilder(
+            SupplementalMemoryPackFormatterBuilder(
                 dump_cs_path=dump_cs_file_path,
                 memorypack_data_dir=memorypack_data_dir,
                 sidecar_path=sidecar_path,
             ).build()
-            if not updated:
-                self.logger.warn(
-                    "MemoryPack semantic formatter sidecar was not updated; "
-                    "advanced JP table semantics may fall back to raw payloads."
-                )
         except Exception as exc:  # pylint: disable=broad-exception-caught
             self.logger.warn(
                 f"MemoryPack semantic formatter sidecar generation failed: {exc}"
