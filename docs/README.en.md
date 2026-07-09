@@ -187,7 +187,7 @@ ba-downloader download --region jp --platform windows
 
 ## About
 
-Blue Archive Asset Downloader v2.1.0.
+Blue Archive Asset Downloader v2.2.0.
 
 Technical support: Codex
 

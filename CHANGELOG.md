@@ -2,9 +2,38 @@
 
 ## Unreleased
 
+- No unreleased changes recorded.
+
+
+## v2.2.0 - 2026-07-09
+
+### Features
+- enable CN advanced search and JP SQLCipher key fallback
+- enable CharacterIndex-backed filtered extraction
+- support encrypted runtime and CharacterIndex data
+
 ### Fixes
-- restore JP Android libil2cpp from encrypted runtime payloads
-- support JP SQLCipher raw-key table database export
+- address validation failures
+- retry truncated Cpp2IL fallback archive
+
+### Refactors
+- consolidate region profiles and character index
+- consolidate profile-owned workflows
+- migrate metadata recovery backend
+- split jp profile from legacy paths
+- reduce workflow coupling
+- compose table source for CharacterIndex data
+- move region workflow rules into policies
+- remove unused internal helpers
+
+### Documentation
+- align search and CharacterIndex command docs
+
+### Tests
+- consolidate shared fixtures
+
+### Other Changes
+- Merge pull request #11 from ZM-Kimu/fix/cpp2il-fallback-archive-retry
 
 
 ## v2.1.0 - 2026-05-26
