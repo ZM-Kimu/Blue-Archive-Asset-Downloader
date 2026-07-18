@@ -9,11 +9,30 @@ from ba_downloader.infrastructure.extraction.character.index_composer import (
     append_names,
 )
 from ba_downloader.infrastructure.extraction.character.index_sources import (
+    CharacterIndexSourceLoader,
     CharacterIndexSources,
+    DatabaseIndexSourceSpec,
+)
+
+CN_DATABASE_INDEX_SOURCE_SPEC = DatabaseIndexSourceSpec(
+    scenario_table="ScenarioCharacterNameDBSchema",
+    character_table="CharacterDBSchema",
+    profile_table="LocalizeCharProfileDBSchema",
+    costume_table="CostumeDBSchema",
+    shop_recruit_table="ShopRecruitDBSchema",
+    localize_gacha_table="LocalizeGachaShopDBSchema",
 )
 
 
-class CnArchiveCharacterIndexEnricher:
+class CnDbCharacterIndexSourceProfile:
+    def load(
+        self,
+        loader: CharacterIndexSourceLoader,
+    ) -> CharacterIndexSources:
+        return loader.load_database_index_sources(CN_DATABASE_INDEX_SOURCE_SPEC)
+
+
+class CnCharacterIndexEnricher:
     def enrich(
         self,
         composer: CharacterIndexComposer,

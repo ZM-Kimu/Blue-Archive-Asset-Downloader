@@ -28,6 +28,9 @@ from ba_downloader.infrastructure.extraction.table.models import ProcessedTableA
 from ba_downloader.infrastructure.regions.archive_character_index import (
     ArchiveCharacterIndexSourceProfile,
 )
+from ba_downloader.infrastructure.regions.cn.character_index import (
+    CnDbCharacterIndexSourceProfile,
+)
 from ba_downloader.infrastructure.regions.jp.character_index import (
     JpDbCharacterIndexSourceProfile,
 )
@@ -157,56 +160,131 @@ def _compose_index_entries(
     )
 
 
-def test_cn_index_sources_warn_but_continue_when_profile_bytes_missing(
+def test_cn_index_sources_read_excel_db_schemas_without_archive_zip(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     logger = RecordingLogger()
     context = _build_context(tmp_path, region="cn")
-    loader = CharacterIndexSourceLoader(FakeTableSource(tmp_path), logger)
-
-    monkeypatch.setattr(
-        loader,
-        "extract_scenario_db",
-        lambda: [{"Bytes": {"NameJP": "Arona", "SmallPortrait": "Portrait_Arona"}}],
+    table_source = FakeTableSource(
+        tmp_path,
+        {
+            "ScenarioCharacterNameDBSchema": [
+                {
+                    "CharacterName": 1001,
+                    "NameKR": "阿洛娜",
+                    "SmallPortrait": "Portrait_Arona",
+                }
+            ],
+            "CharacterDBSchema": [
+                {
+                    "Id": 1001,
+                    "DevName": "Arona",
+                    "School": "SCHALE",
+                    "Club": "System",
+                }
+            ],
+            "LocalizeCharProfileDBSchema": [
+                {
+                    "CharacterId": 1001,
+                    "FullNameKr": "阿洛娜",
+                    "CharacterVoiceKr": "Kohara Konomi",
+                    "CharacterAgeKr": "16",
+                    "CharHeightKr": "152cm",
+                    "BirthDay": "1/1",
+                    "IllustratorNameKr": "DoReMi",
+                }
+            ],
+            "CostumeDBSchema": [
+                {
+                    "CostumeGroupId": 1001,
+                    "DevName": "Arona_default",
+                    "TextureDir": "Student_Portrait_Arona",
+                }
+            ],
+            "ShopRecruitDBSchema": [{"Id": 100, "InfoCharacterId": [1001]}],
+            "LocalizeGachaShopDBSchema": [
+                {"GachaShopId": 100, "SubTitleKr": "【特别】阿洛娜招募概率提升!"}
+            ],
+        },
     )
+    loader = CharacterIndexSourceLoader(table_source, logger)
     monkeypatch.setattr(
         loader,
         "extract_excel_bytes_files",
-        lambda: {
-            "characterexceltable.bytes": tmp_path / "characterexceltable.bytes",
-        },
-    )
-    monkeypatch.setattr(
-        loader,
-        "load_excel_payloads",
-        lambda paths: {
-            "characterexceltable.bytes": [{"Id": 1001, "DevName": "Arona"}],
-        },
+        lambda: pytest.fail("CN character index should read ExcelDB schema tables"),
     )
 
     sources = loader.load(
         _service_profile(context.region).character_index_source_profile_factory(context)
     )
 
-    assert sources.scenario_db
-    assert sources.char_excel == [{"Id": 1001, "DevName": "Arona"}]
-    assert logger.by_level("warn") == [
-        "Some character index sources are missing or invalid: localizecharprofileexceltable.bytes. Character index might be incomplete."
+    assert table_source.table_names == [
+        "ScenarioCharacterNameDBSchema",
+        "CharacterDBSchema",
+        "LocalizeCharProfileDBSchema",
+        "CostumeDBSchema",
+        "ShopRecruitDBSchema",
+        "LocalizeGachaShopDBSchema",
     ]
+    assert sources.scenario_db == [
+        {
+            "Bytes": {
+                "CharacterName": 1001,
+                "NameKR": "阿洛娜",
+                "SmallPortrait": "Portrait_Arona",
+            }
+        }
+    ]
+    assert sources.char_excel == [
+        {
+            "Id": 1001,
+            "DevName": "Arona",
+            "School": "SCHALE",
+            "Club": "System",
+        }
+    ]
+    assert sources.char_profile == [
+        {
+            "CharacterId": 1001,
+            "FullNameKr": "阿洛娜",
+            "CharacterVoiceKr": "Kohara Konomi",
+            "CharacterAgeKr": "16",
+            "CharHeightKr": "152cm",
+            "BirthDay": "1/1",
+            "IllustratorNameKr": "DoReMi",
+        }
+    ]
+    assert sources.costume_excel == [
+        {
+            "CostumeGroupId": 1001,
+            "DevName": "Arona_default",
+            "TextureDir": "Student_Portrait_Arona",
+        }
+    ]
+    assert sources.shop_recruit == [{"Id": 100, "InfoCharacterId": [1001]}]
+    assert sources.localize_gacha == [
+        {"GachaShopId": 100, "SubTitleKr": "【特别】阿洛娜招募概率提升!"}
+    ]
+    assert logger.by_level("warn") == []
 
 
-def test_index_source_profile_selects_jp_db_and_archive_sources(
+def test_index_source_profile_selects_region_owned_sources(
     tmp_path: Path,
 ) -> None:
     jp_context = _build_context(tmp_path, region="jp")
     cn_context = _build_context(tmp_path, region="cn")
+    gl_context = _build_context(tmp_path, region="gl")
     assert isinstance(
         _service_profile("jp").character_index_source_profile_factory(jp_context),
         JpDbCharacterIndexSourceProfile,
     )
     assert isinstance(
         _service_profile("cn").character_index_source_profile_factory(cn_context),
+        CnDbCharacterIndexSourceProfile,
+    )
+    assert isinstance(
+        _service_profile("gl").character_index_source_profile_factory(gl_context),
         ArchiveCharacterIndexSourceProfile,
     )
 
@@ -348,30 +426,46 @@ def test_jp_index_extract_excel_fails_when_all_db_sources_are_missing(
         )
 
 
-def test_cn_index_extract_excel_fails_when_all_core_sources_are_missing(
-    monkeypatch: pytest.MonkeyPatch,
+def test_cn_index_sources_warn_with_schema_name_when_source_is_missing(
+    tmp_path: Path,
+) -> None:
+    logger = RecordingLogger()
+    context = _build_context(tmp_path, region="cn")
+    loader = CharacterIndexSourceLoader(
+        FakeTableSource(
+            tmp_path,
+            {
+                "ScenarioCharacterNameDBSchema": [
+                    {
+                        "CharacterName": 1001,
+                        "NameKR": "阿洛娜",
+                        "SmallPortrait": "Portrait_Arona",
+                    }
+                ],
+                "CharacterDBSchema": [{"Id": 1001, "DevName": "Arona"}],
+            },
+        ),
+        logger,
+    )
+
+    sources = loader.load(
+        _service_profile(context.region).character_index_source_profile_factory(context)
+    )
+
+    assert sources.scenario_db
+    assert sources.char_excel == [{"Id": 1001, "DevName": "Arona"}]
+    assert logger.by_level("warn") == [
+        "Some character index sources are missing or invalid: LocalizeCharProfileDBSchema. Character index might be incomplete."
+    ]
+
+
+def test_cn_index_sources_fail_when_all_core_db_sources_are_missing(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="cn")
     loader = CharacterIndexSourceLoader(
         FakeTableSource(tmp_path),
         RecordingLogger(),
-    )
-
-    monkeypatch.setattr(
-        loader,
-        "extract_scenario_db",
-        lambda: [],
-    )
-    monkeypatch.setattr(
-        loader,
-        "extract_excel_bytes_files",
-        lambda: {},
-    )
-    monkeypatch.setattr(
-        loader,
-        "load_excel_payloads",
-        lambda paths: {},
     )
 
     with pytest.raises(

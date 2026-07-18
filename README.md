@@ -168,12 +168,11 @@ ba-downloader download --region jp --platform windows
 ## 使用须知
 - `--platform` 仅对 JP 生效，用于指定 JP 平台的资源。
 - `--version` 仅对 GL 生效；CN/JP 会自动解析当前可用版本。
-- CN dump 会自动使用 CN metadata recovery backend，并保持输出 `<Extracted>/Dumps/dump.cs` 与 `memorypack_formatters.json`。
 - JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
 - Bundle文件的提取基于UnityPy，如希望更加详细的内容请使用[AssetRipper](https://github.com/AssetRipper/AssetRipper)或[AssetStudio](https://github.com/Perfare/AssetStudio)
-- 由于解开方法经常变更，各类接口会频繁变动，不建议直接调用内部方法。
+- 由于各类接口频繁变动，不建议直接调用内部方法。
 
 ## TODO
 - `v2.3.0`

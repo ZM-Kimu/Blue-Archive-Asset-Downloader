@@ -15,12 +15,17 @@ from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
 )
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.codegen_registration import (
     LoadSegment,
+    resolve_module_names,
 )
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.parameters import (
     CnMetadataRecoveryParameters,
+    resolve_attribute_blob_start,
     resolve_exported_type_definitions_offset,
     resolve_hidden_tail_offset,
     resolve_metadata_registration_va,
+)
+from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.standard_metadata import (
+    ROW_SIZES,
 )
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.standardize import (
     CUSTOM_SECTIONS,
@@ -60,6 +65,25 @@ class FakeRelocatedElf:
 
     def read_u64_offset(self, offset: int) -> int:
         return struct.unpack_from("<Q", self.data, offset)[0]
+
+
+class FakeCodegenMetadata:
+    def __init__(self, counts_by_name: dict[str, int]) -> None:
+        self.images = [{"name": name} for name in counts_by_name]
+        self.image_method_counts = list(counts_by_name.values())
+
+
+def _fake_codegen_module(
+    index: int,
+    method_count: int,
+    decoded_name: str | None = None,
+) -> dict[str, object]:
+    return {
+        "codegen_index": index,
+        "decoded_name": decoded_name,
+        "name_mode": "plain" if decoded_name else "unresolved",
+        "methodPointerCount": method_count,
+    }
 
 
 def _metadata_with_custom_sections(
@@ -160,6 +184,57 @@ def test_cn_metadata_recovery_resolves_exported_type_offset_from_tail_end() -> N
     )
 
 
+def test_cn_metadata_recovery_resolves_attribute_blob_start_from_assembly_summary() -> (
+    None
+):
+    tail_offset = 0x300
+    assembly_summary_offset = 0x180
+    metadata = bytearray(
+        _metadata_with_custom_sections(
+            {
+                CUSTOM_SECTIONS["assemblySummary"]: (assembly_summary_offset, 0xC0),
+            },
+            size=tail_offset + 0x400,
+        )
+    )
+    struct.pack_into(
+        "<16I",
+        metadata,
+        assembly_summary_offset,
+        0,
+        0,
+        0,
+        2,
+        *([0] * 12),
+    )
+    struct.pack_into(
+        "<16I",
+        metadata,
+        assembly_summary_offset + 0x40,
+        0,
+        0,
+        2,
+        5,
+        *([0] * 12),
+    )
+    struct.pack_into(
+        "<16I",
+        metadata,
+        assembly_summary_offset + 0x80,
+        0,
+        0,
+        7,
+        3,
+        *([0] * 12),
+    )
+
+    assert resolve_attribute_blob_start(bytes(metadata), tail_offset) == 0x28
+
+
+def test_cn_metadata_recovery_uses_twelve_byte_field_marshaled_size_rows() -> None:
+    assert ROW_SIZES["fieldMarshaledSizes"] == 0x0C
+
+
 def test_cn_metadata_recovery_scans_metadata_registration_va() -> None:
     data = bytearray(0x2000)
     _pack_metadata_registration(data, 0x100, type_count=2, type_ptrs_va=0x1400)
@@ -201,6 +276,48 @@ def test_cn_metadata_recovery_metadata_registration_scan_rejects_ambiguous_candi
 
     with pytest.raises(ValueError, match="ambiguous"):
         resolve_metadata_registration_va(FakeRelocatedElf(bytes(data)), 6)
+
+
+def test_cn_metadata_recovery_rejects_stale_manual_codegen_module_name() -> None:
+    metadata = FakeCodegenMetadata(
+        {
+            "System.IO.Compression.dll": 31,
+            "System.Numerics.dll": 200,
+        }
+    )
+    modules = [_fake_codegen_module(36, 200)]
+
+    resolved = resolve_module_names(modules, metadata)  # type: ignore[arg-type]
+
+    assert resolved[0]["resolved_name"] == "System.Numerics.dll"
+    assert {
+        "name": "System.IO.Compression.dll",
+        "resolution": "manual_index_count_context",
+        "reason": "method_count_mismatch",
+        "metadata_method_count": 31,
+        "module_methodPointerCount": 200,
+    } in resolved[0]["rejected_names"]
+
+
+def test_cn_metadata_recovery_resolves_cn_3_0_2_ambiguous_codegen_modules() -> None:
+    metadata = FakeCodegenMetadata(
+        {
+            "MX.Shader.dll": 3,
+            "UnityEngine.ImageConversionModule.dll": 3,
+            "__Generated": 3,
+        }
+    )
+    modules = [
+        _fake_codegen_module(21, 3),
+        _fake_codegen_module(55, 3),
+        _fake_codegen_module(96, 3, "__Generated"),
+    ]
+
+    resolved = resolve_module_names(modules, metadata)  # type: ignore[arg-type]
+
+    assert resolved[0]["resolved_name"] == "MX.Shader.dll"
+    assert resolved[1]["resolved_name"] == "UnityEngine.ImageConversionModule.dll"
+    assert resolved[2]["resolved_name"] == "__Generated"
 
 
 def test_cn_metadata_recovery_pipeline_runs_steps_in_memory(tmp_path: Path) -> None:

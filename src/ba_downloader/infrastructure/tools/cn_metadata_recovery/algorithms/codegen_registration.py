@@ -14,31 +14,34 @@ STANDARD_HEADER_ORDER_V27_2 = HEADER_V27_2
 
 CODE_REG_STRUCT_QWORDS_V27_2 = 15
 CODEGEN_MODULE_QWORDS_V27_2 = 18
-MANUAL_NAME_BY_CODEGEN_INDEX = {
-    # These entries have protected moduleName strings in the current CN metadata recovery sample.
-    # The mapping is resolved by method-pointer count plus surrounding clear names
-    # in the real codegen module pointer list.
-    0: "Animancer.dll",
-    1: "Animancer.FSM.dll",
-    2: "Antlr3.Runtime.dll",
-    3: "AutoMapper.dll",
-    8: "BlueArchive.System.dll",
-    10: "CommunityToolkit.HighPerformance.dll",
-    22: "MX.Shader.dll",
-    23: "MackySoft.SerializeReferenceExtensions.dll",
-    31: "System.dll",
-    36: "System.IO.Compression.dll",
-    46: "UnityEngine.AnimationModule.dll",
-    54: "UnityEngine.InputLegacyModule.dll",
-    63: "UnityEngine.SubsystemsModule.dll",
-    65: "UnityEngine.TextRenderingModule.dll",
-    67: "UnityEngine.UI.dll",
-    73: "UnityEngine.VideoModule.dll",
-    82: "Unity.Notifications.Android.dll",
-    86: "Unity.RenderPipelines.Universal.Runtime.dll",
-    88: "Unity.Timeline.dll",
-    90: "ZString.dll",
-    97: "spine-unity.dll",
+MANUAL_NAMES_BY_CODEGEN_INDEX = {
+    # These entries have protected or misleading moduleName strings in CN samples.
+    # Treat them as candidates only: a name is accepted only when its metadata
+    # method count matches the codegen module's methodPointerCount.
+    0: ["Animancer.dll"],
+    1: ["Animancer.FSM.dll"],
+    2: ["Antlr3.Runtime.dll"],
+    3: ["AutoMapper.dll"],
+    8: ["BlueArchive.System.dll"],
+    10: ["CommunityToolkit.HighPerformance.dll"],
+    21: ["MX.Shader.dll"],
+    22: ["MX.Shader.dll"],
+    23: ["MackySoft.SerializeReferenceExtensions.dll"],
+    31: ["System.dll"],
+    36: ["System.IO.Compression.dll", "System.Numerics.dll"],
+    46: ["UnityEngine.AnimationModule.dll", "UnityEngine.AIModule.dll"],
+    48: ["UnityEngine.AnimationModule.dll"],
+    54: ["UnityEngine.InputLegacyModule.dll"],
+    55: ["UnityEngine.ImageConversionModule.dll"],
+    63: ["UnityEngine.SubsystemsModule.dll"],
+    65: ["UnityEngine.TextRenderingModule.dll"],
+    67: ["UnityEngine.UI.dll"],
+    73: ["UnityEngine.VideoModule.dll"],
+    82: ["Unity.Notifications.Android.dll"],
+    86: ["Unity.RenderPipelines.Universal.Runtime.dll"],
+    88: ["Unity.Timeline.dll"],
+    90: ["ZString.dll", "Unity.RenderPipelines.Core.Runtime.dll"],
+    97: ["spine-unity.dll"],
 }
 
 
@@ -401,25 +404,69 @@ def resolve_module_names(
     modules: list[dict[str, Any]], metadata: StandardMetadata
 ) -> list[dict[str, Any]]:
     names_by_count: dict[int, list[str]] = {}
+    count_by_name: dict[str, int] = {}
     for image, method_count in zip(
         metadata.images,
         metadata.image_method_counts,
         strict=True,
     ):
-        names_by_count.setdefault(method_count, []).append(image["name"])
+        image_name = str(image["name"])
+        names_by_count.setdefault(method_count, []).append(image_name)
+        count_by_name[image_name] = method_count
 
-    used = {module["decoded_name"] for module in modules if module["decoded_name"]}
+    used: set[str] = set()
+
+    def assign(module: dict[str, Any], name: str | None, resolution: str) -> bool:
+        if not name:
+            return False
+        expected_count = count_by_name.get(name)
+        actual_count = int(module["methodPointerCount"])
+        if expected_count is None:
+            module.setdefault("rejected_names", []).append(
+                {
+                    "name": name,
+                    "resolution": resolution,
+                    "reason": "not_in_metadata",
+                }
+            )
+            return False
+        if expected_count != actual_count:
+            module.setdefault("rejected_names", []).append(
+                {
+                    "name": name,
+                    "resolution": resolution,
+                    "reason": "method_count_mismatch",
+                    "metadata_method_count": expected_count,
+                    "module_methodPointerCount": actual_count,
+                }
+            )
+            return False
+        if name in used:
+            module.setdefault("rejected_names", []).append(
+                {
+                    "name": name,
+                    "resolution": resolution,
+                    "reason": "duplicate_name",
+                }
+            )
+            return False
+        module["resolved_name"] = name
+        module["resolution"] = resolution
+        used.add(name)
+        return True
+
     for module in modules:
-        if module["decoded_name"]:
-            module["resolved_name"] = module["decoded_name"]
-            module["resolution"] = module["name_mode"]
+        if assign(module, module["decoded_name"], module["name_mode"]):
             continue
 
-        manual = MANUAL_NAME_BY_CODEGEN_INDEX.get(module["codegen_index"])
-        if manual:
-            module["resolved_name"] = manual
-            module["resolution"] = "manual_index_count_context"
-            used.add(manual)
+    for module in modules:
+        if module.get("resolved_name"):
+            continue
+
+        for manual in MANUAL_NAMES_BY_CODEGEN_INDEX.get(module["codegen_index"], []):
+            if assign(module, manual, "manual_index_count_context"):
+                break
+        if module.get("resolved_name"):
             continue
 
         candidates = [
@@ -462,25 +509,26 @@ def _build_report_from_metadata(
     resolved_order = [module["resolved_name"] for module in modules]
     unresolved = [module for module in modules if not module["resolved_name"]]
     count_mismatches = []
-    if not unresolved:
-        count_by_name = {
-            image["name"]: count
-            for image, count in zip(
-                metadata.images,
-                metadata.image_method_counts,
-                strict=True,
+    count_by_name = {
+        str(image["name"]): count
+        for image, count in zip(
+            metadata.images,
+            metadata.image_method_counts,
+            strict=True,
+        )
+    }
+    for module in modules:
+        if not module["resolved_name"]:
+            continue
+        expected = count_by_name[module["resolved_name"]]
+        if expected != module["methodPointerCount"]:
+            count_mismatches.append(
+                {
+                    "name": module["resolved_name"],
+                    "metadata_method_count": expected,
+                    "module_methodPointerCount": module["methodPointerCount"],
+                }
             )
-        }
-        for module in modules:
-            expected = count_by_name[module["resolved_name"]]
-            if expected != module["methodPointerCount"]:
-                count_mismatches.append(
-                    {
-                        "name": module["resolved_name"],
-                        "metadata_method_count": expected,
-                        "module_methodPointerCount": module["methodPointerCount"],
-                    }
-                )
 
     code_reg_offset = elf_image.va_to_offset(code_reg_va)
     if code_reg_offset is None:
