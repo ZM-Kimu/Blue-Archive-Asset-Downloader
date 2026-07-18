@@ -5,6 +5,12 @@
 - No unreleased changes recorded.
 
 
+## v2.2.1 - 2026-07-18
+
+### Fixes
+- update metadata recovery and character index sources
+
+
 ## v2.2.0 - 2026-07-09
 
 ### Features

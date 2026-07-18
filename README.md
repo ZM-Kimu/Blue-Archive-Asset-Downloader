@@ -181,7 +181,7 @@ ba-downloader download --region jp --platform windows
   - 处理 GL Table 解开
   
 ## 关于项目
-Blue Archive Asset Downloader v2.2.0.
+Blue Archive Asset Downloader v2.2.1.
 
 ✨ 技术支持：Codex ✨
 
