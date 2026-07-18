@@ -29,11 +29,9 @@ from ba_downloader.infrastructure.extraction.table.payload_router import (
 from ba_downloader.infrastructure.extraction.table.profiles import (
     TableExtractionProfile,
 )
-from ba_downloader.infrastructure.regions.archive_character_index import (
-    ArchiveCharacterIndexSourceProfile,
-)
 from ba_downloader.infrastructure.regions.cn.character_index import (
-    CnArchiveCharacterIndexEnricher,
+    CnCharacterIndexEnricher,
+    CnDbCharacterIndexSourceProfile,
 )
 from ba_downloader.infrastructure.regions.cn.dump_backend import (
     CnMetadataRecoveryDumpBackend,
@@ -111,7 +109,7 @@ def build_character_index_source_profile(
     context: RuntimeContext,
 ) -> CharacterIndexSourceProfile:
     _ = context
-    return ArchiveCharacterIndexSourceProfile()
+    return CnDbCharacterIndexSourceProfile()
 
 
 def build_character_index_composition_profile(
@@ -120,5 +118,5 @@ def build_character_index_composition_profile(
     _ = context
     return CharacterIndexCompositionProfile(
         romanize_japanese_names=False,
-        enrichers=(CnArchiveCharacterIndexEnricher(),),
+        enrichers=(CnCharacterIndexEnricher(),),
     )

@@ -57,6 +57,7 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
 
         recovery_dir = base_dir / self.RECOVERY_FOLDER
         try:
+            self.logger.info("Starting CN metadata recovery.")
             recovery_result = self.recovery_pipeline.run(
                 protected_metadata=metadata_path.read_bytes(),
                 binary_path=binary_path,

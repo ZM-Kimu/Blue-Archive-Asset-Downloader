@@ -3,6 +3,10 @@
 - All code must be written in English: naming, comments, errors, CLI help, and example commands.
 - Documentation may be written in Chinese.
 
+## Project Statement
+- Any network request involved in this project must be performed with authorized approval. Network request code in this project is for learning purposes only.
+- This project only parses game assets and does not involve illegal behavior such as in-game anti-cheat bypassing.
+
 ## Workflow
 - Read relevant files/documents first, then provide a brief plan in Chinese with 3–6 bullet points.
 - During implementation, keep the code style in English and prioritize reusing existing models, ports, boundaries, and project style.

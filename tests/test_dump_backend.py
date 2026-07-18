@@ -584,6 +584,7 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
 
     assert logger.warn_messages == []
     assert logger.info_messages == [
+        "Starting CN metadata recovery.",
         "Recovered CN metadata successfully.",
         "Dumped CN metadata recovery il2cpp binary file successfully.",
     ]

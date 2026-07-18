@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 from .attribute_blob import BinaryTypes, MetadataTypeInfo, parse_attribute_blob
 from .codegen_registration import RelocatedElf
-from .standard_metadata import Section, section_map
+from .standard_metadata import Section, i32, section_map
 from .standardize import CUSTOM_SECTIONS
 
 CN_ATTRIBUTE_BLOB_START = 0x870
@@ -141,7 +141,7 @@ def resolve_exported_type_definitions_offset(
     for index in range(image_ranges.size // 0x28):
         row_offset = image_ranges.offset + index * 0x28
         values = struct.unpack_from("<10I", restored_metadata, row_offset)
-        start = struct.unpack("<i", struct.pack("<I", values[4]))[0]
+        start = i32(values[4])
         count = values[5]
         if count:
             if start < 0:
@@ -161,6 +161,37 @@ def resolve_exported_type_definitions_offset(
             f"table=0x{table_size:X} tail=0x{tail_size:X}"
         )
     return tail_size - table_size
+
+
+def resolve_attribute_blob_start(restored_metadata: bytes, tail_offset: int) -> int:
+    if tail_offset < 0 or tail_offset > len(restored_metadata):
+        raise ValueError(f"hidden tail offset is outside metadata: 0x{tail_offset:X}")
+
+    assembly_summary = _read_custom_section(
+        restored_metadata,
+        CUSTOM_SECTIONS["assemblySummary"],
+    )
+    max_end = 0
+    for index in range(assembly_summary.size // 0x40):
+        row_offset = assembly_summary.offset + index * 0x40
+        values = struct.unpack_from("<16I", restored_metadata, row_offset)
+        start = i32(values[2])
+        count = values[3]
+        if count:
+            if start < 0:
+                raise ValueError(
+                    f"assembly {index} referenced assembly range has negative start: {start}"
+                )
+            max_end = max(max_end, start + count)
+
+    blob_start = max_end * 4
+    tail_size = len(restored_metadata) - tail_offset
+    if blob_start >= tail_size:
+        raise ValueError(
+            f"resolved CN attribute blob start is outside hidden tail: "
+            f"blob_start=0x{blob_start:X} tail_size=0x{tail_size:X}"
+        )
+    return blob_start
 
 
 def _sample_type_indices(type_count: int, type_definition_count: int) -> list[int]:
@@ -357,10 +388,12 @@ def resolve_cn_metadata_recovery_parameters(
         restored_metadata,
         tail_offset,
     )
+    blob_start = resolve_attribute_blob_start(restored_metadata, tail_offset)
     parameters = CnMetadataRecoveryParameters(
         tail_offset=tail_offset,
         metadata_registration_va=metadata_registration_va,
         exported_types_offset=exported_types_offset,
+        blob_start=blob_start,
     )
     _validate_attribute_blob_start(
         restored_metadata,

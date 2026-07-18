@@ -122,7 +122,7 @@ ROW_SIZES = {
     "methods": 0x20,
     "parameterDefaultValues": 0x0C,
     "fieldDefaultValues": 0x0C,
-    "fieldMarshaledSizes": 8,
+    "fieldMarshaledSizes": 0x0C,
     "parameters": 0x0C,
     "fields": 0x0C,
     "genericParameters": 0x10,

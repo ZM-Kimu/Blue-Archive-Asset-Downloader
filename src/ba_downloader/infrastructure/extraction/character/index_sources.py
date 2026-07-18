@@ -65,6 +65,9 @@ class DatabaseIndexSourceSpec:
     scenario_table: str
     character_table: str
     profile_table: str
+    costume_table: str | None = None
+    shop_recruit_table: str | None = None
+    localize_gacha_table: str | None = None
 
     @property
     def required_sources(self) -> tuple[str, str, str]:
@@ -122,6 +125,11 @@ class CharacterIndexSourceLoader:
         scenario_db = self.extract_db_table(spec.scenario_table)
         char_excel = self.extract_db_bytes_payloads(spec.character_table)
         char_profile = self.extract_db_bytes_payloads(spec.profile_table)
+        costume_excel = self.extract_optional_db_bytes_payloads(spec.costume_table)
+        shop_recruit = self.extract_optional_db_bytes_payloads(spec.shop_recruit_table)
+        localize_gacha = self.extract_optional_db_bytes_payloads(
+            spec.localize_gacha_table
+        )
 
         self.validate_index_sources(
             source_payloads={
@@ -136,9 +144,9 @@ class CharacterIndexSourceLoader:
             scenario_db=scenario_db,
             char_profile=char_profile,
             char_excel=char_excel,
-            costume_excel=[],
-            shop_recruit=[],
-            localize_gacha=[],
+            costume_excel=costume_excel,
+            shop_recruit=shop_recruit,
+            localize_gacha=localize_gacha,
         )
 
     def extract_scenario_db(self) -> list[dict[str, Any]]:
@@ -160,6 +168,17 @@ class CharacterIndexSourceLoader:
             if isinstance(payload, dict) and payload:
                 payloads.append(payload)
         return payloads
+
+    def extract_optional_db_bytes_payloads(
+        self,
+        table_name: str | None,
+    ) -> list[dict[str, Any]]:
+        if not table_name:
+            return []
+        try:
+            return self.extract_db_bytes_payloads(table_name)
+        except LookupError:
+            return []
 
     def extract_excel_bytes_files(self) -> dict[str, Path]:
         excel_folder = Path(self._table_source.table_file_folder)
