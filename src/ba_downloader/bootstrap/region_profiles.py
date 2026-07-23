@@ -183,6 +183,7 @@ def _build_gl_service_profile() -> RegionServiceProfile:
         character_index_composition_profile_factory=(
             gl_profile.build_character_index_composition_profile
         ),
+        extraction_prerequisite_factory=gl_profile.build_extraction_prerequisite,
     )
 
 

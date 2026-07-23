@@ -59,6 +59,32 @@ def test_cn_gl_table_archive_detectors_identify_shared_archive_families() -> Non
     assert is_cn_gl_table_archive_name("MGSLogicGroundData.zip")
 
 
+@pytest.mark.parametrize(
+    "archive_name",
+    [
+        "MovingAreaTestMap.zip",
+        "TrainTest_Exception.zip",
+        "DecaTest.zip",
+        "permitgametimetest.zip",
+        "Hod.zip",
+        "milleniumskyscraper_P01_obastacle_P01_LITTLE.zip",
+        "MultiFloorRaid_EN0008_Outdoor_FirstSection.zip",
+        "shanhaijingstreet_p01_n.zip",
+        "sportcenter_obstacleset_many.zip",
+    ],
+)
+def test_cn_gl_table_archive_classifier_preserves_unsupported_ground_tools(
+    archive_name: str,
+) -> None:
+    assert classify_gl_table_archive(archive_name).route_key == ROUTE_RAW
+    assert classify_cn_table_archive(archive_name).route_key == ROUTE_RAW
+
+
+def test_cn_gl_table_archive_classifier_does_not_match_unrelated_test_suffix() -> None:
+    assert classify_gl_table_archive("latest.zip").route_key == ROUTE_STANDARD
+    assert classify_cn_table_archive("latest.zip").route_key == ROUTE_STANDARD
+
+
 def test_cn_table_archive_classifier_preserves_cn_gl_archives_as_raw() -> None:
     assert (
         classify_cn_table_archive("C_sb_01_hyakkiyakomatsuri_p02_Little.zip").route_key
@@ -207,7 +233,19 @@ def test_table_extraction_profile_splits_jp_cn_and_gl_routing(tmp_path) -> None:
     assert jp_route.allow_partial_memorypack is False
     assert cn_route.codec is TablePayloadCodec.MEMORYPACK
     assert cn_route.allow_partial_memorypack is True
-    assert gl_route.codec is TablePayloadCodec.FLATBUFFER
+    assert gl_route.codec is TablePayloadCodec.MEMORYPACK
+    assert gl_route.allow_partial_memorypack is False
+    assert gl_profile.top_level_memorypack_payloads == {
+        "TableCatalog.bytes": "TableCatalog"
+    }
+    assert gl_profile.preserved_top_level_files == frozenset({"TableCatalog.hash"})
+    assert gl_profile.preserved_archive_entries == frozenset(
+        {
+            "minigamecardexceltable.bytes",
+            "minigameroadpuzzleexceltable.bytes",
+            "minigameshootingexceltable.bytes",
+        }
+    )
 
 
 def test_table_database_quotes_special_table_names(tmp_path) -> None:

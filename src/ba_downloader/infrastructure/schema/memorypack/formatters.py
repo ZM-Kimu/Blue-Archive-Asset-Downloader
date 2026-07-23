@@ -23,6 +23,7 @@ class MemoryPackFormatterDescriptor:
     formatter_type: str = ""
     formatter_token: str = ""
     tag_type: str = "int"
+    element_type: str = ""
     object_header: bool = False
     method_token: str = ""
     method_rva: str = ""
@@ -36,6 +37,8 @@ class MemoryPackFormatterDescriptor:
             return True
         if self.kind == "union":
             return bool(self.union_tags)
+        if self.kind == "collection":
+            return bool(self.element_type)
         return False
 
 
@@ -94,6 +97,7 @@ class MemoryPackFormatterRegistry:
             formatter_type=str(data.get("formatter_type", "")),
             formatter_token=str(data.get("formatter_token", "")),
             tag_type=str(data.get("tag_type", "int")),
+            element_type=str(data.get("element_type", "")),
             object_header=bool(data.get("object_header", False)),
             method_token=str(data.get("method_token", "")),
             method_rva=str(data.get("method_rva", "")),

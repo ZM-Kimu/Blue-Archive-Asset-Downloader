@@ -3,6 +3,10 @@ from ba_downloader.infrastructure.packages.android_package import (
     download_package_file,
     extract_xapk_file,
 )
+from ba_downloader.infrastructure.packages.apkpure import (
+    ApkPurePackageRelease,
+    ApkPureReleaseClient,
+)
 from ba_downloader.infrastructure.packages.jp_server_info import JPServerInfoExtractor
 from ba_downloader.infrastructure.packages.zip_range_reader import (
     ZipEntry,
@@ -12,6 +16,8 @@ from ba_downloader.infrastructure.packages.zip_range_reader import (
 )
 
 __all__ = [
+    "ApkPurePackageRelease",
+    "ApkPureReleaseClient",
     "JPServerInfoExtractor",
     "PackageArchiveError",
     "ZipEntry",

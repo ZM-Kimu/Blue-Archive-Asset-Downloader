@@ -35,6 +35,9 @@ from ba_downloader.infrastructure.extraction.table.archives import TableArchiveR
 from ba_downloader.infrastructure.extraction.table.payload_router import (
     MemoryPackTablePayloadRouter,
 )
+from ba_downloader.infrastructure.extraction.table.prerequisites import (
+    TableExtractionPrerequisite,
+)
 from ba_downloader.infrastructure.extraction.table.profiles import (
     TableExtractionProfile,
 )
@@ -44,9 +47,6 @@ from ba_downloader.infrastructure.regions.jp.catalog_metadata import (
 )
 from ba_downloader.infrastructure.regions.jp.character_index import (
     JpDbCharacterIndexSourceProfile,
-)
-from ba_downloader.infrastructure.regions.jp.prerequisites import (
-    JpTableExtractionPrerequisite,
 )
 from ba_downloader.infrastructure.regions.jp.provider import JPRegionProvider
 from ba_downloader.infrastructure.regions.jp.runtime_assets import (
@@ -70,7 +70,6 @@ JP_WORKFLOW_POLICY = RegionWorkflowPolicy(
 JP_SETTINGS_POLICY = RegionSettingsPolicy(
     include_platform_in_default_dirs=True,
     retain_sqlcipher_key_hex=True,
-    character_index_command_includes_version=False,
 )
 
 JP_TABLE_ARCHIVE_ROUTES = frozenset(
@@ -154,7 +153,11 @@ def build_extraction_prerequisite(
     schema_preparation: SchemaPreparationPort,
     logger: LoggerPort,
 ) -> ExtractionPrerequisitePort:
-    return JpTableExtractionPrerequisite(schema_preparation, logger)
+    return TableExtractionPrerequisite(
+        schema_preparation,
+        region="JP",
+        logger=logger,
+    )
 
 
 def build_catalog_metadata_policy(

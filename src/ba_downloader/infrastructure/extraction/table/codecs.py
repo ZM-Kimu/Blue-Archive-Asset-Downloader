@@ -50,6 +50,7 @@ class TablePayloadCodecAdapter:
         memorypack_data_dir: str | None = None,
         memorypack_formatter_path: str | None = None,
         payload_router: TablePayloadRouter | None = None,
+        preserved_archive_entries: frozenset[str] = frozenset(),
     ) -> None:
         self.flatbuffer_data_dir = flatbuffer_data_dir
         self.memorypack_data_dir = memorypack_data_dir or str(
@@ -62,6 +63,9 @@ class TablePayloadCodecAdapter:
         )
         self.logger = logger
         self.payload_router = payload_router or FlatBufferTablePayloadRouter()
+        self.preserved_archive_entries = {
+            Path(file_name).name.lower() for file_name in preserved_archive_entries
+        }
         self.lower_schema_registry: dict[str, Any] = {}
         self.flatbuffer_exporter: FlatBufferExporter
         self.memorypack_schema_registry = MemoryPackSchemaRegistry(types={}, enums={})
@@ -289,6 +293,9 @@ class TablePayloadCodecAdapter:
         *,
         detect_type: bool = False,
     ) -> ProcessedTableArtifact:
+        if Path(file_name).name.lower() in self.preserved_archive_entries:
+            return ProcessedTableArtifact(file_data, Path(file_name).name)
+
         if file_name.endswith(".json") and (
             json_bytes := self.process_json_file(file_data)
         ):

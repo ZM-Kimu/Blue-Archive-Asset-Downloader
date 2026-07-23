@@ -109,6 +109,12 @@ class MemoryPackEnumDescriptor:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryPackCollectionFormatterDescriptor:
+    target_type: str
+    element_type: str
+
+
+@dataclass(frozen=True, slots=True)
 class PythonTypeRender:
     annotation: str
     imports: frozenset[str]

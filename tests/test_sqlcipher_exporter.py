@@ -12,8 +12,11 @@ from Crypto.Cipher import AES
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpResponse
 from ba_downloader.infrastructure.extraction.table.database import TableDatabaseReader
+from ba_downloader.infrastructure.regions.gl.profile import (
+    build_table_extraction_profile as build_gl_table_extraction_profile,
+)
 from ba_downloader.infrastructure.regions.jp.profile import (
-    build_table_extraction_profile,
+    build_table_extraction_profile as build_jp_table_extraction_profile,
 )
 from ba_downloader.infrastructure.storage.sqlcipher import (
     SQLITE_HEADER,
@@ -25,9 +28,14 @@ from ba_downloader.infrastructure.storage.sqlcipher import (
 RAW_KEY_HEX = "00" * 32
 
 
-def _build_context(tmp_path: Path, *, key_hex: str = RAW_KEY_HEX) -> RuntimeContext:
+def _build_context(
+    tmp_path: Path,
+    *,
+    key_hex: str = RAW_KEY_HEX,
+    region: str = "jp",
+) -> RuntimeContext:
     return RuntimeContext(
-        region="jp",
+        region=region,  # type: ignore[arg-type]
         threads=1,
         version="",
         raw_dir=str(tmp_path / "Raw"),
@@ -354,7 +362,7 @@ def test_jp_sqlcipher_key_provider_uses_runtime_http_options(
             self.closed = True
 
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.jp.sqlcipher_key.ResilientHttpClient",
+        "ba_downloader.infrastructure.storage.remote_sqlcipher_key.ResilientHttpClient",
         FakeHttpClient,
     )
     context = _build_context(tmp_path, key_hex="").with_updates(
@@ -380,8 +388,24 @@ def test_jp_table_profile_configures_sqlcipher_key_provider(
         JpSqlCipherKeyProvider,
     )
 
-    profile = build_table_extraction_profile(_build_context(tmp_path, key_hex=""))
+    profile = build_jp_table_extraction_profile(_build_context(tmp_path, key_hex=""))
 
     resolver = profile.database_path_resolver
     assert isinstance(resolver, SqlCipherDatabaseResolver)
     assert isinstance(resolver.key_provider, JpSqlCipherKeyProvider)
+
+
+def test_gl_table_profile_configures_sqlcipher_key_provider(
+    tmp_path: Path,
+) -> None:
+    from ba_downloader.infrastructure.regions.gl.sqlcipher_key import (
+        GlSqlCipherKeyProvider,
+    )
+
+    profile = build_gl_table_extraction_profile(
+        _build_context(tmp_path, key_hex="", region="gl")
+    )
+
+    resolver = profile.database_path_resolver
+    assert isinstance(resolver, SqlCipherDatabaseResolver)
+    assert isinstance(resolver.key_provider, GlSqlCipherKeyProvider)

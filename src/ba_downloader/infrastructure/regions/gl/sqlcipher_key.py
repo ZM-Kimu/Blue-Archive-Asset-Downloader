@@ -2,19 +2,16 @@ from __future__ import annotations
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.storage.remote_sqlcipher_key import (
-    DEFAULT_SQLCIPHER_KEY_TIMEOUT,
     RemoteSqlCipherKeyProvider,
 )
 
-JP_SQLCIPHER_KEY_URL = "https://ba.zmkimu.com/jp"
-JP_SQLCIPHER_KEY_TIMEOUT = DEFAULT_SQLCIPHER_KEY_TIMEOUT
+GL_SQLCIPHER_KEY_URL = "https://ba.zmkimu.com/gl"
 
 
-class JpSqlCipherKeyProvider(RemoteSqlCipherKeyProvider):
+class GlSqlCipherKeyProvider(RemoteSqlCipherKeyProvider):
     def __init__(self, context: RuntimeContext) -> None:
         super().__init__(
             context,
-            region="JP",
-            endpoint=JP_SQLCIPHER_KEY_URL,
-            timeout=JP_SQLCIPHER_KEY_TIMEOUT,
+            region="GL",
+            endpoint=GL_SQLCIPHER_KEY_URL,
         )

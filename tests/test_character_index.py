@@ -25,11 +25,11 @@ from ba_downloader.infrastructure.extraction.character.index_store import (
     CharacterIndexSearcher,
 )
 from ba_downloader.infrastructure.extraction.table.models import ProcessedTableArtifact
-from ba_downloader.infrastructure.regions.archive_character_index import (
-    ArchiveCharacterIndexSourceProfile,
-)
 from ba_downloader.infrastructure.regions.cn.character_index import (
     CnDbCharacterIndexSourceProfile,
+)
+from ba_downloader.infrastructure.regions.gl.character_index import (
+    GlDbCharacterIndexSourceProfile,
 )
 from ba_downloader.infrastructure.regions.jp.character_index import (
     JpDbCharacterIndexSourceProfile,
@@ -161,7 +161,6 @@ def _compose_index_entries(
 
 
 def test_cn_index_sources_read_excel_db_schemas_without_archive_zip(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     logger = RecordingLogger()
@@ -209,12 +208,6 @@ def test_cn_index_sources_read_excel_db_schemas_without_archive_zip(
         },
     )
     loader = CharacterIndexSourceLoader(table_source, logger)
-    monkeypatch.setattr(
-        loader,
-        "extract_excel_bytes_files",
-        lambda: pytest.fail("CN character index should read ExcelDB schema tables"),
-    )
-
     sources = loader.load(
         _service_profile(context.region).character_index_source_profile_factory(context)
     )
@@ -285,12 +278,48 @@ def test_index_source_profile_selects_region_owned_sources(
     )
     assert isinstance(
         _service_profile("gl").character_index_source_profile_factory(gl_context),
-        ArchiveCharacterIndexSourceProfile,
+        GlDbCharacterIndexSourceProfile,
     )
 
 
+def test_gl_index_sources_read_excel_db_schemas_without_excel_zip(
+    tmp_path: Path,
+) -> None:
+    logger = RecordingLogger()
+    table_source = FakeTableSource(
+        tmp_path,
+        {
+            "ScenarioCharacterNameDBSchema": [
+                {
+                    "CharacterName": 1001,
+                    "NameKr": "Arona",
+                    "SmallPortrait": "Portrait_Arona",
+                }
+            ],
+            "CharacterDBSchema": [{"Id": 1001, "DevName": "Arona"}],
+            "LocalizeCharProfileDBSchema": [
+                {"CharacterId": 1001, "FullNameKr": "Arona"}
+            ],
+        },
+    )
+    context = _build_context(tmp_path, region="gl")
+    loader = CharacterIndexSourceLoader(table_source, logger)
+    sources = loader.load(
+        _service_profile(context.region).character_index_source_profile_factory(context)
+    )
+
+    assert table_source.table_names == [
+        "ScenarioCharacterNameDBSchema",
+        "CharacterDBSchema",
+        "LocalizeCharProfileDBSchema",
+    ]
+    assert sources.scenario_db[0]["Bytes"]["CharacterName"] == 1001
+    assert sources.char_excel == [{"Id": 1001, "DevName": "Arona"}]
+    assert sources.char_profile == [{"CharacterId": 1001, "FullNameKr": "Arona"}]
+    assert logger.by_level("warn") == []
+
+
 def test_jp_index_sources_read_excel_db_schemas_without_excel_zip(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     logger = RecordingLogger()
@@ -327,12 +356,6 @@ def test_jp_index_sources_read_excel_db_schemas_without_excel_zip(
     )
     context = _build_context(tmp_path, region="jp")
     loader = CharacterIndexSourceLoader(table_source, logger)
-    monkeypatch.setattr(
-        loader,
-        "extract_excel_bytes_files",
-        lambda: pytest.fail("JP character index should read ExcelDB schema tables"),
-    )
-
     sources = loader.load(
         _service_profile(context.region).character_index_source_profile_factory(context)
     )

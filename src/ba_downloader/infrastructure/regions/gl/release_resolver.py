@@ -9,27 +9,30 @@ from ba_downloader.infrastructure.packages.apkpure import (
 )
 
 
-class JPReleaseResolver:
-    PACKAGE_NAME = "com.YostarJP.BlueArchive"
+class GLReleaseResolver:
+    PACKAGE_NAME = "com.nexon.bluearchive"
 
     def __init__(self, http_client: HttpClientPort) -> None:
-        self.http_client = http_client
         self.release_client = ApkPureReleaseClient(
             http_client,
             package_name=self.PACKAGE_NAME,
         )
 
-    @classmethod
-    def parse_package_info(cls, payload: bytes) -> ApkPurePackageRelease:
-        return ApkPureReleaseClient.parse_releases(payload, cls.PACKAGE_NAME)[-1]
-
-    def get_latest_package_info(self) -> ApkPurePackageRelease:
+    def get_latest_release(self) -> ApkPurePackageRelease:
         return self.release_client.get_latest_release()
 
-    def resolve(self, context: RuntimeContext) -> ResolvedRelease:
-        package_info = self.get_latest_package_info()
+    def resolve_latest(self, context: RuntimeContext) -> ResolvedRelease:
+        release = self.get_latest_release()
         return ResolvedRelease(
             region=context.region,
-            version=package_info.version,
-            package_url=package_info.download_url,
+            version=release.version,
+            package_url=release.download_url,
+        )
+
+    def resolve_version(self, context: RuntimeContext, version: str) -> ResolvedRelease:
+        release = self.release_client.get_release(version)
+        return ResolvedRelease(
+            region=context.region,
+            version=release.version,
+            package_url=release.download_url,
         )

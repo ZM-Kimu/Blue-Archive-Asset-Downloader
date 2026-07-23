@@ -425,7 +425,7 @@ internal static class Program
         if (constructorArgs.Count < 2)
             return false;
 
-        if (constructorArgs[0] is not int tag)
+        if (!TryConvertUnionTag(constructorArgs[0], out var tag))
             return false;
 
         if (constructorArgs[1] is not string unionType || string.IsNullOrWhiteSpace(unionType))
@@ -439,6 +439,34 @@ internal static class Program
             ["union_type"] = unionType,
         };
         return true;
+    }
+
+    private static bool TryConvertUnionTag(object? value, out int tag)
+    {
+        switch (value)
+        {
+            case byte byteValue:
+                tag = byteValue;
+                return true;
+            case sbyte signedByteValue:
+                tag = signedByteValue;
+                return true;
+            case ushort ushortValue:
+                tag = ushortValue;
+                return true;
+            case short shortValue:
+                tag = shortValue;
+                return true;
+            case uint uintValue when uintValue <= int.MaxValue:
+                tag = (int)uintValue;
+                return true;
+            case int intValue:
+                tag = intValue;
+                return true;
+            default:
+                tag = 0;
+                return false;
+        }
     }
 
     private static object? ReadCustomAttributeValue(BinaryReader reader)
@@ -460,7 +488,42 @@ internal static class Program
             Il2CppTypeEnum.IL2CPP_TYPE_R8 => reader.ReadDouble(),
             Il2CppTypeEnum.IL2CPP_TYPE_STRING => ReadCustomAttributeString(reader),
             Il2CppTypeEnum.IL2CPP_TYPE_IL2CPP_TYPE_INDEX => ReadCustomAttributeTypeName(reader.BaseStream),
+            Il2CppTypeEnum.IL2CPP_TYPE_ENUM => ReadCustomAttributeEnum(reader),
             _ => throw new InvalidDataException($"Unsupported custom attribute value type: {valueType}"),
+        };
+    }
+
+    private static object ReadCustomAttributeEnum(BinaryReader reader)
+    {
+        var enumTypeIndex = ReadCompressedInt(reader.BaseStream);
+        if (enumTypeIndex < 0 || LibCpp2IlMain.Binary is null)
+            throw new InvalidDataException("Custom attribute enum type index is invalid.");
+
+        var enumType = LibCpp2IlMain.Binary.GetType(
+            Il2CppVariableWidthIndex<Il2CppType>.MakeTemporaryForFixedWidthUsage(enumTypeIndex));
+        return ReadCustomAttributePrimitiveValue(
+            reader,
+            enumType.AsClass().EnumUnderlyingType.Type);
+    }
+
+    private static object ReadCustomAttributePrimitiveValue(
+        BinaryReader reader,
+        Il2CppTypeEnum valueType)
+    {
+        return valueType switch
+        {
+            Il2CppTypeEnum.IL2CPP_TYPE_BOOLEAN => reader.ReadBoolean(),
+            Il2CppTypeEnum.IL2CPP_TYPE_CHAR => reader.ReadChar(),
+            Il2CppTypeEnum.IL2CPP_TYPE_I1 => reader.ReadSByte(),
+            Il2CppTypeEnum.IL2CPP_TYPE_U1 => reader.ReadByte(),
+            Il2CppTypeEnum.IL2CPP_TYPE_I2 => reader.ReadInt16(),
+            Il2CppTypeEnum.IL2CPP_TYPE_U2 => reader.ReadUInt16(),
+            Il2CppTypeEnum.IL2CPP_TYPE_I4 => ReadCompressedInt(reader.BaseStream),
+            Il2CppTypeEnum.IL2CPP_TYPE_U4 => ReadCompressedUInt(reader.BaseStream),
+            Il2CppTypeEnum.IL2CPP_TYPE_I8 => reader.ReadInt64(),
+            Il2CppTypeEnum.IL2CPP_TYPE_U8 => reader.ReadUInt64(),
+            _ => throw new InvalidDataException(
+                $"Unsupported custom attribute enum storage type: {valueType}"),
         };
     }
 
@@ -479,7 +542,7 @@ internal static class Program
             return "";
         var type = LibCpp2IlMain.Binary.GetType(
             Il2CppVariableWidthIndex<Il2CppType>.MakeTemporaryForFixedWidthUsage(typeIndex));
-        return CleanTypeName(type.ToString() ?? "");
+        return CleanTypeName(type.CoerceToUnderlyingTypeDefinition().FullName ?? "");
     }
 
     private static void SkipCustomAttributeMemberIndex(Stream stream)
@@ -668,14 +731,14 @@ internal static class Program
     {
         if (string.IsNullOrWhiteSpace(raw))
             return "void";
-        return Regex.Replace(raw, @"`\\d+", string.Empty).Replace('+', '.');
+        return Regex.Replace(raw, @"`\d+", string.Empty).Replace('+', '.');
     }
 
     private static string SanitizeIdentifier(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
             return "_";
-        return Regex.Replace(raw, @"`\\d+", string.Empty);
+        return Regex.Replace(raw, @"`\d+", string.Empty);
     }
 
     private static void RequireFile(string path)

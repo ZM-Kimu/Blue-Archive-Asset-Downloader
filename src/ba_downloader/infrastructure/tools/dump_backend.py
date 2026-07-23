@@ -36,6 +36,7 @@ EXPORTER_CSPROJ_TEMPLATE_PATH = (
     EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.csproj.template"
 )
 EXPORTER_PROGRAM_CS_PATH = EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.Program.cs"
+RuntimeRootResolver = Callable[[RuntimeContext], Path]
 
 
 def _read_exporter_template(template_path: Path) -> str:
@@ -201,15 +202,21 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
         http_client: HttpClientPort,
         logger: LoggerPort,
         source_resolver: Cpp2ILSourceResolver | None = None,
+        runtime_root_resolver: RuntimeRootResolver | None = None,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
         self.source_resolver = source_resolver or Cpp2ILSourceResolver(
             http_client, logger
         )
+        self.runtime_root_resolver = runtime_root_resolver
 
     def dump(self, context: RuntimeContext, output_dir: str) -> None:
-        base_dir = Path(context.temp_dir)
+        base_dir = (
+            self.runtime_root_resolver(context)
+            if self.runtime_root_resolver is not None
+            else Path(context.temp_dir)
+        )
         locator = RuntimeAssetLocator(base_dir)
         binary_path = locator.find_first(self.BINARY_CANDIDATES)
         metadata_path = locator.find_first((self.METADATA_NAME,))

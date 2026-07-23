@@ -102,6 +102,23 @@ def test_runtime_context_copies_sqlcipher_key_from_cli() -> None:
     assert runtime_context.sqlcipher_key_hex == "a" * 64
 
 
+def test_runtime_context_preserves_gl_sqlcipher_key_override() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "extract",
+            "--region",
+            "gl",
+            "-kei",
+            "a" * 64,
+        ]
+    )
+
+    runtime_context = runtime_context_from_namespace(args)
+
+    assert runtime_context.sqlcipher_key_hex == "a" * 64
+
+
 def test_runtime_context_copies_sqlcipher_key_from_short_cli_option() -> None:
     parser = build_parser()
     args = parser.parse_args(
@@ -175,8 +192,6 @@ def test_extract_cli_accepts_basic_search_option() -> None:
             "extract",
             "--region",
             "jp",
-            "--version",
-            "1.70.436321",
             "--search",
             "Shiroko",
         ]
@@ -188,6 +203,25 @@ def test_extract_cli_accepts_basic_search_option() -> None:
     assert runtime_context.advanced_search == ()
 
 
+def test_cli_rejects_removed_version_option() -> None:
+    parser = build_parser()
+
+    try:
+        parser.parse_args(
+            [
+                "sync",
+                "--region",
+                "gl",
+                "--version",
+                "1.2.3",
+            ]
+        )
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("Expected argparse to reject the removed version option.")
+
+
 def test_extract_cli_accepts_advanced_search_option() -> None:
     parser = build_parser()
     args = parser.parse_args(
@@ -195,8 +229,6 @@ def test_extract_cli_accepts_advanced_search_option() -> None:
             "extract",
             "--region",
             "jp",
-            "--version",
-            "1.70.436321",
             "--advanced-search",
             "シロコ",
         ]

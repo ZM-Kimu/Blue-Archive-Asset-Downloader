@@ -15,12 +15,12 @@ from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.pipeline import CatalogDecoder
 from ba_downloader.domain.services.catalog_pipeline import CatalogPipeline
+from ba_downloader.infrastructure.packages.apkpure import ApkPurePackageRelease
 from ba_downloader.infrastructure.regions.jp.asset_normalizer import JPAssetNormalizer
 from ba_downloader.infrastructure.regions.jp.bootstrapper import JPBootstrapper
 from ba_downloader.infrastructure.regions.jp.catalog_source import (
     JPCatalogSourceProvider,
 )
-from ba_downloader.infrastructure.regions.jp.models import APKPackageInfo
 from ba_downloader.infrastructure.regions.jp.release_resolver import JPReleaseResolver
 
 
@@ -80,10 +80,10 @@ class JPRegionProvider:
         self.bootstrapper.extract_apk_file(apk_path, context)
 
     @classmethod
-    def parse_package_info(cls, payload: bytes) -> APKPackageInfo:
+    def parse_package_info(cls, payload: bytes) -> ApkPurePackageRelease:
         return JPReleaseResolver.parse_package_info(payload)
 
-    def get_latest_package_info(self) -> APKPackageInfo:
+    def get_latest_package_info(self) -> ApkPurePackageRelease:
         return self.release_resolver.get_latest_package_info()
 
     def get_latest_version(self) -> str:
@@ -138,7 +138,6 @@ class JPRegionProvider:
 
 
 __all__ = [
-    "APKPackageInfo",
     "JPAssetNormalizer",
     "JPBootstrapper",
     "JPCatalogSourceProvider",

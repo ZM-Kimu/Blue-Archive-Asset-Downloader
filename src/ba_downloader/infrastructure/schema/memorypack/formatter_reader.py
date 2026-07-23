@@ -27,6 +27,7 @@ from ba_downloader.infrastructure.schema.memorypack.schema_reader import (
 FORMATTER_KIND_HANDLERS = {
     "union": "_read_formatter_union",
     "object": "_read_formatter_members",
+    "collection": "_read_formatter_collection",
 }
 _UNHANDLED = object()
 
@@ -47,7 +48,7 @@ class FormatterDrivenReader:
         formatter_registry: MemoryPackFormatterRegistry,
         *,
         ensure_consumed: bool = True,
-    ) -> dict[str, Any]:
+    ) -> Any:
         result = self._read_formatter_object(
             root_type,
             schema_registry,
@@ -65,7 +66,7 @@ class FormatterDrivenReader:
         root_type: str,
         schema_registry: MemoryPackSchemaRegistry,
         formatter_registry: MemoryPackFormatterRegistry,
-    ) -> dict[str, Any]:
+    ) -> Any:
         formatter = formatter_registry.resolve(root_type)
         if formatter is None or not formatter.is_available:
             raise ValueError(
@@ -79,6 +80,23 @@ class FormatterDrivenReader:
             )
         handler = getattr(self, handler_name)
         return handler(formatter, schema_registry, formatter_registry)
+
+    def _read_formatter_collection(
+        self,
+        formatter: MemoryPackFormatterDescriptor,
+        schema_registry: MemoryPackSchemaRegistry,
+        formatter_registry: MemoryPackFormatterRegistry,
+    ) -> list[Any] | None:
+        if not formatter.element_type:
+            raise ValueError(
+                f"MemoryPack collection element type is unavailable for "
+                f"{formatter.target_type}."
+            )
+        return self._read_sequence(
+            formatter.element_type,
+            schema_registry,
+            formatter_registry,
+        )
 
     def _read_formatter_union(
         self,
@@ -214,6 +232,8 @@ class FormatterDrivenReader:
             return self._read_vector2()
         if normalized == "UnityEngine.Vector3":
             return self._read_vector3()
+        if normalized.rsplit(".", maxsplit=1)[-1] == "Hash64":
+            return {"Hash": self._cursor.read_uint64()}
         if normalized.rsplit(".", maxsplit=1)[-1] == "ShapeSpecification":
             return self._read_shape_specification()
         return _UNHANDLED

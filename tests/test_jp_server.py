@@ -380,7 +380,7 @@ def test_parse_package_info_prefers_highest_version() -> None:
 
 
 def test_parse_package_info_raises_for_invalid_payload() -> None:
-    with pytest.raises(LookupError, match="PureAPK"):
+    with pytest.raises(LookupError, match="APKPure"):
         JPRegionProvider.parse_package_info(b"invalid payload")
 
 

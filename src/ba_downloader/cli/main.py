@@ -63,12 +63,6 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         help="Concurrent download or extraction worker count.",
     )
     parser.add_argument(
-        "--version",
-        "-v",
-        default="",
-        help="Resource version. Effective for GL only; JP resolves the latest version.",
-    )
-    parser.add_argument(
         "--raw-dir",
         "-rd",
         default="RawData",
@@ -117,7 +111,7 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         default="",
         help=(
             "SQLCipher raw key override as 64 hex characters; "
-            "JP fetches the default key when omitted."
+            "GL and JP fetch their default keys when omitted."
         ),
     )
     parser.add_argument(
@@ -209,7 +203,7 @@ def runtime_context_from_namespace(args: argparse.Namespace) -> RuntimeContext:
     settings = AppSettings(
         region=region,
         threads=args.threads,
-        version=args.version,
+        version="",
         raw_dir=args.raw_dir,
         extract_dir=args.extract_dir,
         temp_dir=args.temp_dir,

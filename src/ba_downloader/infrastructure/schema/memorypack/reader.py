@@ -44,7 +44,7 @@ class MemoryPackReader(MemoryPackCursor):
         formatter_registry: MemoryPackFormatterRegistry,
         *,
         ensure_consumed: bool = True,
-    ) -> dict[str, Any]:
+    ) -> Any:
         return self._formatter_reader.read_object(
             root_type,
             schema_registry,

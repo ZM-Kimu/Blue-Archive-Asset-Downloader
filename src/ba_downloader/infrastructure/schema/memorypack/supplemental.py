@@ -40,11 +40,18 @@ class SupplementalMemoryPackFormatterBuilder:
         self.schema_registry = MemoryPackSchemaRegistry.from_directory(
             self.memorypack_data_dir,
         )
+        parser = MemoryPackCSParser(str(self.dump_cs_path))
+        self.collection_formatters = parser.parse_collection_formatters()
+        self.formatter_layout_types = {
+            descriptor.full_name: descriptor
+            for descriptor in parser.parse_formatter_layout_types()
+        }
 
     def build(self) -> bool:
         data = self._load_sidecar()
         formatter_map = self._formatter_map(data)
         changed = self._merge_union_attribute_sidecar(formatter_map)
+        changed = self._merge_collection_formatters(formatter_map) or changed
 
         for target_type in sorted(self.schema_registry.types):
             formatter = formatter_map.get(target_type)
@@ -66,6 +73,24 @@ class SupplementalMemoryPackFormatterBuilder:
             return False
 
         self._write_sidecar(formatter_map)
+        return changed
+
+    def _merge_collection_formatters(
+        self,
+        formatter_map: dict[str, dict[str, Any]],
+    ) -> bool:
+        changed = False
+        for descriptor in self.collection_formatters:
+            formatter = {
+                "target_type": descriptor.target_type,
+                "kind": "collection",
+                "element_type": descriptor.element_type,
+                "source": "KeyedCollection base type",
+            }
+            if formatter_map.get(descriptor.target_type) == formatter:
+                continue
+            formatter_map[descriptor.target_type] = formatter
+            changed = True
         return changed
 
     def _load_sidecar(self) -> dict[str, Any]:
@@ -212,10 +237,15 @@ class SupplementalMemoryPackFormatterBuilder:
         seen.add(target_type)
 
         schema_type = self.schema_registry.resolve_type(target_type)
-        if schema_type is None:
+        descriptor = self.formatter_layout_types.get(target_type)
+        if schema_type is None and descriptor is None:
             return None
 
-        metadata = getattr(schema_type, "__memorypack_type__", None)
+        metadata = (
+            getattr(schema_type, "__memorypack_type__", None)
+            if schema_type is not None
+            else descriptor
+        )
         inherited: tuple[SupplementalMember, ...] = ()
         base_type = getattr(metadata, "base_type", None)
         if isinstance(base_type, str) and base_type:
@@ -223,15 +253,27 @@ class SupplementalMemoryPackFormatterBuilder:
             if base_members is not None:
                 inherited = base_members
 
-        own_members = tuple(
-            SupplementalMember(
-                name=name,
-                cs_type=member.cs_type,
-                source="generated MemoryPackData",
-                wire_type=self._wire_type(member.cs_type),
+        if schema_type is not None:
+            own_members = tuple(
+                SupplementalMember(
+                    name=name,
+                    cs_type=member.cs_type,
+                    source="generated MemoryPackData",
+                    wire_type=self._wire_type(member.cs_type),
+                )
+                for name, member, _python_type in schema_members(schema_type)
             )
-            for name, member, _python_type in schema_members(schema_type)
-        )
+        else:
+            assert descriptor is not None
+            own_members = tuple(
+                SupplementalMember(
+                    name=member.name,
+                    cs_type=member.cs_type,
+                    source="formatter-register dump layout",
+                    wire_type=self._wire_type(member.cs_type),
+                )
+                for member in descriptor.members
+            )
         return inherited + own_members
 
     def _wire_type(self, cs_type: str) -> str:

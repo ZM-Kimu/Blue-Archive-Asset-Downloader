@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from collections.abc import Callable, Mapping
 from os import path
@@ -78,6 +79,14 @@ class TableExtractor:
         )
         self.logger = logger or ConsoleLogger()
         self.payload_router = active_profile.payload_router
+        self.top_level_memorypack_payloads = {
+            Path(file_name).name.lower(): root_type
+            for file_name, root_type in active_profile.top_level_memorypack_payloads.items()
+        }
+        self.preserved_top_level_files = {
+            Path(file_name).name.lower()
+            for file_name in active_profile.preserved_top_level_files
+        }
         self.progress = TableExtractionProgress(self.logger)
         self.codec_adapter = TablePayloadCodecAdapter(
             self.flatbuffer_data_dir,
@@ -85,6 +94,7 @@ class TableExtractor:
             memorypack_data_dir=self.memorypack_data_dir,
             memorypack_formatter_path=self.memorypack_formatter_path,
             payload_router=self.payload_router,
+            preserved_archive_entries=active_profile.preserved_archive_entries,
         )
         self.database_reader = TableDatabaseReader(
             self.codec_adapter,
@@ -254,6 +264,31 @@ class TableExtractor:
         progress_callback: ProgressCallback | None = None,
         metadata: Mapping[str, object] | None = None,
     ) -> None:
+        file_name = path.basename(file_path)
+        normalized_name = file_name.lower()
+        if root_type := self.top_level_memorypack_payloads.get(normalized_name):
+            source_path = Path(self.table_file_folder) / file_path
+            try:
+                processed_file = self.process_memorypack_payload(
+                    root_type,
+                    source_path.read_bytes(),
+                    f"{Path(file_name).stem}.json",
+                )
+                self.write_processed_file(Path(self.extract_folder), processed_file)
+            except (OSError, TableProcessingError) as exc:
+                self.logger.error(f"Failed to process {file_path}: {exc}")
+            return
+
+        if normalized_name in self.preserved_top_level_files:
+            source_path = Path(self.table_file_folder) / file_path
+            output_path = Path(self.extract_folder) / file_name
+            try:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source_path, output_path)
+            except OSError as exc:
+                self.logger.error(f"Failed to preserve {file_path}: {exc}")
+            return
+
         if not file_path.endswith((".zip", ".db")):
             self.logger.warn(
                 f"The file {file_path} is not supported in current implementation."

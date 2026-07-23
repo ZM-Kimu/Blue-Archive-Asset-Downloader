@@ -1,15 +1,20 @@
 import json
 from pathlib import Path
 
-from ba_downloader.domain.models.asset import AssetType
+from ba_downloader.domain.models.asset import AssetType, ResolvedRelease
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.packages import ZipEntry
+from ba_downloader.infrastructure.packages.apkpure import ApkPureReleaseClient
 from ba_downloader.infrastructure.regions.cn.provider import CNRegionProvider
 from ba_downloader.infrastructure.regions.gl.provider import (
     GLRegionProvider,
+)
+from ba_downloader.infrastructure.regions.gl.runtime_assets import (
+    GL_RUNTIME_VERSION_FILE,
     GLRuntimeAssetPreparer,
+    resolve_gl_runtime_dir,
 )
 from support import RecordingLogger
 
@@ -86,7 +91,28 @@ def _text_response(url: str, payload: str) -> HttpResponse:
     )
 
 
-def test_gl_provider_returns_updated_context_when_version_is_missing() -> None:
+def _apkpure_response(
+    package_name: str,
+    *releases: tuple[str, str],
+) -> HttpResponse:
+    payload = b"".join(
+        package_name.encode("ascii")
+        + b"\x00"
+        + version.encode("ascii")
+        + b"\x00"
+        + download_url.encode("ascii")
+        + b"\x00"
+        for version, download_url in releases
+    )
+    return HttpResponse(
+        status_code=200,
+        headers={"Content-Type": "application/octet-stream"},
+        content=payload,
+        url=ApkPureReleaseClient.API_URL,
+    )
+
+
+def test_gl_provider_resolves_latest_apkpure_release() -> None:
     context = RuntimeContext(
         region="gl",
         threads=4,
@@ -105,9 +131,10 @@ def test_gl_provider_returns_updated_context_when_version_is_missing() -> None:
     server_url = "https://example.invalid/catalog.json"
     client = RecordingHttpClient(
         {
-            ("GET", GLRegionProvider.UPTODOWN_URL): _text_response(
-                GLRegionProvider.UPTODOWN_URL,
-                "Blue Archive Global 1.2.3",
+            ("GET", ApkPureReleaseClient.API_URL): _apkpure_response(
+                "com.nexon.bluearchive",
+                ("1.2.2", "https://download.pureapk.com/b/XAPK/old.xapk"),
+                ("1.2.3", "https://download.pureapk.com/b/XAPK/latest.xapk"),
             ),
             ("POST", GLRegionProvider.CATALOG_URL): _json_response(
                 GLRegionProvider.CATALOG_URL,
@@ -160,14 +187,14 @@ def test_gl_provider_returns_updated_context_when_version_is_missing() -> None:
     assert client.download_calls == []
     assert logger.by_level("warn") == []
     assert logger.by_level("info")[:3] == [
-        "Version not specified. Automatically fetching latest...",
+        "Automatically fetching latest package info...",
         "Current resource version: 1.2.3",
         "Pulling catalog...",
     ]
     assert logger.by_level("info")[-1].startswith("Catalog: 3 items in the catalog")
 
 
-def test_gl_provider_uses_explicit_version_without_fetching_latest() -> None:
+def test_gl_provider_replaces_stale_context_version_with_latest_release() -> None:
     context = RuntimeContext(
         region="gl",
         threads=4,
@@ -186,6 +213,10 @@ def test_gl_provider_uses_explicit_version_without_fetching_latest() -> None:
     server_url = "https://example.invalid/catalog.json"
     client = RecordingHttpClient(
         {
+            ("GET", ApkPureReleaseClient.API_URL): _apkpure_response(
+                "com.nexon.bluearchive",
+                ("1.2.3", "https://download.pureapk.com/b/XAPK/latest.xapk"),
+            ),
             ("POST", GLRegionProvider.CATALOG_URL): _json_response(
                 GLRegionProvider.CATALOG_URL,
                 {"patch": {"resource_path": server_url}},
@@ -197,8 +228,9 @@ def test_gl_provider_uses_explicit_version_without_fetching_latest() -> None:
 
     result = provider.load_catalog(context)
 
-    assert result.context.version == "9.9.9"
+    assert result.context.version == "1.2.3"
     assert [call["url"] for call in client.request_calls] == [
+        ApkPureReleaseClient.API_URL,
         GLRegionProvider.CATALOG_URL,
         server_url,
     ]
@@ -226,6 +258,10 @@ def test_gl_provider_warns_when_platform_is_explicitly_ignored() -> None:
     server_url = "https://example.invalid/catalog.json"
     client = RecordingHttpClient(
         {
+            ("GET", ApkPureReleaseClient.API_URL): _apkpure_response(
+                "com.nexon.bluearchive",
+                ("1.2.3", "https://download.pureapk.com/b/XAPK/latest.xapk"),
+            ),
             ("POST", GLRegionProvider.CATALOG_URL): _json_response(
                 GLRegionProvider.CATALOG_URL,
                 {"patch": {"resource_path": server_url}},
@@ -637,8 +673,24 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
     preparer = GLRuntimeAssetPreparer(http_client=object(), logger=NullLogger())
     calls: list[tuple[str, object]] = []
 
-    def fake_download_package_file(*_args: object, **kwargs: object) -> str:
-        calls.append(("download", kwargs["transport"]))
+    class FakeReleaseResolver:
+        def resolve_version(
+            self,
+            active_context: RuntimeContext,
+            version: str,
+        ) -> ResolvedRelease:
+            assert active_context is context
+            assert version == "1.2.3"
+            return ResolvedRelease(
+                region="gl",
+                version=version,
+                package_url="https://download.pureapk.com/b/XAPK/package.xapk",
+            )
+
+    preparer.release_resolver = FakeReleaseResolver()  # type: ignore[assignment]
+
+    def fake_download_package_file(*args: object, **_kwargs: object) -> str:
+        calls.append(("download", args[2]))
         return str(tmp_path / "package.xapk")
 
     def fake_extract_xapk_file(
@@ -649,19 +701,60 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
         extract_path.mkdir(parents=True, exist_ok=True)
         (extract_path / "libil2cpp.so").write_bytes(b"binary")
         (extract_path / "global-metadata.dat").write_bytes(b"metadata")
+        (extract_path / "globalgamemanagers").write_bytes(b"unity")
 
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.gl.provider.download_package_file",
+        "ba_downloader.infrastructure.regions.gl.runtime_assets.download_package_file",
         fake_download_package_file,
     )
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.gl.provider.extract_xapk_file",
+        "ba_downloader.infrastructure.regions.gl.runtime_assets.extract_xapk_file",
         fake_extract_xapk_file,
     )
 
     preparer.prepare(context)
 
     assert calls == [
-        ("download", "browser"),
+        (
+            "download",
+            "https://download.pureapk.com/b/XAPK/package.xapk",
+        ),
         ("extract", str(tmp_path / "package.xapk")),
     ]
+    assert (resolve_gl_runtime_dir(context) / GL_RUNTIME_VERSION_FILE).read_text(
+        encoding="utf8"
+    ) == "1.2.3"
+
+
+def test_gl_runtime_asset_preparer_reuses_matching_release(
+    tmp_path: Path,
+) -> None:
+    context = RuntimeContext(
+        region="gl",
+        threads=1,
+        version="1.2.3",
+        raw_dir="Raw",
+        extract_dir="Extracted",
+        temp_dir=str(tmp_path / "Temp"),
+        extract_while_download=False,
+        resource_type=("table",),
+        proxy_url="",
+        max_retries=1,
+        search=(),
+        advanced_search=(),
+        work_dir=str(tmp_path),
+    )
+    runtime_dir = resolve_gl_runtime_dir(context)
+    runtime_dir.mkdir(parents=True)
+    for file_name in GLRuntimeAssetPreparer.RUNTIME_FILES:
+        (runtime_dir / file_name).write_bytes(b"runtime")
+    (runtime_dir / GL_RUNTIME_VERSION_FILE).write_text("1.2.3", encoding="utf8")
+    preparer = GLRuntimeAssetPreparer(http_client=object(), logger=NullLogger())
+
+    class FailingReleaseResolver:
+        def resolve_version(self, *_args: object) -> ResolvedRelease:
+            raise AssertionError("Matching runtime assets must not fetch APKPure.")
+
+    preparer.release_resolver = FailingReleaseResolver()  # type: ignore[assignment]
+
+    preparer.prepare(context)

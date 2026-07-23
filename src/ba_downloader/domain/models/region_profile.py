@@ -20,4 +20,3 @@ class RegionWorkflowPolicy:
 class RegionSettingsPolicy:
     include_platform_in_default_dirs: bool = False
     retain_sqlcipher_key_hex: bool = False
-    character_index_command_includes_version: bool = True

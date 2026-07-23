@@ -90,7 +90,8 @@ def test_default_region_service_profiles_expose_table_and_index_policy_behavior(
 
     assert cn_route.codec is TablePayloadCodec.MEMORYPACK
     assert cn_route.allow_partial_memorypack is True
-    assert gl_route.codec is TablePayloadCodec.FLATBUFFER
+    assert gl_route.codec is TablePayloadCodec.MEMORYPACK
+    assert gl_route.allow_partial_memorypack is False
     assert jp_route.codec is TablePayloadCodec.MEMORYPACK
     assert jp_route.allow_partial_memorypack is False
     assert callable(cn.character_index_source_profile_factory(_context("cn")).load)

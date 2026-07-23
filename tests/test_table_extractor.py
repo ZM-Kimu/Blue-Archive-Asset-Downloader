@@ -956,6 +956,116 @@ def test_extract_zip_file_writes_excel_artifact(tmp_path: Path) -> None:
     assert logger.error_messages == []
 
 
+def test_gl_extract_table_decodes_catalog_and_preserves_hash(tmp_path: Path) -> None:
+    context = _build_context(tmp_path).with_updates(region="gl")
+    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    _create_flat_buffer_data_package(flatbuffer_data_dir)
+    _create_empty_memorypack_data_package(Path(context.extract_dir) / "MemoryPackData")
+    _write_memorypack_formatter_sidecar(
+        Path(context.extract_dir),
+        {
+            "version": 1,
+            "formatters": [
+                {
+                    "target_type": "TableCatalog",
+                    "kind": "object",
+                    "object_header": True,
+                    "members": [],
+                }
+            ],
+        },
+    )
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    (table_dir / "TableCatalog.bytes").write_bytes(b"\x00")
+    (table_dir / "TableCatalog.hash").write_bytes(b"catalog-v1")
+
+    logger = RecordingLogger()
+    output_dir = Path(context.extract_dir) / "Table"
+    extractor = TableExtractor(
+        str(table_dir),
+        str(output_dir),
+        str(flatbuffer_data_dir),
+        logger=logger,
+        table_profile=_table_profile(context),
+    )
+
+    extractor.extract_table("TableCatalog.bytes")
+    extractor.extract_table("TableCatalog.hash")
+
+    assert json.loads(
+        (output_dir / "TableCatalog.json").read_text(encoding="utf8")
+    ) == {"__type__": "TableCatalog"}
+    assert (output_dir / "TableCatalog.hash").read_bytes() == b"catalog-v1"
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+
+
+@pytest.mark.parametrize(
+    "entry_name",
+    [
+        "MiniGameCardExcelTable.bytes",
+        "MiniGameRoadPuzzleExcelTable.bytes",
+        "MiniGameShootingExcelTable.bytes",
+    ],
+)
+def test_gl_extract_zip_file_preserves_known_minigame_payloads(
+    tmp_path: Path,
+    entry_name: str,
+) -> None:
+    context = _build_context(tmp_path).with_updates(region="gl")
+    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    _create_flat_buffer_data_package(flatbuffer_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    with ZipFile(table_dir / "Excel.zip", "w") as archive:
+        archive.writestr(entry_name, b"raw-minigame")
+
+    logger = RecordingLogger()
+    output_dir = Path(context.extract_dir) / "Table"
+    extractor = TableExtractor(
+        str(table_dir),
+        str(output_dir),
+        str(flatbuffer_data_dir),
+        logger=logger,
+        table_profile=_table_profile(context),
+    )
+
+    extractor.extract_zip_file("Excel.zip")
+
+    assert (output_dir / "Excel" / entry_name).read_bytes() == b"raw-minigame"
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+
+
+def test_gl_extract_zip_file_preserves_test_archive_as_raw(tmp_path: Path) -> None:
+    context = _build_context(tmp_path).with_updates(region="gl")
+    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    _create_flat_buffer_data_package(flatbuffer_data_dir)
+    table_dir = Path(context.raw_dir) / "Table"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    with ZipFile(table_dir / "MovingAreaTestMap.zip", "w") as archive:
+        archive.writestr("movingareatestmap.bytes", b"raw-test-map")
+
+    logger = RecordingLogger()
+    output_dir = Path(context.extract_dir) / "Table"
+    extractor = TableExtractor(
+        str(table_dir),
+        str(output_dir),
+        str(flatbuffer_data_dir),
+        logger=logger,
+        table_profile=_table_profile(context),
+    )
+
+    extractor.extract_zip_file("MovingAreaTestMap.zip")
+
+    assert (
+        output_dir / "MovingAreaTestMap" / "movingareatestmap.bytes"
+    ).read_bytes() == b"raw-test-map"
+    assert logger.warn_messages == []
+    assert logger.error_messages == []
+
+
 def test_extract_zip_file_reports_entry_progress(tmp_path: Path) -> None:
     context = _build_context(tmp_path).with_updates(region="gl")
     flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"

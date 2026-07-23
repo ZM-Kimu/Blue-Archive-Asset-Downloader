@@ -266,6 +266,82 @@ def test_memorypack_parser_uses_fields_when_type_has_no_properties(
     ]
 
 
+def test_memorypack_parser_combines_serialized_properties_and_fields(
+    tmp_path: Path,
+) -> None:
+    dump_path = _write_dump(
+        tmp_path,
+        """// Namespace: Sample
+public class MixedLayout : MemoryPack.IMemoryPackable`1<Sample.MixedLayout>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 1 Token: 0x02000001
+{
+    // Fields
+    private System.Boolean <RandomTargetSelect>k__BackingField; // Token: 0x04000001
+    public System.Int32 TargetCount; // Token: 0x04000002
+    private System.Int32 runtimeState; // Token: 0x04000003
+    // Properties
+    public System.Boolean IsValid { get; } // Token: 0x17000001
+    public System.Boolean RandomTargetSelect { get; set; } // Token: 0x17000002
+}
+""",
+    )
+
+    descriptor = MemoryPackCSParser(str(dump_path)).parse_types()[0]
+
+    assert [member.name for member in descriptor.members] == [
+        "RandomTargetSelect",
+        "TargetCount",
+    ]
+
+
+def test_memorypack_parser_reads_keyed_collection_formatter(
+    tmp_path: Path,
+) -> None:
+    dump_path = _write_dump(
+        tmp_path,
+        """// Namespace: Sample
+public class EntityCollection : System.Collections.ObjectModel.KeyedCollection`2<System.String, Sample.Entity>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 1 Token: 0x02000001
+{
+}
+""",
+    )
+
+    descriptors = MemoryPackCSParser(str(dump_path)).parse_collection_formatters()
+
+    assert len(descriptors) == 1
+    assert descriptors[0].target_type == "Sample.EntityCollection"
+    assert descriptors[0].element_type == "Sample.Entity"
+
+
+def test_memorypack_parser_resolves_only_declared_formatter_layout_base(
+    tmp_path: Path,
+) -> None:
+    dump_path = _write_dump(
+        tmp_path,
+        """// Namespace: Sample
+public class Root : System.IComparable<Sample.Root>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 1 Token: 0x02000001
+{
+    public System.Int32 RootValue; // Token: 0x04000001
+}
+
+// Namespace: Sample
+public class Child : Sample.Root, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 2 Token: 0x02000002
+{
+    public System.Int32 ChildValue; // Token: 0x04000002
+}
+""",
+    )
+
+    descriptors = {
+        descriptor.full_name: descriptor
+        for descriptor in MemoryPackCSParser(
+            str(dump_path)
+        ).parse_formatter_layout_types()
+    }
+
+    assert descriptors["Sample.Root"].base_type is None
+    assert descriptors["Sample.Child"].base_type == "Sample.Root"
+
+
 def test_memorypack_parser_reads_enums_without_explicit_values(
     tmp_path: Path,
 ) -> None:
@@ -717,6 +793,7 @@ def test_memorypack_reader_decodes_formatter_special_wire_types(
                             {"name": "Position2D", "cs_type": "UnityEngine.Vector2"},
                             {"name": "Position3D", "cs_type": "UnityEngine.Vector3"},
                             {"name": "Marker", "cs_type": "System.Char"},
+                            {"name": "HashedId", "cs_type": "MX.Core.Services.Hash64"},
                             {
                                 "name": "UnknownEnum",
                                 "cs_type": "FlatData.UnknownEnum",
@@ -737,7 +814,7 @@ def test_memorypack_reader_decodes_formatter_special_wire_types(
     schema_registry = MemoryPackSchemaRegistry(types={}, enums={})
 
     payload = bytearray()
-    payload.append(6)
+    payload.append(7)
     payload.extend(b"\x01\x00\x00\x00\x00\x00\x00\x00")
     payload.extend((123).to_bytes(8, "little", signed=True))
     payload.extend(_f32(1.5))
@@ -746,6 +823,7 @@ def test_memorypack_reader_decodes_formatter_special_wire_types(
     payload.extend(_f32(4.5))
     payload.extend(_f32(5.5))
     payload.extend(ord("Z").to_bytes(2, "little"))
+    payload.extend((0xFEDCBA9876543210).to_bytes(8, "little"))
     payload.extend((7).to_bytes(4, "little", signed=True))
     payload.extend((2).to_bytes(4, "little", signed=True))
     payload.extend(_f32(10.0))
@@ -770,6 +848,7 @@ def test_memorypack_reader_decodes_formatter_special_wire_types(
     assert result["Position2D"] == {"x": 1.5, "y": 2.5}
     assert result["Position3D"] == {"x": 3.5, "y": 4.5, "z": 5.5}
     assert result["Marker"] == "Z"
+    assert result["HashedId"] == {"Hash": 0xFEDCBA9876543210}
     assert result["UnknownEnum"] == 7
     assert result["Shape"] == {
         "__type__": "ShapeSpecification",
@@ -920,6 +999,113 @@ public class GroundCommandSetLimitBreakGauge : MX.Logic.Battles.GroundCommand, M
     command = registry.resolve("MX.Logic.Battles.GroundCommandSetLimitBreakGauge")
     assert command is not None
     assert [member.name for member in command.members] == ["PrefabPath"]
+
+
+def test_supplemental_formatter_builder_merges_collection_and_custom_base_layout(
+    tmp_path: Path,
+) -> None:
+    dump_path = _write_dump(
+        tmp_path,
+        """// Namespace: Sample
+public class EntityCollection : System.Collections.ObjectModel.KeyedCollection`2<System.String, Sample.Entity>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 1 Token: 0x02000001
+{
+}
+
+// Namespace: Sample
+public class Root : System.IComparable<Sample.Root>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 2 Token: 0x02000002
+{
+    public System.Int32 RootValue; // Token: 0x04000001
+}
+
+// Namespace: Sample
+public class Child : Sample.Root, MemoryPack.IMemoryPackable`1<Sample.Child>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 3 Token: 0x02000003
+{
+    public System.Int32 ChildValue; // Token: 0x04000002
+}
+""",
+    )
+    memorypack_data_dir = tmp_path / "MemoryPackData"
+    parser = MemoryPackCSParser(str(dump_path))
+    CompileMemoryPackToPython(
+        parser.parse_types(),
+        str(memorypack_data_dir),
+        parser.parse_enums(),
+    ).create_schema_files()
+    sidecar_path = tmp_path / "memorypack_formatters.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "formatters": [
+                    {
+                        "target_type": "Sample.Root",
+                        "kind": "union",
+                        "tag_type": "byte",
+                        "union_tags": {"1": "Sample.Child"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf8",
+    )
+
+    SupplementalMemoryPackFormatterBuilder(
+        dump_cs_path=dump_path,
+        memorypack_data_dir=memorypack_data_dir,
+        sidecar_path=sidecar_path,
+    ).build()
+    registry = MemoryPackFormatterRegistry.from_file(sidecar_path)
+
+    collection = registry.resolve("Sample.EntityCollection")
+    assert collection is not None
+    assert collection.kind == "collection"
+    assert collection.element_type == "Sample.Entity"
+
+    child = registry.resolve("Sample.Child")
+    assert child is not None
+    assert [member.name for member in child.members] == ["RootValue", "ChildValue"]
+
+
+def test_memorypack_reader_decodes_formatter_collection(
+    tmp_path: Path,
+) -> None:
+    sidecar_path = tmp_path / "memorypack_formatters.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "formatters": [
+                    {
+                        "target_type": "Sample.EntityCollection",
+                        "kind": "collection",
+                        "element_type": "Sample.Entity",
+                    },
+                    {
+                        "target_type": "Sample.Entity",
+                        "kind": "object",
+                        "object_header": True,
+                        "members": [{"name": "Id", "cs_type": "int"}],
+                    },
+                ],
+            }
+        ),
+        encoding="utf8",
+    )
+    payload = bytearray((2).to_bytes(4, "little", signed=True))
+    for value in (11, 22):
+        payload.append(1)
+        payload.extend(value.to_bytes(4, "little", signed=True))
+
+    result = MemoryPackReader(bytes(payload)).read_formatter_object(
+        "Sample.EntityCollection",
+        MemoryPackSchemaRegistry(types={}, enums={}),
+        MemoryPackFormatterRegistry.from_file(sidecar_path),
+    )
+
+    assert result == [
+        {"__type__": "Sample.Entity", "Id": 11},
+        {"__type__": "Sample.Entity", "Id": 22},
+    ]
 
 
 def test_supplemental_formatter_builder_requires_runtime_union_sidecar(

@@ -1,15 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from ba_downloader.domain.models.region import Platform
-
-
-@dataclass(frozen=True)
-class APKPackageInfo:
-    version: str
-    download_url: str
-
 
 JP_PLATFORM_PATCH_SEGMENTS: dict[Platform, str] = {
     "windows": "Windows",

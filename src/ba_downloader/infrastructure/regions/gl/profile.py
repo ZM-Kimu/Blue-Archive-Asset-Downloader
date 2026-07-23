@@ -6,6 +6,10 @@ from ba_downloader.domain.models.region_profile import (
     SyncExtractionMode,
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.extract import (
+    ExtractionPrerequisitePort,
+    SchemaPreparationPort,
+)
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.character.index_composer import (
@@ -24,17 +28,24 @@ from ba_downloader.infrastructure.extraction.table.archive_classifier import (
 )
 from ba_downloader.infrastructure.extraction.table.archives import TableArchiveRegistry
 from ba_downloader.infrastructure.extraction.table.payload_router import (
-    FlatBufferTablePayloadRouter,
+    MemoryPackTablePayloadRouter,
+)
+from ba_downloader.infrastructure.extraction.table.prerequisites import (
+    TableExtractionPrerequisite,
 )
 from ba_downloader.infrastructure.extraction.table.profiles import (
     TableExtractionProfile,
 )
-from ba_downloader.infrastructure.regions.archive_character_index import (
-    ArchiveCharacterIndexSourceProfile,
+from ba_downloader.infrastructure.regions.gl.character_index import (
+    GlDbCharacterIndexSourceProfile,
 )
-from ba_downloader.infrastructure.regions.gl.provider import (
-    GLRegionProvider,
+from ba_downloader.infrastructure.regions.gl.provider import GLRegionProvider
+from ba_downloader.infrastructure.regions.gl.runtime_assets import (
     GLRuntimeAssetPreparer,
+    resolve_gl_runtime_dir,
+)
+from ba_downloader.infrastructure.regions.gl.sqlcipher_key import (
+    GlSqlCipherKeyProvider,
 )
 from ba_downloader.infrastructure.regions.gl.table_archives import (
     GROUND_FLATBUFFER_ARCHIVE_ROUTE,
@@ -42,14 +53,18 @@ from ba_downloader.infrastructure.regions.gl.table_archives import (
     build_gl_table_archive_handlers,
     classify_gl_table_archive,
 )
+from ba_downloader.infrastructure.storage import SqlCipherDatabaseResolver
 from ba_downloader.infrastructure.tools.dump_backend import Cpp2IlDumpCsBackend
 
 GL_WORKFLOW_POLICY = RegionWorkflowPolicy(
     prepares_schema_for_sync=True,
-    sync_extraction_mode=SyncExtractionMode.direct,
+    sync_extraction_mode=SyncExtractionMode.post_download,
+    table_extraction_prerequisite=True,
 )
-GL_SETTINGS_POLICY = RegionSettingsPolicy(character_index_command_includes_version=True)
-GL_TABLE_ARCHIVE_KINDS = frozenset(
+GL_SETTINGS_POLICY = RegionSettingsPolicy(
+    retain_sqlcipher_key_hex=True,
+)
+GL_TABLE_ARCHIVE_ROUTES = frozenset(
     {
         ROUTE_RHYTHM_BEATMAP,
         ROUTE_GROUND_GRID_PATCH,
@@ -59,6 +74,22 @@ GL_TABLE_ARCHIVE_KINDS = frozenset(
         ROUTE_STANDARD,
         GROUND_FLATBUFFER_ARCHIVE_ROUTE,
         MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE,
+    }
+)
+GL_MEMORYPACK_DB_ROOT_TYPES = {
+    "LevelSkillDataDBSchema.db": "MX.GameData.DAO.Battle.SkillLogicDAO",
+    "LogicEffectDataDBSchema.db": "MX.GameData.DAO.Battle.LogicEffectDAO",
+    "SkillVisualEffectDataDBSchema.db": "MX.AppData.DAO.Battle.SkillVisualDAO",
+}
+GL_TOP_LEVEL_MEMORYPACK_PAYLOADS = {
+    "TableCatalog.bytes": "TableCatalog",
+}
+GL_PRESERVED_TOP_LEVEL_FILES = frozenset({"TableCatalog.hash"})
+GL_PRESERVED_ARCHIVE_ENTRIES = frozenset(
+    {
+        "minigamecardexceltable.bytes",
+        "minigameroadpuzzleexceltable.bytes",
+        "minigameshootingexceltable.bytes",
     }
 )
 
@@ -81,7 +112,11 @@ def build_dumper_backend(
     http_client: HttpClientPort,
     logger: LoggerPort,
 ) -> Cpp2IlDumpCsBackend:
-    return Cpp2IlDumpCsBackend(http_client=http_client, logger=logger)
+    return Cpp2IlDumpCsBackend(
+        http_client=http_client,
+        logger=logger,
+        runtime_root_resolver=resolve_gl_runtime_dir,
+    )
 
 
 def build_table_extraction_profile(
@@ -91,10 +126,20 @@ def build_table_extraction_profile(
     return TableExtractionProfile(
         archive_registry=TableArchiveRegistry(
             classifier=classify_gl_table_archive,
-            enabled_routes=GL_TABLE_ARCHIVE_KINDS,
+            enabled_routes=GL_TABLE_ARCHIVE_ROUTES,
             handler_factory=build_gl_table_archive_handlers,
         ),
-        payload_router=FlatBufferTablePayloadRouter(),
+        payload_router=MemoryPackTablePayloadRouter(
+            GL_MEMORYPACK_DB_ROOT_TYPES,
+            allow_partial_memorypack=False,
+        ),
+        database_path_resolver=SqlCipherDatabaseResolver(
+            context,
+            key_provider=GlSqlCipherKeyProvider(context),
+        ),
+        top_level_memorypack_payloads=GL_TOP_LEVEL_MEMORYPACK_PAYLOADS,
+        preserved_top_level_files=GL_PRESERVED_TOP_LEVEL_FILES,
+        preserved_archive_entries=GL_PRESERVED_ARCHIVE_ENTRIES,
     )
 
 
@@ -102,7 +147,7 @@ def build_character_index_source_profile(
     context: RuntimeContext,
 ) -> CharacterIndexSourceProfile:
     _ = context
-    return ArchiveCharacterIndexSourceProfile()
+    return GlDbCharacterIndexSourceProfile()
 
 
 def build_character_index_composition_profile(
@@ -110,3 +155,14 @@ def build_character_index_composition_profile(
 ) -> CharacterIndexCompositionProfile:
     _ = context
     return CharacterIndexCompositionProfile(romanize_japanese_names=False)
+
+
+def build_extraction_prerequisite(
+    schema_preparation: SchemaPreparationPort,
+    logger: LoggerPort,
+) -> ExtractionPrerequisitePort:
+    return TableExtractionPrerequisite(
+        schema_preparation,
+        region="GL",
+        logger=logger,
+    )

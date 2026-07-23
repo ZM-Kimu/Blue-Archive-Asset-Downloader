@@ -21,8 +21,8 @@ from ba_downloader.domain.models.asset import (
 )
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.infrastructure.regions.jp.prerequisites import (
-    JpTableExtractionPrerequisite,
+from ba_downloader.infrastructure.extraction.table.prerequisites import (
+    TableExtractionPrerequisite,
 )
 from support import DummyCharacterIndexBuilder, RecordingLogger, StaticProvider
 
@@ -126,10 +126,7 @@ class RecordingSchemaWorkflow:
         self.calls.append("compile")
         if self.fail_on == "compile" and self.error is not None:
             raise self.error
-        flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
-        flatbuffer_data_dir.mkdir(parents=True, exist_ok=True)
-        (flatbuffer_data_dir / "__init__.py").write_text("", encoding="utf8")
-        (flatbuffer_data_dir / "_registry.py").write_text("", encoding="utf8")
+        _create_table_schema_directories(context)
 
 
 def _build_context(tmp_path: Path) -> RuntimeContext:
@@ -157,11 +154,12 @@ def _create_table_folder(context: RuntimeContext) -> None:
     (table_dir / "Excel.zip").write_bytes(b"placeholder")
 
 
-def _create_flat_buffer_data(context: RuntimeContext) -> None:
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
-    flatbuffer_data_dir.mkdir(parents=True, exist_ok=True)
-    (flatbuffer_data_dir / "__init__.py").write_text("", encoding="utf8")
-    (flatbuffer_data_dir / "_registry.py").write_text("", encoding="utf8")
+def _create_table_schema_directories(context: RuntimeContext) -> None:
+    for directory in ("FlatBufferData", "MemoryPackData"):
+        schema_dir = Path(context.extract_dir) / directory
+        schema_dir.mkdir(parents=True, exist_ok=True)
+        (schema_dir / "__init__.py").write_text("", encoding="utf8")
+        (schema_dir / "_registry.py").write_text("", encoding="utf8")
 
 
 def _create_dump_cs(context: RuntimeContext) -> None:
@@ -270,13 +268,14 @@ def _build_jp_prerequisite_service(
     *,
     fail_on: str | None = None,
     error: Exception | None = None,
-) -> JpTableExtractionPrerequisite:
-    return JpTableExtractionPrerequisite(
+) -> TableExtractionPrerequisite:
+    return TableExtractionPrerequisite(
         SchemaPreparationService(
             RecordingSchemaWorkflow(calls, fail_on=fail_on, error=error),
             RecordingRuntimeAssetPreparer(calls),
         ),
-        RecordingLogger(),
+        region="JP",
+        logger=RecordingLogger(),
     )
 
 
@@ -285,7 +284,7 @@ def test_extract_service_skips_bootstrap_when_flatbufferdata_exists(
 ) -> None:
     context = _build_context(tmp_path)
     _create_table_folder(context)
-    _create_flat_buffer_data(context)
+    _create_table_schema_directories(context)
     calls: list[str] = []
     extraction_workflow = RecordingExtractionWorkflow()
     service = ExtractAssetsUseCase(
@@ -379,14 +378,17 @@ def test_extract_service_translates_jp_bootstrap_failures_to_lookup_error(
     )
 
     with pytest.raises(
-        LookupError, match="JP table extract prerequisites were missing"
+        LookupError, match="JP table extraction prerequisites were missing"
     ) as exc_info:
         service.run(context, _build_table_metadata_resources())
 
     message = str(exc_info.value)
-    assert context.temp_dir in message
-    assert "global-metadata.dat" in message
-    assert "GameAssembly.dll" in message
+    if fail_on == "dump":
+        assert context.temp_dir in message
+        assert "global-metadata.dat" in message
+        assert "GameAssembly.dll" in message
+    else:
+        assert context.extract_dir in message
 
 
 def test_extract_service_does_not_bootstrap_when_jp_table_folder_is_missing(

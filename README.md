@@ -21,7 +21,7 @@
 
 - Bundle
 - Media
-- Table(GL尚不可用)
+- Table
 
 #### **注意**：尽管部分区域支持下载不同版本的资源，但是该程序不保证能够提取过时版本的资源文件。
 
@@ -94,7 +94,6 @@ python -m ba_downloader sync --region jp
 | -------------------------- | ---------------------- | ---------------------------------------------------------------------------------------- | ------------------ | ----------------------------- |
 | **`--region`**`*`          | `-r`                   | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                                 | 无                 | `-r jp`                       |
 | `--threads`                | `-t`                   | **同时下载或解压的线程数**                                                               | `20`               | `-t 50`                       |
-| `--version`                | `-v`                   | **需要下载的资源版本号**（仅 GL 生效；JP 不支持指定版本）                                | 无                 | `-v 1.2.3`                    |
 | `--platform`               | `-p`                   | **资源所属平台**：`windows`、`android`、`ios`（仅 JP 生效）                              | `android`          | `-p windows`                  |
 | `--raw-dir`                | `-rd`                  | **指定未处理文件的位置**                                                                 | `"RawData"`        | `-rd raw_folder`              |
 | `--extract-dir`            | `-ed`                  | **指定已提取文件的位置**                                                                 | `"Extracted"`      | `-ed output_folder`           |
@@ -135,10 +134,10 @@ python -m ba_downloader sync --region jp
   >ba-downloader sync --region jp -as cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
   >```
 
-  <!-- > global
+  > global
   >```sh
   >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ mika
-  >``` -->
+  >```
 
   > china
   >```sh
@@ -167,8 +166,7 @@ ba-downloader download --region jp --platform windows
 
 ## 使用须知
 - `--platform` 仅对 JP 生效，用于指定 JP 平台的资源。
-- `--version` 仅对 GL 生效；CN/JP 会自动解析当前可用版本。
-- JP的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本。
+- JP/GL的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
 - Bundle文件的提取基于UnityPy，如希望更加详细的内容请使用[AssetRipper](https://github.com/AssetRipper/AssetRipper)或[AssetStudio](https://github.com/Perfare/AssetStudio)
@@ -177,8 +175,7 @@ ba-downloader download --region jp --platform windows
 ## TODO
 - `v2.3.0`
   - 新 Bundle 解开器
-  - 从 launcher 取得最新可用资源
-  - 处理 GL Table 解开
+  - WebAPI/WebUI
   
 ## 关于项目
 Blue Archive Asset Downloader v2.2.1.

@@ -32,9 +32,10 @@ from ba_downloader.infrastructure.regions.cn_gl_table_archives import (
     is_eliminate_raid_archive,
     is_enemy_boss_script_archive,
     is_ground_archive,
+    is_ground_tool_archive,
     is_mgs_logic_ground_archive,
     is_numeric_stage_archive,
-    is_raw_script_test_archive,
+    is_script_test_archive,
     resolve_ground_schema_name,
 )
 
@@ -62,7 +63,8 @@ def classify_gl_table_archive(file_name: str) -> TableArchiveRoute:
     if (
         is_eliminate_raid_archive(lower_name)
         or is_enemy_boss_script_archive(lower_name)
-        or is_raw_script_test_archive(lower_name)
+        or is_ground_tool_archive(lower_name)
+        or is_script_test_archive(archive_name)
         or is_numeric_stage_archive(lower_name)
     ):
         return TableArchiveRoute(ROUTE_RAW)

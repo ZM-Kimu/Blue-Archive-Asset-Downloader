@@ -21,9 +21,7 @@ Extractable file types:
 
 - Bundle
 - Media
-- Table (GL is not available yet)
-
-#### **Note**: Although some regions support downloading resources from different versions, this program does not guarantee that outdated resource files can still be extracted.
+- Table
 
 ## Requirements
 
@@ -97,7 +95,6 @@ python -m ba_downloader sync --region jp
 | -------------------------- | ---------- | ------------------------------------------------------------------------------------------------- | ------------------- | ----------------------------- |
 | **`--region`**`*`          | `-r`       | **Server region**: `cn` (China), `gl` (Global), `jp` (Japan)                                      | None                | `-r jp`                       |
 | `--threads`                | `-t`       | **Number of concurrent download or extraction workers**                                           | `20`                | `-t 50`                       |
-| `--version`                | `-v`       | **Resource version to download** (GL only; JP does not support specifying versions)               | None                | `-v 1.2.3`                    |
 | `--platform`               | `-p`       | **Resource platform**: `windows`, `android`, `ios` (JP only)                                      | `android`           | `-p windows`                  |
 | `--raw-dir`                | `-rd`      | **Location for raw files**                                                                        | `"RawData"`         | `-rd raw_folder`              |
 | `--extract-dir`            | `-ed`      | **Location for extracted files**                                                                  | `"Extracted"`       | `-ed output_folder`           |
@@ -106,7 +103,7 @@ python -m ba_downloader sync --region jp
 | `--resource-type`          | `-rt`      | **Resource type**: `table`, `media`, `bundle`, `all`                                              | `all`               | `--resource-type media table` |
 | `--proxy`                  | `-px`      | **HTTP proxy**                                                                                    | None (system proxy) | `-px http://127.0.0.1:8080`   |
 | `--max-retries`            | `-mr`      | **Maximum retry count for failed downloads**                                                      | `5`                 | `--max-retries 3`             |
-| `--sqlcipher-key-hex`      | `-kei`     | **SQL raw key**                                                                                   | Internal/automatic  | `-kei <64hex>`                |
+| `--sqlcipher-key-hex`      | `-kei`     | **Manual SQLCipher raw key override**                                                             | Automatic for GL/JP | `-kei <64hex>`                |
 | `--search`                 | `-s`       | **Basic search**, file keywords for searching, downloading, or extracting (`sync`, `download`, and `extract` are supported) | None                | `-s aris shiroko`             |
 | `--advanced-search`        | `-as`      | **Advanced search**, character information terms (requires a .NET environment)                    | None                | `-as yume cv=小倉唯`          |
 
@@ -170,9 +167,10 @@ ba-downloader download --region jp --platform windows
 ## Notes
 
 - `--platform` only applies to JP and selects the JP resource platform.
-- `--version` only applies to GL; CN/JP automatically resolve the currently available version.
+- CN, GL, and JP automatically resolve the currently available version.
 - CN dump automatically uses the CN metadata recovery backend and keeps the `<Extracted>/Dumps/dump.cs` and `memorypack_formatters.json` outputs.
-- JP APK files come from APKPure. After the Play Store updates, APKPure may need some time to synchronize the version.
+- GL and JP APK files come from APKPure. After the Play Store updates, APKPure may need some time to synchronize the version.
+- GL and JP fetch their default SQLCipher keys automatically for encrypted table databases; use `-kei` to override the key manually.
 - Resource catalogs may be unavailable during server maintenance windows.
 - Some regions may require a proxy server to download game resources from specific servers.
 - Bundle extraction is based on UnityPy. For more detailed results, use [AssetRipper](https://github.com/AssetRipper/AssetRipper) or [AssetStudio](https://github.com/Perfare/AssetStudio).

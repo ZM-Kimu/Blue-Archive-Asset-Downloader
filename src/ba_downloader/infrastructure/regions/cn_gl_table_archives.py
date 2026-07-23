@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from os import path
 
 GROUND_GRID_SCHEMA_NAME = "GroundGridFlat.bytes"
@@ -15,7 +16,7 @@ C_SB_RAW_SCRIPT_KEYWORDS = (
     "hyakkiyakonorthtown",
     "trainroof",
 )
-RAW_SCRIPT_TEST_PREFIXES = (
+SCRIPT_TEST_ARCHIVE_PREFIXES = (
     "basementtest",
     "character_resource_",
     "charactertest",
@@ -35,11 +36,20 @@ RAW_SCRIPT_TEST_PREFIXES = (
     "playground_obstacleset_",
     "raidtest",
 )
-RAW_SCRIPT_TEST_ARCHIVE_NAMES = (
+SCRIPT_TEST_ARCHIVE_NAMES = (
     "camerarotatetest.zip",
     "changelooktargettest.zip",
     "ch0265test2.zip",
+    "decatest.zip",
+    "permitgametimetest.zip",
 )
+GROUND_TOOL_ARCHIVE_PREFIXES = (
+    "milleniumskyscraper_",
+    "multifloorraid_",
+    "shanhaijingstreet_",
+    "sportcenter_obstacleset_",
+)
+GROUND_TOOL_ARCHIVE_NAMES = frozenset({"hod.zip"})
 
 
 def is_cn_gl_table_archive_name(file_name: str) -> bool:
@@ -51,7 +61,8 @@ def is_cn_gl_table_archive_name(file_name: str) -> bool:
         or is_ground_archive(lower_name)
         or is_eliminate_raid_archive(lower_name)
         or is_enemy_boss_script_archive(lower_name)
-        or is_raw_script_test_archive(lower_name)
+        or is_ground_tool_archive(lower_name)
+        or is_script_test_archive(archive_name)
         or is_numeric_stage_archive(lower_name)
     )
 
@@ -101,11 +112,26 @@ def is_enemy_boss_script_archive(archive_name: str) -> bool:
     )
 
 
-def is_raw_script_test_archive(archive_name: str) -> bool:
+def is_script_test_archive(archive_name: str) -> bool:
+    archive_stem = path.splitext(path.basename(archive_name))[0]
+    lower_name = archive_name.lower()
+    lower_stem = archive_stem.lower()
     return (
-        archive_name.startswith(RAW_SCRIPT_TEST_PREFIXES)
-        or "obstest" in archive_name
-        or "timelinetest" in archive_name
-        or "emojitest" in archive_name
-        or archive_name in RAW_SCRIPT_TEST_ARCHIVE_NAMES
+        lower_name.startswith(SCRIPT_TEST_ARCHIVE_PREFIXES)
+        or re.search(r"(?:^|[_-])test(?:$|[_\d-])", lower_stem) is not None
+        or "Test" in archive_stem
+        or "TEST" in archive_stem
+        or "obstest" in lower_name
+        or "timelinetest" in lower_name
+        or "emojitest" in lower_name
+        or lower_name in SCRIPT_TEST_ARCHIVE_NAMES
+    )
+
+
+def is_ground_tool_archive(archive_name: str) -> bool:
+    return (
+        archive_name.startswith(
+            GROUND_TOOL_ARCHIVE_PREFIXES,
+        )
+        or archive_name in GROUND_TOOL_ARCHIVE_NAMES
     )

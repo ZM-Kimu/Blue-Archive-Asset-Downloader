@@ -86,10 +86,4 @@ class CharacterIndexSearchService:
         )
 
     def _format_character_index_command_args(self, context: RuntimeContext) -> str:
-        version_hint = ""
-        if (
-            context.version
-            and self.settings_policy.character_index_command_includes_version
-        ):
-            version_hint = f" --version {context.version}"
-        return f"--region {context.region}{version_hint}"
+        return f"--region {context.region}"

@@ -48,9 +48,7 @@ CN_WORKFLOW_POLICY = RegionWorkflowPolicy(
     prepares_schema_for_sync=True,
     sync_extraction_mode=SyncExtractionMode.post_download,
 )
-CN_SETTINGS_POLICY = RegionSettingsPolicy(
-    character_index_command_includes_version=False
-)
+CN_SETTINGS_POLICY = RegionSettingsPolicy()
 CN_TABLE_ARCHIVE_KINDS = frozenset(
     {
         ROUTE_RHYTHM_BEATMAP,

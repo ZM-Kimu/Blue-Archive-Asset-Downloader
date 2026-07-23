@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.extraction.table.archive_classifier import (
@@ -20,6 +21,9 @@ class TableExtractionProfile:
     archive_registry: TableArchiveRegistry
     payload_router: TablePayloadRouter
     database_path_resolver: DatabasePathResolver | None = None
+    top_level_memorypack_payloads: Mapping[str, str] = field(default_factory=dict)
+    preserved_top_level_files: frozenset[str] = frozenset()
+    preserved_archive_entries: frozenset[str] = frozenset()
 
 
 DEFAULT_TABLE_ARCHIVE_ROUTES = SHARED_TABLE_ARCHIVE_ROUTE_KEYS

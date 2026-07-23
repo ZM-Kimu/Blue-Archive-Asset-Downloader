@@ -66,12 +66,12 @@ def _profile(region: str):
     )
 
 
-def test_region_profile_uses_direct_extract_for_gl() -> None:
+def test_region_profile_uses_post_download_extract_for_gl() -> None:
     profile = _profile("gl")
 
     assert profile.prepares_schema_for_sync is True
-    assert profile.sync_extraction_mode is SyncExtractionMode.direct
-    assert profile.table_extraction_prerequisite is False
+    assert profile.sync_extraction_mode is SyncExtractionMode.post_download
+    assert profile.table_extraction_prerequisite is True
 
 
 def test_region_profile_uses_post_download_extract_for_cn_and_jp() -> None:
@@ -82,7 +82,7 @@ def test_region_profile_uses_post_download_extract_for_cn_and_jp() -> None:
         assert profile.sync_extraction_mode is SyncExtractionMode.post_download
 
 
-def test_region_profile_marks_only_jp_for_table_prerequisite() -> None:
+def test_region_profile_marks_gl_and_jp_for_table_prerequisite() -> None:
     assert _profile("jp").table_extraction_prerequisite is True
     assert _profile("cn").table_extraction_prerequisite is False
-    assert _profile("gl").table_extraction_prerequisite is False
+    assert _profile("gl").table_extraction_prerequisite is True

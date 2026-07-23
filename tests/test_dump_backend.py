@@ -134,7 +134,9 @@ def _create_cpp2il_tree(root: Path) -> None:
     (root / "LibCpp2IL" / "LibCpp2IL.csproj").write_text("<Project />", encoding="utf8")
 
 
-def test_default_dumper_policy_maps_regions_to_expected_backends() -> None:
+def test_default_dumper_policy_maps_regions_to_expected_backends(
+    tmp_path: Path,
+) -> None:
     logger = NullLogger()
     http_client = DummyHttpClient()
 
@@ -144,11 +146,13 @@ def test_default_dumper_policy_maps_regions_to_expected_backends() -> None:
         ),
         Cpp2IlDumpCsBackend,
     )
-    assert isinstance(
-        DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("gl").dumper_backend_factory(
-            http_client, logger
-        ),
-        Cpp2IlDumpCsBackend,
+    gl_backend = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
+        "gl"
+    ).dumper_backend_factory(http_client, logger)
+    assert isinstance(gl_backend, Cpp2IlDumpCsBackend)
+    assert gl_backend.runtime_root_resolver is not None
+    assert gl_backend.runtime_root_resolver(_build_context(tmp_path, region="gl")) == (
+        tmp_path / "Temp" / "GL_Runtime"
     )
     assert isinstance(
         DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("cn").dumper_backend_factory(
@@ -435,6 +439,9 @@ def test_cpp2il_exporter_project_targets_selected_framework(
     assert "if (options.EnableCnMetadataRecoveryShim)" in program_text
     assert "RegisterCnMetadataRecoveryShim();" in program_text
     assert "memorypack_union_attrs.json" in program_text
+    assert 'Regex.Replace(raw, @"`\\d+", string.Empty)' in program_text
+    assert "TryConvertUnionTag" in program_text
+    assert "IL2CPP_TYPE_ENUM => ReadCustomAttributeEnum(reader)" in program_text
     assert not (project_path.parent / "CnMetadataRecoveryInputShim.cs").exists()
 
 
