@@ -164,7 +164,7 @@ def _write_mftl_tara_fixture(path: Path) -> bytes:
 
 
 def test_jp_encrypted_runtime_extractor_restores_libil2cpp(tmp_path: Path) -> None:
-    source_path = tmp_path / "libgedenedo.so"
+    source_path = tmp_path / "librontatre.so"
     expected = _write_mftl_tara_fixture(source_path)
     output_path = tmp_path / "libil2cpp.so"
 
@@ -176,7 +176,7 @@ def test_jp_encrypted_runtime_extractor_restores_libil2cpp(tmp_path: Path) -> No
 def test_jp_encrypted_runtime_extractor_rejects_missing_mftl_footer(
     tmp_path: Path,
 ) -> None:
-    source_path = tmp_path / "libgedenedo.so"
+    source_path = tmp_path / "librontatre.so"
     source_path.write_bytes(b"\x7fELF" + b"\x00" * 128)
 
     with pytest.raises(JpRuntimeDecryptError, match="MFTL footer magic"):
@@ -239,13 +239,13 @@ def test_jp_runtime_preparer_keeps_existing_libil2cpp(tmp_path: Path) -> None:
     assert prepared.root_dir == (Path(context.temp_dir) / context.version / "Runtime")
 
 
-def test_jp_runtime_preparer_restores_libil2cpp_from_libgedenedo(
+def test_jp_runtime_preparer_restores_libil2cpp_from_librontatre(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
     _write_jp_package_runtime(
         context,
-        binary_name="libgedenedo.so",
+        binary_name="librontatre.so",
         binary_data=b"encrypted",
     )
     extractor = RecordingRuntimeExtractor([])
@@ -257,7 +257,7 @@ def test_jp_runtime_preparer_restores_libil2cpp_from_libgedenedo(
 
     assert len(extractor.calls) == 1
     source_path, output_path = extractor.calls[0]
-    assert source_path.name == "libgedenedo.so"
+    assert source_path.name == "librontatre.so"
     assert output_path.name == "libil2cpp.so"
     assert source_path.parent == output_path.parent
     assert prepared.binary_path.read_bytes() == b"\x7fELFrestored"

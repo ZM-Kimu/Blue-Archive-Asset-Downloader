@@ -261,7 +261,7 @@ class RuntimeExtractor(Protocol):
 
 
 class JPRuntimeAssetPreparer(RuntimeAssetPreparerPort):
-    ENCRYPTED_BINARY_NAME = "libgedenedo.so"
+    ENCRYPTED_BINARY_NAME = "librontatre.so"
     BINARY_NAME = "libil2cpp.so"
     METADATA_NAME = "global-metadata.dat"
     GLOBALGAMEMANAGERS_NAME = "globalgamemanagers"
@@ -305,7 +305,7 @@ class JPRuntimeAssetPreparer(RuntimeAssetPreparerPort):
             )
         if not encrypted_binary.is_file() and not source_binary.is_file():
             raise FileNotFoundError(
-                "JP package snapshot is missing libil2cpp.so and libgedenedo.so "
+                "JP package snapshot is missing libil2cpp.so and librontatre.so "
                 "for the resolved release."
             )
 

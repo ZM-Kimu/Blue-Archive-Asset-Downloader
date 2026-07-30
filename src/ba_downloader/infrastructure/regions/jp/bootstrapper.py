@@ -140,7 +140,7 @@ class JPBootstrapper:
             metadata_path.is_file()
             and managers_path.is_file()
             and (
-                (runtime_dir / "libgedenedo.so").is_file()
+                (runtime_dir / "librontatre.so").is_file()
                 or (runtime_dir / "libil2cpp.so").is_file()
             )
         )

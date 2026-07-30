@@ -816,6 +816,37 @@ def test_load_catalog_logs_happy_path_at_info_level(
     ]
 
 
+def test_jp_bootstrap_accepts_current_encrypted_runtime_name(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "Package"
+    extracted_dir = package_dir / "Extracted"
+    metadata_path = (
+        extracted_dir
+        / "assets"
+        / "bin"
+        / "Data"
+        / "Managed"
+        / "Metadata"
+        / "global-metadata.dat"
+    )
+    metadata_path.parent.mkdir(parents=True)
+    metadata_path.write_bytes(b"metadata")
+    managers_path = extracted_dir / "assets" / "bin" / "Data" / "globalgamemanagers"
+    managers_path.parent.mkdir(parents=True, exist_ok=True)
+    managers_path.write_bytes(b"unity")
+    runtime_dir = extracted_dir / "lib" / "arm64-v8a"
+    runtime_dir.mkdir(parents=True)
+    current_runtime = runtime_dir / "librontatre.so"
+    current_runtime.write_bytes(b"runtime")
+
+    assert JPBootstrapper._has_required_package_assets(package_dir)
+
+    current_runtime.rename(runtime_dir / "libgedenedo.so")
+
+    assert not JPBootstrapper._has_required_package_assets(package_dir)
+
+
 def test_jp_bootstrap_translates_package_download_validation_errors(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
