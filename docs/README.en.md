@@ -180,13 +180,13 @@ ba-downloader download --region jp --platform windows
 
 ## TODO
 
-- `v2.3.0`
+- `v3.0.0`
   - New Bundle extractor
   - Web API/Web UI
 
 ## About
 
-Blue Archive Asset Downloader v2.2.1.
+Blue Archive Asset Downloader v2.3.0.
 
 ✨ Technical support: Codex ✨
 

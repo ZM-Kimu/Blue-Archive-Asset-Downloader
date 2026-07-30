@@ -171,12 +171,12 @@ ba-downloader download --region jp --platform windows
 - 由于各类接口频繁变动，不建议直接调用内部方法。
 
 ## TODO
-- `v2.3.0`
+- `v3.0.0`
   - 新 Bundle 解开器
   - WebAPI/WebUI
   
 ## 关于项目
-Blue Archive Asset Downloader v2.2.1.
+Blue Archive Asset Downloader v2.3.0.
 
 ✨ 技术支持：Codex ✨
 

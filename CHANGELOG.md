@@ -2,14 +2,23 @@
 
 ## Unreleased
 
+No unreleased changes recorded.
+
+
+## v2.3.0 - 2026-07-30
+
 ### Breaking Changes
 - remove `--version` / `-v`; all regions now resolve the currently available
   release automatically
+
+### Features
+- modernize the GL runtime and encrypted table extraction flow
 
 ### Fixes
 - isolate CN, GL, and JP runtime assets in validated version snapshots
 - exclude computed properties without backing fields from MemoryPack layouts
 - decode APKPure release responses as protobuf wire data
+- support the latest JP encrypted runtime payload name
 
 
 ## v2.2.1 - 2026-07-18
