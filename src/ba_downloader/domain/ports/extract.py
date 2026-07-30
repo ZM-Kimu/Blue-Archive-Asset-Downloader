@@ -2,10 +2,16 @@ from typing import Protocol
 
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 
 
 class Il2CppDumpBackendPort(Protocol):
-    def dump(self, context: RuntimeContext, output_dir: str) -> None: ...
+    def dump(
+        self,
+        context: RuntimeContext,
+        output_dir: str,
+        runtime_assets: PreparedRuntimeAssets,
+    ) -> None: ...
 
 
 class AssetExtractionPort(Protocol):
@@ -29,7 +35,11 @@ class AssetExtractionPort(Protocol):
 
 
 class SchemaWorkflowPort(Protocol):
-    def dump(self, context: RuntimeContext) -> None: ...
+    def dump(
+        self,
+        context: RuntimeContext,
+        runtime_assets: PreparedRuntimeAssets,
+    ) -> None: ...
 
     def compile(self, context: RuntimeContext) -> None: ...
 

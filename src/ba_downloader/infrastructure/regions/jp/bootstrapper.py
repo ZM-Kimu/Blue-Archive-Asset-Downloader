@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import shutil
 from collections.abc import Mapping
-from os import path
+from pathlib import Path
 from typing import Any
 
 from ba_downloader.domain.models.asset import BootstrapSession, ResolvedRelease
@@ -15,6 +16,7 @@ from ba_downloader.infrastructure.packages import (
 )
 from ba_downloader.infrastructure.packages.jp_server_info import JPServerInfoExtractor
 from ba_downloader.infrastructure.regions.jp.platform import build_jp_platform_profile
+from ba_downloader.infrastructure.runtime import RuntimeSnapshotStore
 
 
 class JPBootstrapper:
@@ -23,14 +25,18 @@ class JPBootstrapper:
         http_client: HttpClientPort,
         logger: LoggerPort,
         server_info_extractor: JPServerInfoExtractor | None = None,
+        snapshot_store: RuntimeSnapshotStore | None = None,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
         self.server_info_extractor = server_info_extractor or JPServerInfoExtractor()
+        self.snapshot_store = snapshot_store or RuntimeSnapshotStore()
 
-    @staticmethod
-    def apk_extract_folder(context: RuntimeContext) -> str:
-        return path.join(context.temp_dir, "Data")
+    def package_dir(self, context: RuntimeContext) -> Path:
+        return self.snapshot_store.version_root(context, context.version) / "Package"
+
+    def apk_extract_folder(self, context: RuntimeContext) -> str:
+        return str(self.package_dir(context) / "Extracted")
 
     def bootstrap(
         self,
@@ -39,10 +45,13 @@ class JPBootstrapper:
     ) -> BootstrapSession:
         if not release.package_url:
             raise LookupError("JP release does not contain a package URL.")
+        if not context.version or context.version != release.version:
+            raise ValueError(
+                "JP bootstrap requires a context resolved to the package version."
+            )
 
         try:
-            apk_path = self.download_apk_file(release.package_url, context)
-            self.extract_apk_file(apk_path, context)
+            apk_path = self._prepare_package(release, context)
         except PackageArchiveError as exc:
             raise LookupError(
                 "Downloaded JP package is invalid or incomplete. "
@@ -63,20 +72,77 @@ class JPBootstrapper:
             },
         )
 
-    def download_apk_file(self, apk_url: str, context: RuntimeContext) -> str:
+    def _prepare_package(
+        self,
+        release: ResolvedRelease,
+        context: RuntimeContext,
+    ) -> str:
+        package_dir = self.package_dir(context)
+        if self._has_required_package_assets(package_dir):
+            existing_archive = self._find_package_archive(package_dir)
+            if existing_archive is not None:
+                return str(existing_archive)
+
         self.logger.info("Downloading APK to retrieve server URL...")
-        return download_package_file(
-            self.http_client,
-            self.logger,
-            apk_url,
-            context.temp_dir,
+        with self.snapshot_store.staging_directory(
+            context,
+            release.version,
+            directory_name="Package",
+        ) as staged_package_dir:
+            apk_path = Path(
+                download_package_file(
+                    self.http_client,
+                    self.logger,
+                    release.package_url,
+                    str(staged_package_dir),
+                )
+            )
+            extract_xapk_file(
+                str(apk_path),
+                str(staged_package_dir / "Extracted"),
+                str(staged_package_dir / "Parts"),
+            )
+            shutil.rmtree(staged_package_dir / "Parts", ignore_errors=True)
+            if not self._has_required_package_assets(staged_package_dir):
+                raise PackageArchiveError(
+                    "JP package extraction is missing metadata, runtime binary, "
+                    "or globalgamemanagers from this package."
+                )
+            relative_archive = apk_path.relative_to(staged_package_dir)
+            published_dir = self.snapshot_store.publish_directory(
+                context,
+                release.version,
+                staged_package_dir,
+                directory_name="Package",
+            )
+            return str(published_dir / relative_archive)
+
+    @staticmethod
+    def _find_package_archive(package_dir: Path) -> Path | None:
+        return next(
+            (
+                path
+                for path in sorted(package_dir.iterdir())
+                if path.is_file() and path.suffix.lower() in {".apk", ".xapk"}
+            ),
+            None,
         )
 
-    def extract_apk_file(self, apk_path: str, context: RuntimeContext) -> None:
-        extract_xapk_file(
-            apk_path,
-            self.apk_extract_folder(context),
-            context.temp_dir,
+    @staticmethod
+    def _has_required_package_assets(package_dir: Path) -> bool:
+        extracted_dir = package_dir / "Extracted"
+        metadata_path = (
+            extracted_dir / "assets/bin/Data/Managed/Metadata/global-metadata.dat"
+        )
+        managers_path = extracted_dir / "assets/bin/Data/globalgamemanagers"
+        runtime_dir = extracted_dir / "lib/arm64-v8a"
+        return (
+            metadata_path.is_file()
+            and managers_path.is_file()
+            and (
+                (runtime_dir / "libgedenedo.so").is_file()
+                or (runtime_dir / "libil2cpp.so").is_file()
+            )
         )
 
     @staticmethod
@@ -103,8 +169,8 @@ class JPBootstrapper:
 
     def get_server_url(self, context: RuntimeContext) -> str:
         self.logger.info("Retrieving game info...")
-        data_root = path.join(self.apk_extract_folder(context), "assets", "bin", "Data")
-        url, version = self.server_info_extractor.find_server_info(data_root)
+        data_root = Path(self.apk_extract_folder(context)) / "assets/bin/Data"
+        url, version = self.server_info_extractor.find_server_info(str(data_root))
         if url:
             self.logger.info(f"Resolved server URL: {url}")
         if version:

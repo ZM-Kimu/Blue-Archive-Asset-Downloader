@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
@@ -27,11 +28,8 @@ class CnMetadataRecoveryDumpError(RuntimeError):
 
 
 class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
-    METADATA_FOLDER = "CN_Metadata"
-    RUNTIME_FOLDER = "CN_Runtime"
-    RECOVERY_FOLDER = "CN_MetadataRecovery"
+    RECOVERY_FOLDER = "MetadataRecovery"
     FINAL_METADATA_NAME = "global-metadata.standard-v29.dat"
-    BINARY_NAME = "libil2cpp.so"
 
     def __init__(
         self,
@@ -44,18 +42,35 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
         super().__init__(http_client, logger, source_resolver)
         self.recovery_pipeline = recovery_pipeline or CnMetadataRecoveryPipeline()
 
-    def dump(self, context: RuntimeContext, output_dir: str) -> None:
-        base_dir = Path(context.temp_dir)
-        metadata_path = self._resolve_prepared_metadata_path(base_dir)
-        binary_path = self._resolve_prepared_binary_path(base_dir)
-        unity_version = self._resolve_unity_version(base_dir)
+    def dump(
+        self,
+        context: RuntimeContext,
+        output_dir: str,
+        runtime_assets: PreparedRuntimeAssets,
+    ) -> None:
+        metadata_path = runtime_assets.metadata_path
+        binary_path = runtime_assets.binary_path
+        if not metadata_path.is_file():
+            raise FileNotFoundError(
+                f"Prepared CN metadata file does not exist: {metadata_path}."
+            )
+        if not binary_path.is_file():
+            raise FileNotFoundError(
+                f"Prepared CN runtime binary does not exist: {binary_path}."
+            )
+        unity_version = self._resolve_unity_version(
+            runtime_assets.globalgamemanagers_path
+        )
         if not unity_version:
             raise LookupError(
                 "Cannot determine Unity version for CN metadata recovery backend. "
-                "Set BA_CPP2IL_UNITY_VERSION or ensure globalgamemanagers exists in temp files.",
+                "Set BA_CPP2IL_UNITY_VERSION or ensure the prepared runtime snapshot "
+                "contains globalgamemanagers.",
             )
 
-        recovery_dir = base_dir / self.RECOVERY_FOLDER
+        recovery_dir = (
+            Path(context.temp_dir) / runtime_assets.version / self.RECOVERY_FOLDER
+        )
         try:
             self.logger.info("Starting CN metadata recovery.")
             recovery_result = self.recovery_pipeline.run(
@@ -133,23 +148,3 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
         final_metadata_path = recovery_dir / cls.FINAL_METADATA_NAME
         final_metadata_path.write_bytes(metadata)
         return final_metadata_path
-
-    @classmethod
-    def _resolve_prepared_metadata_path(cls, temp_dir: Path) -> Path:
-        metadata_path = temp_dir / cls.METADATA_FOLDER / cls.METADATA_NAME
-        if not metadata_path.is_file():
-            raise FileNotFoundError(
-                "Cannot find CN metadata recovery metadata file. "
-                "Make sure CN runtime asset preparation completed successfully."
-            )
-        return metadata_path
-
-    @classmethod
-    def _resolve_prepared_binary_path(cls, temp_dir: Path) -> Path:
-        binary_path = temp_dir / cls.RUNTIME_FOLDER / cls.BINARY_NAME
-        if not binary_path.is_file():
-            raise FileNotFoundError(
-                "Cannot find CN metadata recovery binary file. "
-                "Make sure CN runtime asset preparation extracted libil2cpp.so."
-            )
-        return binary_path

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import ClassVar
+from urllib.parse import urlsplit
 
 from ba_downloader.domain.ports.http import HttpClientPort
+from ba_downloader.infrastructure.packages.apkpure_protocol import (
+    ApkPurePackageVariant,
+    ApkPureProtocolError,
+    decode_apkpure_variants,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,11 +33,7 @@ class ApkPureReleaseClient:
         "x-abis": "arm64-v8a,armeabi-v7a,armeabi",
         "x-gp": "1",
     }
-    VERSION_PATTERN = re.compile(rb"\d+\.\d+\.\d+")
-    DOWNLOAD_URL_PATTERN = re.compile(
-        rb"https://download\.pureapk\.com/b/XAPK/"
-        rb"[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%_-]+"
-    )
+    VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+")
 
     def __init__(
         self,
@@ -48,40 +52,80 @@ class ApkPureReleaseClient:
         payload: bytes,
         package_name: str,
     ) -> tuple[ApkPurePackageRelease, ...]:
-        package_bytes = package_name.encode("ascii")
-        package_offsets = [
-            match.start() for match in re.finditer(package_bytes, payload)
-        ]
-        releases: dict[str, ApkPurePackageRelease] = {}
+        try:
+            variants = decode_apkpure_variants(payload)
+        except ApkPureProtocolError as exc:
+            raise LookupError(
+                f"Unable to parse APKPure package releases for '{package_name}': "
+                f"{exc}"
+            ) from exc
 
-        for index, start in enumerate(package_offsets):
-            end = (
-                package_offsets[index + 1]
-                if index + 1 < len(package_offsets)
-                else len(payload)
-            )
-            record = payload[start:end]
-            version_match = cls.VERSION_PATTERN.search(record)
-            download_match = cls.DOWNLOAD_URL_PATTERN.search(record)
-            if version_match is None or download_match is None:
+        grouped: defaultdict[str, list[ApkPurePackageVariant]] = defaultdict(list)
+        for variant in variants:
+            if variant.package_name != package_name:
                 continue
+            if cls.VERSION_PATTERN.fullmatch(variant.version) is None:
+                continue
+            if variant.package_format.upper() != "XAPK":
+                continue
+            if not cls._is_valid_xapk_url(variant.download_url):
+                continue
+            grouped[variant.version].append(variant)
 
-            version = version_match.group().decode("ascii")
-            releases[version] = ApkPurePackageRelease(
-                version=version,
-                download_url=download_match.group().decode("ascii"),
-            )
-
+        releases = [
+            cls._select_release(version, version_variants, package_name)
+            for version, version_variants in grouped.items()
+        ]
         if not releases:
             raise LookupError(
                 f"Unable to parse APKPure package releases for '{package_name}'."
             )
+        return tuple(sorted(releases, key=lambda item: cls._version_key(item.version)))
 
-        return tuple(
-            sorted(
-                releases.values(),
-                key=lambda item: cls._version_key(item.version),
+    @classmethod
+    def _select_release(
+        cls,
+        version: str,
+        variants: list[ApkPurePackageVariant],
+        package_name: str,
+    ) -> ApkPurePackageRelease:
+        by_url: dict[str, ApkPurePackageVariant] = {}
+        for variant in variants:
+            current = by_url.get(variant.download_url)
+            if current is None or cls._timestamp_key(
+                variant.release_timestamp
+            ) > cls._timestamp_key(current.release_timestamp):
+                by_url[variant.download_url] = variant
+
+        candidates = list(by_url.values())
+        if len(candidates) == 1:
+            selected = candidates[0]
+        else:
+            if any(candidate.release_timestamp is None for candidate in candidates):
+                raise LookupError(
+                    "Unable to select an APKPure XAPK variant for package "
+                    f"'{package_name}' version {version}: release timestamps are "
+                    "missing."
+                )
+            latest_timestamp = max(
+                cls._timestamp_key(candidate.release_timestamp)
+                for candidate in candidates
             )
+            latest = [
+                candidate
+                for candidate in candidates
+                if cls._timestamp_key(candidate.release_timestamp) == latest_timestamp
+            ]
+            if len(latest) != 1:
+                raise LookupError(
+                    "Unable to select an APKPure XAPK variant for package "
+                    f"'{package_name}' version {version}: multiple variants have the "
+                    "same release timestamp."
+                )
+            selected = latest[0]
+        return ApkPurePackageRelease(
+            version=selected.version,
+            download_url=selected.download_url,
         )
 
     def fetch_releases(self) -> tuple[ApkPurePackageRelease, ...]:
@@ -96,6 +140,10 @@ class ApkPureReleaseClient:
                 "Failed to fetch APKPure package releases for "
                 f"'{self.package_name}': HTTP {response.status_code}."
             )
+        if not response.content:
+            raise LookupError(
+                f"APKPure returned an empty release response for '{self.package_name}'."
+            )
         return self.parse_releases(response.content, self.package_name)
 
     def get_latest_release(self) -> ApkPurePackageRelease:
@@ -108,6 +156,23 @@ class ApkPureReleaseClient:
         raise LookupError(
             f"APKPure does not provide package '{self.package_name}' version {version}."
         )
+
+    @staticmethod
+    def _is_valid_xapk_url(url: str) -> bool:
+        parsed = urlsplit(url)
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == "download.pureapk.com"
+            and parsed.path.startswith("/b/XAPK/")
+        )
+
+    @staticmethod
+    def _timestamp_key(timestamp: datetime | None) -> tuple[bool, float]:
+        if timestamp is None:
+            return False, 0.0
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return True, timestamp.timestamp()
 
     @staticmethod
     def _version_key(version: str) -> tuple[int, ...]:

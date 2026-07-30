@@ -4,6 +4,7 @@ import py_compile
 from pathlib import Path
 
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.extract import SchemaWorkflowPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
@@ -36,7 +37,11 @@ class SchemaWorkflow(SchemaWorkflowPort):
         self.logger = logger
         self.dumper_backend_factory = dumper_backend_factory
 
-    def dump(self, context: RuntimeContext) -> None:
+    def dump(
+        self,
+        context: RuntimeContext,
+        runtime_assets: PreparedRuntimeAssets,
+    ) -> None:
         if self.dumper_backend_factory is None:
             raise ValueError(
                 "SchemaWorkflow.dump requires a configured dumper backend factory."
@@ -46,6 +51,7 @@ class SchemaWorkflow(SchemaWorkflowPort):
         backend.dump(
             context,
             str(extract_path.resolve()),
+            runtime_assets,
         )
 
     def _validate_generated_python(self, output_dir: Path, label: str) -> None:

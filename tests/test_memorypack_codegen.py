@@ -149,6 +149,9 @@ CN_PROPERTY_MODIFIER_SAMPLE = """
 // Namespace: MXBehaviorTree
 public class Root : MemoryPack.IMemoryPackable<MXBehaviorTree.Root>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 27182, Token: 0x02000034
 {
+    // Fields
+    private int <childCount>k__BackingField; // Token: 0x04000017
+    private string <valueString>k__BackingField; // Token: 0x04000018
     // Properties
     public override int childCount { get; } // Token: 0x17000017
     public virtual string valueString { get; } // Token: 0x17000018
@@ -291,6 +294,52 @@ public class MixedLayout : MemoryPack.IMemoryPackable`1<Sample.MixedLayout>, Mem
         "RandomTargetSelect",
         "TargetCount",
     ]
+
+
+def test_memorypack_parser_excludes_unbacked_computed_properties(
+    tmp_path: Path,
+) -> None:
+    dump_path = _write_dump(
+        tmp_path,
+        """// Namespace: Sample
+public class ComputedLayout : MemoryPack.IMemoryPackable`1<Sample.ComputedLayout>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 1 Token: 0x02000001
+{
+    // Fields
+    private System.Int32 <Value>k__BackingField; // Token: 0x04000002
+    // Properties
+    public System.String UIPath { get; } // Token: 0x17000001
+    public System.Int32 Value { get; set; } // Token: 0x17000002
+    public System.Single FadeOutTimeSecond { get; } // Token: 0x17000003
+}
+""",
+    )
+
+    descriptor = MemoryPackCSParser(str(dump_path)).parse_types()[0]
+
+    assert [member.name for member in descriptor.members] == ["Value"]
+
+
+def test_memorypack_parser_orders_properties_by_backing_field_token(
+    tmp_path: Path,
+) -> None:
+    dump_path = _write_dump(
+        tmp_path,
+        """// Namespace: Sample
+public class TokenLayout : MemoryPack.IMemoryPackable`1<Sample.TokenLayout>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 1 Token: 0x02000001
+{
+    // Fields
+    private System.Int32 <First>k__BackingField; // Token: 0x04000001
+    private System.Int32 <Second>k__BackingField; // Token: 0x04000002
+    // Properties
+    public System.Int32 Second { get; set; } // Token: 0x17000001
+    public System.Int32 First { get; set; } // Token: 0x17000002
+}
+""",
+    )
+
+    descriptor = MemoryPackCSParser(str(dump_path)).parse_types()[0]
+
+    assert [member.name for member in descriptor.members] == ["First", "Second"]
 
 
 def test_memorypack_parser_reads_keyed_collection_formatter(
@@ -1121,6 +1170,8 @@ public abstract class LogicEffectDAO : MemoryPack.IMemoryPackable`1<MX.GameData.
 // Namespace: MX.GameData.DAO.Battle
 public class DamageEffectDAO : MX.GameData.DAO.Battle.LogicEffectDAO, MemoryPack.IMemoryPackable`1<MX.GameData.DAO.Battle.DamageEffectDAO>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 11 Token: 0x0200000B
 {
+    // Fields
+    private System.String <TemplateId>k__BackingField; // Token: 0x04000001
     // Properties
     public System.String TemplateId { get; set; } // Token: 0x17000001
 }

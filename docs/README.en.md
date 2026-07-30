@@ -103,7 +103,7 @@ python -m ba_downloader sync --region jp
 | `--resource-type`          | `-rt`      | **Resource type**: `table`, `media`, `bundle`, `all`                                              | `all`               | `--resource-type media table` |
 | `--proxy`                  | `-px`      | **HTTP proxy**                                                                                    | None (system proxy) | `-px http://127.0.0.1:8080`   |
 | `--max-retries`            | `-mr`      | **Maximum retry count for failed downloads**                                                      | `5`                 | `--max-retries 3`             |
-| `--sqlcipher-key-hex`      | `-kei`     | **Manual SQLCipher raw key override**                                                             | Automatic for GL/JP | `-kei <64hex>`                |
+| `--sqlcipher-key-hex`      | `-kei`     | **SQLCipher raw key**                                                                             | Unspecified         | `-kei <64hex>`                |
 | `--search`                 | `-s`       | **Basic search**, file keywords for searching, downloading, or extracting (`sync`, `download`, and `extract` are supported) | None                | `-s aris shiroko`             |
 | `--advanced-search`        | `-as`      | **Advanced search**, character information terms (requires a .NET environment)                    | None                | `-as yume cv=小倉唯`          |
 
@@ -138,6 +138,11 @@ Advanced-search fields:
   >ba-downloader sync --region jp -as cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
   >```
 
+  > global
+  >```sh
+  >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ mika
+  >```
+
   > china
   >```sh
   >ba-downloader sync --region cn -as 伊吹 心奈 黑服
@@ -152,7 +157,7 @@ Advanced-search fields:
 
 ## Default Output
 
-- `Temp`: Stores temporary files or non-primary files, such as APK files.
+- `Temp`: Stores temporary or non-primary files, such as APK files.
 - `RawData`: Stores files downloaded from catalogs, such as Bundle, Media, and Table files.
 - `Extracted`: Stores extracted files, such as Bundle, Media, Table, and Dumps files.
 - `CharacterIndex.json`: Character information index. It can be generated with `ba-downloader character-index build --region <region>`, or generated automatically by adding `-as`.
@@ -167,10 +172,7 @@ ba-downloader download --region jp --platform windows
 ## Notes
 
 - `--platform` only applies to JP and selects the JP resource platform.
-- CN, GL, and JP automatically resolve the currently available version.
-- CN dump automatically uses the CN metadata recovery backend and keeps the `<Extracted>/Dumps/dump.cs` and `memorypack_formatters.json` outputs.
 - GL and JP APK files come from APKPure. After the Play Store updates, APKPure may need some time to synchronize the version.
-- GL and JP fetch their default SQLCipher keys automatically for encrypted table databases; use `-kei` to override the key manually.
 - Resource catalogs may be unavailable during server maintenance windows.
 - Some regions may require a proxy server to download game resources from specific servers.
 - Bundle extraction is based on UnityPy. For more detailed results, use [AssetRipper](https://github.com/AssetRipper/AssetRipper) or [AssetStudio](https://github.com/Perfare/AssetStudio).
@@ -180,20 +182,19 @@ ba-downloader download --region jp --platform windows
 
 - `v2.3.0`
   - New Bundle extractor
-  - Fetch latest available resources from the launcher
-  - Handle GL table extraction
+  - Web API/Web UI
 
 ## About
 
 Blue Archive Asset Downloader v2.2.1.
 
-Technical support: Codex
+✨ Technical support: Codex ✨
 
-Technical assistance thanks:
+Technical acknowledgments:
 
 - [KitanoSakurana](https://github.com/KitanoSakurana)
 
-Some content references:
+Some content is based on:
 
 - [Blue-Archive---Asset-Downloader](https://github.com/K0lb3/Blue-Archive---Asset-Downloader)
 - [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL)

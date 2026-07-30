@@ -73,12 +73,6 @@ class JPRegionProvider:
             context=resolved_context,
         )
 
-    def download_apk_file(self, apk_url: str, context: RuntimeContext) -> str:
-        return self.bootstrapper.download_apk_file(apk_url, context)
-
-    def extract_apk_file(self, apk_path: str, context: RuntimeContext) -> None:
-        self.bootstrapper.extract_apk_file(apk_path, context)
-
     @classmethod
     def parse_package_info(cls, payload: bytes) -> ApkPurePackageRelease:
         return JPReleaseResolver.parse_package_info(payload)

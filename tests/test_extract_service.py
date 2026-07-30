@@ -21,6 +21,7 @@ from ba_downloader.domain.models.asset import (
 )
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.infrastructure.extraction.table.prerequisites import (
     TableExtractionPrerequisite,
 )
@@ -97,9 +98,15 @@ class RecordingRuntimeAssetPreparer:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
 
-    def prepare(self, context: RuntimeContext) -> None:
-        _ = context
+    def prepare(self, context: RuntimeContext) -> PreparedRuntimeAssets:
         self.calls.append("prepare")
+        root = Path(context.temp_dir) / "test" / "Runtime"
+        return PreparedRuntimeAssets(
+            version=context.version or "test",
+            root_dir=root,
+            binary_path=root / "libil2cpp.so",
+            metadata_path=root / "global-metadata.dat",
+        )
 
 
 class RecordingSchemaWorkflow:
@@ -114,7 +121,12 @@ class RecordingSchemaWorkflow:
         self.fail_on = fail_on
         self.error = error
 
-    def dump(self, context: RuntimeContext) -> None:
+    def dump(
+        self,
+        context: RuntimeContext,
+        runtime_assets: PreparedRuntimeAssets,
+    ) -> None:
+        _ = runtime_assets
         self.calls.append("dump")
         if self.fail_on == "dump" and self.error is not None:
             raise self.error

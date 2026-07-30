@@ -29,6 +29,7 @@ from ba_downloader.infrastructure.schema.memorypack.generator import (
     CompileMemoryPackToPython,
 )
 from ba_downloader.infrastructure.schema.memorypack.parser import MemoryPackCSParser
+from support import build_apkpure_version_list
 
 
 class MemoryPackWriter:
@@ -362,13 +363,16 @@ def _create_jp_catalog_memorypack_data(extract_dir) -> None:
 
 
 def test_parse_package_info_prefers_highest_version() -> None:
-    payload = (
-        b"com.YostarJP.BlueArchive\x00"
-        b"1.64.123456\x00"
-        b"https://download.pureapk.com/b/XAPK/old-build.xapk\x00"
-        b"com.YostarJP.BlueArchive\x00"
-        b"1.66.405117\x00"
-        b"https://download.pureapk.com/b/XAPK/latest-build.xapk\x00"
+    payload = build_apkpure_version_list(
+        "com.YostarJP.BlueArchive",
+        (
+            "1.64.123456",
+            "https://download.pureapk.com/b/XAPK/old-build.xapk",
+        ),
+        (
+            "1.66.405117",
+            "https://download.pureapk.com/b/XAPK/latest-build.xapk",
+        ),
     )
 
     package_info = JPRegionProvider.parse_package_info(payload)
@@ -849,6 +853,7 @@ def test_jp_bootstrap_translates_package_download_validation_errors(
         LookupError, match="Downloaded JP package is invalid or incomplete"
     ):
         bootstrapper.bootstrap(release, context)
+    assert not (Path(context.temp_dir) / context.version / "Package").exists()
 
 
 def test_jp_bootstrap_translates_package_extraction_errors(
@@ -888,3 +893,4 @@ def test_jp_bootstrap_translates_package_extraction_errors(
         LookupError, match="Downloaded JP package is invalid or incomplete"
     ):
         bootstrapper.bootstrap(release, context)
+    assert not (Path(context.temp_dir) / context.version / "Package").exists()

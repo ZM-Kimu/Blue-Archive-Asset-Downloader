@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from io import BytesIO
-from pathlib import Path
 from typing import ClassVar, Literal
 from urllib.parse import urljoin
 
@@ -14,6 +13,7 @@ from ba_downloader.domain.models.asset import (
 )
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.http import HttpClientPort, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
@@ -30,6 +30,7 @@ from ba_downloader.infrastructure.regions.common import (
     join_catalog_url,
     warn_if_platform_ignored,
 )
+from ba_downloader.infrastructure.runtime import RuntimeSnapshotStore
 
 
 class CNRegionProvider:
@@ -295,19 +296,25 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
     METADATA_NAME = "global-metadata.dat"
     BINARY_NAME = "libil2cpp.so"
     GLOBAL_GAME_MANAGERS_NAME = "globalgamemanagers"
-    METADATA_FOLDER = "CN_Metadata"
-    RUNTIME_FOLDER = "CN_Runtime"
 
-    def __init__(self, http_client: HttpClientPort, logger: LoggerPort) -> None:
+    def __init__(
+        self,
+        http_client: HttpClientPort,
+        logger: LoggerPort,
+        *,
+        snapshot_store: RuntimeSnapshotStore | None = None,
+    ) -> None:
         self.http_client = http_client
         self.logger = logger
+        self.snapshot_store = snapshot_store or RuntimeSnapshotStore()
 
-    def prepare(self, context: RuntimeContext) -> None:
-        metadata_path = self.metadata_output_path(context)
-        binary_path = self.binary_output_path(context)
-        managers_path = self.globalgamemanagers_output_path(context)
-        if metadata_path.exists() and binary_path.exists():
-            return
+    def prepare(self, context: RuntimeContext) -> PreparedRuntimeAssets:
+        if not context.version:
+            raise ValueError(
+                "CN runtime preparation requires a resolved release version."
+            )
+        if prepared := self.snapshot_store.load(context, context.version):
+            return prepared
 
         self.logger.info("Preparing CN runtime assets from APK central directory...")
         apk_url = CNRegionProvider(self.http_client, self.logger).get_apk_url()
@@ -322,29 +329,44 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
             preferred_path=self.BINARY_ENTRY_PATH,
             fallback_name=self.BINARY_NAME,
         )
-        extract_zip_entry(apk_url, metadata_entry, metadata_path, self.http_client)
-        extract_zip_entry(apk_url, binary_entry, binary_path, self.http_client)
+        with self.snapshot_store.staging_runtime(
+            context,
+            context.version,
+        ) as runtime_dir:
+            metadata_path = runtime_dir / self.METADATA_NAME
+            binary_path = runtime_dir / self.BINARY_NAME
+            managers_path = runtime_dir / self.GLOBAL_GAME_MANAGERS_NAME
+            extract_zip_entry(
+                apk_url,
+                metadata_entry,
+                metadata_path,
+                self.http_client,
+            )
+            extract_zip_entry(
+                apk_url,
+                binary_entry,
+                binary_path,
+                self.http_client,
+            )
 
-        if managers_entry := self._find_optional_globalgamemanagers(entries):
-            extract_zip_entry(apk_url, managers_entry, managers_path, self.http_client)
+            managers_name: str | None = None
+            if managers_entry := self._find_optional_globalgamemanagers(entries):
+                extract_zip_entry(
+                    apk_url,
+                    managers_entry,
+                    managers_path,
+                    self.http_client,
+                )
+                managers_name = self.GLOBAL_GAME_MANAGERS_NAME
 
-        if not metadata_path.exists():
-            raise FileNotFoundError("Unable to prepare CN metadata from the APK.")
-        if not binary_path.exists():
-            raise FileNotFoundError("Unable to prepare CN libil2cpp.so from the APK.")
-
-    def metadata_output_path(self, context: RuntimeContext) -> Path:
-        return Path(context.temp_dir) / self.METADATA_FOLDER / self.METADATA_NAME
-
-    def binary_output_path(self, context: RuntimeContext) -> Path:
-        return Path(context.temp_dir) / self.RUNTIME_FOLDER / self.BINARY_NAME
-
-    def globalgamemanagers_output_path(self, context: RuntimeContext) -> Path:
-        return (
-            Path(context.temp_dir)
-            / self.RUNTIME_FOLDER
-            / self.GLOBAL_GAME_MANAGERS_NAME
-        )
+            return self.snapshot_store.publish(
+                context,
+                context.version,
+                runtime_dir,
+                binary_name=self.BINARY_NAME,
+                metadata_name=self.METADATA_NAME,
+                globalgamemanagers_name=managers_name,
+            )
 
     def _find_optional_globalgamemanagers(
         self, entries: list[ZipEntry]

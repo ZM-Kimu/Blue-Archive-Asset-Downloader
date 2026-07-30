@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from ba_downloader.domain.models.asset import AssetType, ResolvedRelease
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
@@ -12,11 +14,10 @@ from ba_downloader.infrastructure.regions.gl.provider import (
     GLRegionProvider,
 )
 from ba_downloader.infrastructure.regions.gl.runtime_assets import (
-    GL_RUNTIME_VERSION_FILE,
     GLRuntimeAssetPreparer,
-    resolve_gl_runtime_dir,
 )
-from support import RecordingLogger
+from ba_downloader.infrastructure.runtime import RuntimeSnapshotStore
+from support import RecordingLogger, build_apkpure_version_list
 
 
 class RecordingHttpClient:
@@ -95,19 +96,10 @@ def _apkpure_response(
     package_name: str,
     *releases: tuple[str, str],
 ) -> HttpResponse:
-    payload = b"".join(
-        package_name.encode("ascii")
-        + b"\x00"
-        + version.encode("ascii")
-        + b"\x00"
-        + download_url.encode("ascii")
-        + b"\x00"
-        for version, download_url in releases
-    )
     return HttpResponse(
         status_code=200,
         headers={"Content-Type": "application/octet-stream"},
-        content=payload,
+        content=build_apkpure_version_list(package_name, *releases),
         url=ApkPureReleaseClient.API_URL,
     )
 
@@ -698,10 +690,23 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
     ) -> None:
         calls.append(("extract", package_path))
         extract_path = Path(extract_dest)
-        extract_path.mkdir(parents=True, exist_ok=True)
-        (extract_path / "libil2cpp.so").write_bytes(b"binary")
-        (extract_path / "global-metadata.dat").write_bytes(b"metadata")
-        (extract_path / "globalgamemanagers").write_bytes(b"unity")
+        metadata_path = (
+            extract_path
+            / "assets"
+            / "bin"
+            / "Data"
+            / "Managed"
+            / "Metadata"
+            / "global-metadata.dat"
+        )
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_bytes(b"metadata")
+        binary_path = extract_path / "lib" / "arm64-v8a" / "libil2cpp.so"
+        binary_path.parent.mkdir(parents=True, exist_ok=True)
+        binary_path.write_bytes(b"binary")
+        managers_path = extract_path / "assets" / "bin" / "Data" / "globalgamemanagers"
+        managers_path.parent.mkdir(parents=True, exist_ok=True)
+        managers_path.write_bytes(b"unity")
 
     monkeypatch.setattr(
         "ba_downloader.infrastructure.regions.gl.runtime_assets.download_package_file",
@@ -712,7 +717,7 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
         fake_extract_xapk_file,
     )
 
-    preparer.prepare(context)
+    prepared = preparer.prepare(context)
 
     assert calls == [
         (
@@ -721,9 +726,12 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
         ),
         ("extract", str(tmp_path / "package.xapk")),
     ]
-    assert (resolve_gl_runtime_dir(context) / GL_RUNTIME_VERSION_FILE).read_text(
-        encoding="utf8"
-    ) == "1.2.3"
+    assert prepared.root_dir == Path(context.temp_dir) / "1.2.3" / "Runtime"
+    assert prepared.binary_path.read_bytes() == b"binary"
+    assert prepared.metadata_path.read_bytes() == b"metadata"
+    assert prepared.globalgamemanagers_path is not None
+    assert prepared.globalgamemanagers_path.read_bytes() == b"unity"
+    assert (prepared.root_dir / "manifest.json").is_file()
 
 
 def test_gl_runtime_asset_preparer_reuses_matching_release(
@@ -744,12 +752,24 @@ def test_gl_runtime_asset_preparer_reuses_matching_release(
         advanced_search=(),
         work_dir=str(tmp_path),
     )
-    runtime_dir = resolve_gl_runtime_dir(context)
-    runtime_dir.mkdir(parents=True)
-    for file_name in GLRuntimeAssetPreparer.RUNTIME_FILES:
-        (runtime_dir / file_name).write_bytes(b"runtime")
-    (runtime_dir / GL_RUNTIME_VERSION_FILE).write_text("1.2.3", encoding="utf8")
-    preparer = GLRuntimeAssetPreparer(http_client=object(), logger=NullLogger())
+    snapshot_store = RuntimeSnapshotStore()
+    with snapshot_store.staging_runtime(context, "1.2.3") as runtime_dir:
+        (runtime_dir / "libil2cpp.so").write_bytes(b"binary")
+        (runtime_dir / "global-metadata.dat").write_bytes(b"metadata")
+        (runtime_dir / "globalgamemanagers").write_bytes(b"unity")
+        expected = snapshot_store.publish(
+            context,
+            "1.2.3",
+            runtime_dir,
+            binary_name="libil2cpp.so",
+            metadata_name="global-metadata.dat",
+            globalgamemanagers_name="globalgamemanagers",
+        )
+    preparer = GLRuntimeAssetPreparer(
+        http_client=object(),
+        logger=NullLogger(),
+        snapshot_store=snapshot_store,
+    )
 
     class FailingReleaseResolver:
         def resolve_version(self, *_args: object) -> ResolvedRelease:
@@ -757,4 +777,83 @@ def test_gl_runtime_asset_preparer_reuses_matching_release(
 
     preparer.release_resolver = FailingReleaseResolver()  # type: ignore[assignment]
 
-    preparer.prepare(context)
+    assert preparer.prepare(context) == expected
+
+
+def test_gl_runtime_asset_preparer_does_not_publish_incomplete_new_release(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    old_context = RuntimeContext(
+        region="gl",
+        threads=1,
+        version="1.2.2",
+        raw_dir="Raw",
+        extract_dir="Extracted",
+        temp_dir=str(tmp_path / "Temp"),
+        extract_while_download=False,
+        resource_type=("table",),
+        proxy_url="",
+        max_retries=1,
+        search=(),
+        advanced_search=(),
+        work_dir=str(tmp_path),
+    )
+    snapshot_store = RuntimeSnapshotStore()
+    with snapshot_store.staging_runtime(old_context, "1.2.2") as runtime_dir:
+        (runtime_dir / "libil2cpp.so").write_bytes(b"old binary")
+        (runtime_dir / "global-metadata.dat").write_bytes(b"old metadata")
+        (runtime_dir / "globalgamemanagers").write_bytes(b"old unity")
+        old_snapshot = snapshot_store.publish(
+            old_context,
+            "1.2.2",
+            runtime_dir,
+            binary_name="libil2cpp.so",
+            metadata_name="global-metadata.dat",
+            globalgamemanagers_name="globalgamemanagers",
+        )
+
+    context = old_context.with_updates(version="1.2.3")
+    preparer = GLRuntimeAssetPreparer(
+        http_client=object(),
+        logger=NullLogger(),
+        snapshot_store=snapshot_store,
+    )
+
+    class FakeReleaseResolver:
+        def resolve_version(
+            self,
+            _context: RuntimeContext,
+            version: str,
+        ) -> ResolvedRelease:
+            return ResolvedRelease(
+                region="gl",
+                version=version,
+                package_url="https://download.pureapk.com/b/XAPK/package.xapk",
+            )
+
+    preparer.release_resolver = FakeReleaseResolver()  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.regions.gl.runtime_assets.download_package_file",
+        lambda *_args, **_kwargs: str(tmp_path / "package.xapk"),
+    )
+
+    def extract_without_metadata(
+        _package_path: str,
+        extract_dest: str,
+        _temp_dir: str,
+    ) -> None:
+        binary_path = Path(extract_dest) / "lib" / "arm64-v8a" / "libil2cpp.so"
+        binary_path.parent.mkdir(parents=True)
+        binary_path.write_bytes(b"new binary")
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.regions.gl.runtime_assets.extract_xapk_file",
+        extract_without_metadata,
+    )
+
+    with pytest.raises(FileNotFoundError, match="this extraction"):
+        preparer.prepare(context)
+
+    assert snapshot_store.load(old_context, "1.2.2") == old_snapshot
+    assert snapshot_store.load(context, "1.2.3") is None

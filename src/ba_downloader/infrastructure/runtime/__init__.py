@@ -1,3 +1,9 @@
-from ba_downloader.infrastructure.runtime.assets import RuntimeAssetLocator
+from ba_downloader.infrastructure.runtime.snapshots import (
+    RuntimeSnapshotError,
+    RuntimeSnapshotStore,
+)
 
-__all__ = ["RuntimeAssetLocator"]
+__all__ = [
+    "RuntimeSnapshotError",
+    "RuntimeSnapshotStore",
+]

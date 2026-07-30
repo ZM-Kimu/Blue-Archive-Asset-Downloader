@@ -14,7 +14,7 @@ The backend then:
 
 1. recovers a standard v29 metadata image in memory;
 2. validates it against the current binary;
-3. writes only `<Temp>/CN_MetadataRecovery/global-metadata.standard-v29.dat`;
+3. writes only `<Temp>/<VERSION>/MetadataRecovery/global-metadata.standard-v29.dat`;
 4. invokes the Cpp2IL dump exporter with the CN metadata recovery shim enabled.
 
 Final BAAD-facing outputs remain:

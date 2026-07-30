@@ -15,6 +15,60 @@ from ba_downloader.domain.models.runtime import RuntimeContext
 LogLevel = Literal["info", "warn", "error"]
 
 
+def _encode_protobuf_varint(value: int) -> bytes:
+    encoded = bytearray()
+    while value >= 0x80:
+        encoded.append((value & 0x7F) | 0x80)
+        value >>= 7
+    encoded.append(value)
+    return bytes(encoded)
+
+
+def _encode_protobuf_bytes(field_number: int, value: bytes) -> bytes:
+    return (
+        _encode_protobuf_varint((field_number << 3) | 2)
+        + _encode_protobuf_varint(len(value))
+        + value
+    )
+
+
+def build_apkpure_version_list(
+    package_name: str,
+    *releases: tuple[str, str],
+) -> bytes:
+    records = bytearray()
+    for index, (version, download_url) in enumerate(releases, start=1):
+        download = b"".join(
+            (
+                _encode_protobuf_bytes(8, b"XAPK"),
+                _encode_protobuf_bytes(9, download_url.encode("utf8")),
+            )
+        )
+        record = b"".join(
+            (
+                _encode_protobuf_bytes(4, package_name.encode("utf8")),
+                _encode_protobuf_bytes(5, str(index).encode("ascii")),
+                _encode_protobuf_bytes(6, version.encode("ascii")),
+                _encode_protobuf_bytes(24, download),
+                _encode_protobuf_bytes(
+                    36,
+                    f"2026-01-{index:02d}T00:00:00".encode("ascii"),
+                ),
+            )
+        )
+        records.extend(_encode_protobuf_bytes(2, record))
+
+    section = b"".join(
+        (
+            _encode_protobuf_bytes(1, b"version_list"),
+            _encode_protobuf_bytes(3, bytes(records)),
+        )
+    )
+    body = _encode_protobuf_bytes(2, section)
+    response = _encode_protobuf_bytes(7, body)
+    return _encode_protobuf_bytes(1, response)
+
+
 class RecordingLogger:
     def __init__(self) -> None:
         self.messages: list[tuple[LogLevel, str]] = []

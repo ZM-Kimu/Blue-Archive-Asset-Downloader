@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import lzma
+import shutil
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,8 +10,10 @@ from typing import Protocol
 from Crypto.Cipher import AES
 
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.runtime.assets import RuntimeAssetLocator
+from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
+from ba_downloader.infrastructure.runtime import RuntimeSnapshotStore
 
 MFTL_FOOTER_SIZE = 0x2C
 MFTL_MAGIC = b"MFTL"
@@ -257,38 +260,88 @@ class RuntimeExtractor(Protocol):
     def extract(self, source_path: Path, output_path: Path) -> None: ...
 
 
-class JPRuntimeAssetPreparer:
-    BINARY_CANDIDATES = ("GameAssembly.dll", "libil2cpp.so")
+class JPRuntimeAssetPreparer(RuntimeAssetPreparerPort):
     ENCRYPTED_BINARY_NAME = "libgedenedo.so"
+    BINARY_NAME = "libil2cpp.so"
+    METADATA_NAME = "global-metadata.dat"
+    GLOBALGAMEMANAGERS_NAME = "globalgamemanagers"
+    PACKAGE_METADATA_PATH = Path("assets/bin/Data/Managed/Metadata/global-metadata.dat")
+    PACKAGE_GLOBALGAMEMANAGERS_PATH = Path("assets/bin/Data/globalgamemanagers")
+    PACKAGE_RUNTIME_DIR = Path("lib/arm64-v8a")
 
     def __init__(
         self,
         logger: LoggerPort,
         *,
         extractor: RuntimeExtractor | None = None,
+        snapshot_store: RuntimeSnapshotStore | None = None,
     ) -> None:
         self.logger = logger
         self.extractor = extractor or JpEncryptedRuntimeExtractor()
+        self.snapshot_store = snapshot_store or RuntimeSnapshotStore()
 
-    def prepare(self, context: RuntimeContext) -> None:
-        temp_dir = Path(context.temp_dir)
-        locator = RuntimeAssetLocator(temp_dir)
-        if locator.find_first(self.BINARY_CANDIDATES):
-            return
+    def prepare(self, context: RuntimeContext) -> PreparedRuntimeAssets:
+        if not context.version:
+            raise ValueError(
+                "JP runtime preparation requires a resolved release version."
+            )
+        if prepared := self.snapshot_store.load(context, context.version):
+            return prepared
 
-        encrypted_binary = locator.find_first((self.ENCRYPTED_BINARY_NAME,))
-        if encrypted_binary is None:
+        package_root = (
+            self.snapshot_store.version_root(context, context.version)
+            / "Package"
+            / "Extracted"
+        )
+        package_runtime_dir = package_root / self.PACKAGE_RUNTIME_DIR
+        encrypted_binary = package_runtime_dir / self.ENCRYPTED_BINARY_NAME
+        source_binary = package_runtime_dir / self.BINARY_NAME
+        metadata_source = package_root / self.PACKAGE_METADATA_PATH
+        managers_source = package_root / self.PACKAGE_GLOBALGAMEMANAGERS_PATH
+        if not metadata_source.is_file() or not managers_source.is_file():
             raise FileNotFoundError(
-                "Cannot find JP runtime binary. Expected GameAssembly.dll, "
-                f"libil2cpp.so, or {self.ENCRYPTED_BINARY_NAME} under {temp_dir}."
+                "JP package snapshot is missing global-metadata.dat or "
+                "globalgamemanagers for the resolved release."
+            )
+        if not encrypted_binary.is_file() and not source_binary.is_file():
+            raise FileNotFoundError(
+                "JP package snapshot is missing libil2cpp.so and libgedenedo.so "
+                "for the resolved release."
             )
 
-        output_path = encrypted_binary.with_name("libil2cpp.so")
-        self.logger.info("Restoring JP libil2cpp.so from encrypted runtime payload...")
-        self.extractor.extract(encrypted_binary, output_path)
-
-        if not output_path.is_file():
-            raise FileNotFoundError(
-                f"Failed to restore JP libil2cpp.so from {encrypted_binary}."
+        with self.snapshot_store.staging_runtime(
+            context,
+            context.version,
+        ) as runtime_dir:
+            shutil.copy2(metadata_source, runtime_dir / self.METADATA_NAME)
+            shutil.copy2(
+                managers_source,
+                runtime_dir / self.GLOBALGAMEMANAGERS_NAME,
             )
-        self.logger.info("Restored JP libil2cpp.so successfully.")
+            file_roles: dict[str, str] = {}
+            output_path = runtime_dir / self.BINARY_NAME
+            if encrypted_binary.is_file():
+                staged_encrypted = runtime_dir / self.ENCRYPTED_BINARY_NAME
+                shutil.copy2(encrypted_binary, staged_encrypted)
+                self.logger.info(
+                    "Restoring JP libil2cpp.so from encrypted runtime payload..."
+                )
+                self.extractor.extract(staged_encrypted, output_path)
+                file_roles["encrypted_binary"] = self.ENCRYPTED_BINARY_NAME
+                self.logger.info("Restored JP libil2cpp.so successfully.")
+            else:
+                shutil.copy2(source_binary, output_path)
+
+            if not output_path.is_file():
+                raise FileNotFoundError(
+                    f"Failed to prepare JP libil2cpp.so from {package_runtime_dir}."
+                )
+            return self.snapshot_store.publish(
+                context,
+                context.version,
+                runtime_dir,
+                binary_name=self.BINARY_NAME,
+                metadata_name=self.METADATA_NAME,
+                globalgamemanagers_name=self.GLOBALGAMEMANAGERS_NAME,
+                file_roles=file_roles,
+            )

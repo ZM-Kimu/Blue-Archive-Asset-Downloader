@@ -11,6 +11,7 @@ from ba_downloader.bootstrap.region_profiles import (
     DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.regions.cn.dump_backend import (
     CnMetadataRecoveryDumpBackend,
@@ -113,7 +114,7 @@ def _build_context(tmp_path: Path, *, region: str = "jp") -> RuntimeContext:
     return RuntimeContext(
         region=region,
         threads=1,
-        version="",
+        version="1.2.3",
         raw_dir=str(tmp_path / "Raw"),
         extract_dir=str(tmp_path / "Extracted"),
         temp_dir=str(tmp_path / "Temp"),
@@ -134,6 +135,28 @@ def _create_cpp2il_tree(root: Path) -> None:
     (root / "LibCpp2IL" / "LibCpp2IL.csproj").write_text("<Project />", encoding="utf8")
 
 
+def _prepared_runtime(
+    context: RuntimeContext,
+    *,
+    binary_name: str = "libil2cpp.so",
+) -> PreparedRuntimeAssets:
+    runtime_dir = Path(context.temp_dir) / context.version / "Runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    binary_path = runtime_dir / binary_name
+    binary_path.write_bytes(b"binary")
+    metadata_path = runtime_dir / "global-metadata.dat"
+    metadata_path.write_bytes(b"metadata")
+    managers_path = runtime_dir / "globalgamemanagers"
+    managers_path.write_bytes(b"Unity 2021.3.45f1")
+    return PreparedRuntimeAssets(
+        version=context.version,
+        root_dir=runtime_dir,
+        binary_path=binary_path,
+        metadata_path=metadata_path,
+        globalgamemanagers_path=managers_path,
+    )
+
+
 def test_default_dumper_policy_maps_regions_to_expected_backends(
     tmp_path: Path,
 ) -> None:
@@ -150,10 +173,6 @@ def test_default_dumper_policy_maps_regions_to_expected_backends(
         "gl"
     ).dumper_backend_factory(http_client, logger)
     assert isinstance(gl_backend, Cpp2IlDumpCsBackend)
-    assert gl_backend.runtime_root_resolver is not None
-    assert gl_backend.runtime_root_resolver(_build_context(tmp_path, region="gl")) == (
-        tmp_path / "Temp" / "GL_Runtime"
-    )
     assert isinstance(
         DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("cn").dumper_backend_factory(
             http_client, logger
@@ -166,8 +185,13 @@ def test_schema_workflow_does_not_fallback_when_jp_backend_fails(
     tmp_path: Path,
 ) -> None:
     class FailingBackend:
-        def dump(self, context: RuntimeContext, output_dir: str) -> None:
-            _ = (context, output_dir)
+        def dump(
+            self,
+            context: RuntimeContext,
+            output_dir: str,
+            runtime_assets: PreparedRuntimeAssets,
+        ) -> None:
+            _ = (context, output_dir, runtime_assets)
             raise RuntimeError("jp backend failed")
 
     workflow = SchemaWorkflow(
@@ -176,17 +200,19 @@ def test_schema_workflow_does_not_fallback_when_jp_backend_fails(
         dumper_backend_factory=lambda _http_client, _logger: FailingBackend(),
     )
     context = _build_context(tmp_path, region="jp")
+    runtime_assets = _prepared_runtime(context)
 
     with pytest.raises(RuntimeError, match="jp backend failed"):
-        workflow.dump(context)
+        workflow.dump(context, runtime_assets)
 
 
 def test_schema_workflow_dump_requires_configured_backend(tmp_path: Path) -> None:
     workflow = SchemaWorkflow(DummyHttpClient(), NullLogger())
     context = _build_context(tmp_path, region="jp")
+    runtime_assets = _prepared_runtime(context)
 
     with pytest.raises(ValueError, match="dumper backend"):
-        workflow.dump(context)
+        workflow.dump(context, runtime_assets)
 
 
 def test_schema_workflow_builds_supplemental_memorypack_formatters(
@@ -204,6 +230,9 @@ public struct CharacterExcel : FlatBuffers.IFlatbufferObject // TypeDefIndex: 1 
 // Namespace: MX.GameData.DAO.Battle
 public abstract class LogicEffectDAO : MemoryPack.IMemoryPackable`1<MX.GameData.DAO.Battle.LogicEffectDAO>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 10 Token: 0x0200000A
 {
+    // Fields
+    private System.Int32 <Level>k__BackingField; // Token: 0x04000001
+    private FlatData.LogicEffectCategory <Category>k__BackingField; // Token: 0x04000002
     // Properties
     public System.Int32 Level { get; set; } // Token: 0x17000001
     public FlatData.LogicEffectCategory Category { get; set; } // Token: 0x17000002
@@ -212,6 +241,8 @@ public abstract class LogicEffectDAO : MemoryPack.IMemoryPackable`1<MX.GameData.
 // Namespace: MX.GameData.DAO.Battle
 public class DamageEffectDAO : MX.GameData.DAO.Battle.LogicEffectDAO, MemoryPack.IMemoryPackable`1<MX.GameData.DAO.Battle.DamageEffectDAO>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 11 Token: 0x0200000B
 {
+    // Fields
+    private System.String <TemplateId>k__BackingField; // Token: 0x04000003
     // Properties
     public System.String TemplateId { get; set; } // Token: 0x17000003
 }
@@ -450,10 +481,7 @@ def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="jp")
-    temp_dir = Path(context.temp_dir)
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    (temp_dir / "GameAssembly.dll").write_bytes(b"binary")
-    (temp_dir / "global-metadata.dat").write_bytes(b"metadata")
+    runtime_assets = _prepared_runtime(context, binary_name="GameAssembly.dll")
     logger = RecordingLogger()
     backend = Cpp2IlDumpCsBackend(DummyHttpClient(), logger)
     exporter_project = tmp_path / "DumpCsExporter.csproj"
@@ -491,7 +519,11 @@ def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(
         "ba_downloader.infrastructure.tools.dump_backend.subprocess.run", fake_run
     )
 
-    backend.dump(context, str(tmp_path / "Extracted" / "Dumps"))
+    backend.dump(
+        context,
+        str(tmp_path / "Extracted" / "Dumps"),
+        runtime_assets,
+    )
 
     assert logger.warn_messages == []
     assert logger.info_messages == ["Dumped il2cpp binary file successfully."]
@@ -528,22 +560,16 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="cn")
-    metadata_dir = Path(context.temp_dir) / "CN_Metadata"
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-    metadata_path = metadata_dir / "global-metadata.dat"
-    metadata_path.write_bytes(b"metadata")
-    runtime_dir = Path(context.temp_dir) / "CN_Runtime"
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    binary_path = runtime_dir / "libil2cpp.so"
-    binary_path.write_bytes(b"binary")
-    (runtime_dir / "globalgamemanagers").write_bytes(b"Unity 2021.3.45f1")
+    runtime_assets = _prepared_runtime(context)
+    binary_path = runtime_assets.binary_path
 
     logger = RecordingLogger()
     cpp2il_root = tmp_path / "fallback" / "Cpp2IL"
     source_resolver = StaticSourceResolver(cpp2il_root)
     final_metadata_path = (
         Path(context.temp_dir)
-        / "CN_MetadataRecovery"
+        / context.version
+        / "MetadataRecovery"
         / "global-metadata.standard-v29.dat"
     )
     pipeline = RecordingMetadataRecoveryPipeline()
@@ -587,7 +613,11 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
         "ba_downloader.infrastructure.tools.dump_backend.subprocess.run", fake_run
     )
 
-    backend.dump(context, str(tmp_path / "Extracted" / "Dumps"))
+    backend.dump(
+        context,
+        str(tmp_path / "Extracted" / "Dumps"),
+        runtime_assets,
+    )
 
     assert logger.warn_messages == []
     assert logger.info_messages == [
@@ -639,13 +669,7 @@ def test_cn_metadata_recovery_backend_raises_actionable_pipeline_error(
             )
 
     context = _build_context(tmp_path, region="cn")
-    metadata_dir = Path(context.temp_dir) / "CN_Metadata"
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-    (metadata_dir / "global-metadata.dat").write_bytes(b"metadata")
-    runtime_dir = Path(context.temp_dir) / "CN_Runtime"
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    (runtime_dir / "libil2cpp.so").write_bytes(b"binary")
-    (runtime_dir / "globalgamemanagers").write_bytes(b"Unity 2021.3.45f1")
+    runtime_assets = _prepared_runtime(context)
     logger = RecordingLogger()
     backend = CnMetadataRecoveryDumpBackend(
         DummyHttpClient(),
@@ -657,7 +681,11 @@ def test_cn_metadata_recovery_backend_raises_actionable_pipeline_error(
     with pytest.raises(
         CnMetadataRecoveryDumpError, match="sanitize_default_values"
     ) as exc:
-        backend.dump(context, str(tmp_path / "Extracted" / "Dumps"))
+        backend.dump(
+            context,
+            str(tmp_path / "Extracted" / "Dumps"),
+            runtime_assets,
+        )
 
     assert "Input:" in str(exc.value)
     assert "Binary:" in str(exc.value)
@@ -668,14 +696,26 @@ def test_cn_metadata_recovery_backend_requires_prepared_metadata_and_binary(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="cn")
-    metadata_dir = Path(context.temp_dir) / "CN_Metadata"
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-    (metadata_dir / "global-metadata.dat").write_bytes(b"metadata")
+    runtime_dir = Path(context.temp_dir) / context.version / "Runtime"
+    runtime_dir.mkdir(parents=True)
+    metadata_path = runtime_dir / "global-metadata.dat"
+    metadata_path.write_bytes(b"metadata")
+    runtime_assets = PreparedRuntimeAssets(
+        version=context.version,
+        root_dir=runtime_dir,
+        binary_path=runtime_dir / "libil2cpp.so",
+        metadata_path=metadata_path,
+        globalgamemanagers_path=runtime_dir / "globalgamemanagers",
+    )
     backend = CnMetadataRecoveryDumpBackend(
         DummyHttpClient(),
         RecordingLogger(),
         StaticSourceResolver(tmp_path / "Cpp2IL"),
     )
 
-    with pytest.raises(FileNotFoundError, match="CN metadata recovery binary"):
-        backend.dump(context, str(tmp_path / "Extracted" / "Dumps"))
+    with pytest.raises(FileNotFoundError):
+        backend.dump(
+            context,
+            str(tmp_path / "Extracted" / "Dumps"),
+            runtime_assets,
+        )

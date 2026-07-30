@@ -32,7 +32,7 @@ def _build_context(tmp_path: Path) -> RuntimeContext:
     return RuntimeContext(
         region="cn",
         threads=1,
-        version="",
+        version="2.1.2",
         raw_dir=str(tmp_path / "Raw"),
         extract_dir=str(tmp_path / "Extracted"),
         temp_dir=str(tmp_path / "Temp"),
@@ -222,14 +222,13 @@ def test_cn_runtime_asset_preparer_extracts_runtime_assets_without_full_download
         lambda self, server="official": "https://example.invalid/cn.apk",
     )
 
-    preparer.prepare(context)
+    prepared = preparer.prepare(context)
 
-    metadata_path = Path(context.temp_dir) / "CN_Metadata" / "global-metadata.dat"
-    binary_path = Path(context.temp_dir) / "CN_Runtime" / "libil2cpp.so"
-    managers_path = Path(context.temp_dir) / "CN_Runtime" / "globalgamemanagers"
-    assert metadata_path.read_bytes() == b"metadata"
-    assert binary_path.read_bytes() == b"binary"
-    assert managers_path.read_bytes() == b"Unity 2021.3.45f1"
+    assert prepared.root_dir == Path(context.temp_dir) / "2.1.2" / "Runtime"
+    assert prepared.metadata_path.read_bytes() == b"metadata"
+    assert prepared.binary_path.read_bytes() == b"binary"
+    assert prepared.globalgamemanagers_path is not None
+    assert prepared.globalgamemanagers_path.read_bytes() == b"Unity 2021.3.45f1"
     assert all(
         call["method"] == "HEAD" or "Range" in call["headers"] for call in client.calls
     )
@@ -259,6 +258,7 @@ def test_cn_runtime_asset_preparer_raises_when_metadata_entry_is_missing(
 
     with pytest.raises(ZipEntryNotFoundError, match=r"global-metadata\.dat"):
         preparer.prepare(context)
+    assert not (Path(context.temp_dir) / context.version / "Runtime").exists()
 
 
 def test_cn_runtime_asset_preparer_raises_when_libil2cpp_entry_is_missing(
@@ -283,6 +283,7 @@ def test_cn_runtime_asset_preparer_raises_when_libil2cpp_entry_is_missing(
 
     with pytest.raises(ZipEntryNotFoundError, match=r"libil2cpp\.so"):
         preparer.prepare(context)
+    assert not (Path(context.temp_dir) / context.version / "Runtime").exists()
 
 
 def test_cn_runtime_asset_preparer_allows_missing_globalgamemanagers(
@@ -305,11 +306,9 @@ def test_cn_runtime_asset_preparer_allows_missing_globalgamemanagers(
         lambda self, server="official": "https://example.invalid/cn.apk",
     )
 
-    preparer.prepare(context)
+    prepared = preparer.prepare(context)
 
-    assert (
-        Path(context.temp_dir) / "CN_Runtime" / "globalgamemanagers"
-    ).exists() is False
+    assert prepared.globalgamemanagers_path is None
 
 
 def test_cn_runtime_asset_preparer_raises_when_metadata_basename_is_ambiguous(

@@ -15,7 +15,7 @@ Android remains the strongest semantic table extraction baseline, but `jp_androi
 
 - `--platform windows`, `--platform android`, and `--platform ios` are JP-only public options.
 - Default JP output directories include the platform name unless the user overrides paths.
-- `--sqlcipher-key-hex, -kei` supplies the SQLCipher key when encrypted JP table databases require it.
+- `--sqlcipher-key-hex, -kei` overrides the automatically fetched SQLCipher key when encrypted JP table databases require it.
 
 ## Table Coverage
 

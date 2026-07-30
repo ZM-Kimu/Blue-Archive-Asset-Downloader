@@ -42,7 +42,6 @@ from ba_downloader.infrastructure.regions.gl.character_index import (
 from ba_downloader.infrastructure.regions.gl.provider import GLRegionProvider
 from ba_downloader.infrastructure.regions.gl.runtime_assets import (
     GLRuntimeAssetPreparer,
-    resolve_gl_runtime_dir,
 )
 from ba_downloader.infrastructure.regions.gl.sqlcipher_key import (
     GlSqlCipherKeyProvider,
@@ -115,7 +114,6 @@ def build_dumper_backend(
     return Cpp2IlDumpCsBackend(
         http_client=http_client,
         logger=logger,
-        runtime_root_resolver=resolve_gl_runtime_dir,
     )
 
 

@@ -18,7 +18,6 @@ from ba_downloader.infrastructure.regions.jp.runtime_assets import (
     JPRuntimeAssetPreparer,
     JpRuntimeDecryptError,
 )
-from ba_downloader.infrastructure.runtime import RuntimeAssetLocator
 from support import RecordingLogger
 
 PADDED_65537 = b"\x00" * 125 + b"\x01\x00\x01"
@@ -29,7 +28,7 @@ def _build_context(tmp_path: Path) -> RuntimeContext:
     return RuntimeContext(
         region="jp",
         threads=1,
-        version="",
+        version="1.70.436321",
         raw_dir=str(tmp_path / "Raw"),
         extract_dir=str(tmp_path / "Extracted"),
         temp_dir=str(tmp_path / "Temp"),
@@ -193,33 +192,75 @@ class RecordingRuntimeExtractor:
         output_path.write_bytes(b"\x7fELFrestored")
 
 
+def _write_jp_package_runtime(
+    context: RuntimeContext,
+    *,
+    binary_name: str,
+    binary_data: bytes,
+) -> Path:
+    package_root = Path(context.temp_dir) / context.version / "Package" / "Extracted"
+    runtime_dir = package_root / "lib" / "arm64-v8a"
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / binary_name).write_bytes(binary_data)
+    metadata_path = (
+        package_root
+        / "assets"
+        / "bin"
+        / "Data"
+        / "Managed"
+        / "Metadata"
+        / "global-metadata.dat"
+    )
+    metadata_path.parent.mkdir(parents=True)
+    metadata_path.write_bytes(b"metadata")
+    managers_path = package_root / "assets" / "bin" / "Data" / "globalgamemanagers"
+    managers_path.parent.mkdir(parents=True, exist_ok=True)
+    managers_path.write_bytes(b"Unity 2021.3.45f1")
+    return runtime_dir / binary_name
+
+
 def test_jp_runtime_preparer_keeps_existing_libil2cpp(tmp_path: Path) -> None:
     context = _build_context(tmp_path)
-    runtime_dir = Path(context.temp_dir) / "Data" / "lib" / "arm64-v8a"
-    runtime_dir.mkdir(parents=True)
-    (runtime_dir / "libil2cpp.so").write_bytes(b"\x7fELFexisting")
+    _write_jp_package_runtime(
+        context,
+        binary_name="libil2cpp.so",
+        binary_data=b"\x7fELFexisting",
+    )
     extractor = RecordingRuntimeExtractor([])
 
-    JPRuntimeAssetPreparer(RecordingLogger(), extractor=extractor).prepare(context)
+    prepared = JPRuntimeAssetPreparer(
+        RecordingLogger(),
+        extractor=extractor,
+    ).prepare(context)
 
     assert extractor.calls == []
-    assert (runtime_dir / "libil2cpp.so").read_bytes() == b"\x7fELFexisting"
+    assert prepared.binary_path.read_bytes() == b"\x7fELFexisting"
+    assert prepared.metadata_path.read_bytes() == b"metadata"
+    assert prepared.root_dir == (Path(context.temp_dir) / context.version / "Runtime")
 
 
 def test_jp_runtime_preparer_restores_libil2cpp_from_libgedenedo(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
-    runtime_dir = Path(context.temp_dir) / "Data" / "lib" / "arm64-v8a"
-    runtime_dir.mkdir(parents=True)
-    source_path = runtime_dir / "libgedenedo.so"
-    source_path.write_bytes(b"encrypted")
+    _write_jp_package_runtime(
+        context,
+        binary_name="libgedenedo.so",
+        binary_data=b"encrypted",
+    )
     extractor = RecordingRuntimeExtractor([])
 
-    JPRuntimeAssetPreparer(RecordingLogger(), extractor=extractor).prepare(context)
+    prepared = JPRuntimeAssetPreparer(
+        RecordingLogger(),
+        extractor=extractor,
+    ).prepare(context)
 
-    assert extractor.calls == [(source_path, runtime_dir / "libil2cpp.so")]
-    assert (runtime_dir / "libil2cpp.so").read_bytes() == b"\x7fELFrestored"
+    assert len(extractor.calls) == 1
+    source_path, output_path = extractor.calls[0]
+    assert source_path.name == "libgedenedo.so"
+    assert output_path.name == "libil2cpp.so"
+    assert source_path.parent == output_path.parent
+    assert prepared.binary_path.read_bytes() == b"\x7fELFrestored"
 
 
 def test_default_region_service_profile_uses_jp_runtime_preparer() -> None:
@@ -231,23 +272,3 @@ def test_default_region_service_profile_uses_jp_runtime_preparer() -> None:
     )
 
     assert isinstance(preparer, JPRuntimeAssetPreparer)
-
-
-def test_runtime_asset_locator_uses_candidate_order_and_deterministic_paths(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "Temp"
-    deeper = root / "z" / "runtime"
-    shallower = root / "a"
-    deeper.mkdir(parents=True)
-    shallower.mkdir(parents=True)
-    (deeper / "libil2cpp.so").write_bytes(b"deeper")
-    (shallower / "libil2cpp.so").write_bytes(b"shallower")
-    (deeper / "GameAssembly.dll").write_bytes(b"preferred")
-
-    locator = RuntimeAssetLocator(root)
-
-    assert locator.find_first(("GameAssembly.dll", "libil2cpp.so")) == (
-        deeper / "GameAssembly.dll"
-    )
-    assert locator.find_first(("libil2cpp.so",)) == shallower / "libil2cpp.so"

@@ -323,23 +323,34 @@ class MemoryPackCSParser:
         cls,
         body_lines: list[str],
     ) -> list[MemoryPackMemberDescriptor]:
-        backing_field_tokens: dict[str, str] = {}
+        backing_fields: dict[str, tuple[str, str]] = {}
         for line in body_lines:
             if field_match := cls.BACKING_FIELD_PATTERN.match(line):
                 field_name = field_match.group("underscore_name") or field_match.group(
                     "angle_name"
                 )
-                backing_field_tokens[field_name] = field_match.group("token")
+                backing_fields[field_name] = (
+                    cls._strip_member_type_modifiers(field_match.group("type")),
+                    field_match.group("token"),
+                )
 
+        property_matches = [
+            property_match
+            for line in body_lines
+            if (property_match := cls.PROPERTY_PATTERN.match(line)) is not None
+        ]
         property_members: list[MemoryPackMemberDescriptor] = []
-        for line in body_lines:
-            property_match = cls.PROPERTY_PATTERN.match(line)
-            if property_match is None:
-                continue
+        for property_match in property_matches:
             member_name = property_match.group("name")
-            if member_name == "IsValid" and member_name not in backing_field_tokens:
+            backing_field = backing_fields.get(member_name)
+            if backing_field is None:
                 continue
             cs_type = cls._strip_member_type_modifiers(property_match.group("type"))
+            backing_cs_type, backing_field_token = backing_field
+            if cls._normalize_cs_type(cs_type) != cls._normalize_cs_type(
+                backing_cs_type
+            ):
+                continue
             property_members.append(
                 MemoryPackMemberDescriptor(
                     index=0,
@@ -347,15 +358,18 @@ class MemoryPackCSParser:
                     cs_type=cs_type,
                     python_type=cls.to_python_type(cs_type),
                     member_token=property_match.group("token"),
-                    backing_field_token=backing_field_tokens.get(member_name, ""),
+                    backing_field_token=backing_field_token,
                 )
             )
 
         field_members = cls._parse_field_members(
             body_lines,
-            public_only=bool(property_members),
+            public_only=bool(property_matches),
         )
-        members = property_members + field_members
+        members = sorted(
+            property_members + field_members,
+            key=lambda member: int(member.backing_field_token, 16),
+        )
         return [
             MemoryPackMemberDescriptor(
                 index=index,

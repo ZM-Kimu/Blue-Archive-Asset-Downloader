@@ -13,8 +13,8 @@ class SchemaPreparationService:
         self.runtime_asset_preparer = runtime_asset_preparer
 
     def prepare(self, context: RuntimeContext) -> None:
-        self.runtime_asset_preparer.prepare(context)
-        self.schema_workflow.dump(context)
+        runtime_assets = self.runtime_asset_preparer.prepare(context)
+        self.schema_workflow.dump(context, runtime_assets)
         self.schema_workflow.compile(context)
 
     def compile(self, context: RuntimeContext) -> None:

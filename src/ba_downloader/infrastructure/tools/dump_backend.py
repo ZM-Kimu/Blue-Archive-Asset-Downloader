@@ -9,10 +9,10 @@ from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.extract import Il2CppDumpBackendPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.runtime.assets import RuntimeAssetLocator
 from ba_downloader.infrastructure.tools.runtime_probe import (
     get_installed_dotnet_sdk_major_versions,
 )
@@ -36,7 +36,6 @@ EXPORTER_CSPROJ_TEMPLATE_PATH = (
     EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.csproj.template"
 )
 EXPORTER_PROGRAM_CS_PATH = EXPORTER_TEMPLATE_DIR / "dumpcs_exporter.Program.cs"
-RuntimeRootResolver = Callable[[RuntimeContext], Path]
 
 
 def _read_exporter_template(template_path: Path) -> str:
@@ -192,44 +191,36 @@ class Cpp2ILSourceResolver:
 
 
 class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
-    BINARY_CANDIDATES = ("GameAssembly.dll", "libil2cpp.so")
-    METADATA_NAME = "global-metadata.dat"
     UNITY_VERSION_ENV = "BA_CPP2IL_UNITY_VERSION"
-    GLOBAL_GAME_MANAGERS = "globalgamemanagers"
 
     def __init__(
         self,
         http_client: HttpClientPort,
         logger: LoggerPort,
         source_resolver: Cpp2ILSourceResolver | None = None,
-        runtime_root_resolver: RuntimeRootResolver | None = None,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
         self.source_resolver = source_resolver or Cpp2ILSourceResolver(
             http_client, logger
         )
-        self.runtime_root_resolver = runtime_root_resolver
 
-    def dump(self, context: RuntimeContext, output_dir: str) -> None:
-        base_dir = (
-            self.runtime_root_resolver(context)
-            if self.runtime_root_resolver is not None
-            else Path(context.temp_dir)
+    def dump(
+        self,
+        context: RuntimeContext,
+        output_dir: str,
+        runtime_assets: PreparedRuntimeAssets,
+    ) -> None:
+        binary_path = runtime_assets.binary_path
+        metadata_path = runtime_assets.metadata_path
+        unity_version = self._resolve_unity_version(
+            runtime_assets.globalgamemanagers_path
         )
-        locator = RuntimeAssetLocator(base_dir)
-        binary_path = locator.find_first(self.BINARY_CANDIDATES)
-        metadata_path = locator.find_first((self.METADATA_NAME,))
-        if not binary_path or not metadata_path:
-            raise FileNotFoundError(
-                "Cannot find binary file or global-metadata file for Cpp2IL backend.",
-            )
-
-        unity_version = self._resolve_unity_version(base_dir)
         if not unity_version:
             raise LookupError(
                 "Cannot determine Unity version for Cpp2IL backend. "
-                "Set BA_CPP2IL_UNITY_VERSION or ensure globalgamemanagers exists in temp files.",
+                "Set BA_CPP2IL_UNITY_VERSION or ensure the prepared runtime snapshot "
+                "contains globalgamemanagers.",
             )
 
         cpp2il_root = self.source_resolver.resolve(context)
@@ -272,18 +263,17 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
 
         self.logger.info("Dumped il2cpp binary file successfully.")
 
-    def _resolve_unity_version(self, temp_dir: Path) -> str:
+    def _resolve_unity_version(self, managers_path: Path | None) -> str:
         import os
 
         if env_value := os.getenv(self.UNITY_VERSION_ENV, "").strip():
             return env_value
 
-        managers = list(temp_dir.rglob(self.GLOBAL_GAME_MANAGERS))
-        for manager_path in managers:
+        if managers_path is not None:
             try:
-                raw = manager_path.read_bytes().decode("latin-1", errors="ignore")
+                raw = managers_path.read_bytes().decode("latin-1", errors="ignore")
             except OSError:
-                continue
+                return ""
             if match := UNITY_VERSION_PATTERN.search(raw):
                 return match.group(1)
 
