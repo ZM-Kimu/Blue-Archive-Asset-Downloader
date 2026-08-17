@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
+from ba_downloader.domain.models.asset import AssetType
 from ba_downloader.domain.models.database import DBTable
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
@@ -12,6 +13,10 @@ from ba_downloader.infrastructure.extraction.table.models import ProcessedTableA
 from ba_downloader.infrastructure.extraction.table.profiles import (
     TableExtractionProfile,
     build_default_table_profile_for_context,
+)
+from ba_downloader.infrastructure.storage.workspace_paths import (
+    extracted_schema_root,
+    raw_type_root,
 )
 
 TableProfileFactory = Callable[[RuntimeContext], TableExtractionProfile]
@@ -53,11 +58,16 @@ class TableExtractorCharacterTableSource:
         )
         return cls(
             TableExtractor(
-                str(Path(context.raw_dir) / "Table"),
+                str(raw_type_root(context, AssetType.table)),
                 str(Path(context.temp_dir) / "Table"),
-                str(Path(context.extract_dir) / "FlatBufferData"),
+                str(extracted_schema_root(context, "flatbuffer")),
                 logger=logger,
                 table_profile=active_table_profile_factory(context),
+                schema_cache_identity=(
+                    Path(context.schema_snapshot_root).name
+                    if context.schema_snapshot_root
+                    else None
+                ),
             )
         )
 
@@ -90,3 +100,10 @@ class TableExtractorCharacterTableSource:
             file_data,
             detect_type=detect_type,
         )
+
+    def process_character_index_tables(
+        self,
+        file_path: str,
+        table_names: list[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        return self._extractor.process_character_index_tables(file_path, table_names)

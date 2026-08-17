@@ -5,13 +5,19 @@ from ba_downloader.application.use_cases.character_index_search import (
     CharacterIndexSearchService,
 )
 from ba_downloader.domain.models.asset import AssetCollection
+from ba_downloader.domain.models.extraction import ExtractionReport
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.extract import (
     AssetExtractionPort,
     ExtractionPrerequisitePort,
 )
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
+from ba_downloader.domain.services.asset_filter import (
+    RESOURCE_FIELDS,
+    AssetFilterService,
+)
 from ba_downloader.domain.services.resource_query import ResourceQueryService
 
 
@@ -25,12 +31,14 @@ class ExtractAssetsUseCase:
         character_index_builder_factory: CharacterIndexBuilderFactory | None = None,
         prerequisite_service: ExtractionPrerequisitePort | None = None,
         workflow_profile: RegionProfile,
+        cancellation: CancellationPort | None = None,
     ) -> None:
         self.extraction_workflow = extraction_workflow
         self.logger = logger
         self.provider = provider
         self.prerequisite_service = prerequisite_service
         self.workflow_profile = workflow_profile
+        self.cancellation = cancellation or NeverCancelled()
         self.asset_selector = (
             AssetSelectionService(logger) if logger is not None else None
         )
@@ -52,7 +60,13 @@ class ExtractAssetsUseCase:
             raise LookupError("Extract search requires a configured region provider.")
 
         capabilities = self.provider.get_capabilities()
-        if context.advanced_search and not capabilities.supports_advanced_search:
+        has_character_filters = any(
+            predicate.field not in RESOURCE_FIELDS
+            for predicate in context.asset_filter.predicates
+        )
+        if (
+            context.advanced_search or has_character_filters
+        ) and not capabilities.supports_advanced_search:
             raise LookupError(
                 f"Advanced search is not supported for region '{context.region}'."
             )
@@ -78,6 +92,22 @@ class ExtractAssetsUseCase:
         resources: AssetCollection,
         context: RuntimeContext,
     ) -> AssetCollection:
+        if context.asset_filter.predicates:
+            entries = None
+            if any(
+                predicate.field not in RESOURCE_FIELDS
+                for predicate in context.asset_filter.predicates
+            ):
+                if self.character_index_search is None:
+                    raise LookupError(
+                        "Character filters require a configured character index."
+                    )
+                entries = self.character_index_search.resolve_existing_entries(context)
+            return AssetFilterService.apply(
+                resources,
+                context.asset_filter,
+                character_entries=entries,
+            )
         if self.asset_selector is not None:
             advanced_keywords = None
             if context.advanced_search:
@@ -127,18 +157,23 @@ class ExtractAssetsUseCase:
         self,
         context: RuntimeContext,
         resources: AssetCollection | None = None,
-    ) -> None:
+    ) -> ExtractionReport:
+        self.cancellation.raise_if_cancelled()
         active_context = context
         active_resources = resources
         if active_resources is None and (
-            active_context.search or active_context.advanced_search
+            active_context.search
+            or active_context.advanced_search
+            or active_context.asset_filter.predicates
         ):
             active_context, active_resources = self._resolve_search_resources(
                 active_context
             )
 
         if active_resources is not None and not active_resources:
-            return
+            return ExtractionReport()
+
+        reports: list[ExtractionReport] = []
 
         if "table" in active_context.resource_type:
             table_resources = self._filter_resources_for_type(
@@ -150,38 +185,52 @@ class ExtractAssetsUseCase:
                     self._resolve_table_metadata_resources(active_context)
                 )
             if self._should_extract_type(table_resources):
+                self.cancellation.raise_if_cancelled()
                 if self.prerequisite_service is not None:
                     self.prerequisite_service.ensure(
                         active_context,
                         table_resources,
                     )
-                self.extraction_workflow.extract_tables(
-                    active_context,
-                    table_resources,
+                reports.append(
+                    self.extraction_workflow.extract_tables(
+                        active_context,
+                        table_resources,
+                    )
                 )
+                self.cancellation.raise_if_cancelled()
         if "bundle" in active_context.resource_type:
             bundle_resources = self._filter_resources_for_type(
                 active_resources,
                 "bundle",
             )
             if self._should_extract_type(bundle_resources):
-                self.extraction_workflow.extract_bundles(
-                    active_context,
-                    bundle_resources,
+                self.cancellation.raise_if_cancelled()
+                reports.append(
+                    self.extraction_workflow.extract_bundles(
+                        active_context,
+                        bundle_resources,
+                    )
                 )
+                self.cancellation.raise_if_cancelled()
         if "media" in active_context.resource_type:
             media_resources = self._filter_resources_for_type(
                 active_resources,
                 "media",
             )
             if self._should_extract_type(media_resources):
-                self.extraction_workflow.extract_media(active_context, media_resources)
+                self.cancellation.raise_if_cancelled()
+                reports.append(
+                    self.extraction_workflow.extract_media(
+                        active_context,
+                        media_resources,
+                    )
+                )
+                self.cancellation.raise_if_cancelled()
+        return ExtractionReport.combine(*reports)
 
     def run_post_download(
         self,
         context: RuntimeContext,
         resources: AssetCollection | None = None,
-    ) -> None:
-        if context.extract_while_download:
-            return
-        self.run(context, resources)
+    ) -> ExtractionReport:
+        return self.run(context, resources)

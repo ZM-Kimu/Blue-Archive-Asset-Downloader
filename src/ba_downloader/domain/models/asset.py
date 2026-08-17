@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal, overload
 
 ChecksumAlgorithm = Literal["crc", "md5"]
 
 
-class AssetType(str, Enum):
+class AssetType(StrEnum):
     table = "table"
     media = "media"
     bundle = "bundle"

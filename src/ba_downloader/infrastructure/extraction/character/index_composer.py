@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -14,6 +15,13 @@ from ba_downloader.infrastructure.extraction.character.index_sources import (
 from ba_downloader.infrastructure.extraction.character.scenario_matching import (
     ScenarioMatchIndex,
 )
+
+_KANA_CONVERTER = pykakasi.kakasi()
+
+
+@lru_cache(maxsize=4096)
+def _convert_kana_to_hepburn(kana: str) -> str:
+    return "".join(item["hepburn"] for item in _KANA_CONVERTER.convert(kana))
 
 
 class CharacterIndexEnricher(Protocol):
@@ -38,9 +46,6 @@ def build_default_character_index_composition_profile() -> (
 
 
 class CharacterIndexComposer:
-    def __init__(self) -> None:
-        self._kana_converter = pykakasi.kakasi()
-
     def compose(
         self,
         sources: CharacterIndexSources,
@@ -52,10 +57,19 @@ class CharacterIndexComposer:
         for enricher in profile.enrichers:
             enricher.enrich(self, hash_map, sources)
         self.apply_scenario_data(hash_map, sources.scenario_db, profile)
-        return list(hash_map.values())
+        searchable_entries: list[CharacterIndexEntry] = []
+        remaining_entries: list[CharacterIndexEntry] = []
+        for entry in hash_map.values():
+            target = (
+                searchable_entries
+                if entry.names or entry.file_aliases
+                else remaining_entries
+            )
+            target.append(entry)
+        return searchable_entries + remaining_entries
 
     def convert_kana_to_hepburn(self, kana: str) -> str:
-        return "".join(item["hepburn"] for item in self._kana_converter.convert(kana))
+        return _convert_kana_to_hepburn(kana)
 
     @staticmethod
     def str_to_int(text: str, default: int = 0) -> int:
@@ -217,6 +231,7 @@ class CharacterIndexComposer:
     ) -> bool:
         file_candidates = {file_name, name_no_underline}
         if matched_char := match_index.match(scenario_names, file_candidates):
+            add_names(matched_char, scenario_names)
             add_file_aliases(
                 matched_char,
                 {file_name, name_no_underline},
@@ -282,10 +297,14 @@ def append_names(
     names: set[str],
 ) -> None:
     data = hash_map.get(char_id, CharacterIndexEntry(char_id))
-    merged_names = set(data.names or [])
-    merged_names.update(name for name in names if name)
-    data.names = sorted(merged_names)
+    add_names(data, names)
     hash_map[char_id] = data
+
+
+def add_names(char_data: CharacterIndexEntry, names: set[str]) -> None:
+    merged_names = set(char_data.names or [])
+    merged_names.update(name for name in names if name)
+    char_data.names = sorted(merged_names)
 
 
 def add_file_aliases(char_data: CharacterIndexEntry, aliases: set[str]) -> None:

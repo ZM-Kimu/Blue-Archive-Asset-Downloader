@@ -24,6 +24,9 @@ from ba_downloader.infrastructure.extraction.character.index_sources import (
 from ba_downloader.infrastructure.extraction.character.index_store import (
     CharacterIndexSearcher,
 )
+from ba_downloader.infrastructure.extraction.character.scenario_matching import (
+    ScenarioMatchIndex,
+)
 from ba_downloader.infrastructure.extraction.table.models import ProcessedTableArtifact
 from ba_downloader.infrastructure.regions.cn.character_index import (
     CnDbCharacterIndexSourceProfile,
@@ -89,6 +92,37 @@ class FakeIndexSourceLoader:
         return self.sources
 
 
+def test_scenario_match_index_registers_only_incremental_aliases() -> None:
+    character = CharacterIndexEntry(
+        10003,
+        dev_name="Hihumi_default",
+        names=["Hifumi"],
+        file_aliases={"Hihumi"},
+    )
+    index = ScenarioMatchIndex([character])
+
+    index.add_character(character)
+    character.file_aliases.add("Hihumi_Robber")
+    index.add_character(character)
+
+    assert index.exact_index["hihumi"] == [character]
+    assert index.exact_index["hihumirobber"] == [character]
+
+
+def test_scenario_match_index_does_not_enumerate_prefix_after_exact_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    character = CharacterIndexEntry(10003, dev_name="Hihumi_default")
+    index = ScenarioMatchIndex([character])
+
+    def fail_prefix(_file_candidates: set[str]) -> list[CharacterIndexEntry]:
+        raise AssertionError("prefix matching must be short-circuited")
+
+    monkeypatch.setattr(index, "_match_prefix_files", fail_prefix)
+
+    assert index.match(set(), {"Hihumi"}) is character
+
+
 def _build_context(tmp_path: Path, region: str = "jp") -> RuntimeContext:
     return RuntimeContext(
         region=region,
@@ -97,7 +131,6 @@ def _build_context(tmp_path: Path, region: str = "jp") -> RuntimeContext:
         raw_dir=str(tmp_path / "Raw"),
         extract_dir=str(tmp_path / "Extracted"),
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("table",),
         proxy_url="",
         max_retries=1,
@@ -633,6 +666,73 @@ def test_index_merges_scenario_aliases_without_scenario_names() -> None:
     assert 4200835236 not in entry_by_id
 
 
+def test_jp_index_merges_names_for_scenarios_sharing_an_existing_portrait() -> None:
+    entries = _compose_index_entries(
+        "jp",
+        scenario_db=[
+            {
+                "Bytes": {
+                    "CharacterName": 1641005259,
+                    "NameJP": "A.R.O.N.A",
+                    "SmallPortrait": "UIs/01_Common/01_Character/NPC_Portrait_NP0035",
+                }
+            },
+            {
+                "Bytes": {
+                    "CharacterName": 384487311,
+                    "NameJP": "プラナ",
+                    "SmallPortrait": "UIs/01_Common/01_Character/NPC_Portrait_NP0035",
+                }
+            },
+        ],
+        char_profile=[],
+        char_excel=[
+            {
+                "Id": 19900006,
+                "DevName": "NP0035_valentine_Event_NPC",
+            }
+        ],
+        costume_excel=[],
+        shop_recruit=[],
+        localize_gacha=[],
+    )
+
+    assert len(entries) == 1
+    assert entries[0].character_id == 19900006
+    assert {"A.R.O.N.A", "プラナ"}.issubset(set(entries[0].names or []))
+    assert entries[0].file_aliases == {"NP0035"}
+
+
+def test_index_stably_prioritizes_entries_with_names_or_file_aliases() -> None:
+    entries = _compose_index_entries(
+        "jp",
+        scenario_db=[
+            {
+                "Bytes": {
+                    "CharacterName": 384487311,
+                    "NameJP": "プラナ",
+                    "SmallPortrait": "UIs/01_Common/01_Character/NPC_Portrait_NP0035",
+                }
+            }
+        ],
+        char_profile=[],
+        char_excel=[
+            {"Id": 610240704, "DevName": "GuidedDevice_Outdoor"},
+            {"Id": 19900006, "DevName": "NP0035_valentine_Event_NPC"},
+            {"Id": 571000000, "DevName": "IAWorldraid_Chesed_GlobalSkill"},
+        ],
+        costume_excel=[],
+        shop_recruit=[],
+        localize_gacha=[],
+    )
+
+    assert [entry.character_id for entry in entries] == [
+        19900006,
+        610240704,
+        571000000,
+    ]
+
+
 def test_jp_index_does_not_match_non_latin_names_by_empty_token() -> None:
     entries = _compose_index_entries(
         "jp",
@@ -904,7 +1004,7 @@ def test_index_build_logs_saved_file_path(
 
     index_builder.build()
 
-    index_path = tmp_path / "JPCharacterIndex.json"
+    index_path = tmp_path / "indexes" / "characters.json"
     assert index_path.exists()
     assert logger.by_level("info")[-1] == (
         f"Character index file saved to {index_path.resolve()}."

@@ -15,6 +15,9 @@ from ba_downloader.domain.models.asset import (
     AssetCollection,
     AssetType,
 )
+from ba_downloader.domain.models.asset_filter import AssetFilter
+from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
+from ba_downloader.domain.models.extraction import ExtractionReport
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 from support import DummyCharacterIndexBuilder, RecordingLogger, StaticProvider
@@ -48,9 +51,10 @@ class RecordingDownloader:
 
 
 class RecordingExtractAssetsUseCase:
-    def __init__(self) -> None:
+    def __init__(self, warnings: tuple[str, ...] = ()) -> None:
         self.calls: list[str] = []
         self.resource_calls: list[list[str] | None] = []
+        self.warnings = warnings
 
     @staticmethod
     def _resource_paths(resources: AssetCollection | None) -> list[str] | None:
@@ -62,19 +66,21 @@ class RecordingExtractAssetsUseCase:
         self,
         context: RuntimeContext,
         resources: AssetCollection | None = None,
-    ) -> None:
+    ) -> ExtractionReport:
         _ = context
         self.calls.append("run")
         self.resource_calls.append(self._resource_paths(resources))
+        return ExtractionReport(self.warnings)
 
     def run_post_download(
         self,
         context: RuntimeContext,
         resources: AssetCollection | None = None,
-    ) -> None:
+    ) -> ExtractionReport:
         _ = context
         self.calls.append("run_post_download")
         self.resource_calls.append(self._resource_paths(resources))
+        return ExtractionReport(self.warnings)
 
 
 class RecordingTableMetadataStore:
@@ -110,7 +116,6 @@ def _build_context(tmp_path: Path) -> RuntimeContext:
         raw_dir=str(tmp_path / "RawData"),
         extract_dir=str(tmp_path / "Extracted"),
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("bundle",),
         proxy_url="",
         max_retries=1,
@@ -248,6 +253,29 @@ def test_jp_sync_passes_catalog_resources_to_post_download_extract(
     ]
 
 
+def test_sync_returns_active_context_and_extraction_warnings(tmp_path: Path) -> None:
+    context = _build_context(tmp_path)
+    active_context = context.with_updates(version="2.0.0")
+    warning = "[BUNDLE_EXTRACTION_PARTIAL] partial output"
+    extract_service = RecordingExtractAssetsUseCase((warning,))
+    provider = StaticProvider(_build_catalog(active_context))
+    logger = RecordingLogger()
+    service = SyncAssetsUseCase(
+        provider,
+        RecordingDownloader(),
+        extract_service,  # type: ignore[arg-type]
+        RecordingSchemaPreparation(),
+        lambda _context: DummyCharacterIndexBuilder(),
+        logger,
+        workflow_profile=_build_profile(active_context, provider, logger),
+    )
+
+    result = service.run(context)
+
+    assert result.context == active_context
+    assert result.extraction.warnings == (warning,)
+
+
 def test_jp_sync_advanced_search_uses_character_index_keywords(tmp_path: Path) -> None:
     context = _build_context(tmp_path).with_updates(
         region="jp",
@@ -376,6 +404,46 @@ def test_jp_sync_search_extracts_only_filtered_resources(tmp_path: Path) -> None
 
     assert downloader.calls == [["Bundle/Shiroko.bundle"]]
     assert extract_service.calls == ["run_post_download"]
+    assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
+
+
+def test_sync_applies_typed_character_filters(tmp_path: Path) -> None:
+    context = _build_context(tmp_path).with_updates(
+        region="jp",
+        asset_filter=AssetFilter.parse(["name~Shiroko", "school=Abydos"]),
+    )
+    downloader = RecordingDownloader()
+    extract_service = RecordingExtractAssetsUseCase()
+    schema_preparation = RecordingSchemaPreparation()
+    builder = DummyCharacterIndexBuilder(
+        index=CharacterIndex(
+            "JP1.0.0",
+            [
+                CharacterIndexEntry(
+                    10000,
+                    dev_name="Shiroko",
+                    names=["Shiroko"],
+                    file_aliases={"Shiroko"},
+                    school_en="Abydos",
+                )
+            ],
+        )
+    )
+    provider = StaticProvider(_build_search_catalog(context))
+    logger = RecordingLogger()
+    service = SyncAssetsUseCase(
+        provider,
+        downloader,
+        extract_service,  # type: ignore[arg-type]
+        schema_preparation,
+        lambda _context: builder,
+        logger,
+        workflow_profile=_build_profile(context, provider, logger),
+    )
+
+    service.run(context)
+
+    assert downloader.calls == [["Bundle/Shiroko.bundle"]]
     assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
 
 

@@ -50,6 +50,7 @@ class DatabaseIndexSourceSpec:
     costume_table: str | None = None
     shop_recruit_table: str | None = None
     localize_gacha_table: str | None = None
+    use_single_database_session: bool = False
 
     @property
     def required_sources(self) -> tuple[str, str, str]:
@@ -82,6 +83,11 @@ class CharacterIndexSourceLoader:
         self,
         spec: DatabaseIndexSourceSpec,
     ) -> CharacterIndexSources:
+        if spec.use_single_database_session and callable(
+            getattr(self._table_source, "process_character_index_tables", None)
+        ):
+            return self._load_single_session_database_sources(spec)
+
         scenario_db = self.extract_db_table(spec.scenario_table)
         char_excel = self.extract_db_bytes_payloads(spec.character_table)
         char_profile = self.extract_db_bytes_payloads(spec.profile_table)
@@ -107,6 +113,65 @@ class CharacterIndexSourceLoader:
             costume_excel=costume_excel,
             shop_recruit=shop_recruit,
             localize_gacha=localize_gacha,
+        )
+
+    def _load_single_session_database_sources(
+        self,
+        spec: DatabaseIndexSourceSpec,
+    ) -> CharacterIndexSources:
+        session_loader = getattr(
+            self._table_source,
+            "process_character_index_tables",
+            None,
+        )
+        if not callable(session_loader):
+            raise TypeError(
+                "Character index table source does not support a database session."
+            )
+        table_names = [
+            table_name
+            for table_name in (
+                spec.scenario_table,
+                spec.character_table,
+                spec.profile_table,
+                spec.costume_table,
+                spec.shop_recruit_table,
+                spec.localize_gacha_table,
+            )
+            if table_name
+        ]
+        rows_by_table = session_loader(
+            str(Path(self._table_source.table_file_folder) / DB_NAME),
+            table_names,
+        )
+
+        def bytes_payloads(table_name: str | None) -> list[dict[str, Any]]:
+            if table_name is None:
+                return []
+            return [
+                payload
+                for row in rows_by_table.get(table_name, [])
+                if isinstance(payload := row.get("Bytes"), dict) and payload
+            ]
+
+        scenario_db = rows_by_table.get(spec.scenario_table, [])
+        char_excel = bytes_payloads(spec.character_table)
+        char_profile = bytes_payloads(spec.profile_table)
+        self.validate_index_sources(
+            source_payloads={
+                spec.scenario_table: scenario_db,
+                spec.character_table: char_excel,
+                spec.profile_table: char_profile,
+            },
+            required_sources=spec.required_sources,
+        )
+        return CharacterIndexSources(
+            scenario_db=scenario_db,
+            char_profile=char_profile,
+            char_excel=char_excel,
+            costume_excel=bytes_payloads(spec.costume_table),
+            shop_recruit=bytes_payloads(spec.shop_recruit_table),
+            localize_gacha=bytes_payloads(spec.localize_gacha_table),
         )
 
     def extract_db_table(self, table_name: str) -> list[dict[str, Any]]:

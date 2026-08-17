@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import cast
 
 from ba_downloader.domain.models.asset import AssetCollection
+from ba_downloader.domain.models.character import CharacterIndex
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.character_index import CharacterIndexBuilderPort
 from ba_downloader.domain.ports.logging import LoggerPort
@@ -108,20 +109,42 @@ class CharacterIndexBuilder(CharacterIndexBuilderPort):
             sources,
             self._character_index_composition_profile_factory(self.context),
         )
+        expected_character_ids = {
+            character_id
+            for payload in sources.char_profile
+            if isinstance(character_id := payload.get("CharacterId"), int)
+            and not isinstance(character_id, bool)
+            and character_id != 0
+        }
         index_path = self._index_store.save(
-            self.context.version,
-            self.context.region,
+            self.context,
             entries,
+            expected_character_ids=expected_character_ids,
         )
         self.logger.info(f"Character index file saved to {index_path}.")
 
     def get_excel_resources(self, resource: AssetCollection) -> AssetCollection:
-        if not (searched := resource.search("path", "Excel")):
+        searched = AssetCollection(
+            item
+            for item in resource
+            if "exceldb" in item.path.casefold()
+            or any(
+                "exceldb" in include.casefold()
+                for include in item.metadata.get("includes", [])
+                if isinstance(include, str)
+            )
+        )
+        if not searched:
+            searched = resource.search("path", "Excel")
+        if not searched:
             raise LookupError("Excel not found, advanced search is unavailable now.")
         return searched
 
     def verify_index_file(self, context: RuntimeContext | None = None) -> bool:
         return self._index_store.verify(context or self.context)
+
+    def load(self, context: RuntimeContext | None = None) -> CharacterIndex:
+        return self._index_store.load(context or self.context)
 
     def search(
         self,

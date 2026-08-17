@@ -19,6 +19,7 @@ from ba_downloader.domain.models.asset import (
     AssetType,
     RegionCapabilities,
 )
+from ba_downloader.domain.models.extraction import ExtractionReport
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
@@ -29,9 +30,10 @@ from support import DummyCharacterIndexBuilder, RecordingLogger, StaticProvider
 
 
 class RecordingExtractionWorkflow:
-    def __init__(self) -> None:
+    def __init__(self, warnings: tuple[str, ...] = ()) -> None:
         self.calls: list[str] = []
         self.resource_calls: list[list[str] | None] = []
+        self.warnings = warnings
 
     @staticmethod
     def _resource_paths(resources: AssetCollection | None) -> list[str] | None:
@@ -43,28 +45,31 @@ class RecordingExtractionWorkflow:
         self,
         context: RuntimeContext,
         resources: AssetCollection | None = None,
-    ) -> None:
+    ) -> ExtractionReport:
         _ = context
         self.calls.append("extract_tables")
         self.resource_calls.append(self._resource_paths(resources))
+        return ExtractionReport(self.warnings)
 
     def extract_bundles(
         self,
         context: RuntimeContext,
         resources: AssetCollection | None = None,
-    ) -> None:
+    ) -> ExtractionReport:
         _ = context
         self.calls.append("extract_bundles")
         self.resource_calls.append(self._resource_paths(resources))
+        return ExtractionReport(self.warnings)
 
     def extract_media(
         self,
         context: RuntimeContext,
         resources: AssetCollection | None = None,
-    ) -> None:
+    ) -> ExtractionReport:
         _ = context
         self.calls.append("extract_media")
         self.resource_calls.append(self._resource_paths(resources))
+        return ExtractionReport(self.warnings)
 
 
 class FailingProvider:
@@ -149,7 +154,6 @@ def _build_context(tmp_path: Path) -> RuntimeContext:
         raw_dir=str(tmp_path / "JP_Windows_RawData"),
         extract_dir=str(tmp_path / "JP_Windows_Extracted"),
         temp_dir=str(tmp_path / "JP_Windows_Temp"),
-        extract_while_download=False,
         resource_type=("table",),
         proxy_url="",
         max_retries=1,
@@ -574,8 +578,8 @@ def test_extract_service_advanced_search_requires_current_index_file(
 
     message = str(exc_info.value)
     assert "Character index file is missing or does not match" in message
-    assert "ba-downloader character-index build --region jp`" in message
-    assert "ba-downloader sync --region jp -as <keyword>`" in message
+    assert "ba-downloader index build --region jp`" in message
+    assert "ba-downloader assets sync --region jp --filter name~<keyword>`" in message
     assert "--version" not in message
     assert character_index_builder.search_calls == []
     assert extraction_workflow.calls == []
@@ -614,3 +618,21 @@ def test_extract_service_advanced_search_respects_region_capabilities(
         service.run(context)
 
     assert extraction_workflow.calls == []
+
+
+def test_extract_service_returns_combined_extraction_warnings(tmp_path: Path) -> None:
+    context = _build_context(tmp_path).with_updates(resource_type=("bundle", "media"))
+    warnings = (
+        "[BUNDLE_BATCH_FAILED] batch-1 failed",
+        "[BUNDLE_EXTRACTION_PARTIAL] partial output",
+    )
+    extraction_workflow = RecordingExtractionWorkflow(warnings)
+    service = ExtractAssetsUseCase(
+        extraction_workflow,
+        workflow_profile=_build_noop_profile(context),
+    )
+
+    report = service.run(context)
+
+    assert extraction_workflow.calls == ["extract_bundles", "extract_media"]
+    assert report.warnings == warnings + warnings

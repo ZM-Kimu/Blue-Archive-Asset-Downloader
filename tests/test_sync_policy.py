@@ -44,7 +44,6 @@ def _context(region: str) -> RuntimeContext:
         raw_dir="RawData",
         extract_dir="Extracted",
         temp_dir="Temp",
-        extract_while_download=False,
         resource_type=("bundle",),
         proxy_url="",
         max_retries=1,

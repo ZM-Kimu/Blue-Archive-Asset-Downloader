@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from ba_downloader.application.profiles import (
     RegionProfile,
@@ -10,13 +11,25 @@ from ba_downloader.application.use_cases.character_index_search import (
 )
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
 from ba_downloader.domain.models.asset import AssetCollection
+from ba_downloader.domain.models.extraction import ExtractionReport
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.character_index import CharacterIndexBuilderPort
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.extract import SchemaPreparationPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
+from ba_downloader.domain.services.asset_filter import (
+    RESOURCE_FIELDS,
+    AssetFilterService,
+)
 from ba_downloader.domain.services.resource_query import ResourceQueryService
+
+
+@dataclass(frozen=True, slots=True)
+class SyncAssetsResult:
+    context: RuntimeContext
+    extraction: ExtractionReport
 
 
 class SyncAssetsUseCase:
@@ -32,6 +45,7 @@ class SyncAssetsUseCase:
         logger: LoggerPort,
         *,
         workflow_profile: RegionProfile,
+        cancellation: CancellationPort | None = None,
     ) -> None:
         self.provider = provider
         self.downloader = downloader
@@ -40,6 +54,7 @@ class SyncAssetsUseCase:
         self.character_index_builder_factory = character_index_builder_factory
         self.logger = logger
         self.workflow_profile = workflow_profile
+        self.cancellation = cancellation or NeverCancelled()
         self.asset_selector = AssetSelectionService(logger)
         self.character_index_search = CharacterIndexSearchService(
             character_index_builder_factory,
@@ -56,6 +71,24 @@ class SyncAssetsUseCase:
         context: RuntimeContext,
         schema_prepared: bool,
     ) -> AssetCollection:
+        if context.asset_filter.predicates:
+            character_entries = None
+            if any(
+                predicate.field not in RESOURCE_FIELDS
+                for predicate in context.asset_filter.predicates
+            ):
+                character_entries, _ = self.character_index_search.resolve_sync_entries(
+                    resources,
+                    context,
+                    schema_preparation=self.schema_preparation,
+                    downloader=self.downloader,
+                    schema_prepared=schema_prepared,
+                )
+            return AssetFilterService.apply(
+                resources,
+                context.asset_filter,
+                character_entries=character_entries,
+            )
         advanced_keywords: list[str] | None = None
         if context.advanced_search:
             index_result = self.character_index_search.resolve_sync_keywords(
@@ -82,7 +115,8 @@ class SyncAssetsUseCase:
         self.downloader.verify_and_download(filtered, context)
         return filtered
 
-    def run(self, context: RuntimeContext) -> RuntimeContext:
+    def run(self, context: RuntimeContext) -> SyncAssetsResult:
+        self.cancellation.raise_if_cancelled()
         capabilities = self.provider.get_capabilities()
         if not capabilities.supports_sync:
             raise LookupError(
@@ -94,6 +128,7 @@ class SyncAssetsUseCase:
             )
 
         catalog = self.provider.load_catalog(context)
+        self.cancellation.raise_if_cancelled()
         active_context = catalog.context
         resources = catalog.resources
         self.workflow_profile.catalog_metadata.on_catalog_loaded(
@@ -103,8 +138,13 @@ class SyncAssetsUseCase:
 
         if self.workflow_profile.prepares_schema_for_sync:
             self._prepare_schema(active_context)
+            self.cancellation.raise_if_cancelled()
 
-        if active_context.search or active_context.advanced_search:
+        if (
+            active_context.search
+            or active_context.advanced_search
+            or active_context.asset_filter.predicates
+        ):
             resources = self._search_resource(
                 resources,
                 active_context,
@@ -112,8 +152,12 @@ class SyncAssetsUseCase:
             )
 
         filtered = self._filter_and_download(resources, active_context)
+        self.cancellation.raise_if_cancelled()
         if self.workflow_profile.sync_extraction_mode is SyncExtractionMode.direct:
-            self.extract_service.run(active_context, filtered)
+            extraction = self.extract_service.run(active_context, filtered)
         else:
-            self.extract_service.run_post_download(active_context, filtered)
-        return active_context
+            extraction = self.extract_service.run_post_download(
+                active_context, filtered
+            )
+        self.cancellation.raise_if_cancelled()
+        return SyncAssetsResult(active_context, extraction)
