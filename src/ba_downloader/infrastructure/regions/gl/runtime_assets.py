@@ -5,8 +5,10 @@ from pathlib import Path
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 from ba_downloader.infrastructure.packages import (
     PackageArchiveError,
@@ -31,13 +33,20 @@ class GLRuntimeAssetPreparer(RuntimeAssetPreparerPort):
         logger: LoggerPort,
         *,
         snapshot_store: RuntimeSnapshotStore | None = None,
+        progress_factory: ProgressReporterFactoryPort | None = None,
+        cancellation: CancellationPort | None = None,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
         self.release_resolver = GLReleaseResolver(http_client)
-        self.snapshot_store = snapshot_store or RuntimeSnapshotStore()
+        self.cancellation = cancellation or NeverCancelled()
+        self.snapshot_store = snapshot_store or RuntimeSnapshotStore(
+            cancellation=self.cancellation
+        )
+        self.progress_factory = progress_factory
 
     def prepare(self, context: RuntimeContext) -> PreparedRuntimeAssets:
+        self.cancellation.raise_if_cancelled()
         if context.version:
             prepared = self.snapshot_store.load(context, context.version)
             if prepared is not None:
@@ -65,13 +74,18 @@ class GLRuntimeAssetPreparer(RuntimeAssetPreparerPort):
                     self.logger,
                     release.package_url,
                     str(package_dir),
+                    progress_factory=self.progress_factory,
+                    cancellation=self.cancellation,
                 )
                 extract_xapk_file(
                     package_path,
                     str(extracted_dir),
                     str(package_dir / "Parts"),
+                    cancellation=self.cancellation,
                 )
+                self.cancellation.raise_if_cancelled()
                 self._copy_runtime_assets(extracted_dir, runtime_dir)
+                self.cancellation.raise_if_cancelled()
                 return self.snapshot_store.publish(
                     context,
                     release.version,

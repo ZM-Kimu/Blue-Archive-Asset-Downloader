@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
+from ba_downloader.domain.exceptions import ProcessExecutionError
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.process import ProcessCommand, ProcessRunnerPort
 from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
     CnMetadataRecoveryError,
     CnMetadataRecoveryPipeline,
@@ -38,9 +40,20 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
         source_resolver: Cpp2ILSourceResolver | None = None,
         *,
         recovery_pipeline: CnMetadataRecoveryPipeline | None = None,
+        cancellation: CancellationPort | None = None,
+        process_runner: ProcessRunnerPort | None = None,
     ) -> None:
-        super().__init__(http_client, logger, source_resolver)
-        self.recovery_pipeline = recovery_pipeline or CnMetadataRecoveryPipeline()
+        active_cancellation = cancellation or NeverCancelled()
+        super().__init__(
+            http_client,
+            logger,
+            source_resolver,
+            cancellation=active_cancellation,
+            process_runner=process_runner,
+        )
+        self.recovery_pipeline = recovery_pipeline or CnMetadataRecoveryPipeline(
+            cancellation=active_cancellation
+        )
 
     def dump(
         self,
@@ -68,9 +81,7 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
                 "contains globalgamemanagers.",
             )
 
-        recovery_dir = (
-            Path(context.temp_dir) / runtime_assets.version / self.RECOVERY_FOLDER
-        )
+        recovery_dir = runtime_assets.root_dir.parent / self.RECOVERY_FOLDER
         try:
             self.logger.info("Starting CN metadata recovery.")
             recovery_result = self.recovery_pipeline.run(
@@ -108,28 +119,26 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
             },
         )
         try:
-            subprocess.run(
-                [
-                    "dotnet",
-                    "run",
-                    "--project",
-                    str(exporter_project),
-                    "--framework",
-                    framework,
-                    "--",
-                    f"--binary-path={binary_path.resolve()}",
-                    f"--metadata-path={final_metadata_path.resolve()}",
-                    f"--unity-version={unity_version}",
-                    f"--output={dump_cs_path.resolve()}",
-                    f"--formatter-output={formatter_sidecar_path.resolve()}",
-                    "--enable-cn-metadata-recovery-shim",
-                ],
-                capture_output=True,
-                check=True,
-                text=True,
-                encoding="utf8",
+            self.process_runner.run(
+                ProcessCommand(
+                    (
+                        "dotnet",
+                        "run",
+                        "--project",
+                        str(exporter_project),
+                        "--framework",
+                        framework,
+                        "--",
+                        f"--binary-path={binary_path.resolve()}",
+                        f"--metadata-path={final_metadata_path.resolve()}",
+                        f"--unity-version={unity_version}",
+                        f"--output={dump_cs_path.resolve()}",
+                        f"--formatter-output={formatter_sidecar_path.resolve()}",
+                        "--enable-cn-metadata-recovery-shim",
+                    )
+                )
             )
-        except subprocess.CalledProcessError as exc:
+        except ProcessExecutionError as exc:
             raise CnMetadataRecoveryDumpError(
                 "Failed to dump CN metadata recovery il2cpp with Cpp2IL backend: "
                 f"{exc.stderr.strip() or exc}",

@@ -8,6 +8,7 @@ from ba_downloader.application.profiles import (
     RegionProfile,
     build_region_profile,
 )
+from ba_downloader.domain.models.asset import RegionCapabilities
 from ba_downloader.domain.models.region import Region
 from ba_downloader.domain.models.region_profile import (
     RegionSettingsPolicy,
@@ -18,6 +19,7 @@ from ba_downloader.domain.ports.catalog_metadata import (
     CatalogMetadataPolicy,
     TableMetadataManifestPort,
 )
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.extract import (
     ExtractionPrerequisitePort,
     Il2CppDumpBackendPort,
@@ -25,6 +27,7 @@ from ba_downloader.domain.ports.extract import (
 )
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
 from ba_downloader.domain.ports.region import RegionProvider
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 from ba_downloader.infrastructure.extraction.character.index_composer import (
@@ -37,13 +40,26 @@ from ba_downloader.infrastructure.extraction.table.profiles import (
     TableExtractionProfile,
 )
 
-ProviderFactory = Callable[[HttpClientPort, LoggerPort], RegionProvider]
+ProviderFactory = Callable[
+    [
+        HttpClientPort,
+        LoggerPort,
+        ProgressReporterFactoryPort | None,
+        CancellationPort,
+    ],
+    RegionProvider,
+]
 RuntimeAssetPreparerFactory = Callable[
-    [HttpClientPort, LoggerPort],
+    [
+        HttpClientPort,
+        LoggerPort,
+        ProgressReporterFactoryPort | None,
+        CancellationPort,
+    ],
     RuntimeAssetPreparerPort,
 ]
 DumperBackendFactory = Callable[
-    [HttpClientPort, LoggerPort],
+    [HttpClientPort, LoggerPort, CancellationPort],
     Il2CppDumpBackendPort,
 ]
 TableProfileFactory = Callable[[RuntimeContext], TableExtractionProfile]
@@ -86,6 +102,7 @@ def _noop_catalog_metadata_policy(
 @dataclass(frozen=True, slots=True)
 class RegionServiceProfile:
     region: Region
+    capabilities: RegionCapabilities
     workflow_policy: RegionWorkflowPolicy
     settings_policy: RegionSettingsPolicy
     provider_factory: ProviderFactory
@@ -138,7 +155,12 @@ def build_application_region_profile(
     provider: RegionProvider | None = None,
 ) -> RegionProfile:
     _ = context
-    active_provider = provider or service_profile.provider_factory(http_client, logger)
+    active_provider = provider or service_profile.provider_factory(
+        http_client,
+        logger,
+        None,
+        NeverCancelled(),
+    )
     return build_region_profile(
         service_profile.workflow_policy,
         service_profile.settings_policy,
@@ -152,9 +174,11 @@ def build_application_region_profile(
 
 def _build_cn_service_profile() -> RegionServiceProfile:
     from ba_downloader.infrastructure.regions.cn import profile as cn_profile
+    from ba_downloader.infrastructure.regions.cn.provider import CNRegionProvider
 
     return RegionServiceProfile(
         region="cn",
+        capabilities=CNRegionProvider.CAPABILITIES,
         workflow_policy=cn_profile.CN_WORKFLOW_POLICY,
         settings_policy=cn_profile.CN_SETTINGS_POLICY,
         provider_factory=cn_profile.build_provider,
@@ -170,9 +194,11 @@ def _build_cn_service_profile() -> RegionServiceProfile:
 
 def _build_gl_service_profile() -> RegionServiceProfile:
     from ba_downloader.infrastructure.regions.gl import profile as gl_profile
+    from ba_downloader.infrastructure.regions.gl.provider import GLRegionProvider
 
     return RegionServiceProfile(
         region="gl",
+        capabilities=GLRegionProvider.CAPABILITIES,
         workflow_policy=gl_profile.GL_WORKFLOW_POLICY,
         settings_policy=gl_profile.GL_SETTINGS_POLICY,
         provider_factory=gl_profile.build_provider,
@@ -189,9 +215,11 @@ def _build_gl_service_profile() -> RegionServiceProfile:
 
 def _build_jp_service_profile() -> RegionServiceProfile:
     from ba_downloader.infrastructure.regions.jp import profile as jp_profile
+    from ba_downloader.infrastructure.regions.jp.provider import JPRegionProvider
 
     return RegionServiceProfile(
         region="jp",
+        capabilities=JPRegionProvider.CAPABILITIES,
         workflow_policy=jp_profile.JP_WORKFLOW_POLICY,
         settings_policy=jp_profile.JP_SETTINGS_POLICY,
         provider_factory=jp_profile.build_provider,

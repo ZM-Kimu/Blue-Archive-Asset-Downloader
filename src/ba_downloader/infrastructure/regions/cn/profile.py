@@ -6,8 +6,10 @@ from ba_downloader.domain.models.region_profile import (
     SyncExtractionMode,
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.execution import CancellationPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
 from ba_downloader.infrastructure.extraction.character.index_composer import (
     CharacterIndexCompositionProfile,
 )
@@ -69,22 +71,37 @@ CN_MEMORYPACK_DB_ROOT_TYPES = {
 def build_provider(
     http_client: HttpClientPort,
     logger: LoggerPort,
+    progress_factory: ProgressReporterFactoryPort | None = None,
+    cancellation: CancellationPort | None = None,
 ) -> CNRegionProvider:
+    _ = (progress_factory, cancellation)
     return CNRegionProvider(http_client=http_client, logger=logger)
 
 
 def build_runtime_asset_preparer(
     http_client: HttpClientPort,
     logger: LoggerPort,
+    progress_factory: ProgressReporterFactoryPort | None = None,
+    cancellation: CancellationPort | None = None,
 ) -> CNRuntimeAssetPreparer:
-    return CNRuntimeAssetPreparer(http_client=http_client, logger=logger)
+    _ = progress_factory
+    return CNRuntimeAssetPreparer(
+        http_client=http_client,
+        logger=logger,
+        cancellation=cancellation,
+    )
 
 
 def build_dumper_backend(
     http_client: HttpClientPort,
     logger: LoggerPort,
+    cancellation: CancellationPort,
 ) -> CnMetadataRecoveryDumpBackend:
-    return CnMetadataRecoveryDumpBackend(http_client=http_client, logger=logger)
+    return CnMetadataRecoveryDumpBackend(
+        http_client=http_client,
+        logger=logger,
+        cancellation=cancellation,
+    )
 
 
 def build_table_extraction_profile(

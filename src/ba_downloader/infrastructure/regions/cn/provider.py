@@ -14,6 +14,7 @@ from ba_downloader.domain.models.asset import (
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
@@ -303,12 +304,17 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
         logger: LoggerPort,
         *,
         snapshot_store: RuntimeSnapshotStore | None = None,
+        cancellation: CancellationPort | None = None,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
-        self.snapshot_store = snapshot_store or RuntimeSnapshotStore()
+        self.cancellation = cancellation or NeverCancelled()
+        self.snapshot_store = snapshot_store or RuntimeSnapshotStore(
+            cancellation=self.cancellation
+        )
 
     def prepare(self, context: RuntimeContext) -> PreparedRuntimeAssets:
+        self.cancellation.raise_if_cancelled()
         if not context.version:
             raise ValueError(
                 "CN runtime preparation requires a resolved release version."
@@ -319,6 +325,7 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
         self.logger.info("Preparing CN runtime assets from APK central directory...")
         apk_url = CNRegionProvider(self.http_client, self.logger).get_apk_url()
         entries = read_zip_entries(apk_url, self.http_client)
+        self.cancellation.raise_if_cancelled()
         metadata_entry = find_zip_entry(
             entries,
             preferred_path=self.METADATA_ENTRY_PATH,
@@ -342,12 +349,14 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
                 metadata_path,
                 self.http_client,
             )
+            self.cancellation.raise_if_cancelled()
             extract_zip_entry(
                 apk_url,
                 binary_entry,
                 binary_path,
                 self.http_client,
             )
+            self.cancellation.raise_if_cancelled()
 
             managers_name: str | None = None
             if managers_entry := self._find_optional_globalgamemanagers(entries):
@@ -357,6 +366,7 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
                     managers_path,
                     self.http_client,
                 )
+                self.cancellation.raise_if_cancelled()
                 managers_name = self.GLOBAL_GAME_MANAGERS_NAME
 
             return self.snapshot_store.publish(

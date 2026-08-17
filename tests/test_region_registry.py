@@ -5,6 +5,7 @@ from ba_downloader.bootstrap.region_profiles import (
     RegionServiceProfileRegistry,
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.execution import NeverCancelled
 from ba_downloader.infrastructure.extraction.table.payload_router import (
     TablePayloadCodec,
 )
@@ -23,7 +24,6 @@ def _context(region: str) -> RuntimeContext:
         raw_dir="RawData",
         extract_dir="Extracted",
         temp_dir="Temp",
-        extract_while_download=False,
         resource_type=("table",),
         proxy_url="",
         max_retries=1,
@@ -50,8 +50,17 @@ def test_default_region_service_profiles_build_core_factories() -> None:
     for region in ("cn", "gl", "jp"):
         profile = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(region)
         provider = profile.provider_factory(http_client, logger)
-        preparer = profile.runtime_asset_preparer_factory(http_client, logger)
-        dumper = profile.dumper_backend_factory(http_client, logger)
+        preparer = profile.runtime_asset_preparer_factory(
+            http_client,
+            logger,
+            None,
+            NeverCancelled(),
+        )
+        dumper = profile.dumper_backend_factory(
+            http_client,
+            logger,
+            NeverCancelled(),
+        )
 
         assert callable(provider.get_capabilities)
         assert callable(provider.load_catalog)

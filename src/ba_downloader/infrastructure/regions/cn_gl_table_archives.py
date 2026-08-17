@@ -5,7 +5,6 @@ from os import path
 
 GROUND_GRID_SCHEMA_NAME = "GroundGridFlat.bytes"
 GROUND_NODE_LAYER_SCHEMA_NAME = "GroundNodeLayerFlat.bytes"
-MGS_LOGIC_GROUND_ARCHIVE_NAME = "MGSLogicGroundData.zip"
 GROUND_ARCHIVE_PREFIXES = ("sb_", "rb_", "rd_", "db_", "c_sb_")
 C_SB_RAW_SCRIPT_KEYWORDS = (
     "destroyhyakkiyakomatsuri",
@@ -56,8 +55,7 @@ def is_cn_gl_table_archive_name(file_name: str) -> bool:
     archive_name = path.basename(file_name)
     lower_name = archive_name.lower()
     return (
-        is_mgs_logic_ground_archive(archive_name)
-        or is_c_sb_raw_script_archive(lower_name)
+        is_c_sb_raw_script_archive(lower_name)
         or is_ground_archive(lower_name)
         or is_eliminate_raid_archive(lower_name)
         or is_enemy_boss_script_archive(lower_name)
@@ -65,10 +63,6 @@ def is_cn_gl_table_archive_name(file_name: str) -> bool:
         or is_script_test_archive(archive_name)
         or is_numeric_stage_archive(lower_name)
     )
-
-
-def is_mgs_logic_ground_archive(archive_name: str) -> bool:
-    return archive_name == MGS_LOGIC_GROUND_ARCHIVE_NAME
 
 
 def is_ground_archive(archive_name: str) -> bool:

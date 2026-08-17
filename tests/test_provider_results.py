@@ -112,7 +112,6 @@ def test_gl_provider_resolves_latest_apkpure_release() -> None:
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir="Temp",
-        extract_while_download=False,
         resource_type=("media",),
         proxy_url="",
         max_retries=1,
@@ -194,7 +193,6 @@ def test_gl_provider_replaces_stale_context_version_with_latest_release() -> Non
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir="Temp",
-        extract_while_download=False,
         resource_type=("media",),
         proxy_url="",
         max_retries=1,
@@ -237,7 +235,6 @@ def test_gl_provider_warns_when_platform_is_explicitly_ignored() -> None:
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir="Temp",
-        extract_while_download=False,
         resource_type=("media",),
         proxy_url="",
         max_retries=1,
@@ -304,7 +301,6 @@ def test_cn_provider_builds_assets_without_downloading_apk(
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir="Temp",
-        extract_while_download=False,
         resource_type=("media", "table", "bundle"),
         proxy_url="",
         max_retries=1,
@@ -508,7 +504,6 @@ def test_cn_provider_warns_when_platform_is_explicitly_ignored(
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir="Temp",
-        extract_while_download=False,
         resource_type=("media", "table", "bundle"),
         proxy_url="",
         max_retries=1,
@@ -654,7 +649,6 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("media",),
         proxy_url="",
         max_retries=1,
@@ -686,7 +680,10 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
         return str(tmp_path / "package.xapk")
 
     def fake_extract_xapk_file(
-        package_path: str, extract_dest: str, _temp_dir: str
+        package_path: str,
+        extract_dest: str,
+        _temp_dir: str,
+        **_kwargs: object,
     ) -> None:
         calls.append(("extract", package_path))
         extract_path = Path(extract_dest)
@@ -744,7 +741,6 @@ def test_gl_runtime_asset_preparer_reuses_matching_release(
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("table",),
         proxy_url="",
         max_retries=1,
@@ -791,7 +787,6 @@ def test_gl_runtime_asset_preparer_does_not_publish_incomplete_new_release(
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("table",),
         proxy_url="",
         max_retries=1,
@@ -842,6 +837,7 @@ def test_gl_runtime_asset_preparer_does_not_publish_incomplete_new_release(
         _package_path: str,
         extract_dest: str,
         _temp_dir: str,
+        **_kwargs: object,
     ) -> None:
         binary_path = Path(extract_dest) / "lib" / "arm64-v8a" / "libil2cpp.so"
         binary_path.parent.mkdir(parents=True)
