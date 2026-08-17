@@ -1,8 +1,62 @@
 # Changelog
 
-## Unreleased
+## v3.0.0 - Unreleased
 
-No unreleased changes recorded.
+### Breaking Changes
+- replace the legacy flat CLI with `assets sync`, `assets download`,
+  `assets extract`, `index build`, and `server start`
+- remove short options, custom raw/extracted/temp paths, prefixed output
+  directories, and legacy `<REGION>CharacterIndex.json` discovery
+- isolate output under `<workspace>/<region>/<platform>` and model operations,
+  progress, cancellation, artifacts, and region gateways with immutable typed
+  contracts
+- replace UnityPy bundle extraction with a pinned AssetRipper exporter and
+  validated source overlays
+- publish versioned runtime and schema snapshots; incompatible internal caches
+  are discarded instead of migrated
+
+### Features
+- add typed resource and character filters with AND/OR composition
+- add versioned character indexes and full per-invocation index rebuilding
+- add the optional local HTTP API with immutable contexts, single-worker FIFO
+  jobs, SSE events, catalog and CharacterIndex queries, bounded file access,
+  and protected storage cleanup
+- add deterministic AssetRipper dependency planning, conflict preservation, and
+  atomic bundle output manifests
+
+### Performance
+- discover JP encrypted IL2CPP containers by validated MFTL structure rather
+  than package filenames and stream their decryption and decompression
+- cache verified JP runtime inspection, minimal character-index schema, and
+  content-addressed SQLCipher exports by release and tool identity
+- request only TableCatalog for JP index builds and read the three required
+  ExcelDB tables through one SQLite session
+- avoid retaining downloaded JP packages and encrypted parent containers after
+  successful runtime publication
+
+### Fixes
+- merge scenario aliases into existing character records so names such as
+  `プラナ` remain searchable
+- keep non-character game entities in the index while stably ordering entries
+  with names or file aliases first
+- reject damaged or ambiguous MFTL containers, incomplete TableCatalog data,
+  partial table decoding, and invalid staged indexes without replacing the last
+  valid output
+- validate HTTP status and response shapes while probing JP catalog roots
+- normalize AssetRipper C# overlays to LF so manifest hashes remain stable on
+  Windows
+
+### Internal Changes
+- require Python 3.11 or later and replace advisory pylint checks with Ruff
+  formatting, Ruff linting, mypy, and import-linter gates
+- lazily load generated schema types and keep character-index schema generation
+  separate from the canonical full-schema workspace
+- preserve third-party attribution and license metadata in source and wheel
+  distributions
+
+### Security
+- document that the local API intentionally uses plaintext HTTP, has no
+  authentication, allows every Origin, and must run only on trusted networks
 
 
 ## v2.3.0 - 2026-07-30

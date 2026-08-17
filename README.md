@@ -26,8 +26,8 @@
 ## 环境要求
 
 - Windows/Linux
-- Python UV 环境管理器 或 Python 3.10 及更高版本
-- [.NET10 SDK  (用于提取 table)](https://dotnet.microsoft.com/download)
+- Python UV 环境管理器 或 Python 3.11 及更高版本
+- [.NET 10 SDK](https://dotnet.microsoft.com/download)
 
 ## 先决条件
 
@@ -39,7 +39,7 @@ cd Blue-Archive-Asset-Downloader
 uv sync
 ```
 
-- 若本地缺失 `third_party/Cpp2IL`，部分 dumper 流程会尝试自动下载源码。
+- 若本地缺失 Cpp2IL 或 AssetRipper submodule，相关流程会尝试下载并校验对应源码包。
 
 请确保已安装 Python，并安装必要的库：
 
@@ -62,121 +62,133 @@ ba-downloader <subcommand> [options]
 
 子命令：
 
-- `ba-downloader sync [options]`: 下载并解开全部内容
-- `ba-downloader download [options]`: 下载全部内容
-- `ba-downloader extract [options]`: 解开已下载的内容
-- `ba-downloader character-index build [options]`: 构建角色信息索引
+- `ba-downloader assets sync [options]`: 下载并解开内容
+- `ba-downloader assets download [options]`: 仅下载内容
+- `ba-downloader assets extract [options]`: 解开已下载的内容
+- `ba-downloader index build [options]`: 构建角色信息索引
+- `ba-downloader server start [options]`: 启动本地 HTTP API
 
 使用下列命令运行完整下载与提取流程（示例）：
 
 ```shell
-ba-downloader sync --region jp
+ba-downloader assets sync --region jp
 ```
 
 或者，使用以下命令仅下载资源而不进行提取（示例）：
 
 ```shell
-ba-downloader download --region jp
+ba-downloader assets download --region jp
 ```
 
 也可以使用模块入口：
 
 ```shell
-python -m ba_downloader sync --region jp
+python -m ba_downloader assets sync --region jp
 ```
 
 
+## HTTP API
+
+```shell
+uv sync --extra api
+ba-downloader server start --host 127.0.0.1
+```
+
+详细协议见 [HTTP API 文档](docs/http-api.md)。
+
 ## **基本参数**
 **`*`** :**必选的选项**
-| 参数                       | 缩&nbsp;&nbsp;&nbsp;写 | 说明                                                                                     | 默认值             | 示例                          |
-| -------------------------- | ---------------------- | ---------------------------------------------------------------------------------------- | ------------------ | ----------------------------- |
-| **`--region`**`*`          | `-r`                   | **服务器区域**：`cn`（中国）、`gl`（国际）、`jp`（日本）                                 | 无                 | `-r jp`                       |
-| `--threads`                | `-t`                   | **同时下载或解压的线程数**                                                               | `20`               | `-t 50`                       |
-| `--platform`               | `-p`                   | **资源所属平台**：`windows`、`android`、`ios`（仅 JP 生效）                              | `android`          | `-p windows`                  |
-| `--raw-dir`                | `-rd`                  | **指定未处理文件的位置**                                                                 | `"RawData"`        | `-rd raw_folder`              |
-| `--extract-dir`            | `-ed`                  | **指定已提取文件的位置**                                                                 | `"Extracted"`      | `-ed output_folder`           |
-| `--temp-dir`               | `-td`                  | **指定临时文件的位置**                                                                   | `"Temp"`           | `-td temp_dir`                |
-| `--extract-while-download` | `-ewd`                 | **是否在下载时便提取文件**（仅 `sync` 可用；较慢，在资源数量较多时酌情使用）             | `False`            | `--extract-while-download`    |
-| `--resource-type`          | `-rt`                  | **资源类型**：`table`、`media`、`bundle`、`all`                                          | `all`              | `--resource-type media table` |
-| `--proxy`                  | `-px`                  | **设置 HTTP 代理**                                                                       | 无（使用系统代理） | `-px http://127.0.0.1:8080`   |
-| `--max-retries`            | `-mr`                  | **下载失败时的最大重试次数**                                                             | `5`                | `--max-retries 3`             |
-| `--sqlcipher-key-hex`      | `-kei`                 | **SQL raw key**                                                                          | （神必）           | `-kei <64hex>`                |
-| `--search`                 | `-s`                   | **普通检索**，指定需要检索、下载或解压的文件关键词（`sync`、`download`、`extract` 可用） | 无                 | `-s aris shiroko`             |
-| `--advanced-search`        | `-as`                  | **高级检索**，指定角色信息（需要 .NET 环境）                                             | 无                 | `-as yume cv=小倉唯`          |
+| 参数              | 适用命令                  | 说明                                      | 默认值                          | 示例                            |
+| ----------------- | ------------------------- | ----------------------------------------- | ------------------------------- | ------------------------------- |
+| **`--region`**`*` | `assets *`、`index build` | **服务器区域**：`cn`、`gl`、`jp`          | 无                              | `--region jp`                   |
+| `--workspace`     | `assets *`、`index build` | 工作区根目录                              | 当前目录                        | `--workspace D:\BAAD`           |
+| `--platform`      | `assets *`、`index build` | `windows`、`android`、`ios`（仅 JP 生效） | `android`                       | `--platform windows`            |
+| `--proxy`         | `assets *`、`index build` | HTTP 代理地址                             | 无                              | `--proxy http://127.0.0.1:8080` |
+| `--max-retries`   | `assets *`、`index build` | 请求失败后的最大重试次数                  | `5`                             | `--max-retries 3`               |
+| `--sqlcipher-key` | `assets *`、`index build` | 64 位十六进制 SQLCipher raw key 覆盖值    | 自动获取                        | `--sqlcipher-key <64hex>`       |
+| `--concurrency`   | `assets *`、`index build` | 并发 worker 数                            | `30`                            | `--concurrency 50`              |
+| `--resources`     | `assets *`                | 逗号分隔的 `table`、`media`、`bundle`     | 全部                            | `--resources table,media`       |
+| `--filter`        | `assets *`                | 资源或角色过滤条件，可以重复              | 无                              | `--filter "name~伊吹"`          |
+| `--host`          | `server start`            | HTTP API 监听地址                         | `0.0.0.0`                       | `--host 127.0.0.1`              |
+| `--port`          | `server start`            | HTTP API 端口                             | `9230` 至 `9239` 中首个可用端口 | `--port 9230`                   |
 
-`--search` 与 `--advanced-search` 互斥；搜索均以 Any 模式匹配。`school` 与 `club` 的具体枚举可在 `FlatbufferData` 中查看。
+CLI 仅支持以上长参数。运行具体命令并附加 `--help` 可查看当前安装版本的准确参数。
 
-高级检索支持的检索条件：
-- `[*]` **角色名称**
+`--filter` 使用 `<字段><操作符><候选值>`：`~` 表示不区分大小写的包含匹配，`=` 表示不区分大小写的精确匹配。重复多个 `--filter` 使用 AND；同一 filter 内以逗号分隔的候选值使用 OR。`character-id`、`age` 与 `height` 只支持 `=` 和非负整数。
+
+可用字段包括：
+- `path` **资源路径**
+- `type` **资源类型**
+- `character-id` **角色 ID**
+- `name` **角色名称**
+- `dev-name` **开发名称**
+- `alias` **文件别名**
 - `cv` **声优**
 - `age` **年龄**
 - `height` **身高**
 - `birthday` **生日**
 - `illustrator` **作画者**
-- `school` **所属学园**：
-  - `RedWinter`、`Trinity`、`Gehenna`、`Abydos`、`Millennium`、`Arius` ...
-- `club` **所属社团**：
-  - `Engineer`、`CleanNClearing`、`KnightsHospitaller`、`IndeGEHENNA`
-  - `FoodService`、`Countermeasure`、`BookClub`、`MatsuriOffice` ...
+- `school` **所属学园**
+- `club` **所属社团**
 
 ---
-#### 并且，在不同的服务器中亦支持不同的名称检索方式，具体内容请参照`<Region>CharacterIndex.json`。
+#### 不同服务器支持各自的角色名称与文件别名，具体内容请参照 `indexes/characters.json`。
 - 示例：
   > japan
   >```sh
-  >ba-downloader sync --region jp -as yume 百合園セイア 호시노
+  >ba-downloader assets sync --region jp --filter "name~プラナ,伊吹"
   >```
 
-  > japan with conditions （所有符合任意一个条件的角色）
+  > japan with conditions（两个条件必须同时满足）
   >```sh
-  >ba-downloader sync --region jp -as cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
+  >ba-downloader assets sync --region jp --filter "cv=小倉唯" --filter "height=153"
   >```
 
   > global
   >```sh
-  >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ mika
+  >ba-downloader assets sync --region gl --filter "name~貝雅特里榭,ยูเมะ,mika"
   >```
 
   > china
   >```sh
-  >ba-downloader sync --region cn -as 伊吹 心奈 黑服
+  >ba-downloader assets sync --region cn --filter "name~伊吹,心奈,黑服"
   >```
 
-- 普通检索：
+- 资源路径检索：
   > package name only
   >```sh
-  >ba-downloader sync --region jp -s aris ch0070 shiroko
+  >ba-downloader assets sync --region jp --filter "path~aris,ch0070,shiroko"
   >```
 
 
 ## 默认输出
-- `Temp`: 存储临时文件或非主要文件。如：Apk文件等。
-- `RawData`: 存储经由Catalog下载的文件。如：Bundle、Media、Table等。
-- `Extracted`: 存储已提取的文件。如：Bundle、Media、Table与Dumps等。
-- `CharacterIndex.json`: 角色信息索引，可通过 `ba-downloader character-index build --region <region>` 生成，或附加 `-as` 参数自动生成。
+`--workspace` 默认为当前目录，输出固定存放在 `<workspace>/<region>/<platform>/`：
+
+- `raw/{tables,media,bundles}`: 存储经由 Catalog 下载的文件。
+- `extracted`: 存储已提取的 Bundle、Media、Table、schema 与 dumps。
+- `indexes/characters.json`: 角色信息索引，可通过 `ba-downloader index build --region <region>` 全量生成。
+- `.state`: 临时内部运行时、缓存、临时文件、日志与 manifest。
 
 资源平台示例：
 
 ```shell
-ba-downloader download --region jp --platform windows
+ba-downloader assets download --region jp --platform windows
 ```
-
 
 ## 使用须知
 - `--platform` 仅对 JP 生效，用于指定 JP 平台的资源。
 - JP/GL的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
-- Bundle文件的提取基于UnityPy，如希望更加详细的内容请使用[AssetRipper](https://github.com/AssetRipper/AssetRipper)或[AssetStudio](https://github.com/Perfare/AssetStudio)
+- Bundle 文件的提取基于[AssetRipper](https://github.com/AssetRipper/AssetRipper)，许可证参见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 - 由于各类接口频繁变动，不建议直接调用内部方法。
 
 ## TODO
-- `v3.0.0`
-  - 新 Bundle 解开器
-  - WebAPI/WebUI
+- `v3.1.0`
+  - WebUI
   
 ## 关于项目
-Blue Archive Asset Downloader v2.3.0.
+Blue Archive Asset Downloader v3.0.0
 
 ✨ 技术支持：Codex ✨
 
