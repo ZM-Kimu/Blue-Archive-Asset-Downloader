@@ -189,3 +189,30 @@ def test_rich_progress_reporter_shows_sub_status_in_extract_mode() -> None:
     assert (
         len("999/999 entries") <= RichProgressReporter.EXTRACT_SUB_STATUS_COLUMN_WIDTH
     )
+
+
+def test_rich_progress_reporter_has_independent_loading_task() -> None:
+    reporter = RichProgressReporter(217, "Extracting bundles...", extract_mode=True)
+
+    with reporter:
+        reporter.set_loading_progress(12, 217, "Loading files")
+
+        assert reporter._loading_task_id is not None
+        assert len(reporter._progress.tasks) == 2
+        loading_task = reporter._progress.tasks[reporter._loading_task_id]
+        assert loading_task.description == "AssetRipper: Loading files"
+        assert loading_task.completed == 12
+        assert loading_task.total == 217
+
+
+def test_rich_progress_reporter_has_independent_processing_task() -> None:
+    reporter = RichProgressReporter(217, "Extracting bundles...", extract_mode=True)
+
+    with reporter:
+        reporter.set_processing_status("Processing 00:12")
+
+        assert reporter._processing_task_id is not None
+        assert len(reporter._progress.tasks) == 2
+        processing_task = reporter._progress.tasks[reporter._processing_task_id]
+        assert processing_task.description == "AssetRipper: Processing 00:12"
+        assert processing_task.total is None

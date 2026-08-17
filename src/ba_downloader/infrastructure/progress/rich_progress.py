@@ -14,7 +14,10 @@ from rich.progress import (
 )
 from rich.table import Column
 
-from ba_downloader.domain.ports.progress import ProgressReporterPort
+from ba_downloader.domain.ports.progress import (
+    ProgressReporterFactoryPort,
+    ProgressReporterPort,
+)
 from ba_downloader.infrastructure.logging.runtime import get_console
 
 
@@ -143,11 +146,13 @@ class RichProgressReporter(ProgressReporterPort):
 
         self._progress = Progress(*columns, console=get_console(), transient=False)
         self._task_id: TaskID | None = None
+        self._loading_task_id: TaskID | None = None
         self._total = total
         self._description = description
         self._status = ""
         self._secondary_status = ""
         self._failed_status = ""
+        self._processing_task_id: TaskID | None = None
 
     def __enter__(self) -> RichProgressReporter:
         self._progress.start()
@@ -187,6 +192,40 @@ class RichProgressReporter(ProgressReporterPort):
         if self._task_id is not None:
             self._progress.update(self._task_id, secondary_status=status)
 
+    def set_loading_progress(self, completed: int, total: int, stage: str) -> None:
+        description = f"AssetRipper: {stage}"
+        status = f"{completed}/{total}"
+        if self._loading_task_id is None:
+            self._loading_task_id = self._progress.add_task(
+                description,
+                total=total,
+                completed=completed,
+                status=status,
+                secondary_status="",
+                failed_status="",
+            )
+            return
+        self._progress.update(
+            self._loading_task_id,
+            description=description,
+            total=total,
+            completed=completed,
+            status=status,
+        )
+
+    def set_processing_status(self, status: str) -> None:
+        description = f"AssetRipper: {status}"
+        if self._processing_task_id is None:
+            self._processing_task_id = self._progress.add_task(
+                description,
+                total=None,
+                status="",
+                secondary_status="",
+                failed_status="",
+            )
+            return
+        self._progress.update(self._processing_task_id, description=description)
+
     def set_failed_status(self, status: str) -> None:
         self._failed_status = status
         if self._task_id is not None:
@@ -222,6 +261,12 @@ class NullProgressReporter(ProgressReporterPort):
     def set_secondary_status(self, status: str) -> None:
         _ = status
 
+    def set_loading_progress(self, completed: int, total: int, stage: str) -> None:
+        _ = (completed, total, stage)
+
+    def set_processing_status(self, status: str) -> None:
+        _ = status
+
     def set_failed_status(self, status: str) -> None:
         _ = status
 
@@ -230,3 +275,33 @@ class NullProgressReporter(ProgressReporterPort):
 
     def stop(self) -> None:
         return None
+
+
+class RichProgressReporterFactory(ProgressReporterFactoryPort):
+    def create(
+        self,
+        total: int,
+        description: str,
+        *,
+        download_mode: bool = False,
+        extract_mode: bool = False,
+    ) -> RichProgressReporter:
+        return RichProgressReporter(
+            total,
+            description,
+            download_mode=download_mode,
+            extract_mode=extract_mode,
+        )
+
+
+class NullProgressReporterFactory(ProgressReporterFactoryPort):
+    def create(
+        self,
+        total: int,
+        description: str,
+        *,
+        download_mode: bool = False,
+        extract_mode: bool = False,
+    ) -> NullProgressReporter:
+        _ = (total, description, download_mode, extract_mode)
+        return NullProgressReporter()

@@ -8,6 +8,7 @@ from ba_downloader.domain.models.asset import (
     AssetType,
     RegionCapabilities,
 )
+from ba_downloader.domain.models.character import CharacterIndex
 from ba_downloader.domain.models.region import Platform, Region
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.runtime import RuntimeContext
@@ -115,7 +116,6 @@ def build_runtime_context(
         "raw_dir": str(tmp_path / "RawData"),
         "extract_dir": str(tmp_path / "Extracted"),
         "temp_dir": str(tmp_path / "Temp"),
-        "extract_while_download": False,
         "resource_type": resource_type,
         "proxy_url": "",
         "max_retries": 1,
@@ -174,10 +174,12 @@ class DummyCharacterIndexBuilder:
         index_file_valid: bool = True,
         search_results: list[str] | None = None,
         excel_resources: AssetCollection | None = None,
+        index: CharacterIndex | None = None,
     ) -> None:
         self.index_file_valid = index_file_valid
         self.search_results = search_results or ["Shiroko"]
         self.excel_resources = excel_resources
+        self.index = index or CharacterIndex("", [])
         self.build_calls: list[RuntimeContext] = []
         self.search_calls: list[list[str]] = []
         self.verify_calls = 0
@@ -198,3 +200,7 @@ class DummyCharacterIndexBuilder:
         _ = context
         self.verify_calls += 1
         return self.index_file_valid
+
+    def load(self, context: RuntimeContext) -> CharacterIndex:
+        _ = context
+        return self.index

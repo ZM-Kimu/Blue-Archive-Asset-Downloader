@@ -1,3 +1,4 @@
+from contextlib import AbstractContextManager
 from typing import Protocol
 
 
@@ -12,8 +13,23 @@ class ProgressReporterPort(Protocol):
 
     def set_secondary_status(self, status: str) -> None: ...
 
+    def set_loading_progress(self, completed: int, total: int, stage: str) -> None: ...
+
+    def set_processing_status(self, status: str) -> None: ...
+
     def set_failed_status(self, status: str) -> None: ...
 
     def set_completed(self, completed: int) -> None: ...
 
     def stop(self) -> None: ...
+
+
+class ProgressReporterFactoryPort(Protocol):
+    def create(
+        self,
+        total: int,
+        description: str,
+        *,
+        download_mode: bool = False,
+        extract_mode: bool = False,
+    ) -> AbstractContextManager[ProgressReporterPort]: ...
