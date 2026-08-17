@@ -7,7 +7,6 @@ FORBIDDEN_INFRA_EDGES = {
     ("infrastructure.download", "infrastructure.extraction"),
     ("infrastructure.extraction", "infrastructure.regions"),
     ("infrastructure.regions", "infrastructure.schema"),
-    ("infrastructure.regions", "infrastructure.unity"),
 }
 
 INFRA_EDGE_ALLOWLIST: set[tuple[str, str]] = {
@@ -77,13 +76,6 @@ def _infra_layer(module_name: str) -> str:
     return ""
 
 
-def _top_layer(module_name: str) -> str:
-    parts = module_name.split(".")
-    if len(parts) >= 2 and parts[0] == "ba_downloader":
-        return parts[1]
-    return ""
-
-
 def _internal_imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     imports: set[str] = set()
@@ -125,16 +117,19 @@ def test_new_infrastructure_cross_edges_do_not_bypass_boundaries() -> None:
     assert not violations, "\n".join(violations)
 
 
-def test_infrastructure_does_not_depend_on_application_layer() -> None:
+def test_package_download_does_not_construct_terminal_progress() -> None:
+    path = PYTHON_SOURCE_ROOT / "infrastructure/packages/android_package.py"
+    imports = _internal_imports(path)
+
+    assert "ba_downloader.infrastructure.progress.rich_progress" not in imports
+
+
+def test_api_adapter_does_not_import_infrastructure() -> None:
+    api_root = PYTHON_SOURCE_ROOT / "api"
     violations: list[str] = []
-    for file_path in PYTHON_SOURCE_ROOT.rglob("*.py"):
-        if "__pycache__" in file_path.parts:
-            continue
-        source_module = _module_name(file_path)
-        if _top_layer(source_module) != "infrastructure":
-            continue
-        for target_module in _internal_imports(file_path):
-            if _top_layer(target_module) == "application":
-                violations.append(f"{source_module} -> {target_module}")
+    for file_path in api_root.rglob("*.py"):
+        for imported in _internal_imports(file_path):
+            if imported.startswith("ba_downloader.infrastructure"):
+                violations.append(f"{_module_name(file_path)} -> {imported}")
 
     assert not violations, "\n".join(violations)

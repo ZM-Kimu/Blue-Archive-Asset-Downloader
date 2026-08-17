@@ -1,0 +1,52 @@
+[importlinter]
+root_package = ba_downloader
+
+[importlinter:contract:domain-independence]
+name = Domain does not depend on outer layers
+type = forbidden
+source_modules =
+    ba_downloader.domain
+forbidden_modules =
+    ba_downloader.application
+    ba_downloader.infrastructure
+    ba_downloader.bootstrap
+    ba_downloader.cli
+    ba_downloader.api
+
+[importlinter:contract:application-independence]
+name = Application depends only on domain
+type = forbidden
+source_modules =
+    ba_downloader.application
+forbidden_modules =
+    ba_downloader.infrastructure
+    ba_downloader.bootstrap
+    ba_downloader.cli
+    ba_downloader.api
+
+[importlinter:contract:infrastructure-adapter-isolation]
+name = Infrastructure does not depend on transport adapters
+type = forbidden
+source_modules =
+    ba_downloader.infrastructure
+forbidden_modules =
+    ba_downloader.cli
+    ba_downloader.api
+
+[importlinter:contract:cli-api-isolation]
+name = CLI does not depend on API
+type = forbidden
+source_modules =
+    ba_downloader.cli
+forbidden_modules =
+    ba_downloader.api
+allow_indirect_imports = true
+
+[importlinter:contract:api-cli-isolation]
+name = API does not depend on CLI
+type = forbidden
+source_modules =
+    ba_downloader.api
+forbidden_modules =
+    ba_downloader.cli
+allow_indirect_imports = true

@@ -100,10 +100,10 @@ venv.bak/
 assets/asset_list.txt
 
 # Project file
-*Extracted/
-*RawData/
-*Temp/
-*CharacterRelation.json
-*CharacterIndex.json
+/jp/
+/gl/
+/cn/
 .vscode/
 .ba-downloader/
+**/bin/
+**/obj/
