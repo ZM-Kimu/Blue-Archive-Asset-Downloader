@@ -12,6 +12,10 @@ from ba_downloader.infrastructure.extraction.table.archive_support import (
 from ba_downloader.infrastructure.regions.cn_gl_table_archives import (
     is_cn_gl_table_archive_name,
 )
+from ba_downloader.infrastructure.regions.ground_table_archives import (
+    MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE,
+    is_mgs_logic_ground_archive,
+)
 
 STALE_JP_EXCEL_ENTRIES = frozenset(
     {
@@ -30,6 +34,9 @@ def classify_jp_table_archive(file_name: str) -> TableArchiveRoute:
     standard_route = classify_table_archive(file_name)
     if standard_route.route_key != ROUTE_STANDARD:
         return standard_route
+
+    if is_mgs_logic_ground_archive(file_name):
+        return TableArchiveRoute(MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE)
 
     if is_cn_gl_table_archive_name(file_name):
         return TableArchiveRoute(

@@ -15,12 +15,19 @@ from ba_downloader.domain.models.region_catalog import DecodedJPCatalog
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpResponse
 from ba_downloader.domain.services.resource_query import ResourceQueryService
+from ba_downloader.infrastructure.extraction.assetripper.exporter import (
+    AssetRipperRuntimeMetadata,
+)
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.packages.android_package import (
     PackageArchiveError,
     _resolve_filename,
 )
 from ba_downloader.infrastructure.regions.jp.catalog_decoder import JPCatalogDecoder
+from ba_downloader.infrastructure.regions.jp.catalog_source import (
+    CatalogSelection,
+    JPCatalogSourceProvider,
+)
 from ba_downloader.infrastructure.regions.jp.provider import (
     JPBootstrapper,
     JPRegionProvider,
@@ -152,6 +159,92 @@ def test_jp_provider_supports_advanced_search() -> None:
     assert capabilities.supports_sync is True
     assert capabilities.supports_advanced_search is True
     assert capabilities.supports_character_index_build is True
+
+
+def test_jp_table_only_catalog_sends_only_table_request() -> None:
+    root = "https://cdn.example.invalid/catalog"
+    table_url = f"{root}/TableBundles/TableCatalog.bytes"
+    client = RecordingHttpClient(
+        {
+            ("GET", table_url): HttpResponse(
+                status_code=200,
+                headers={"content-type": "application/octet-stream"},
+                content=_build_table_catalog_bytes(),
+                url=table_url,
+            )
+        }
+    )
+    context = RuntimeContext(
+        region="jp",
+        threads=1,
+        version="1.2.3",
+        raw_dir="Raw",
+        extract_dir="Extracted",
+        temp_dir="Temp",
+        resource_type=("table",),
+        proxy_url="",
+        max_retries=0,
+        search=(),
+        advanced_search=(),
+        work_dir=".",
+    )
+    session = BootstrapSession(
+        ResolvedRelease("jp", "1.2.3"),
+        "https://server.example.invalid/info",
+        root,
+    )
+
+    sources = JPCatalogSourceProvider(client, NullLogger()).fetch(
+        session,
+        context,
+        CatalogSelection.TABLE_ONLY,
+    )
+
+    assert [source.name for source in sources] == ["table"]
+    assert client.calls == [("GET", table_url)]
+
+
+def test_jp_table_only_decode_does_not_load_generated_memorypack_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = RuntimeContext(
+        region="jp",
+        threads=1,
+        version="1.2.3",
+        raw_dir="Raw",
+        extract_dir="Extracted",
+        temp_dir="Temp",
+        resource_type=("table",),
+        proxy_url="",
+        max_retries=0,
+        search=(),
+        advanced_search=(),
+        work_dir=".",
+    )
+    session = BootstrapSession(
+        ResolvedRelease("jp", "1.2.3"),
+        "https://server.example.invalid/info",
+        "https://cdn.example.invalid/catalog",
+    )
+    source = CatalogSource(
+        "table",
+        "https://cdn.example.invalid/catalog/TableBundles/TableCatalog.bytes",
+        _build_table_catalog_bytes(),
+    )
+
+    monkeypatch.setattr(
+        JPCatalogDecoder,
+        "_JPCatalogDecoder__load_memorypack_registry",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("table-only decode must not load the generated registry")
+        ),
+    )
+
+    decoded = JPCatalogDecoder.decode(session, [source], context)
+
+    assert len(decoded.tables) == 2
+    assert decoded.media == []
+    assert decoded.bundles == []
 
 
 def _write_table_bundle(writer: MemoryPackWriter, bundle: dict[str, Any]) -> None:
@@ -506,7 +599,7 @@ def test_get_resource_manifest_uses_second_root_and_bundle_packing_info() -> Non
     assert bundle_items[0].metadata["bundle_files"]
 
 
-def test_jp_catalog_decoder_prefers_generated_memorypack_schema(
+def test_jp_catalog_decoder_uses_builtin_table_and_generated_media_schema(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -517,7 +610,6 @@ def test_jp_catalog_decoder_prefers_generated_memorypack_schema(
         raw_dir=str(tmp_path / "Raw"),
         extract_dir=str(tmp_path / "Extracted"),
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("table", "media", "bundle"),
         proxy_url="",
         max_retries=1,
@@ -558,11 +650,6 @@ def test_jp_catalog_decoder_prefers_generated_memorypack_schema(
         _ = (args, kwargs)
         raise AssertionError("legacy catalog decoder should not be used")
 
-    monkeypatch.setattr(
-        JPCatalogDecoder,
-        "_JPCatalogDecoder__decode_table_catalog",
-        fail_fallback,
-    )
     monkeypatch.setattr(
         JPCatalogDecoder,
         "_JPCatalogDecoder__decode_media_catalog",
@@ -682,7 +769,6 @@ def test_jp_catalog_source_provider_uses_selected_platform_for_bundle_manifest(
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir="Temp",
-        extract_while_download=False,
         resource_type=("bundle",),
         proxy_url="",
         max_retries=1,
@@ -790,7 +876,6 @@ def test_load_catalog_logs_happy_path_at_info_level(
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir="Temp",
-        extract_while_download=False,
         resource_type=("media",),
         proxy_url="",
         max_retries=1,
@@ -816,7 +901,39 @@ def test_load_catalog_logs_happy_path_at_info_level(
     ]
 
 
-def test_jp_bootstrap_accepts_current_encrypted_runtime_name(
+def _write_jp_mftl_runtime_marker(path: Path) -> None:
+    payload_offset = 0x40
+    payload = b"\x00" * 16
+    directory = b"".join(
+        (
+            b"\x91\x97\xaclibil2cpp.so",
+            bytes([payload_offset, len(payload)]),
+            b"\xc4\x10" + b"\x11" * 16,
+            b"\xc4\x20" + b"\x22" * 32,
+            bytes([len(payload)]) + b"\xa7fixture",
+        )
+    )
+    prefix = bytearray(b"\x00" * payload_offset)
+    prefix[:6] = b"\x7fELF\x02\x01"
+    prefix[18:20] = (0xB7).to_bytes(2, "little")
+    prefix[0x20 : 0x20 + len(b"libappsign4a.so")] = b"libappsign4a.so"
+    directory_offset = payload_offset + len(payload)
+    footer = (
+        struct.pack(
+            "<4sIQQQQ",
+            b"MFTL",
+            1,
+            payload_offset,
+            len(payload),
+            directory_offset,
+            len(directory),
+        )
+        + b"\x00" * 4
+    )
+    path.write_bytes(bytes(prefix) + payload + directory + footer)
+
+
+def test_jp_bootstrap_accepts_structural_mftl_runtime_with_renamed_container(
     tmp_path: Path,
 ) -> None:
     package_dir = tmp_path / "Package"
@@ -840,11 +957,58 @@ def test_jp_bootstrap_accepts_current_encrypted_runtime_name(
     current_runtime = runtime_dir / "librontatre.so"
     current_runtime.write_bytes(b"runtime")
 
+    assert not JPBootstrapper._has_required_package_assets(package_dir)
+
+    _write_jp_mftl_runtime_marker(current_runtime)
+
     assert JPBootstrapper._has_required_package_assets(package_dir)
 
     current_runtime.rename(runtime_dir / "libgedenedo.so")
 
-    assert not JPBootstrapper._has_required_package_assets(package_dir)
+    assert JPBootstrapper._has_required_package_assets(package_dir)
+
+
+def test_jp_bootstrap_uses_runtime_metadata_inspector(tmp_path: Path) -> None:
+    class MetadataInspector:
+        def inspect(
+            self, context: RuntimeContext, data_root: Path
+        ) -> AssetRipperRuntimeMetadata:
+            assert context.version == "1.2.3"
+            assert data_root == tmp_path / "Package" / "Extracted" / "assets/bin/Data"
+            return AssetRipperRuntimeMetadata(b"encrypted", "1.2.3")
+
+    class ServerInfoDecoder:
+        def decode_server_url(self, data: bytes) -> str:
+            assert data == b"encrypted"
+            return "https://example.invalid/server-info.json"
+
+    context = RuntimeContext(
+        region="jp",
+        threads=1,
+        version="1.2.3",
+        raw_dir="Raw",
+        extract_dir="Extracted",
+        temp_dir=str(tmp_path),
+        resource_type=("table",),
+        proxy_url="",
+        max_retries=0,
+        search=(),
+        advanced_search=(),
+        work_dir=str(tmp_path),
+    )
+    logger = RecordingLogger()
+    bootstrapper = JPBootstrapper(
+        RecordingHttpClient({}),
+        logger,
+        runtime_metadata_inspector=MetadataInspector(),  # type: ignore[arg-type]
+        server_info_decoder=ServerInfoDecoder(),  # type: ignore[arg-type]
+    )
+    bootstrapper.package_dir = lambda _: tmp_path / "Package"  # type: ignore[method-assign]
+
+    assert bootstrapper.get_server_url(context) == (
+        "https://example.invalid/server-info.json"
+    )
+    assert logger.warn_messages == []
 
 
 def test_jp_bootstrap_translates_package_download_validation_errors(
@@ -859,7 +1023,6 @@ def test_jp_bootstrap_translates_package_download_validation_errors(
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("bundle",),
         proxy_url="",
         max_retries=1,
@@ -901,7 +1064,6 @@ def test_jp_bootstrap_translates_package_extraction_errors(
         raw_dir="Raw",
         extract_dir="Extracted",
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("bundle",),
         proxy_url="",
         max_retries=1,

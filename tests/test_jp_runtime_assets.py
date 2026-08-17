@@ -13,10 +13,13 @@ from ba_downloader.bootstrap.region_profiles import (
     DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.execution import NeverCancelled
 from ba_downloader.infrastructure.regions.jp.runtime_assets import (
     JpEncryptedRuntimeExtractor,
     JPRuntimeAssetPreparer,
     JpRuntimeDecryptError,
+    JpRuntimePayloadError,
+    locate_jp_runtime_payload,
 )
 from support import RecordingLogger
 
@@ -32,7 +35,6 @@ def _build_context(tmp_path: Path) -> RuntimeContext:
         raw_dir=str(tmp_path / "Raw"),
         extract_dir=str(tmp_path / "Extracted"),
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("table",),
         proxy_url="",
         max_retries=1,
@@ -107,7 +109,7 @@ def _build_mftl_directory(
     payload_size: int,
     iv: bytes,
     key: bytes,
-    unpacked_size: int,
+    recorded_size: int,
 ) -> bytes:
     return b"".join(
         (
@@ -118,14 +120,18 @@ def _build_mftl_directory(
             _msgpack_uint(payload_size),
             _msgpack_bin(iv),
             _msgpack_bin(key),
-            _msgpack_uint(unpacked_size),
+            _msgpack_uint(recorded_size),
             _msgpack_str("fixture"),
         )
     )
 
 
 def _write_mftl_tara_fixture(path: Path) -> bytes:
-    unpacked = b"\x7fELF" + b"synthetic-libil2cpp".ljust(60, b"\x00")
+    unpacked_buffer = bytearray(b"\x00" * 64)
+    unpacked_buffer[:6] = b"\x7fELF\x02\x01"
+    unpacked_buffer[18:20] = (0xB7).to_bytes(2, "little")
+    unpacked_buffer[20:40] = b"synthetic-libil2cpp"
+    unpacked = bytes(unpacked_buffer)
     rsa_key = RSA.generate(1024)
     tara = _build_tara_payload(unpacked, rsa_key)
     mftl_key = bytes.fromhex("44" * 32)
@@ -134,8 +140,10 @@ def _write_mftl_tara_fixture(path: Path) -> bytes:
 
     key_blob = rsa_key.n.to_bytes(128, "big") + PADDED_65537
     payload_offset = 0x200 + len(key_blob) + 0x20
-    prefix = bytearray(b"\x7fELF")
-    prefix.extend(b"\x00" * (0x200 - len(prefix)))
+    prefix = bytearray(b"\x00" * 0x200)
+    prefix[:6] = b"\x7fELF\x02\x01"
+    prefix[18:20] = (0xB7).to_bytes(2, "little")
+    prefix[0x20 : 0x20 + len(b"libappsign4a.so")] = b"libappsign4a.so"
     prefix.extend(key_blob)
     prefix.extend(b"\x00" * (payload_offset - len(prefix)))
 
@@ -144,7 +152,7 @@ def _write_mftl_tara_fixture(path: Path) -> bytes:
         payload_size=len(encrypted_tara),
         iv=mftl_iv,
         key=mftl_key,
-        unpacked_size=len(unpacked),
+        recorded_size=len(encrypted_tara),
     )
     dir_offset = payload_offset + len(encrypted_tara)
     footer = (
@@ -161,6 +169,36 @@ def _write_mftl_tara_fixture(path: Path) -> bytes:
     )
     path.write_bytes(bytes(prefix) + encrypted_tara + directory + footer)
     return unpacked
+
+
+def _write_mftl_marker(path: Path) -> None:
+    payload_offset = 0x40
+    payload = b"\x00" * 16
+    directory = _build_mftl_directory(
+        payload_offset=payload_offset,
+        payload_size=len(payload),
+        iv=b"\x11" * 16,
+        key=b"\x22" * 32,
+        recorded_size=len(payload),
+    )
+    prefix = bytearray(b"\x00" * payload_offset)
+    prefix[:6] = b"\x7fELF\x02\x01"
+    prefix[18:20] = (0xB7).to_bytes(2, "little")
+    prefix[0x20 : 0x20 + len(b"libappsign4a.so")] = b"libappsign4a.so"
+    directory_offset = payload_offset + len(payload)
+    footer = (
+        struct.pack(
+            "<4sIQQQQ",
+            b"MFTL",
+            1,
+            payload_offset,
+            len(payload),
+            directory_offset,
+            len(directory),
+        )
+        + b"\x00" * 4
+    )
+    path.write_bytes(bytes(prefix) + payload + directory + footer)
 
 
 def test_jp_encrypted_runtime_extractor_restores_libil2cpp(tmp_path: Path) -> None:
@@ -181,6 +219,44 @@ def test_jp_encrypted_runtime_extractor_rejects_missing_mftl_footer(
 
     with pytest.raises(JpRuntimeDecryptError, match="MFTL footer magic"):
         JpEncryptedRuntimeExtractor().extract(source_path, tmp_path / "libil2cpp.so")
+
+
+def test_jp_runtime_payload_locator_uses_mftl_structure_not_filename(
+    tmp_path: Path,
+) -> None:
+    unrelated = tmp_path / "librontatre.so"
+    unrelated.write_bytes(b"\x7fELFnot-an-mftl-container")
+    renamed = tmp_path / "libgedenedo.so"
+    _write_mftl_marker(renamed)
+
+    payload = locate_jp_runtime_payload(tmp_path)
+
+    assert payload is not None
+    assert payload.path == renamed
+    assert payload.encrypted
+
+
+def test_jp_runtime_payload_locator_rejects_multiple_mftl_candidates(
+    tmp_path: Path,
+) -> None:
+    _write_mftl_marker(tmp_path / "first.so")
+    _write_mftl_marker(tmp_path / "second.so")
+
+    with pytest.raises(JpRuntimePayloadError, match=r"first\.so, second\.so"):
+        locate_jp_runtime_payload(tmp_path)
+
+
+def test_jp_runtime_payload_locator_requires_internal_soname_marker(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "renamed.so"
+    _write_mftl_marker(candidate)
+    candidate.write_bytes(
+        candidate.read_bytes().replace(b"libappsign4a.so", b"noappsign4a.so?")
+    )
+
+    with pytest.raises(JpRuntimePayloadError, match="SONAME marker"):
+        locate_jp_runtime_payload(tmp_path)
 
 
 @dataclass
@@ -219,7 +295,7 @@ def _write_jp_package_runtime(
     return runtime_dir / binary_name
 
 
-def test_jp_runtime_preparer_keeps_existing_libil2cpp(tmp_path: Path) -> None:
+def test_jp_runtime_preparer_rejects_plaintext_only_libil2cpp(tmp_path: Path) -> None:
     context = _build_context(tmp_path)
     _write_jp_package_runtime(
         context,
@@ -228,26 +304,25 @@ def test_jp_runtime_preparer_keeps_existing_libil2cpp(tmp_path: Path) -> None:
     )
     extractor = RecordingRuntimeExtractor([])
 
-    prepared = JPRuntimeAssetPreparer(
-        RecordingLogger(),
-        extractor=extractor,
-    ).prepare(context)
+    with pytest.raises(FileNotFoundError, match="structurally valid MFTL"):
+        JPRuntimeAssetPreparer(
+            RecordingLogger(),
+            extractor=extractor,
+        ).prepare(context)
 
     assert extractor.calls == []
-    assert prepared.binary_path.read_bytes() == b"\x7fELFexisting"
-    assert prepared.metadata_path.read_bytes() == b"metadata"
-    assert prepared.root_dir == (Path(context.temp_dir) / context.version / "Runtime")
 
 
-def test_jp_runtime_preparer_restores_libil2cpp_from_librontatre(
+def test_jp_runtime_preparer_restores_libil2cpp_from_renamed_mftl_container(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
-    _write_jp_package_runtime(
+    encrypted_binary = _write_jp_package_runtime(
         context,
-        binary_name="librontatre.so",
-        binary_data=b"encrypted",
+        binary_name="libgedenedo.so",
+        binary_data=b"",
     )
+    _write_mftl_marker(encrypted_binary)
     extractor = RecordingRuntimeExtractor([])
 
     prepared = JPRuntimeAssetPreparer(
@@ -257,10 +332,32 @@ def test_jp_runtime_preparer_restores_libil2cpp_from_librontatre(
 
     assert len(extractor.calls) == 1
     source_path, output_path = extractor.calls[0]
-    assert source_path.name == "librontatre.so"
+    assert source_path.name == "libgedenedo.so"
     assert output_path.name == "libil2cpp.so"
-    assert source_path.parent == output_path.parent
+    assert source_path == encrypted_binary
+    assert source_path.parent != output_path.parent
     assert prepared.binary_path.read_bytes() == b"\x7fELFrestored"
+    assert not (prepared.root_dir / "libgedenedo.so").exists()
+    assert prepared.provenance["type"] == "jp_mftl_v1"
+
+
+def test_jp_mftl_extractor_never_reads_parent_as_one_bytes_object(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "random-parent.so"
+    _write_mftl_tara_fixture(source_path)
+    output_path = tmp_path / "libil2cpp.so"
+
+    def fail_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("MFTL extraction must stream the parent container")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    JpEncryptedRuntimeExtractor().extract(source_path, output_path)
+
+    with output_path.open("rb") as output:
+        assert output.read(6) == b"\x7fELF\x02\x01"
 
 
 def test_default_region_service_profile_uses_jp_runtime_preparer() -> None:
@@ -269,6 +366,7 @@ def test_default_region_service_profile_uses_jp_runtime_preparer() -> None:
     ).runtime_asset_preparer_factory(
         http_client=object(),
         logger=RecordingLogger(),
+        cancellation=NeverCancelled(),
     )
 
     assert isinstance(preparer, JPRuntimeAssetPreparer)

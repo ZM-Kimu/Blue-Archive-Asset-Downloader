@@ -57,21 +57,37 @@ class JPCatalogDecoder:
         context: RuntimeContext,
     ) -> DecodedJPCatalog:
         _ = session
-        memorypack_registry = cls.__load_memorypack_registry(context)
+        memorypack_registry: MemoryPackSchemaRegistry | None = None
         payload = DecodedJPCatalog(tables=[], media=[], bundles=[])
 
         for source in sources:
             if source.name == "table":
-                table_assets = cls.__try_decode_table_catalog_with_memorypack(
-                    source.content,
-                    memorypack_registry,
-                )
-                if table_assets is None:
+                try:
                     table_assets = cls.__decode_table_catalog(
                         cls.CatalogReader(source.content)
                     )
+                except (
+                    EOFError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    AttributeError,
+                ) as built_in_error:
+                    memorypack_registry = cls.__load_memorypack_registry(context)
+                    generated_assets = cls.__try_decode_table_catalog_with_memorypack(
+                        source.content,
+                        memorypack_registry,
+                    )
+                    if generated_assets is None:
+                        raise ValueError(
+                            "JP TableCatalog could not be decoded by the built-in "
+                            "v3 reader or generated schema."
+                        ) from built_in_error
+                    table_assets = generated_assets
                 payload.tables.extend(table_assets)
             elif source.name == "media":
+                if memorypack_registry is None:
+                    memorypack_registry = cls.__load_memorypack_registry(context)
                 media_assets = cls.__try_decode_media_catalog_with_memorypack(
                     source.content,
                     memorypack_registry,

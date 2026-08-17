@@ -6,20 +6,19 @@ import shutil
 from base64 import b64decode
 from binascii import Error as BinasciiError
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from urllib.parse import parse_qs, unquote, urlparse
 from zipfile import BadZipFile, ZipFile, is_zipfile
 
-from ba_downloader.domain.exceptions import NetworkError
+from ba_downloader.domain.exceptions import NetworkError, OperationCancelledError
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort, TransportKind, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.progress.rich_progress import (
-    NullProgressReporter,
-    RichProgressReporter,
-)
+from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
+from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 
 
 @dataclass(frozen=True)
@@ -60,7 +59,11 @@ def download_package_file(
     *,
     transport: TransportKind = "default",
     headers: Mapping[str, str] | None = None,
+    progress_factory: ProgressReporterFactoryPort | None = None,
+    cancellation: CancellationPort | None = None,
 ) -> str:
+    active_cancellation = cancellation or NeverCancelled()
+    active_cancellation.raise_if_cancelled()
     os.makedirs(destination_dir, exist_ok=True)
     metadata = _resolve_package_metadata(
         http_client,
@@ -84,16 +87,11 @@ def download_package_file(
             return destination
 
     logger.info(f"Downloading package {metadata.file_name}...")
-    progress = (
-        RichProgressReporter(
-            content_length,
-            f"Downloading {metadata.file_name}",
-            download_mode=True,
-        )
-        if content_length
-        else NullProgressReporter()
-    )
-    with progress:
+    with (progress_factory or NullProgressReporterFactory()).create(
+        content_length,
+        f"Downloading {metadata.file_name}",
+        download_mode=True,
+    ) as progress:
         if _should_use_multipart_download(
             http_client,
             package_url,
@@ -109,6 +107,7 @@ def download_package_file(
                 transport=transport,
                 headers=headers,
                 progress_callback=progress.advance,
+                cancellation=active_cancellation,
             )
 
         download_result = http_client.download_to_file(
@@ -118,11 +117,20 @@ def download_package_file(
             transport=transport,
             progress_callback=progress.advance if content_length else None,
         )
+        active_cancellation.raise_if_cancelled()
         _validate_package_file(download_result.path, expected_size=content_length)
         return download_result.path
 
 
-def extract_xapk_file(package_path: str, extract_dest: str, temp_dir: str) -> None:
+def extract_xapk_file(
+    package_path: str,
+    extract_dest: str,
+    temp_dir: str,
+    *,
+    cancellation: CancellationPort | None = None,
+) -> None:
+    active_cancellation = cancellation or NeverCancelled()
+    active_cancellation.raise_if_cancelled()
     temp_path = Path(temp_dir)
     temp_path.mkdir(parents=True, exist_ok=True)
     extract_path = Path(extract_dest)
@@ -133,13 +141,17 @@ def extract_xapk_file(package_path: str, extract_dest: str, temp_dir: str) -> No
     try:
         with ZipFile(package_path, "r") as package_zip:
             for member in package_zip.namelist():
+                active_cancellation.raise_if_cancelled()
                 if member.lower().endswith(".apk"):
                     package_zip.extract(member, temp_path)
                     apk_files.append(temp_path / member)
 
         for apk_file in apk_files:
+            active_cancellation.raise_if_cancelled()
             with ZipFile(apk_file, "r") as apk_zip:
-                apk_zip.extractall(extract_path)
+                for archive_member in apk_zip.infolist():
+                    active_cancellation.raise_if_cancelled()
+                    apk_zip.extract(archive_member, extract_path)
     except (BadZipFile, OSError) as exc:
         _discard_invalid_package(Path(package_path))
         raise PackageArchiveError(
@@ -149,6 +161,106 @@ def extract_xapk_file(package_path: str, extract_dest: str, temp_dir: str) -> No
                 reason=f"archive extraction failed with {exc.__class__.__name__}: {exc}",
             )
         ) from exc
+
+
+def extract_jp_xapk_file(
+    package_path: str,
+    extract_dest: str,
+    temp_dir: str,
+    *,
+    cancellation: CancellationPort | None = None,
+) -> None:
+    active_cancellation = cancellation or NeverCancelled()
+    active_cancellation.raise_if_cancelled()
+    package = Path(package_path)
+    extract_root = Path(extract_dest)
+    inner_root = Path(temp_dir)
+    extract_root.mkdir(parents=True, exist_ok=True)
+    inner_root.mkdir(parents=True, exist_ok=True)
+    _validate_package_file(package_path)
+
+    selected: list[tuple[Path, str]] = []
+    try:
+        with ZipFile(package, "r") as xapk:
+            apk_members = [
+                info
+                for info in xapk.infolist()
+                if not info.is_dir() and info.filename.lower().endswith(".apk")
+            ]
+            for index, member in enumerate(apk_members):
+                active_cancellation.raise_if_cancelled()
+                inner_path = inner_root / f"part-{index:03d}.apk"
+                with xapk.open(member) as source, inner_path.open("wb") as destination:
+                    shutil.copyfileobj(source, destination, length=1024 * 1024)
+                with ZipFile(inner_path, "r") as apk:
+                    names = [
+                        info.filename.replace("\\", "/") for info in apk.infolist()
+                    ]
+                has_metadata = (
+                    "assets/bin/Data/Managed/Metadata/global-metadata.dat" in names
+                )
+                has_arm64 = any(name.startswith("lib/arm64-v8a/") for name in names)
+                has_unity_data = any(
+                    name.startswith("assets/bin/Data/") for name in names
+                )
+                if has_metadata:
+                    selected.append((inner_path, "base"))
+                elif has_arm64:
+                    selected.append((inner_path, "arm64"))
+                elif has_unity_data:
+                    selected.append((inner_path, "unity_data"))
+
+        roles = [role for _, role in selected]
+        if roles.count("base") != 1 or roles.count("arm64") != 1:
+            raise PackageArchiveError(
+                "JP XAPK must contain exactly one base APK and one ARM64 split."
+            )
+        for inner_path, role in selected:
+            active_cancellation.raise_if_cancelled()
+            with ZipFile(inner_path, "r") as apk:
+                for member in apk.infolist():
+                    active_cancellation.raise_if_cancelled()
+                    normalized = member.filename.replace("\\", "/")
+                    if member.is_dir():
+                        continue
+                    if role == "arm64":
+                        include = normalized.startswith(
+                            "lib/arm64-v8a/"
+                        ) and normalized.lower().endswith(".so")
+                    else:
+                        include = normalized.startswith("assets/bin/Data/")
+                    if include:
+                        _extract_member_safely(apk, member, extract_root)
+    except PackageArchiveError:
+        raise
+    except (BadZipFile, OSError) as exc:
+        raise PackageArchiveError(
+            _build_package_error_message(
+                package,
+                actual_size=_safe_file_size(package),
+                reason=f"selective JP extraction failed with {exc.__class__.__name__}: {exc}",
+            )
+        ) from exc
+    finally:
+        shutil.rmtree(inner_root, ignore_errors=True)
+
+
+def _extract_member_safely(
+    archive: ZipFile,
+    member,
+    destination_root: Path,
+) -> None:
+    normalized = member.filename.replace("\\", "/").lstrip("/")
+    destination = (destination_root / normalized).resolve()
+    try:
+        destination.relative_to(destination_root.resolve())
+    except ValueError as exc:
+        raise PackageArchiveError(
+            f"Archive member escapes extraction root: {member.filename!r}."
+        ) from exc
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with archive.open(member) as source, destination.open("wb") as output:
+        shutil.copyfileobj(source, output, length=1024 * 1024)
 
 
 def _resolve_package_metadata(
@@ -313,6 +425,7 @@ def _download_package_with_parts(
     transport: TransportKind,
     headers: Mapping[str, str] | None,
     progress_callback: Callable[[int], None] | None,
+    cancellation: CancellationPort,
 ) -> str:
     destination_path = Path(destination)
     parts_dir = destination_path.with_name(f"{destination_path.name}.parts")
@@ -333,27 +446,35 @@ def _download_package_with_parts(
                     expected_size=expected_size,
                     transport=transport,
                     headers=headers,
+                    cancellation=cancellation,
                 ): part
                 for part in parts
             }
-            for future in as_completed(future_map):
-                part = future_map[future]
-                try:
-                    future.result()
-                except PackageArchiveError:
-                    for pending in future_map:
-                        if pending is not future:
+            pending_futures = set(future_map)
+            while pending_futures:
+                cancellation.raise_if_cancelled()
+                done_futures, pending_futures = wait(
+                    pending_futures,
+                    timeout=0.1,
+                    return_when=FIRST_COMPLETED,
+                )
+                for future in done_futures:
+                    part = future_map[future]
+                    try:
+                        future.result()
+                    except (OperationCancelledError, PackageArchiveError):
+                        for pending in pending_futures:
                             pending.cancel()
-                    raise
+                        raise
 
-                if progress_callback is not None:
-                    with progress_lock:
-                        progress_callback(part.size)
+                    if progress_callback is not None:
+                        with progress_lock:
+                            progress_callback(part.size)
 
         _assemble_package_file(parts, destination_path)
         _validate_package_file(str(destination_path), expected_size=expected_size)
         return str(destination_path)
-    except (OSError, PackageArchiveError):
+    except (OSError, OperationCancelledError, PackageArchiveError):
         destination_path.unlink(missing_ok=True)
         raise
     finally:
@@ -383,9 +504,11 @@ def _download_package_part(
     expected_size: int,
     transport: TransportKind,
     headers: Mapping[str, str] | None,
+    cancellation: CancellationPort,
 ) -> None:
     last_error: Exception | None = None
     for _attempt in range(1, MULTIPART_PART_ATTEMPTS + 1):
+        cancellation.raise_if_cancelled()
         part.path.unlink(missing_ok=True)
         try:
             response = http_client.request(
@@ -407,6 +530,7 @@ def _download_package_part(
                     f"expected {part.size} bytes."
                 )
             part.path.write_bytes(response.content)
+            cancellation.raise_if_cancelled()
             return
         except (NetworkError, OSError, PackageArchiveError) as exc:
             last_error = exc
@@ -557,7 +681,8 @@ def _safe_file_size(package_path: Path) -> int:
 
 def _read_file_signature(package_path: Path, *, preview_bytes: int = 16) -> str:
     try:
-        signature = package_path.read_bytes()[:preview_bytes]
+        with package_path.open("rb") as package_file:
+            signature = package_file.read(preview_bytes)
     except OSError:
         return "unavailable"
     if not signature:

@@ -17,9 +17,84 @@ from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.packages.android_package import (
     PackageArchiveError,
+    _read_file_signature,
     _resolve_filename,
     download_package_file,
+    extract_jp_xapk_file,
 )
+
+
+def test_package_signature_preview_reads_only_requested_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    package_path = tmp_path / "package.apk"
+    package_path.write_bytes(b"0123456789abcdef-extra")
+
+    def fail_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("read_bytes must not be used for signature previews")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    assert _read_file_signature(package_path) == b"0123456789abcdef".hex(" ")
+
+
+def test_jp_xapk_extraction_selects_only_required_splits_and_entries(
+    tmp_path: Path,
+) -> None:
+    def apk_bytes(entries: dict[str, bytes]) -> bytes:
+        output = BytesIO()
+        with ZipFile(output, "w") as archive:
+            for name, payload in entries.items():
+                archive.writestr(name, payload)
+        return output.getvalue()
+
+    package_path = tmp_path / "release.xapk"
+    with ZipFile(package_path, "w") as package:
+        package.writestr(
+            "com.YostarJP.BlueArchive.apk",
+            apk_bytes(
+                {
+                    "assets/bin/Data/Managed/Metadata/global-metadata.dat": b"metadata",
+                    "assets/bin/Data/globalgamemanagers": b"managers",
+                    "assets/unrelated.bin": b"skip",
+                }
+            ),
+        )
+        package.writestr(
+            "UnityDataAssetPack.apk",
+            apk_bytes(
+                {
+                    "assets/bin/Data/random-hash": b"config-candidate",
+                    "assets/asset-pack-unrelated.bin": b"skip",
+                }
+            ),
+        )
+        package.writestr(
+            "config.arm64_v8a.apk",
+            apk_bytes(
+                {
+                    "lib/arm64-v8a/random-parent.so": b"mftl",
+                    "lib/arm64-v8a/not-a-library.txt": b"skip",
+                    "lib/x86_64/ignored.so": b"skip",
+                }
+            ),
+        )
+        package.writestr(
+            "config.x86_64.apk",
+            apk_bytes({"lib/x86_64/ignored.so": b"skip"}),
+        )
+
+    output = tmp_path / "Extracted"
+    inner = tmp_path / "Parts"
+    extract_jp_xapk_file(str(package_path), str(output), str(inner))
+
+    assert (output / "assets/bin/Data/Managed/Metadata/global-metadata.dat").is_file()
+    assert (output / "assets/bin/Data/random-hash").is_file()
+    assert (output / "lib/arm64-v8a/random-parent.so").is_file()
+    assert not (output / "assets/unrelated.bin").exists()
+    assert not (output / "lib/x86_64/ignored.so").exists()
+    assert not inner.exists()
 
 
 class RecordingHttpClient:

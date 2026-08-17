@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 import pytest
 
 from ba_downloader.domain.exceptions import DownloadError, NetworkError
-from ba_downloader.domain.models.asset import AssetCollection, AssetRecord, AssetType
+from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import DownloadResult
 from ba_downloader.infrastructure.download.resource_downloader import ResourceDownloader
@@ -56,7 +56,9 @@ class RecordingHttpClient:
         payload = (
             b""
             if status_code >= 400
-            else self._payloads.pop(0) if self._payloads else b"x" * 10
+            else self._payloads.pop(0)
+            if self._payloads
+            else b"x" * 10
         )
         if progress_callback is not None and payload:
             first_chunk = max(1, len(payload) // 2)
@@ -124,6 +126,22 @@ class RecordingProgressReporter:
         return None
 
 
+def _create_recording_progress(
+    _factory: object,
+    total: int,
+    description: str,
+    *,
+    download_mode: bool = False,
+    extract_mode: bool = False,
+) -> RecordingProgressReporter:
+    _ = extract_mode
+    return RecordingProgressReporter(
+        total,
+        description,
+        download_mode=download_mode,
+    )
+
+
 class RecordingLogger:
     def __init__(self) -> None:
         self.info_messages: list[str] = []
@@ -166,7 +184,6 @@ def _build_context(tmp_path: Path) -> RuntimeContext:
         raw_dir=str(tmp_path / "raw"),
         extract_dir=str(tmp_path / "extract"),
         temp_dir=str(tmp_path / "temp"),
-        extract_while_download=False,
         resource_type=("bundle",),
         proxy_url="",
         max_retries=1,
@@ -236,8 +253,8 @@ def test_download_resources_tracks_aggregate_bytes(monkeypatch, tmp_path: Path) 
     )
 
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
-        RecordingProgressReporter,
+        "ba_downloader.infrastructure.progress.NullProgressReporterFactory.create",
+        _create_recording_progress,
     )
     monkeypatch.setattr(
         downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
@@ -359,8 +376,8 @@ def test_download_resources_keeps_concurrency_on_non_network_failure(
 
     monkeypatch.setattr(downloader, "_download_resource", fake_download_resource)
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
-        RecordingProgressReporter,
+        "ba_downloader.infrastructure.progress.NullProgressReporterFactory.create",
+        _create_recording_progress,
     )
     monkeypatch.setattr(
         downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
@@ -405,8 +422,8 @@ def test_download_resources_reduces_concurrency_for_timeout_failures(
 
     monkeypatch.setattr(downloader, "_download_resource", fake_download_resource)
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
-        RecordingProgressReporter,
+        "ba_downloader.infrastructure.progress.NullProgressReporterFactory.create",
+        _create_recording_progress,
     )
     monkeypatch.setattr(
         downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
@@ -445,8 +462,8 @@ def test_download_resources_treats_network_timeout_as_retryable_failure(
 
     monkeypatch.setattr(downloader, "_download_resource", fake_download_resource)
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
-        RecordingProgressReporter,
+        "ba_downloader.infrastructure.progress.NullProgressReporterFactory.create",
+        _create_recording_progress,
     )
     monkeypatch.setattr(
         downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
@@ -477,8 +494,8 @@ def test_retry_rounds_reuse_adaptive_state(monkeypatch, tmp_path: Path) -> None:
     assert downloader._decrease_target_concurrency(state) is True
 
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
-        RecordingProgressReporter,
+        "ba_downloader.infrastructure.progress.NullProgressReporterFactory.create",
+        _create_recording_progress,
     )
     monkeypatch.setattr(
         downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
@@ -761,118 +778,6 @@ def test_verify_and_download_raises_when_retries_are_exhausted(
     assert "Failed to download 2 files after retries." in str(exc_info.value)
     assert "Bundle/a.bundle" in str(exc_info.value)
     assert "Media/b.zip" in str(exc_info.value)
-
-
-def test_download_resources_does_not_extract_when_post_download_validation_fails(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    logger = RecordingLogger()
-    client = RecordingHttpClient(payloads=[b"short"])
-    context = _build_context(tmp_path).with_updates(extract_while_download=True)
-    resources = list(_build_resources("Bundle/a.bundle"))
-    extract_calls: list[str] = []
-    downloader = ResourceDownloader(
-        client,
-        logger,
-        immediate_extraction_handler=lambda resource, _context: extract_calls.append(
-            resource.path
-        ),
-    )
-    RecordingProgressReporter.instances.clear()
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
-        RecordingProgressReporter,
-    )
-    monkeypatch.setattr(
-        downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
-    )
-    failed = downloader._download_resources(resources, context)
-
-    assert [resource.path for resource in failed] == ["Bundle/a.bundle"]
-    assert extract_calls == []
-    progress = RecordingProgressReporter.instances[-1]
-    assert progress.statuses[-1] == "0/1 files"
-    assert progress.secondary_statuses[-1] == "conc. 1/1"
-    assert progress.failed_statuses[-1] == "failed 1"
-    assert logger.error_messages == []
-
-
-def test_download_resources_uses_injected_immediate_extraction_handler(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    payload = b"validated!"
-    client = RecordingHttpClient(payloads=[payload])
-    context = _build_context(tmp_path).with_updates(extract_while_download=True)
-    resource = next(
-        iter(_build_checked_resources(tmp_path, "Bundle/a.bundle", payload=payload))
-    )
-    extraction_calls: list[tuple[str, str]] = []
-    RecordingProgressReporter.instances.clear()
-
-    def extract_immediately(
-        downloaded_resource: AssetRecord,
-        active_context: RuntimeContext,
-    ) -> None:
-        assert downloaded_resource == resource
-        asset_path = Path(active_context.raw_dir) / resource.path
-        assert asset_path.read_bytes() == payload
-        extraction_calls.append((resource.path, active_context.raw_dir))
-
-    downloader = ResourceDownloader(
-        client,
-        NullLogger(),
-        immediate_extraction_handler=extract_immediately,
-    )
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
-        RecordingProgressReporter,
-    )
-    monkeypatch.setattr(
-        downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
-    )
-
-    failed = downloader._download_resources([resource], context)
-
-    assert failed == []
-    assert extraction_calls == [(resource.path, context.raw_dir)]
-
-
-def test_download_resources_skips_immediate_extraction_when_context_disables_it(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    payload = b"validated!"
-    client = RecordingHttpClient(payloads=[payload])
-    context = _build_context(tmp_path)
-    resource = next(
-        iter(_build_checked_resources(tmp_path, "Bundle/a.bundle", payload=payload))
-    )
-    extraction_calls: list[str] = []
-    downloader = ResourceDownloader(
-        client,
-        NullLogger(),
-        immediate_extraction_handler=lambda downloaded, _context: extraction_calls.append(
-            downloaded.path
-        ),
-    )
-    RecordingProgressReporter.instances.clear()
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.download.resource_downloader.RichProgressReporter",
-        RecordingProgressReporter,
-    )
-    monkeypatch.setattr(
-        downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
-    )
-
-    failed = downloader._download_resources([resource], context)
-
-    assert failed == []
-    assert extraction_calls == []
 
 
 def test_verify_resource_accepts_jp_crc_decimal_strings(tmp_path: Path) -> None:

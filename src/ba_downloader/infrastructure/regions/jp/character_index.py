@@ -10,6 +10,7 @@ JP_DATABASE_INDEX_SOURCE_SPEC = DatabaseIndexSourceSpec(
     scenario_table="ScenarioCharacterNameDBSchema",
     character_table="CharacterDBSchema",
     profile_table="LocalizeCharProfileDBSchema",
+    use_single_database_session=True,
 )
 
 

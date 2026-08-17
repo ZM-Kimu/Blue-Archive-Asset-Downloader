@@ -53,12 +53,13 @@ def test_jp_table_metadata_manifest_round_trips_table_includes(
         / "1.70.436321.table-metadata.json"
     )
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["region"] == "jp"
     assert payload["platform"] == "android"
     assert payload["version"] == "1.70.436321"
     assert payload["tables"] == [
         {
+            "url": "https://example.invalid/Table/TablePatchPack_GroundStage_1.zip",
             "path": "Table/TablePatchPack_GroundStage_1.zip",
             "size": 123,
             "crc": "456",

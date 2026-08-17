@@ -12,7 +12,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from threading import Event, Lock
 
-from ba_downloader.domain.exceptions import DownloadError
+from ba_downloader.domain.exceptions import DownloadError, OperationCancelledError
 from ba_downloader.domain.models.asset import (
     AssetCollection,
     AssetRecord,
@@ -20,15 +20,19 @@ from ba_downloader.domain.models.asset import (
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.progress import (
+    ProgressReporterFactoryPort,
+    ProgressReporterPort,
+)
 from ba_downloader.infrastructure.download.adaptive import (
     AdaptiveDownloadState,
     classify_download_failure,
     decrease_target_concurrency,
     record_download_success,
 )
-from ba_downloader.infrastructure.download.immediate import ImmediateExtractionHandler
 from ba_downloader.infrastructure.download.loop import (
     DownloadLoopContext,
     ResourceDownloadLoop,
@@ -40,12 +44,13 @@ from ba_downloader.infrastructure.packages import (
     find_zip_entry,
     read_zip_entries,
 )
-from ba_downloader.infrastructure.progress.rich_progress import RichProgressReporter
+from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 from ba_downloader.infrastructure.runtime.interrupts import (
     build_future_wait_policy,
     cancel_pending_futures,
     install_interrupt_handler,
 )
+from ba_downloader.infrastructure.storage.workspace_paths import raw_resource_path
 
 _AdaptiveDownloadState = AdaptiveDownloadState
 
@@ -62,14 +67,16 @@ class ResourceDownloader(ResourceDownloaderPort):
         logger: LoggerPort,
         *,
         force_exit: Callable[[int], None] | None = None,
-        immediate_extraction_handler: ImmediateExtractionHandler | None = None,
+        progress_factory: ProgressReporterFactoryPort | None = None,
+        cancellation: CancellationPort | None = None,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
         self._zip_entry_cache: dict[tuple[str, str], ZipEntry] = {}
         self._zip_entries_by_url: dict[str, list[ZipEntry]] = {}
         self._force_exit = force_exit or os._exit
-        self._immediate_extraction_handler = immediate_extraction_handler
+        self._progress_factory = progress_factory or NullProgressReporterFactory()
+        self._cancellation = cancellation or NeverCancelled()
         self._wait_policy = build_future_wait_policy(
             self.logger,
             self.POLL_INTERVAL_SECONDS,
@@ -79,7 +86,7 @@ class ResourceDownloader(ResourceDownloaderPort):
         self._download_loop = ResourceDownloadLoop(
             wait_policy=self._wait_policy,
             download_resource=self._download_resource_for_loop,
-            handle_successful_download=self._handle_successful_download,
+            cancellation=self._cancellation,
         )
 
     def verify_and_download(
@@ -87,6 +94,7 @@ class ResourceDownloader(ResourceDownloaderPort):
         resources: AssetCollection,
         context: RuntimeContext,
     ) -> None:
+        self._cancellation.raise_if_cancelled()
         if not resources:
             return
 
@@ -103,6 +111,7 @@ class ResourceDownloader(ResourceDownloaderPort):
         adaptive_state = self._create_adaptive_download_state(pending, context)
         attempt = 0
         while pending and attempt <= context.max_retries:
+            self._cancellation.raise_if_cancelled()
             if attempt:
                 self.logger.warn(
                     f"Retrying {len(pending)} failed files. Attempt {attempt}/{context.max_retries}."
@@ -123,12 +132,29 @@ class ResourceDownloader(ResourceDownloaderPort):
             raise DownloadError(f"{failure_message} Failed resources: {failed_paths}")
         else:
             self.logger.info("All files have been downloaded to your computer.")
+        self._cancellation.raise_if_cancelled()
 
     def _verify_resources(
         self,
         resources: AssetCollection,
         context: RuntimeContext,
     ) -> list[AssetRecord]:
+        if len(resources) == 1:
+            stop_event = Event()
+            with (
+                self._install_interrupt_handler(stop_event),
+                self._progress_factory.create(
+                    1,
+                    "Verifying assets...",
+                ) as progress,
+            ):
+                resource, verified = self._verify_resource(resources[0], context)
+                progress.set_description(f"Verifying {Path(resource.path).name}")
+                progress.advance()
+            if stop_event.is_set():
+                raise OperationCancelledError("Download cancelled by user.")
+            return [] if verified else [resource]
+
         pending: list[AssetRecord] = []
         workers = min(max(context.threads, 1), max(len(resources), 1))
         stop_event = Event()
@@ -137,7 +163,7 @@ class ResourceDownloader(ResourceDownloaderPort):
         try:
             with (
                 self._install_interrupt_handler(stop_event),
-                RichProgressReporter(
+                self._progress_factory.create(
                     len(resources),
                     "Verifying assets...",
                 ) as progress,
@@ -156,7 +182,7 @@ class ResourceDownloader(ResourceDownloaderPort):
             executor.shutdown(wait=False, cancel_futures=True)
 
         if stop_event.is_set():
-            raise KeyboardInterrupt()
+            raise OperationCancelledError("Download cancelled by user.")
 
         return pending
 
@@ -179,7 +205,7 @@ class ResourceDownloader(ResourceDownloaderPort):
         try:
             with (
                 self._install_interrupt_handler(stop_event),
-                RichProgressReporter(
+                self._progress_factory.create(
                     progress_total,
                     "Downloading assets...",
                     download_mode=download_mode,
@@ -207,7 +233,7 @@ class ResourceDownloader(ResourceDownloaderPort):
             executor.shutdown(wait=False, cancel_futures=True)
 
         if stop_event.is_set():
-            raise KeyboardInterrupt()
+            raise OperationCancelledError("Download cancelled by user.")
 
         return failed_resources
 
@@ -237,7 +263,7 @@ class ResourceDownloader(ResourceDownloaderPort):
 
     @staticmethod
     def _build_progress_callback(
-        progress: RichProgressReporter,
+        progress: ProgressReporterPort,
         progress_lock: Lock,
     ) -> Callable[[int], None]:
         def advance_progress(amount: int) -> None:
@@ -245,17 +271,6 @@ class ResourceDownloader(ResourceDownloaderPort):
                 progress.advance(amount)
 
         return advance_progress
-
-    def _handle_successful_download(
-        self,
-        resource: AssetRecord,
-        context: RuntimeContext,
-    ) -> None:
-        if not context.extract_while_download:
-            return
-        if self._immediate_extraction_handler is None:
-            return
-        self._immediate_extraction_handler(resource, context)
 
     def _download_resource_for_loop(
         self,
@@ -275,10 +290,12 @@ class ResourceDownloader(ResourceDownloaderPort):
         self,
         pending_futures: set[Future[tuple[AssetRecord, bool]]],
         stop_event: Event,
-        progress: RichProgressReporter,
+        progress: ProgressReporterPort,
         pending: list[AssetRecord],
     ) -> None:
         while pending_futures:
+            if self._cancellation.is_cancelled():
+                stop_event.set()
             done_futures, pending_futures = wait(
                 pending_futures,
                 timeout=self.POLL_INTERVAL_SECONDS,
@@ -324,11 +341,14 @@ class ResourceDownloader(ResourceDownloaderPort):
         resource: AssetRecord,
         context: RuntimeContext,
     ) -> tuple[AssetRecord, bool]:
-        asset_path = Path(context.raw_dir) / resource.path
+        self._cancellation.raise_if_cancelled()
+        asset_path = raw_resource_path(context, resource)
         asset_path = self._canonicalize_existing_case_path(asset_path)
         if not asset_path.exists():
             return resource, False
-        return resource, self._get_validation_error(asset_path, resource) is None
+        result = self._get_validation_error(asset_path, resource) is None
+        self._cancellation.raise_if_cancelled()
+        return resource, result
 
     def _get_validation_error(
         self, asset_path: Path, resource: AssetRecord
@@ -411,7 +431,8 @@ class ResourceDownloader(ResourceDownloaderPort):
         progress_callback: Callable[[int], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
     ) -> AssetRecord:
-        asset_path = Path(context.raw_dir) / resource.path
+        self._cancellation.raise_if_cancelled()
+        asset_path = raw_resource_path(context, resource)
         asset_path.parent.mkdir(parents=True, exist_ok=True)
         asset_path = self._canonicalize_existing_case_path(asset_path)
         if self._is_apk_entry_resource(resource):
@@ -424,6 +445,7 @@ class ResourceDownloader(ResourceDownloaderPort):
                 timeout=self.DOWNLOAD_TIMEOUT_SECONDS,
             )
             self._validate_downloaded_resource(asset_path, resource)
+            self._cancellation.raise_if_cancelled()
             return resource
 
         download_result = self.http_client.download_to_file(
@@ -438,6 +460,7 @@ class ResourceDownloader(ResourceDownloaderPort):
             raise RuntimeError(f"unexpected HTTP status {download_result.status_code}")
 
         self._validate_downloaded_resource(asset_path, resource)
+        self._cancellation.raise_if_cancelled()
         return resource
 
     @classmethod
