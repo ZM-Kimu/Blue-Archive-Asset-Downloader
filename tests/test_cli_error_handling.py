@@ -1,77 +1,52 @@
-from types import SimpleNamespace
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import cast
 
 import pytest
 
-from ba_downloader.bootstrap.container import (
-    DownloadRuntimeServices,
-    ExtractRuntimeServices,
-)
-from ba_downloader.bootstrap.region_profiles import (
-    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
-    build_application_region_profile,
+from ba_downloader.application.operations import (
+    ApplicationOperation,
+    ApplicationOperationCommand,
+    ApplicationOperationResult,
 )
 from ba_downloader.cli.main import main
 from ba_downloader.domain.exceptions import DownloadError, NetworkError
-from ba_downloader.domain.models.asset import AssetCollection, RegionCapabilities
-from ba_downloader.domain.models.region_catalog import RegionCatalogResult
-from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
+from ba_downloader.domain.models.runtime import RuntimeContext
 
 
-class ClosableHttpClient:
-    def __init__(self) -> None:
-        self.closed = False
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class FailingExtractAssetsUseCase:
-    def __init__(self, error: Exception) -> None:
+class RecordingExecutor:
+    def __init__(self, error: Exception | None = None) -> None:
         self.error = error
+        self.operations: list[ApplicationOperation] = []
+        self.context: RuntimeContext | None = None
 
-    def run(self, context) -> None:  # type: ignore[no-untyped-def]
-        _ = context
-        raise self.error
-
-
-class DownloadProvider:
-    def get_capabilities(self) -> RegionCapabilities:
-        return RegionCapabilities()
-
-    def load_catalog(self, context) -> RegionCatalogResult:  # type: ignore[no-untyped-def]
-        return RegionCatalogResult(AssetCollection(), context)
-
-
-JP_SERVICE_PROFILE = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("jp")
+    def execute(
+        self,
+        command: ApplicationOperationCommand,
+    ) -> ApplicationOperationResult:
+        self.operations.append(command.operation)
+        if self.error is not None:
+            raise self.error
+        assert self.context is not None
+        return ApplicationOperationResult(self.context, ())
 
 
-def _build_workflow_profile(provider: DownloadProvider):
-    return build_application_region_profile(
-        JP_SERVICE_PROFILE,
-        SimpleNamespace(region="jp"),  # type: ignore[arg-type]
-        http_client=object(),
-        logger=ConsoleLogger(),
-        table_metadata_store=NoopTableMetadataStore(),
-        provider=provider,
+def _install_executor(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: RecordingExecutor,
+) -> None:
+    @contextmanager
+    def fake_scope(*args: object, **kwargs: object) -> Iterator[RecordingExecutor]:
+        _ = (args, kwargs)
+        executor.context = cast(RuntimeContext, args[0])
+        yield executor
+
+    monkeypatch.setattr(
+        "ba_downloader.cli.main.application_operation_executor",
+        fake_scope,
     )
-
-
-class RecordingDownloader:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def verify_and_download(self, resources, context) -> None:  # type: ignore[no-untyped-def]
-        _ = (resources, context)
-        self.calls += 1
-
-
-class NoopTableMetadataStore:
-    def load(self, context):  # type: ignore[no-untyped-def]
-        _ = context
-        return None
-
-    def write(self, context, resources) -> None:  # type: ignore[no-untyped-def]
-        _ = (context, resources)
 
 
 @pytest.mark.parametrize(
@@ -83,10 +58,7 @@ class NoopTableMetadataStore:
             ),
             "Downloaded JP package is invalid or incomplete.",
         ),
-        (
-            NetworkError("temporary failure"),
-            "temporary failure",
-        ),
+        (NetworkError("temporary failure"), "temporary failure"),
         (
             DownloadError("Failed to download 2 files after retries."),
             "Failed to download 2 files after retries.",
@@ -99,82 +71,38 @@ def test_main_logs_operational_errors_without_traceback(
     error: Exception,
     expected_message: str,
 ) -> None:
-    http_client = ClosableHttpClient()
-    services = SimpleNamespace(
-        logger=ConsoleLogger(),
-        http_client=http_client,
-    )
+    _install_executor(monkeypatch, RecordingExecutor(error))
 
-    monkeypatch.setattr(
-        "ba_downloader.cli.main.build_download_runtime_services",
-        lambda context: services,
-    )
-    monkeypatch.setattr(
-        "ba_downloader.cli.main._run_command",
-        lambda *args, **kwargs: (_ for _ in ()).throw(error),
-    )
-
-    exit_code = main(["download", "--region", "jp"])
+    exit_code = main(["assets", "download", "--region", "jp"])
     captured = capsys.readouterr()
 
-    assert exit_code == 1
-    assert expected_message in captured.err
+    assert exit_code == (2 if isinstance(error, (NetworkError, DownloadError)) else 1)
+    assert expected_message in " ".join(captured.err.split())
     assert "Traceback" not in captured.err
-    assert http_client.closed is True
 
 
-def test_main_logs_extract_bootstrap_errors_without_traceback(
+def test_main_logs_extract_errors_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    http_client = ClosableHttpClient()
     error = LookupError(
         "JP table extract prerequisites were missing and auto-generation was attempted."
     )
-    provider = DownloadProvider()
-    services = ExtractRuntimeServices(
-        logger=ConsoleLogger(),
-        http_client=http_client,
-        provider=provider,
-        service_profile=JP_SERVICE_PROFILE,
-        extract_service=FailingExtractAssetsUseCase(error),
-        workflow_profile=_build_workflow_profile(provider),
-    )
+    _install_executor(monkeypatch, RecordingExecutor(error))
 
-    monkeypatch.setattr(
-        "ba_downloader.cli.main.build_extract_runtime_services",
-        lambda context: services,
-    )
-
-    exit_code = main(["extract", "--region", "jp", "--platform", "windows"])
+    exit_code = main(["assets", "extract", "--region", "jp", "--platform", "windows"])
     captured = capsys.readouterr()
 
     assert exit_code == 1
     assert "JP table extract prerequisites were missing" in captured.err
     assert "Traceback" not in captured.err
-    assert http_client.closed is True
 
 
-def test_download_command_uses_download_only_runtime_services(
+def test_download_command_uses_shared_operation_executor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    http_client = ClosableHttpClient()
-    downloader = RecordingDownloader()
-    provider = DownloadProvider()
-    services = DownloadRuntimeServices(
-        logger=ConsoleLogger(),
-        http_client=http_client,
-        provider=provider,
-        service_profile=JP_SERVICE_PROFILE,
-        downloader=downloader,
-        workflow_profile=_build_workflow_profile(provider),
-    )
+    executor = RecordingExecutor()
+    _install_executor(monkeypatch, executor)
 
-    monkeypatch.setattr(
-        "ba_downloader.cli.main.build_download_runtime_services",
-        lambda context: services,
-    )
-
-    assert main(["download", "--region", "jp"]) == 0
-    assert downloader.calls == 1
-    assert http_client.closed is True
+    assert main(["assets", "download", "--region", "jp"]) == 0
+    assert executor.operations == [ApplicationOperation.download]
