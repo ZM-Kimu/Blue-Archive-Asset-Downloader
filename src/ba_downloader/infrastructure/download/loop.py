@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.models.asset import AssetRecord
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.infrastructure.download.adaptive import (
     AdaptiveDownloadState,
     classify_download_failure,
@@ -39,7 +40,6 @@ DownloadFunction = Callable[
     [AssetRecord, RuntimeContext, Callable[[int], None] | None, Callable[[], bool]],
     AssetRecord,
 ]
-SuccessfulDownloadHandler = Callable[[AssetRecord, RuntimeContext], None]
 
 
 @dataclass(slots=True)
@@ -70,11 +70,11 @@ class ResourceDownloadLoop:
         *,
         wait_policy: Any,
         download_resource: DownloadFunction,
-        handle_successful_download: SuccessfulDownloadHandler,
+        cancellation: CancellationPort | None = None,
     ) -> None:
         self._wait_policy = wait_policy
         self._download_resource = download_resource
-        self._handle_successful_download = handle_successful_download
+        self._cancellation = cancellation or NeverCancelled()
 
     def run(
         self,
@@ -96,6 +96,8 @@ class ResourceDownloadLoop:
         cancellation_state = CancellationFeedbackState()
 
         while pending_resources or future_map:
+            if self._cancellation.is_cancelled():
+                stop_event.set()
             if stop_event.is_set() and not future_map:
                 break
 
@@ -219,12 +221,11 @@ class ResourceDownloadLoop:
         loop_context: DownloadLoopContext,
         session_state: DownloadSessionState,
     ) -> None:
-        for downloaded_item in successful_downloads:
+        for _downloaded_item in successful_downloads:
             session_state.completed_files += 1
             if not loop_context.download_mode:
                 with loop_context.progress_lock:
                     loop_context.progress.advance()
-            self._handle_successful_download(downloaded_item, loop_context.context)
 
     @staticmethod
     def _update_progress_status(

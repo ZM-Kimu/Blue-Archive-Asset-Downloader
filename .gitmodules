@@ -1,3 +1,6 @@
 [submodule "third_party/Cpp2IL"]
 	path = third_party/Cpp2IL
 	url = https://github.com/SamboyCoding/Cpp2IL.git
+[submodule "third_party/AssetRipper"]
+	path = third_party/AssetRipper
+	url = https://github.com/AssetRipper/AssetRipper.git

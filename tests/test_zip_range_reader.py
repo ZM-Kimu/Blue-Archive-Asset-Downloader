@@ -36,7 +36,6 @@ def _build_context(tmp_path: Path) -> RuntimeContext:
         raw_dir=str(tmp_path / "Raw"),
         extract_dir=str(tmp_path / "Extracted"),
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("table",),
         proxy_url="",
         max_retries=1,

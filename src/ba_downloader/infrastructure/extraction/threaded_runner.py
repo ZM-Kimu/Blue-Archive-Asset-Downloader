@@ -9,10 +9,15 @@ from pathlib import Path
 from threading import Event
 from zipfile import BadZipFile
 
-from ba_downloader.domain.exceptions import ExtractError
+from ba_downloader.domain.exceptions import ExtractError, OperationCancelledError
 from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.progress.rich_progress import RichProgressReporter
+from ba_downloader.domain.ports.progress import (
+    ProgressReporterFactoryPort,
+    ProgressReporterPort,
+)
+from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 from ba_downloader.infrastructure.runtime.interrupts import (
     CancellationFeedbackState,
     build_future_wait_policy,
@@ -39,8 +44,17 @@ class ExtractionFailureError(ExtractError):
         file_word = "file" if len(failures) == 1 else "files"
         examples = ", ".join(Path(failure.file_path).name for failure in failures[:5])
         suffix = f": {examples}" if examples else ""
+        first_error = next(
+            (failure.error for failure in failures if str(failure.error)),
+            None,
+        )
+        detail = (
+            f"; first error: {first_error.__class__.__name__}: {first_error}"
+            if first_error is not None
+            else ""
+        )
         super().__init__(
-            f"{operation_name} failed for {len(failures)} {file_word}{suffix}"
+            f"{operation_name} failed for {len(failures)} {file_word}{suffix}{detail}"
         )
 
     @classmethod
@@ -64,11 +78,15 @@ class ThreadedExtractionRunner:
         poll_interval_seconds: float,
         interrupt_grace_seconds: float,
         force_exit: Callable[[int], None] | None = None,
+        progress_factory: ProgressReporterFactoryPort | None = None,
+        cancellation: CancellationPort | None = None,
     ) -> None:
         self.logger = logger
         self.poll_interval_seconds = poll_interval_seconds
         self.interrupt_grace_seconds = interrupt_grace_seconds
         self.force_exit = force_exit or os._exit
+        self.progress_factory = progress_factory or NullProgressReporterFactory()
+        self.cancellation = cancellation or NeverCancelled()
         self.wait_policy = build_future_wait_policy(
             self.logger,
             self.poll_interval_seconds,
@@ -85,6 +103,7 @@ class ThreadedExtractionRunner:
         operation_name: str,
         task: ExtractionTask,
     ) -> None:
+        self.cancellation.raise_if_cancelled()
         if not files:
             return
 
@@ -101,7 +120,7 @@ class ThreadedExtractionRunner:
                     self.logger,
                     force_exit=self.force_exit,
                 ),
-                RichProgressReporter(
+                self.progress_factory.create(
                     len(files),
                     progress_title,
                     extract_mode=True,
@@ -126,16 +145,18 @@ class ThreadedExtractionRunner:
                 if failures:
                     raise ExtractionFailureError(operation_name, failures)
         finally:
+            if self.cancellation.is_cancelled():
+                stop_event.set()
             executor.shutdown(wait=False, cancel_futures=True)
             if stop_event.is_set():
-                raise KeyboardInterrupt()
+                raise OperationCancelledError(f"{operation_name} cancelled by user.")
 
     def _drain_futures(
         self,
         pending_futures: set[Future[None]],
         future_map: dict[Future[None], str],
         stop_event: Event,
-        progress: RichProgressReporter,
+        progress: ProgressReporterPort,
         operation_name: str,
     ) -> list[ExtractionFailure]:
         cancellation_state = CancellationFeedbackState()
@@ -145,6 +166,8 @@ class ThreadedExtractionRunner:
         progress.set_status(f"0/{total_files} files")
 
         while pending_futures:
+            if self.cancellation.is_cancelled():
+                stop_event.set()
             done_futures, pending_futures = wait_for_operation_futures(
                 pending_futures,
                 stop_event,
@@ -191,7 +214,7 @@ class ThreadedExtractionRunner:
 
     @staticmethod
     def _build_sub_progress_callback(
-        progress: RichProgressReporter,
+        progress: ProgressReporterPort,
         file_path: str,
     ) -> Callable[[str], None]:
         def update_progress(status: str) -> None:
