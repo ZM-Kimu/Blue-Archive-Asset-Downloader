@@ -12,9 +12,10 @@ from uuid import uuid4
 
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 
 MANIFEST_NAME = "manifest.json"
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 RUNTIME_DIR_NAME = "Runtime"
 STAGING_DIR_NAME = ".staging"
 VERSION_MANIFEST_NAME = "version.json"
@@ -26,13 +27,19 @@ class RuntimeSnapshotError(RuntimeError):
 
 
 class RuntimeSnapshotStore:
-    def __init__(self, *, retained_versions: int = 2) -> None:
+    def __init__(
+        self,
+        *,
+        retained_versions: int = 2,
+        cancellation: CancellationPort | None = None,
+    ) -> None:
         if retained_versions < 1:
             raise ValueError("retained_versions must be at least 1.")
         self.retained_versions = retained_versions
+        self.cancellation = cancellation or NeverCancelled()
 
     def version_root(self, context: RuntimeContext, version: str) -> Path:
-        return Path(context.temp_dir) / self._validate_version(version)
+        return self._snapshot_root(context) / self._validate_version(version)
 
     def runtime_dir(self, context: RuntimeContext, version: str) -> Path:
         return self.version_root(context, version) / RUNTIME_DIR_NAME
@@ -75,7 +82,9 @@ class RuntimeSnapshotStore:
     ) -> Iterator[Path]:
         safe_version = self._validate_version(version)
         staging_root = (
-            Path(context.temp_dir) / STAGING_DIR_NAME / f"{safe_version}-{uuid4().hex}"
+            self._snapshot_root(context)
+            / STAGING_DIR_NAME
+            / f"{safe_version}-{uuid4().hex}"
         )
         directory = staging_root / directory_name
         directory.mkdir(parents=True)
@@ -109,6 +118,7 @@ class RuntimeSnapshotStore:
         metadata_name: str,
         globalgamemanagers_name: str | None = None,
         file_roles: Mapping[str, str] | None = None,
+        provenance: Mapping[str, Any] | None = None,
     ) -> PreparedRuntimeAssets:
         roles = {
             "binary": binary_name,
@@ -134,6 +144,7 @@ class RuntimeSnapshotStore:
             "release_version": version,
             "roles": roles,
             "files": files,
+            "provenance": dict(provenance or {"type": "direct_runtime"}),
         }
         (staged_runtime_dir / MANIFEST_NAME).write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
@@ -173,11 +184,24 @@ class RuntimeSnapshotStore:
 
         roles = manifest.get("roles")
         files = manifest.get("files")
-        if not isinstance(roles, dict) or not isinstance(files, dict):
+        provenance = manifest.get("provenance")
+        if (
+            not isinstance(roles, dict)
+            or not isinstance(files, dict)
+            or not isinstance(provenance, dict)
+        ):
             raise ValueError("Runtime manifest roles or files are invalid.")
+        if context.region == "jp":
+            if provenance.get("type") != "jp_mftl_v1":
+                raise ValueError("JP runtime manifest lacks MFTL provenance.")
+            if "encrypted_binary" in roles:
+                raise ValueError(
+                    "JP runtime snapshot must not retain its MFTL container."
+                )
 
         validated_paths: dict[str, Path] = {}
         for relative_path, metadata in files.items():
+            self.cancellation.raise_if_cancelled()
             if not isinstance(relative_path, str) or not isinstance(metadata, dict):
                 raise ValueError("Runtime manifest file entry is invalid.")
             path = self._resolve_relative_path(runtime_dir, relative_path)
@@ -224,11 +248,18 @@ class RuntimeSnapshotStore:
                 "globalgamemanagers",
                 required=False,
             ),
+            file_fingerprints={
+                relative_path: dict(metadata)
+                for relative_path, metadata in files.items()
+                if isinstance(relative_path, str) and isinstance(metadata, dict)
+            },
+            provenance=dict(provenance),
         )
 
     def _build_file_manifest(self, runtime_dir: Path) -> dict[str, dict[str, Any]]:
         files: dict[str, dict[str, Any]] = {}
         for path in sorted(runtime_dir.rglob("*")):
+            self.cancellation.raise_if_cancelled()
             if not path.is_file() or path.name == MANIFEST_NAME:
                 continue
             if path.stat().st_size == 0:
@@ -243,7 +274,7 @@ class RuntimeSnapshotStore:
         return files
 
     def _prune(self, context: RuntimeContext, *, current_version: str) -> None:
-        temp_dir = Path(context.temp_dir)
+        temp_dir = self._snapshot_root(context)
         managed: list[tuple[tuple[tuple[int, int | str], ...], Path]] = []
         if not temp_dir.is_dir():
             return
@@ -338,10 +369,19 @@ class RuntimeSnapshotStore:
         return version
 
     @staticmethod
-    def _sha256(path: Path) -> str:
+    def _snapshot_root(context: RuntimeContext) -> Path:
+        temp_root = Path(context.temp_dir)
+        return (
+            temp_root.parent / "runtime"
+            if context.workspace_mode == "v3"
+            else temp_root
+        )
+
+    def _sha256(self, path: Path) -> str:
         digest = hashlib.sha256()
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                self.cancellation.raise_if_cancelled()
                 digest.update(chunk)
         return digest.hexdigest()
 

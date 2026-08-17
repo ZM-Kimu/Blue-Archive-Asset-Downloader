@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from ba_downloader.domain.models.database import DBTable, SQLiteDataType
+from ba_downloader.domain.models.database import DBColumn, DBTable, SQLiteDataType
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.table.codecs import (
     TablePayloadCodecAdapter,
@@ -118,6 +119,8 @@ class TableDatabaseReader:
         table_name: str,
         column: Any,
         value: Any,
+        *,
+        strict_blob: bool = False,
     ) -> Any:
         column_type = SQLiteDataType[column.data_type].value
         if column_type is bytes:
@@ -142,6 +145,11 @@ class TableDatabaseReader:
                 )
                 return processed
             except TableProcessingError as exc:
+                if strict_blob:
+                    raise TableProcessingError(
+                        f"Failed to decode bytes field {column.name} in "
+                        f"required table {table_name}: {exc}"
+                    ) from exc
                 self.logger.warn(
                     f"Skipping bytes field {column.name} in {table_name}: {exc}"
                 )
@@ -149,6 +157,98 @@ class TableDatabaseReader:
         if column_type is bool:
             return bool(value)
         return value
+
+    def process_character_index_tables(
+        self,
+        file_path: str,
+        table_names: list[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        source_path = Path(file_path)
+        retryable_errors = (
+            LookupError,
+            OSError,
+            sqlite3.Error,
+            TableProcessingError,
+            TypeError,
+            ValueError,
+        )
+        for attempt in range(2):
+            database_path = (
+                self.database_path_resolver.resolve(source_path)
+                if self.database_path_resolver is not None
+                else source_path
+            )
+            try:
+                return self._read_character_index_tables(
+                    source_path,
+                    database_path,
+                    table_names,
+                )
+            except retryable_errors:
+                invalidator = getattr(
+                    self.database_path_resolver,
+                    "invalidate",
+                    None,
+                )
+                if attempt != 0 or not callable(invalidator):
+                    raise
+                invalidator(source_path)
+        raise AssertionError("database retry loop exhausted unexpectedly")
+
+    def _read_character_index_tables(
+        self,
+        source_path: Path,
+        database_path: Path,
+        table_names: list[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        database_uri = f"{database_path.resolve().as_uri()}?mode=ro"
+        result: dict[str, list[dict[str, Any]]] = {}
+        with sqlite3.connect(database_uri, uri=True) as connection:
+            inventory_cursor = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table';"
+            )
+            inventory = {
+                str(row[0]) for row in inventory_cursor if row and row[0] is not None
+            }
+            missing = [name for name in table_names if name not in inventory]
+            if missing:
+                raise LookupError(
+                    "Required character index database tables are missing: "
+                    + ", ".join(missing)
+                )
+
+            for table_name in table_names:
+                quoted_table = '"' + table_name.replace('"', '""') + '"'
+                rows: list[dict[str, Any]] = []
+                cursor = connection.execute(f'SELECT "Bytes" FROM {quoted_table};')
+                schema_name = table_name.replace("DBSchema", "Excel")
+                bytes_column = DBColumn(name="Bytes", data_type="BLOB")
+                for row_index, row in enumerate(cursor, start=1):
+                    if not row or not isinstance(row[0], bytes):
+                        raise TableProcessingError(
+                            f"Required table {table_name} row {row_index} has no "
+                            "binary Bytes payload."
+                        )
+                    decoded = self.convert_database_value(
+                        source_path.name,
+                        schema_name,
+                        table_name,
+                        bytes_column,
+                        row[0],
+                        strict_blob=True,
+                    )
+                    if not isinstance(decoded, dict) or not decoded:
+                        raise TableProcessingError(
+                            f"Required table {table_name} row {row_index} decoded "
+                            "to an empty or invalid payload."
+                        )
+                    rows.append({"Bytes": decoded})
+                if not rows:
+                    raise LookupError(
+                        f"Required character index database table {table_name} is empty."
+                    )
+                result[table_name] = rows
+        return result
 
 
 class TableDatabaseJsonWriter:

@@ -12,6 +12,9 @@ from Crypto.Cipher import AES
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpResponse
 from ba_downloader.infrastructure.extraction.table.database import TableDatabaseReader
+from ba_downloader.infrastructure.extraction.table.payload_router import (
+    FlatBufferTablePayloadRouter,
+)
 from ba_downloader.infrastructure.regions.gl.profile import (
     build_table_extraction_profile as build_gl_table_extraction_profile,
 )
@@ -23,9 +26,25 @@ from ba_downloader.infrastructure.storage.sqlcipher import (
     SqlCipherDatabaseResolver,
     SqlCipherRawExporter,
     SqlCipherRawExportError,
+    is_sqlite_database,
 )
 
 RAW_KEY_HEX = "00" * 32
+
+
+def test_sqlite_header_check_reads_only_header(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "database.db"
+    database_path.write_bytes(SQLITE_HEADER + b"payload")
+
+    def fail_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("read_bytes must not be used for header checks")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    assert is_sqlite_database(database_path)
 
 
 def _build_context(
@@ -41,7 +60,6 @@ def _build_context(
         raw_dir=str(tmp_path / "Raw"),
         extract_dir=str(tmp_path / "Extracted"),
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("table",),
         proxy_url="",
         max_retries=1,
@@ -196,6 +214,71 @@ class NoopProgress:
         _ = (progress_callback, current, total, unit)
 
 
+def test_character_index_database_session_resolves_opens_and_inventories_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "ExcelDB.db"
+    table_names = [
+        "ScenarioCharacterNameDBSchema",
+        "CharacterDBSchema",
+        "LocalizeCharProfileDBSchema",
+    ]
+    with sqlite3.connect(database_path) as connection:
+        for table_name in table_names:
+            connection.execute(f'CREATE TABLE "{table_name}" ("Bytes" BLOB)')
+            connection.execute(
+                f'INSERT INTO "{table_name}" ("Bytes") VALUES (?)',
+                (table_name.encode("utf8"),),
+            )
+
+    class CountingResolver:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def resolve(self, source: Path) -> Path:
+            self.calls += 1
+            assert source == database_path
+            return source
+
+    class DecodingCodec:
+        def process_bytes_file(self, schema_name: str, value: bytes):  # type: ignore[no-untyped-def]
+            return {"schema": schema_name, "value": value.decode("utf8")}, "row.json"
+
+    actual_connect = sqlite3.connect
+    connect_calls = 0
+    queries: list[str] = []
+
+    def recording_connect(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal connect_calls
+        connect_calls += 1
+        connection = actual_connect(*args, **kwargs)
+        connection.set_trace_callback(queries.append)
+        return connection
+
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extraction.table.database.sqlite3.connect",
+        recording_connect,
+    )
+    resolver = CountingResolver()
+    reader = TableDatabaseReader(
+        codec_adapter=DecodingCodec(),  # type: ignore[arg-type]
+        payload_router=FlatBufferTablePayloadRouter(),
+        logger=object(),  # type: ignore[arg-type]
+        progress=NoopProgress(),  # type: ignore[arg-type]
+        database_path_resolver=resolver,
+    )
+
+    rows = reader.process_character_index_tables(str(database_path), table_names)
+
+    assert resolver.calls == 1
+    assert connect_calls == 1
+    assert set(rows) == set(table_names)
+    assert sum("sqlite_master" in query for query in queries) == 1
+    assert sum('SELECT "Bytes"' in query for query in queries) == 3
+    assert not any("SELECT *" in query or "PRAGMA" in query for query in queries)
+
+
 def test_sqlcipher_database_resolver_exports_encrypted_db_before_reading(
     tmp_path: Path,
 ) -> None:
@@ -222,7 +305,33 @@ def test_sqlcipher_database_resolver_exports_encrypted_db_before_reading(
     assert len(exporter.calls) == 1
     assert exporter.calls[0][0] == encrypted_db
     assert exporter.calls[0][2] == RAW_KEY_HEX
-    assert exporter.calls[0][1].parent == tmp_path / "Temp" / "SQLCipher"
+    assert exporter.calls[0][1].parent.is_relative_to(
+        tmp_path / "Temp" / "SQLCipher" / "cache" / "jp" / "android"
+    )
+
+
+def test_sqlcipher_database_resolver_reuses_persistent_validated_cache(
+    tmp_path: Path,
+) -> None:
+    encrypted_db = tmp_path / "Raw" / "Table" / "Sample.db"
+    encrypted_db.parent.mkdir(parents=True)
+    encrypted_db.write_bytes(b"encrypted" * 512)
+    plaintext_db = tmp_path / "plain.db"
+    _write_sqlite_db(plaintext_db)
+    first_exporter = CopyingExporter(plaintext_db)
+    second_exporter = CopyingExporter(plaintext_db)
+
+    first_path = SqlCipherDatabaseResolver(
+        _build_context(tmp_path), exporter=first_exporter
+    ).resolve(encrypted_db)
+    second_path = SqlCipherDatabaseResolver(
+        _build_context(tmp_path), exporter=second_exporter
+    ).resolve(encrypted_db)
+
+    assert first_path == second_path
+    assert len(first_exporter.calls) == 1
+    assert second_exporter.calls == []
+    assert (first_path.parent / "manifest.json").is_file()
 
 
 def test_sqlcipher_database_resolver_requires_key_for_encrypted_db(
@@ -232,7 +341,7 @@ def test_sqlcipher_database_resolver_requires_key_for_encrypted_db(
     encrypted_db.write_bytes(b"encrypted" * 512)
     resolver = SqlCipherDatabaseResolver(_build_context(tmp_path, key_hex=""))
 
-    with pytest.raises(LookupError, match="--sqlcipher-key-hex"):
+    with pytest.raises(LookupError, match="--sqlcipher-key"):
         resolver.resolve(encrypted_db)
 
 
@@ -313,7 +422,7 @@ def test_sqlcipher_database_resolver_rejects_invalid_provider_key(
 
     message = str(exc_info.value)
     assert "64" in message
-    assert "--sqlcipher-key-hex" in message
+    assert "--sqlcipher-key" in message
     assert invalid_key not in message
 
 

@@ -3,16 +3,22 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
-import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
+from ba_downloader.domain.exceptions import (
+    OperationCancelledError,
+    ProcessExecutionError,
+)
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.extract import Il2CppDumpBackendPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.process import ProcessCommand, ProcessRunnerPort
+from ba_downloader.infrastructure.runtime.process import CancellableProcessRunner
 from ba_downloader.infrastructure.tools.runtime_probe import (
     get_installed_dotnet_sdk_major_versions,
 )
@@ -56,6 +62,7 @@ class Cpp2ILSourceResolver:
         archive_sha256: str = CPP2IL_ARCHIVE_SHA256,
         max_archive_files: int = CPP2IL_MAX_ARCHIVE_FILES,
         max_archive_bytes: int = CPP2IL_MAX_ARCHIVE_BYTES,
+        cancellation: CancellationPort | None = None,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
@@ -64,8 +71,10 @@ class Cpp2ILSourceResolver:
         self.archive_sha256 = archive_sha256
         self.max_archive_files = max_archive_files
         self.max_archive_bytes = max_archive_bytes
+        self.cancellation = cancellation or NeverCancelled()
 
     def resolve(self, context: RuntimeContext) -> Path:
+        self.cancellation.raise_if_cancelled()
         submodule_root = _repo_root() / "third_party" / "Cpp2IL"
         if self._is_valid_cpp2il_root(submodule_root):
             return submodule_root
@@ -98,18 +107,35 @@ class Cpp2ILSourceResolver:
         return (root / CPP2IL_PROJECT).exists() and (root / LIBCPP2IL_PROJECT).exists()
 
     def _download_to_cache(self, cache_root: Path, *, max_attempts: int) -> None:
+        archive_path = cache_root.parent / f"cpp2il-{self.commit}.zip"
+        extract_dir = cache_root.parent / f"cpp2il-{self.commit}-extract"
+        try:
+            self._download_to_cache_impl(cache_root, max_attempts=max_attempts)
+        except OperationCancelledError:
+            archive_path.unlink(missing_ok=True)
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            raise
+
+    def _download_to_cache_impl(
+        self,
+        cache_root: Path,
+        *,
+        max_attempts: int,
+    ) -> None:
         cache_root.parent.mkdir(parents=True, exist_ok=True)
         archive_path = cache_root.parent / f"cpp2il-{self.commit}.zip"
         extract_dir = cache_root.parent / f"cpp2il-{self.commit}-extract"
         last_error: BaseException | None = None
 
         for attempt in range(1, max_attempts + 1):
+            self.cancellation.raise_if_cancelled()
             if extract_dir.exists():
                 shutil.rmtree(extract_dir)
             if archive_path.exists():
                 archive_path.unlink()
 
             self.http_client.download_to_file(self.archive_url, str(archive_path))
+            self.cancellation.raise_if_cancelled()
             try:
                 self._verify_archive_checksum(archive_path)
                 with ZipFile(archive_path, "r") as archive:
@@ -174,6 +200,7 @@ class Cpp2ILSourceResolver:
             raise ValueError(f"Cpp2IL source archive has too many files: {len(infos)}.")
 
         for info in infos:
+            self.cancellation.raise_if_cancelled()
             total_size += max(info.file_size, 0)
             if total_size > self.max_archive_bytes:
                 raise ValueError(
@@ -198,11 +225,20 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
         http_client: HttpClientPort,
         logger: LoggerPort,
         source_resolver: Cpp2ILSourceResolver | None = None,
+        *,
+        cancellation: CancellationPort | None = None,
+        process_runner: ProcessRunnerPort | None = None,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
+        self.cancellation = cancellation or NeverCancelled()
         self.source_resolver = source_resolver or Cpp2ILSourceResolver(
-            http_client, logger
+            http_client,
+            logger,
+            cancellation=self.cancellation,
+        )
+        self.process_runner = process_runner or CancellableProcessRunner(
+            self.cancellation
         )
 
     def dump(
@@ -211,6 +247,7 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
         output_dir: str,
         runtime_assets: PreparedRuntimeAssets,
     ) -> None:
+        self.cancellation.raise_if_cancelled()
         binary_path = runtime_assets.binary_path
         metadata_path = runtime_assets.metadata_path
         unity_version = self._resolve_unity_version(
@@ -235,27 +272,25 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
             framework,
         )
         try:
-            subprocess.run(
-                [
-                    "dotnet",
-                    "run",
-                    "--project",
-                    str(exporter_project),
-                    "--framework",
-                    framework,
-                    "--",
-                    f"--binary-path={binary_path.resolve()}",
-                    f"--metadata-path={metadata_path.resolve()}",
-                    f"--unity-version={unity_version}",
-                    f"--output={dump_cs_path.resolve()}",
-                    f"--formatter-output={formatter_sidecar_path.resolve()}",
-                ],
-                capture_output=True,
-                check=True,
-                text=True,
-                encoding="utf8",
+            self.process_runner.run(
+                ProcessCommand(
+                    (
+                        "dotnet",
+                        "run",
+                        "--project",
+                        str(exporter_project),
+                        "--framework",
+                        framework,
+                        "--",
+                        f"--binary-path={binary_path.resolve()}",
+                        f"--metadata-path={metadata_path.resolve()}",
+                        f"--unity-version={unity_version}",
+                        f"--output={dump_cs_path.resolve()}",
+                        f"--formatter-output={formatter_sidecar_path.resolve()}",
+                    )
+                )
             )
-        except subprocess.CalledProcessError as exc:
+        except ProcessExecutionError as exc:
             raise RuntimeError(
                 "Failed to dump il2cpp with Cpp2IL backend: "
                 f"{exc.stderr.strip() or exc}",
@@ -323,4 +358,7 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
         return project_path
 
 
-BackendFactory = Callable[[HttpClientPort, LoggerPort], Il2CppDumpBackendPort]
+BackendFactory = Callable[
+    [HttpClientPort, LoggerPort, CancellationPort],
+    Il2CppDumpBackendPort,
+]

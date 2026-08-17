@@ -105,3 +105,20 @@ def test_versioned_package_directories_use_the_same_retention_policy(
     assert not (Path(context.temp_dir) / "1.2.1").exists()
     assert (Path(context.temp_dir) / "1.2.2" / "Package").is_dir()
     assert (Path(context.temp_dir) / "1.2.3" / "Package").is_dir()
+
+
+def test_v3_runtime_snapshots_use_dedicated_state_directory(tmp_path: Path) -> None:
+    temp_dir = tmp_path / "cn" / "android" / ".state" / "temp"
+    context = build_runtime_context(
+        tmp_path,
+        region="cn",
+        version="2.1.2",
+        temp_dir=str(temp_dir),
+        workspace_mode="v3",
+    )
+
+    prepared = _publish_snapshot(
+        RuntimeSnapshotStore(), context, "2.1.2", marker=b"current"
+    )
+
+    assert prepared.root_dir == (temp_dir.parent / "runtime" / "2.1.2" / "Runtime")

@@ -2,6 +2,17 @@ from dataclasses import dataclass
 from enum import Enum
 
 
+@dataclass(frozen=True, slots=True)
+class DatabaseSourceIdentity:
+    region: str
+    platform: str
+    release: str
+    size: int
+    checksum: str
+    exporter_version: str = ""
+    key_id: str = ""
+
+
 @dataclass
 class DBColumn:
     name: str

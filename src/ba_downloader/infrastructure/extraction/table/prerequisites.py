@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-from ba_downloader.domain.models.asset import AssetCollection
+from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.extract import (
     ExtractionPrerequisitePort,
     SchemaPreparationPort,
 )
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.infrastructure.storage.workspace_paths import (
+    extracted_dumps_root,
+    extracted_schema_root,
+    raw_type_root,
+)
 
 
 class TableExtractionPrerequisite(ExtractionPrerequisitePort):
@@ -70,19 +73,18 @@ class TableExtractionPrerequisite(ExtractionPrerequisitePort):
     ) -> bool:
         if resources is not None:
             return bool(resources)
-        return (Path(context.raw_dir) / "Table").exists()
+        return raw_type_root(context, AssetType.table).exists()
 
     def _are_schema_directories_ready(self, context: RuntimeContext) -> bool:
-        extract_dir = Path(context.extract_dir)
         return all(
-            (extract_dir / directory / "__init__.py").is_file()
-            and (extract_dir / directory / "_registry.py").is_file()
-            for directory in self.SCHEMA_DIRECTORIES
+            (extracted_schema_root(context, schema) / "__init__.py").is_file()
+            and (extracted_schema_root(context, schema) / "_registry.py").is_file()
+            for schema in ("flatbuffer", "memorypack")
         )
 
     @staticmethod
     def _is_dump_cs_ready(context: RuntimeContext) -> bool:
-        return (Path(context.extract_dir) / "Dumps" / "dump.cs").is_file()
+        return (extracted_dumps_root(context) / "dump.cs").is_file()
 
     def _format_error(
         self,

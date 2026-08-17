@@ -247,8 +247,7 @@ class StandardMetadata:
         old_assembly_rows = [
             bytes(
                 self.data[
-                    assemblies_section.offset
-                    + i * 0x40 : assemblies_section.offset
+                    assemblies_section.offset + i * 0x40 : assemblies_section.offset
                     + (i + 1) * 0x40
                 ]
             )

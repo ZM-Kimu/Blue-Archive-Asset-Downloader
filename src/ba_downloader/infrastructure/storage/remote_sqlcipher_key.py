@@ -34,7 +34,7 @@ class RemoteSqlCipherKeyProvider:
         except Exception as exc:
             raise LookupError(
                 f"Failed to fetch {self.region} SQLCipher key from {self.endpoint}. "
-                "Pass --sqlcipher-key-hex to override."
+                "Pass --sqlcipher-key to override."
             ) from exc
         finally:
             client.close()
@@ -42,14 +42,14 @@ class RemoteSqlCipherKeyProvider:
         if response.status_code != 200:
             raise LookupError(
                 f"Failed to fetch {self.region} SQLCipher key from {self.endpoint}: "
-                f"HTTP {response.status_code}. Pass --sqlcipher-key-hex to override."
+                f"HTTP {response.status_code}. Pass --sqlcipher-key to override."
             )
 
         content_type = response.header("Content-Type").lower()
         if content_type and "text/plain" not in content_type:
             raise LookupError(
                 f"{self.region} SQLCipher key endpoint returned unexpected content "
-                f"type '{content_type}'. Pass --sqlcipher-key-hex to override."
+                f"type '{content_type}'. Pass --sqlcipher-key to override."
             )
 
         return response.text.strip()

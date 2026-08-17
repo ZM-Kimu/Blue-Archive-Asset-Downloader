@@ -26,9 +26,12 @@ from ba_downloader.infrastructure.regions.cn_gl_table_archives import (
     is_cn_gl_table_archive_name,
 )
 from ba_downloader.infrastructure.regions.gl.table_archives import (
+    classify_gl_table_archive,
+)
+from ba_downloader.infrastructure.regions.ground_table_archives import (
     GROUND_FLATBUFFER_ARCHIVE_ROUTE,
     MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE,
-    classify_gl_table_archive,
+    is_mgs_logic_ground_archive,
 )
 from ba_downloader.infrastructure.regions.jp.table_archives import (
     classify_jp_table_archive,
@@ -56,7 +59,8 @@ def test_table_archive_classifier_preserves_shared_archive_routes() -> None:
 def test_cn_gl_table_archive_detectors_identify_shared_archive_families() -> None:
     assert is_cn_gl_table_archive_name("C_sb_01_hyakkiyakomatsuri_p02_Little.zip")
     assert is_cn_gl_table_archive_name("1041104_03_s3_boss_02_desertcity_p01_d.zip")
-    assert is_cn_gl_table_archive_name("MGSLogicGroundData.zip")
+    assert not is_cn_gl_table_archive_name("MGSLogicGroundData.zip")
+    assert is_mgs_logic_ground_archive("MGSLogicGroundData.zip")
 
 
 @pytest.mark.parametrize(
@@ -96,6 +100,7 @@ def test_cn_table_archive_classifier_preserves_cn_gl_archives_as_raw() -> None:
         ).route_key
         == ROUTE_RAW
     )
+    assert classify_cn_table_archive("MGSLogicGroundData.zip").route_key == ROUTE_RAW
 
 
 @pytest.mark.parametrize(
@@ -176,13 +181,28 @@ def test_gl_table_archive_classifier_routes_mgs_logic_ground_as_mixed_decode() -
     assert route.route_key == MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE
 
 
-def test_jp_table_archive_classifier_does_not_route_cn_gl_archive_families() -> None:
-    jp_route = classify_jp_table_archive("sb_02_desertcity_p01_e.zip")
-    gl_route = classify_gl_table_archive("sb_02_desertcity_p01_e.zip")
+@pytest.mark.parametrize(
+    ("archive_name", "expected_gl_route"),
+    [
+        ("sb_02_desertcity_p01_e.zip", GROUND_FLATBUFFER_ARCHIVE_ROUTE),
+        ("1041104_03_s3_boss_02_desertcity_p01_d.zip", ROUTE_RAW),
+    ],
+)
+def test_jp_table_archive_classifier_does_not_route_cn_gl_archive_families(
+    archive_name: str,
+    expected_gl_route: str,
+) -> None:
+    jp_route = classify_jp_table_archive(archive_name)
+    gl_route = classify_gl_table_archive(archive_name)
 
     assert jp_route.route_key == ROUTE_UNSUPPORTED
-    assert gl_route.route_key == GROUND_FLATBUFFER_ARCHIVE_ROUTE
-    assert gl_route.schema_name == "GroundGridFlat.bytes"
+    assert gl_route.route_key == expected_gl_route
+
+
+def test_jp_table_archive_classifier_routes_mgs_logic_ground() -> None:
+    route = classify_jp_table_archive("MGSLogicGroundData.zip")
+
+    assert route.route_key == MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE
 
 
 def test_table_extraction_profile_splits_jp_cn_and_gl_routing(tmp_path) -> None:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
+from threading import Event
 from zipfile import ZipFile
 
 import pytest
@@ -12,6 +12,8 @@ from ba_downloader.bootstrap.region_profiles import (
 )
 from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
+from ba_downloader.domain.ports.execution import EventCancellation, NeverCancelled
+from ba_downloader.domain.ports.process import ProcessCommand, ProcessResult
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.regions.cn.dump_backend import (
     CnMetadataRecoveryDumpBackend,
@@ -118,7 +120,6 @@ def _build_context(tmp_path: Path, *, region: str = "jp") -> RuntimeContext:
         raw_dir=str(tmp_path / "Raw"),
         extract_dir=str(tmp_path / "Extracted"),
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("table", "media", "bundle"),
         proxy_url="",
         max_retries=1,
@@ -165,17 +166,17 @@ def test_default_dumper_policy_maps_regions_to_expected_backends(
 
     assert isinstance(
         DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("jp").dumper_backend_factory(
-            http_client, logger
+            http_client, logger, NeverCancelled()
         ),
         Cpp2IlDumpCsBackend,
     )
     gl_backend = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
         "gl"
-    ).dumper_backend_factory(http_client, logger)
+    ).dumper_backend_factory(http_client, logger, NeverCancelled())
     assert isinstance(gl_backend, Cpp2IlDumpCsBackend)
     assert isinstance(
         DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("cn").dumper_backend_factory(
-            http_client, logger
+            http_client, logger, NeverCancelled()
         ),
         CnMetadataRecoveryDumpBackend,
     )
@@ -197,13 +198,105 @@ def test_schema_workflow_does_not_fallback_when_jp_backend_fails(
     workflow = SchemaWorkflow(
         DummyHttpClient(),
         NullLogger(),
-        dumper_backend_factory=lambda _http_client, _logger: FailingBackend(),
+        dumper_backend_factory=lambda _http_client, _logger, _cancellation: (
+            FailingBackend()
+        ),
     )
     context = _build_context(tmp_path, region="jp")
     runtime_assets = _prepared_runtime(context)
 
     with pytest.raises(RuntimeError, match="jp backend failed"):
         workflow.dump(context, runtime_assets)
+
+
+def test_schema_workflow_discards_cancelled_staging_snapshot(
+    tmp_path: Path,
+) -> None:
+    class CancellingBackend:
+        def dump(
+            self,
+            context: RuntimeContext,
+            output_dir: str,
+            runtime_assets: PreparedRuntimeAssets,
+        ) -> None:
+            _ = (context, runtime_assets)
+            output = Path(output_dir)
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "dump.cs").write_text("new", encoding="utf8")
+            cancellation_event.set()
+
+    cancellation_event = Event()
+    context = _build_context(tmp_path, region="jp")
+    dumps_dir = Path(context.extract_dir) / "Dumps"
+    dumps_dir.mkdir(parents=True)
+    (dumps_dir / "dump.cs").write_text("previous", encoding="utf8")
+    workflow = SchemaWorkflow(
+        DummyHttpClient(),
+        NullLogger(),
+        dumper_backend_factory=lambda _http, _logger, _cancel: CancellingBackend(),
+        cancellation=EventCancellation(cancellation_event),
+    )
+
+    with pytest.raises(Exception, match="cancelled"):
+        workflow.dump(context, _prepared_runtime(context))
+
+    assert (dumps_dir / "dump.cs").read_text(encoding="utf8") == "previous"
+    assert not (Path(context.extract_dir) / ".staging").exists()
+
+
+def test_schema_workflow_reuses_matching_runtime_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dump_calls = 0
+
+    class Backend:
+        def dump(
+            self,
+            context: RuntimeContext,
+            output_dir: str,
+            runtime_assets: PreparedRuntimeAssets,
+        ) -> None:
+            nonlocal dump_calls
+            _ = (context, runtime_assets)
+            dump_calls += 1
+            output = Path(output_dir)
+            output.mkdir(parents=True)
+            (output / "dump.cs").write_text("dump", encoding="utf8")
+
+    def compile_artifacts(active_context: RuntimeContext) -> None:
+        root = Path(active_context.extract_dir)
+        for relative in ("schemas/flatbuffers", "schemas/memorypack"):
+            directory = root / relative
+            directory.mkdir(parents=True)
+            (directory / "schema.py").write_text("VALUE = 1\n", encoding="utf8")
+
+    context = _build_context(tmp_path, region="jp")
+    runtime = _prepared_runtime(context)
+    first = SchemaWorkflow(
+        DummyHttpClient(),
+        NullLogger(),
+        dumper_backend_factory=lambda *_: Backend(),
+    )
+    monkeypatch.setattr(first, "_compile", compile_artifacts)
+    first.dump(context, runtime)
+    first.compile(context)
+
+    second = SchemaWorkflow(
+        DummyHttpClient(),
+        NullLogger(),
+        dumper_backend_factory=lambda *_: Backend(),
+    )
+    monkeypatch.setattr(
+        second,
+        "_compile",
+        lambda _context: pytest.fail("cached schema must not be compiled"),
+    )
+    second.dump(context, runtime)
+    second.compile(context)
+
+    assert dump_calls == 1
+    assert (Path(context.extract_dir) / "Dumps" / "dump.cs").read_text() == "dump"
 
 
 def test_schema_workflow_dump_requires_configured_backend(tmp_path: Path) -> None:
@@ -486,13 +579,12 @@ def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(
     backend = Cpp2IlDumpCsBackend(DummyHttpClient(), logger)
     exporter_project = tmp_path / "DumpCsExporter.csproj"
     exporter_project.write_text("<Project />", encoding="utf8")
-    run_calls: list[list[str]] = []
+    run_calls: list[ProcessCommand] = []
     ensure_calls: list[str] = []
 
-    def fake_run(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
-        _ = kwargs
+    def fake_run(command: ProcessCommand) -> ProcessResult:
         run_calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "", "")
+        return ProcessResult(command, 0, "", "")
 
     monkeypatch.setattr(
         backend.source_resolver, "resolve", lambda _context: tmp_path / "Cpp2IL"
@@ -515,9 +607,7 @@ def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(
         backend, "_resolve_unity_version", lambda *_args, **_kwargs: "2021.3.36f1"
     )
     monkeypatch.setattr(backend, "_resolve_framework", lambda: "net10.0")
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.tools.dump_backend.subprocess.run", fake_run
-    )
+    monkeypatch.setattr(backend.process_runner, "run", fake_run)
 
     backend.dump(
         context,
@@ -529,12 +619,12 @@ def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(
     assert logger.info_messages == ["Dumped il2cpp binary file successfully."]
     assert ensure_calls == ["net10.0"]
     assert len(run_calls) == 1
-    assert "--framework" in run_calls[0]
-    assert "net10.0" in run_calls[0]
+    assert "--framework" in run_calls[0].argv
+    assert "net10.0" in run_calls[0].argv
     assert (
         f"--formatter-output="
         f"{(tmp_path / 'Extracted' / 'Dumps' / 'memorypack_formatters.json').resolve()}"
-    ) in run_calls[-1]
+    ) in run_calls[-1].argv
 
 
 class RecordingMetadataRecoveryPipeline:
@@ -581,13 +671,12 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
     )
     exporter_project = tmp_path / "DumpCsExporter.csproj"
     exporter_project.write_text("<Project />", encoding="utf8")
-    run_calls: list[list[str]] = []
+    run_calls: list[ProcessCommand] = []
     ensure_calls: list[tuple[str, tuple[str, ...]]] = []
 
-    def fake_run(command: list[str], **kwargs):  # type: ignore[no-untyped-def]
-        _ = kwargs
+    def fake_run(command: ProcessCommand) -> ProcessResult:
         run_calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "", "")
+        return ProcessResult(command, 0, "", "")
 
     def fake_ensure_exporter_project(
         _context: RuntimeContext,
@@ -609,9 +698,7 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
         fake_ensure_exporter_project,
     )
     monkeypatch.setattr(backend, "_resolve_framework", lambda: "net10.0")
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.tools.dump_backend.subprocess.run", fake_run
-    )
+    monkeypatch.setattr(backend.process_runner, "run", fake_run)
 
     backend.dump(
         context,
@@ -631,8 +718,8 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
     assert sorted(path.name for path in final_metadata_path.parent.iterdir()) == [
         "global-metadata.standard-v29.dat"
     ]
-    assert run_calls == [
-        [
+    assert [call.argv for call in run_calls] == [
+        (
             "dotnet",
             "run",
             "--project",
@@ -647,7 +734,7 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
             f"--formatter-output="
             f"{(tmp_path / 'Extracted' / 'Dumps' / 'memorypack_formatters.json').resolve()}",
             "--enable-cn-metadata-recovery-shim",
-        ]
+        )
     ]
     assert source_resolver.contexts == [context]
 

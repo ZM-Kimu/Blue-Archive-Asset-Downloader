@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, Literal
+from time import monotonic, sleep
+from typing import Any, Literal, NoReturn
 
 import httpx
 from curl_cffi import requests as curl_requests
@@ -16,7 +17,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from ba_downloader.domain.exceptions import NetworkError
+from ba_downloader.domain.exceptions import NetworkError, OperationCancelledError
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import (
     DownloadResult,
     HttpClientPort,
@@ -66,9 +68,17 @@ CONNECT_TIMEOUT_CAP = 20.0
 
 
 class ResilientHttpClient(HttpClientPort):
-    def __init__(self, *, proxy_url: str | None = None, max_retries: int = 5) -> None:
+    def __init__(
+        self,
+        *,
+        proxy_url: str | None = None,
+        max_retries: int = 5,
+        cancellation: CancellationPort | None = None,
+    ) -> None:
         self.proxy_url = proxy_url
         self.max_retries = max_retries
+        self._cancellation = cancellation or NeverCancelled()
+        self._closed = False
         self._httpx = httpx.Client(
             follow_redirects=True,
             headers={"User-Agent": DEFAULT_USER_AGENT},
@@ -93,6 +103,7 @@ class ResilientHttpClient(HttpClientPort):
         transport: TransportKind = "default",
         timeout: float = 10.0,
     ) -> HttpResponse:
+        self._cancellation.raise_if_cancelled()
         normalized_params = dict(params) if params is not None else None
 
         if transport == "browser":
@@ -105,7 +116,9 @@ class ResilientHttpClient(HttpClientPort):
                 params=normalized_params,
                 timeout=timeout,
             )
-            return self._to_response(response)
+            normalized = self._to_response(response)
+            self._cancellation.raise_if_cancelled()
+            return normalized
 
         response = self._request_with_httpx(
             method,
@@ -127,7 +140,10 @@ class ResilientHttpClient(HttpClientPort):
                 params=normalized_params,
                 timeout=timeout,
             )
-            return self._to_response(browser_response)
+            normalized = self._to_response(browser_response)
+            self._cancellation.raise_if_cancelled()
+            return normalized
+        self._cancellation.raise_if_cancelled()
         return normalized
 
     def download_to_file(
@@ -144,18 +160,25 @@ class ResilientHttpClient(HttpClientPort):
         destination_path = Path(destination)
         destination_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if should_stop is not None and should_stop():
-            raise NetworkError(f"Failed to download {url}: download cancelled by user.")
+        def active_should_stop() -> bool:
+            return self._cancellation.is_cancelled() or bool(
+                should_stop is not None and should_stop()
+            )
+
+        if active_should_stop():
+            self._raise_download_cancelled(url)
 
         if transport == "browser":
-            return self._download_with_browser(
+            result = self._download_with_browser(
                 url,
                 destination_path,
                 headers=headers,
                 timeout=timeout,
                 progress_callback=progress_callback,
-                should_stop=should_stop,
+                should_stop=active_should_stop,
             )
+            self._cancellation.raise_if_cancelled()
+            return result
 
         result = self._download_with_httpx(
             url,
@@ -163,26 +186,56 @@ class ResilientHttpClient(HttpClientPort):
             headers=headers,
             timeout=timeout,
             progress_callback=progress_callback,
-            should_stop=should_stop,
+            should_stop=active_should_stop,
         )
         if result.status_code in {403, 429} or (
             "text/html" in get_header(result.headers, "Content-Type").lower()
             and destination_path.read_bytes()[:4096].find(b"Cloudflare") != -1
         ):
             destination_path.unlink(missing_ok=True)
-            return self._download_with_browser(
+            result = self._download_with_browser(
                 url,
                 destination_path,
                 headers=headers,
                 timeout=timeout,
                 progress_callback=progress_callback,
-                should_stop=should_stop,
+                should_stop=active_should_stop,
             )
+            self._cancellation.raise_if_cancelled()
+            return result
+        self._cancellation.raise_if_cancelled()
         return result
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._httpx.close()
         self._browser.close()
+
+    def _sleep_with_cancellation(self, seconds: float) -> None:
+        deadline = monotonic() + max(seconds, 0.0)
+        while True:
+            self._cancellation.raise_if_cancelled()
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return
+            sleep(min(remaining, 0.05))
+
+    def _raise_download_cancelled(
+        self,
+        url: str,
+        cause: BaseException | None = None,
+    ) -> NoReturn:
+        if self._cancellation.is_cancelled():
+            error: Exception = OperationCancelledError("Operation cancelled.")
+        else:
+            error = NetworkError(
+                f"Failed to download {url}: download cancelled by user."
+            )
+        if cause is not None:
+            raise error from cause
+        raise error
 
     def _request_with_httpx(
         self,
@@ -200,11 +253,13 @@ class ResilientHttpClient(HttpClientPort):
             wait=wait_exponential(multiplier=0.2, min=0.2, max=2),
             retry=retry_if_exception_type(HTTPX_REQUEST_EXCEPTIONS),
             reraise=True,
+            sleep=self._sleep_with_cancellation,
         )
         try:
             for attempt in retrying:
                 with attempt:
-                    return self._httpx.request(
+                    self._cancellation.raise_if_cancelled()
+                    response = self._httpx.request(
                         method,
                         url,
                         headers=headers,
@@ -213,6 +268,8 @@ class ResilientHttpClient(HttpClientPort):
                         params=params,
                         timeout=timeout,
                     )
+                    self._cancellation.raise_if_cancelled()
+                    return response
         except HTTPX_REQUEST_EXCEPTIONS as exc:
             raise NetworkError(f"Failed to fetch {url}: {exc}") from exc
         raise NetworkError(f"Failed to fetch {url}: unexpected retry state.")
@@ -233,11 +290,13 @@ class ResilientHttpClient(HttpClientPort):
             wait=wait_exponential(multiplier=0.2, min=0.2, max=2),
             retry=retry_if_exception_type(BROWSER_REQUEST_EXCEPTIONS),
             reraise=True,
+            sleep=self._sleep_with_cancellation,
         )
         try:
             for attempt in retrying:
                 with attempt:
-                    return self._browser.request(
+                    self._cancellation.raise_if_cancelled()
+                    response = self._browser.request(
                         method,
                         url,
                         headers=dict(headers or {}),
@@ -246,6 +305,8 @@ class ResilientHttpClient(HttpClientPort):
                         params=params,
                         timeout=timeout,
                     )
+                    self._cancellation.raise_if_cancelled()
+                    return response
         except BROWSER_REQUEST_EXCEPTIONS as exc:
             raise NetworkError(f"Failed to fetch {url}: {exc}") from exc
         raise NetworkError(f"Failed to fetch {url}: unexpected retry state.")
@@ -291,9 +352,7 @@ class ResilientHttpClient(HttpClientPort):
             DownloadResumeSession.partial_download_path(destination).unlink(
                 missing_ok=True
             )
-            raise NetworkError(
-                f"Failed to download {url}: download cancelled by user."
-            ) from exc
+            self._raise_download_cancelled(url, exc)
         except KeyboardInterrupt:
             destination.unlink(missing_ok=True)
             DownloadResumeSession.partial_download_path(destination).unlink(
@@ -306,9 +365,7 @@ class ResilientHttpClient(HttpClientPort):
                 DownloadResumeSession.partial_download_path(destination).unlink(
                     missing_ok=True
                 )
-                raise NetworkError(
-                    f"Failed to download {url}: download cancelled by user."
-                ) from exc
+                self._raise_download_cancelled(url, exc)
             raise NetworkError(f"Failed to download {url}: {exc}") from exc
 
     def _download_with_browser(
@@ -346,9 +403,7 @@ class ResilientHttpClient(HttpClientPort):
             DownloadResumeSession.partial_download_path(destination).unlink(
                 missing_ok=True
             )
-            raise NetworkError(
-                f"Failed to download {url}: download cancelled by user."
-            ) from exc
+            self._raise_download_cancelled(url, exc)
         except KeyboardInterrupt:
             destination.unlink(missing_ok=True)
             DownloadResumeSession.partial_download_path(destination).unlink(
@@ -361,9 +416,7 @@ class ResilientHttpClient(HttpClientPort):
                 DownloadResumeSession.partial_download_path(destination).unlink(
                     missing_ok=True
                 )
-                raise NetworkError(
-                    f"Failed to download {url}: download cancelled by user."
-                ) from exc
+                self._raise_download_cancelled(url, exc)
             raise NetworkError(f"Failed to download {url}: {exc}") from exc
 
     @contextmanager

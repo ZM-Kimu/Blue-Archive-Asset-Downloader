@@ -40,7 +40,7 @@ RESTORE_IV = bytes(range(2, 18))
 
 
 def restore_runtime_metadata_view(
-    protected_metadata: bytes,
+    protected_metadata: bytes | memoryview,
 ) -> tuple[bytes, dict[str, object]]:
     restored = apply_restore(protected_metadata, RESTORE_KEY_CONSTANT)
     header_ok, header_values = validate_header_offsets(restored)
@@ -63,7 +63,7 @@ def derive_ascii_key_material(key_constant: int) -> bytes:
     return (f"{key_constant:08x}{key_constant:08x}").encode("ascii")
 
 
-def apply_restore(raw: bytes, key_constant: int) -> bytes:
+def apply_restore(raw: bytes | memoryview, key_constant: int) -> bytes:
     out = bytearray(raw)
     xor_byte = derive_xor_byte(key_constant)
     aes_key = derive_ascii_key_material(key_constant)

@@ -350,8 +350,7 @@ def _validate_attribute_blob_start(
     tail = restored_metadata[parameters.tail_offset :]
     if parameters.blob_start >= len(tail):
         raise ValueError(
-            "CN attribute blob start is outside hidden tail. "
-            f"{parameters.describe()}"
+            f"CN attribute blob start is outside hidden tail. {parameters.describe()}"
         )
     try:
         parse_attribute_blob(

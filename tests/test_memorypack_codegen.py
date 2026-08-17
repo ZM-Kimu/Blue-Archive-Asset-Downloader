@@ -342,6 +342,28 @@ public class TokenLayout : MemoryPack.IMemoryPackable`1<Sample.TokenLayout>, Mem
     assert [member.name for member in descriptor.members] == ["First", "Second"]
 
 
+def test_memorypack_parser_excludes_delegate_fields_from_wire_layout(
+    tmp_path: Path,
+) -> None:
+    dump_path = _write_dump(
+        tmp_path,
+        """// Namespace: Sample
+public class DelegateLayout : MemoryPack.IMemoryPackable`1<Sample.DelegateLayout>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 1 Token: 0x02000001
+{
+    public System.String Name; // Token: 0x04000001
+    public System.Action Callback; // Token: 0x04000002
+    public System.Func<System.Int32, System.Boolean> Predicate; // Token: 0x04000003
+    public System.Delegate Handler; // Token: 0x04000004
+    public System.MulticastDelegate MulticastHandler; // Token: 0x04000005
+}
+""",
+    )
+
+    descriptor = MemoryPackCSParser(str(dump_path)).parse_types()[0]
+
+    assert [member.name for member in descriptor.members] == ["Name"]
+
+
 def test_memorypack_parser_reads_keyed_collection_formatter(
     tmp_path: Path,
 ) -> None:
@@ -1113,6 +1135,63 @@ public class Child : Sample.Root, MemoryPack.IMemoryPackable`1<Sample.Child>, Me
     child = registry.resolve("Sample.Child")
     assert child is not None
     assert [member.name for member in child.members] == ["RootValue", "ChildValue"]
+
+
+def test_supplemental_formatter_builder_excludes_inherited_delegate_members(
+    tmp_path: Path,
+) -> None:
+    dump_path = _write_dump(
+        tmp_path,
+        """// Namespace: Sample
+public class Root : MemoryPack.IMemoryPackable`1<Sample.Root>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 1 Token: 0x02000001
+{
+    public System.String BaseName; // Token: 0x04000001
+    public System.Action Callback; // Token: 0x04000002
+}
+
+// Namespace: Sample
+public class Child : Sample.Root, MemoryPack.IMemoryPackable`1<Sample.Child>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 2 Token: 0x02000002
+{
+    public System.Int32 Count; // Token: 0x04000003
+    public System.Func<System.Int32, System.Boolean> Predicate; // Token: 0x04000004
+}
+""",
+    )
+    memorypack_data_dir = tmp_path / "MemoryPackData"
+    parser = MemoryPackCSParser(str(dump_path))
+    CompileMemoryPackToPython(
+        parser.parse_types(),
+        str(memorypack_data_dir),
+        parser.parse_enums(),
+    ).create_schema_files()
+    sidecar_path = tmp_path / "memorypack_formatters.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "formatters": [
+                    {
+                        "target_type": "Sample.Root",
+                        "kind": "union",
+                        "tag_type": "byte",
+                        "union_tags": {"1": "Sample.Child"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf8",
+    )
+
+    SupplementalMemoryPackFormatterBuilder(
+        dump_cs_path=dump_path,
+        memorypack_data_dir=memorypack_data_dir,
+        sidecar_path=sidecar_path,
+    ).build()
+    registry = MemoryPackFormatterRegistry.from_file(sidecar_path)
+
+    child = registry.resolve("Sample.Child")
+    assert child is not None
+    assert [member.name for member in child.members] == ["BaseName", "Count"]
 
 
 def test_memorypack_reader_decodes_formatter_collection(

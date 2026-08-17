@@ -66,7 +66,6 @@ def _build_context(tmp_path: Path) -> RuntimeContext:
         raw_dir=str(tmp_path / "Raw"),
         extract_dir=str(tmp_path / "Extracted"),
         temp_dir=str(tmp_path / "Temp"),
-        extract_while_download=False,
         resource_type=("table",),
         proxy_url="",
         max_retries=1,
@@ -627,7 +626,11 @@ def test_extract_db_file_decodes_logic_effect_blob_with_formatter_sidecar(
 def test_extract_db_file_deduplicates_cn_memorypack_fallback_warnings(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="cn")
+    context = _build_context(tmp_path).with_updates(
+        region="cn",
+        workspace_mode="v3",
+        temp_dir=str(tmp_path / "cn" / "android" / ".state" / "temp"),
+    )
     flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
     _create_flat_buffer_data_package(flatbuffer_data_dir)
     table_dir = Path(context.raw_dir) / "Table"
@@ -680,6 +683,23 @@ def test_extract_db_file_deduplicates_cn_memorypack_fallback_warnings(
         "FlatBufferData schema is missing" not in message
         for message in logger.warn_messages
     )
+    diagnostics = sorted(
+        (
+            tmp_path
+            / "cn"
+            / "android"
+            / ".state"
+            / "schema"
+            / "diagnostics"
+            / "memorypack"
+        ).glob("*.json")
+    )
+    raw_payloads = sorted(path.with_suffix(".bin") for path in diagnostics)
+    assert len(diagnostics) == 2
+    assert all(path.is_file() for path in raw_payloads)
+    evidence = json.loads(diagnostics[0].read_text(encoding="utf8"))
+    assert evidence["root_type"] == "MX.GameData.DAO.Battle.LogicEffectDAO"
+    assert evidence["failure_offset"] <= evidence["payload_size"]
 
 
 def test_jp_table_payload_router_routes_known_dao_blobs_without_partial_fallback() -> (
@@ -1820,10 +1840,12 @@ def test_extract_zip_file_writes_gl_script_test_raw_payloads(
     assert logger.info_messages == []
 
 
+@pytest.mark.parametrize("region", ["gl", "jp"])
 def test_extract_zip_file_writes_mgs_logic_ground_mixed_artifacts(
     tmp_path: Path,
+    region: str,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
+    context = _build_context(tmp_path).with_updates(region=region)
     flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
     _create_flat_buffer_data_package(flatbuffer_data_dir)
     table_dir = Path(context.raw_dir) / "Table"

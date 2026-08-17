@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from threading import Event
 
 import pytest
 
+from ba_downloader.domain.exceptions import OperationCancelledError
+from ba_downloader.domain.ports.execution import EventCancellation
 from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
     CnMetadataRecoveryError,
     CnMetadataRecoveryPipeline,
@@ -27,24 +30,18 @@ from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.paramete
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.standard_metadata import (
     ROW_SIZES,
 )
+from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.standard_v29 import (
+    assemble_standard_v29_sections,
+)
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.standardize import (
     CUSTOM_SECTIONS,
 )
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.pipeline import (
-    CnMetadataRecoveryState,
-    CnMetadataRecoveryStepSpec,
+    CnMetadataInferResult,
+    CnMetadataParseResult,
+    CnMetadataRebuildResult,
+    CnMetadataValidateResult,
 )
-
-EXPECTED_STEP_ORDER = [
-    "restore_runtime_metadata_view",
-    "standardize_custom_layout",
-    "apply_codegen_module_order",
-    "resolve_dynamic_parameters",
-    "sanitize_default_values",
-    "restore_pre29_attribute_sections",
-    "build_standard_v29_metadata",
-    "validate_standard_v29_metadata",
-]
 
 
 class FakeRelocatedElf:
@@ -65,6 +62,17 @@ class FakeRelocatedElf:
 
     def read_u64_offset(self, offset: int) -> int:
         return struct.unpack_from("<Q", self.data, offset)[0]
+
+
+def test_standard_v29_assembly_precomputes_one_output_buffer() -> None:
+    candidate, emitted = assemble_standard_v29_sections(
+        {"stringLiteral": b"abc", "stringLiteralData": b"de"}
+    )
+
+    assert len(candidate) == 0x106
+    assert candidate[0x100:0x103] == b"abc"
+    assert candidate[0x104:0x106] == b"de"
+    assert emitted["stringLiteral"]["offset"] == "0x100"
 
 
 class FakeCodegenMetadata:
@@ -320,7 +328,7 @@ def test_cn_metadata_recovery_resolves_cn_3_0_2_ambiguous_codegen_modules() -> N
     assert resolved[2]["resolved_name"] == "__Generated"
 
 
-def test_cn_metadata_recovery_pipeline_runs_steps_in_memory(tmp_path: Path) -> None:
+def test_cn_metadata_recovery_pipeline_runs_immutable_phases(tmp_path: Path) -> None:
     calls: list[str] = []
     parameters = CnMetadataRecoveryParameters(
         tail_offset=0x100,
@@ -328,37 +336,34 @@ def test_cn_metadata_recovery_pipeline_runs_steps_in_memory(tmp_path: Path) -> N
         exported_types_offset=0x300,
     )
 
-    def make_step(name: str):
-        def step(state: CnMetadataRecoveryState) -> None:
-            calls.append(name)
-            if name == "resolve_dynamic_parameters":
-                state.parameters = parameters
-            if name in {
-                "sanitize_default_values",
-                "restore_pre29_attribute_sections",
-                "build_standard_v29_metadata",
-                "validate_standard_v29_metadata",
-            }:
-                assert state.parameters is parameters
-            state.current_metadata = state.current_metadata + f"|{name}".encode("ascii")
-            if name == "build_standard_v29_metadata":
-                state.standard_v29_metadata = b"standard-v29"
-            if name == "validate_standard_v29_metadata":
-                state.validation_summary = {
-                    "valid": True,
-                    "errorCount": 0,
-                    "warningCount": 0,
-                }
+    def parse(source: memoryview, binary: Path) -> CnMetadataParseResult:
+        calls.append("parse")
+        assert source.readonly
+        return CnMetadataParseResult(source, binary, b"restored", b"standardized")
 
-        return step
+    def infer(parsed: CnMetadataParseResult) -> CnMetadataInferResult:
+        calls.append("infer")
+        return CnMetadataInferResult(parsed, b"reordered", parameters)
+
+    def rebuild(inferred: CnMetadataInferResult) -> CnMetadataRebuildResult:
+        calls.append("rebuild")
+        assert inferred.parameters is parameters
+        return CnMetadataRebuildResult(inferred, b"standard-v29", 12)
+
+    def validate(rebuilt: CnMetadataRebuildResult) -> CnMetadataValidateResult:
+        calls.append("validate")
+        return CnMetadataValidateResult(
+            rebuilt,
+            {"valid": True, "errorCount": 0, "warningCount": 0},
+        )
 
     binary_path = tmp_path / "libil2cpp.so"
     binary_path.write_bytes(b"binary")
     pipeline = CnMetadataRecoveryPipeline(
-        steps=[
-            CnMetadataRecoveryStepSpec(name, make_step(name))
-            for name in EXPECTED_STEP_ORDER
-        ]
+        parse_phase=parse,
+        infer_phase=infer,
+        rebuild_phase=rebuild,
+        validate_phase=validate,
     )
 
     result = pipeline.run(
@@ -367,7 +372,7 @@ def test_cn_metadata_recovery_pipeline_runs_steps_in_memory(tmp_path: Path) -> N
     )
 
     assert isinstance(result, CnMetadataRecoveryResult)
-    assert calls == EXPECTED_STEP_ORDER
+    assert calls == ["parse", "infer", "rebuild", "validate"]
     assert result.standard_v29_metadata == b"standard-v29"
     assert result.validation_summary == {
         "valid": True,
@@ -378,44 +383,33 @@ def test_cn_metadata_recovery_pipeline_runs_steps_in_memory(tmp_path: Path) -> N
     assert sorted(path.name for path in tmp_path.iterdir()) == ["libil2cpp.so"]
 
 
-def test_cn_metadata_recovery_pipeline_stops_with_step_name_on_failure(
+def test_cn_metadata_recovery_pipeline_reports_failed_phase(
     tmp_path: Path,
 ) -> None:
     calls: list[str] = []
 
-    def first_step(state: CnMetadataRecoveryState) -> None:
-        calls.append("restore_runtime_metadata_view")
-        state.current_metadata = b"restored"
-
-    def failing_step(state: CnMetadataRecoveryState) -> None:
-        calls.append("sanitize_default_values")
-        raise CnMetadataRecoveryError(
-            "sanitize_default_values",
-            "default value section is invalid",
-        )
+    def failing_parse(
+        source: memoryview,
+        binary: Path,
+    ) -> CnMetadataParseResult:
+        _ = (source, binary)
+        calls.append("parse")
+        raise ValueError("metadata header is invalid")
 
     binary_path = tmp_path / "libil2cpp.so"
     binary_path.write_bytes(b"binary")
     pipeline = CnMetadataRecoveryPipeline(
-        steps=[
-            CnMetadataRecoveryStepSpec(
-                "restore_runtime_metadata_view",
-                first_step,
-            ),
-            CnMetadataRecoveryStepSpec(
-                "sanitize_default_values",
-                failing_step,
-            ),
-        ]
+        parse_phase=failing_parse,
     )
 
-    with pytest.raises(CnMetadataRecoveryError, match="sanitize_default_values") as exc:
+    with pytest.raises(CnMetadataRecoveryError, match="parse") as exc:
         pipeline.run(protected_metadata=b"protected", binary_path=binary_path)
 
-    assert exc.value.step == "sanitize_default_values"
-    assert "default value section is invalid" in str(exc.value)
+    assert exc.value.stage == "parse"
+    assert "metadata header is invalid" in str(exc.value)
+    assert exc.value.diagnostics["metadata_sha256"]
     assert not hasattr(exc.value, "summary")
-    assert calls == ["restore_runtime_metadata_view", "sanitize_default_values"]
+    assert calls == ["parse"]
 
 
 def test_cn_metadata_recovery_runtime_package_does_not_expose_probe_or_ylda_names() -> (
@@ -492,10 +486,38 @@ def test_cn_metadata_recovery_algorithms_use_one_standard_layout_module() -> Non
     ]
 
 
-def test_cn_metadata_recovery_pipeline_uses_explicit_step_specs() -> None:
+def test_cn_metadata_recovery_pipeline_uses_explicit_phase_results() -> None:
     source = Path(
         "src/ba_downloader/infrastructure/tools/cn_metadata_recovery/pipeline.py"
     ).read_text(encoding="utf-8")
 
-    assert "CnMetadataRecoveryStepSpec" in source
-    assert ".__name__ =" not in source
+    assert "CnMetadataParseResult" in source
+    assert "CnMetadataInferResult" in source
+    assert "CnMetadataRebuildResult" in source
+    assert "CnMetadataValidateResult" in source
+    assert "CnMetadataRecoveryStepSpec" not in source
+
+
+def test_cn_metadata_recovery_pipeline_stops_between_steps(tmp_path: Path) -> None:
+    binary_path = tmp_path / "libil2cpp.so"
+    binary_path.write_bytes(b"binary")
+    cancellation_event = Event()
+    calls: list[str] = []
+
+    def cancel_after_parse(
+        source: memoryview,
+        binary: Path,
+    ) -> CnMetadataParseResult:
+        calls.append("parse")
+        cancellation_event.set()
+        return CnMetadataParseResult(source, binary, b"restored", b"standardized")
+
+    pipeline = CnMetadataRecoveryPipeline(
+        parse_phase=cancel_after_parse,
+        cancellation=EventCancellation(cancellation_event),
+    )
+
+    with pytest.raises(OperationCancelledError):
+        pipeline.run(protected_metadata=b"protected", binary_path=binary_path)
+
+    assert calls == ["parse"]

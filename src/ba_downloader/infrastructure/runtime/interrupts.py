@@ -5,11 +5,19 @@ from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
-from threading import Event, current_thread, main_thread
+from threading import current_thread, main_thread
 from time import monotonic
-from typing import Any
+from typing import Any, Protocol
 
 from ba_downloader.domain.ports.logging import LoggerPort
+
+
+class StopEventPort(Protocol):
+    def is_set(self) -> bool: ...
+
+    def set(self) -> None: ...
+
+    def wait(self, timeout: float | None = None) -> bool: ...
 
 
 @dataclass(slots=True)
@@ -43,7 +51,7 @@ def build_future_wait_policy(
 
 @contextmanager
 def install_interrupt_handler(
-    stop_event: Event,
+    stop_event: StopEventPort,
     logger: LoggerPort,
     *,
     force_exit: Callable[[int], None],
@@ -107,7 +115,7 @@ def cancel_pending_futures(pending_futures: Iterable[Future[Any]]) -> None:
 def wait_for_futures_with_cancellation(
     pending_futures: set[Future[Any]],
     *,
-    stop_event: Event,
+    stop_event: StopEventPort,
     logger: LoggerPort,
     cancellation_state: CancellationFeedbackState,
     poll_interval: float,
@@ -137,7 +145,7 @@ def wait_for_futures_with_cancellation(
 
 def wait_for_operation_futures(
     pending_futures: set[Future[Any]],
-    stop_event: Event,
+    stop_event: StopEventPort,
     policy: FutureWaitPolicy,
     cancellation_state: CancellationFeedbackState,
     operation_name: str,

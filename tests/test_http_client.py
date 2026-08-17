@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 
-from ba_downloader.domain.exceptions import NetworkError
+from ba_downloader.domain.exceptions import NetworkError, OperationCancelledError
+from ba_downloader.domain.ports.execution import EventCancellation
 from ba_downloader.infrastructure.http import client as http_client_module
 from ba_downloader.infrastructure.http.client import (
     DEFAULT_DOWNLOAD_TIMEOUT,
@@ -293,6 +295,63 @@ def test_http_client_download_cleans_partial_file_on_cancel(
             str(destination),
             progress_callback=progress_callback,
             should_stop=lambda: should_stop_state["value"],
+        )
+
+    assert not destination.exists()
+    assert not destination.with_name("archive.bin.part").exists()
+
+
+def test_http_client_stops_before_retry_when_operation_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancellation_event = Event()
+    client = ResilientHttpClient(
+        max_retries=5,
+        cancellation=EventCancellation(cancellation_event),
+    )
+
+    class CancellingHttpxClient:
+        calls = 0
+
+        def request(self, *_args: object, **_kwargs: object) -> None:
+            self.calls += 1
+            cancellation_event.set()
+            raise httpx.ConnectError("offline")
+
+        def close(self) -> None:
+            return None
+
+    fake_httpx = CancellingHttpxClient()
+    monkeypatch.setattr(client, "_httpx", fake_httpx)
+
+    with pytest.raises(OperationCancelledError):
+        client.request("GET", "https://example.com/data")
+
+    assert fake_httpx.calls == 1
+
+
+def test_http_client_reports_operation_cancellation_during_download(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cancellation_event = Event()
+    client = ResilientHttpClient(
+        max_retries=0,
+        cancellation=EventCancellation(cancellation_event),
+    )
+    destination = tmp_path / "archive.bin"
+    fake_httpx = FakeHttpxClient(FakeHttpxResponse([b"abc", b"def"]))
+
+    def cancel_operation(_amount: int) -> None:
+        cancellation_event.set()
+
+    monkeypatch.setattr(client, "_httpx", fake_httpx)
+
+    with pytest.raises(OperationCancelledError):
+        client.download_to_file(
+            "https://example.com/archive.bin",
+            str(destination),
+            progress_callback=cancel_operation,
         )
 
     assert not destination.exists()
