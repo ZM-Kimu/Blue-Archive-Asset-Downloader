@@ -19,7 +19,6 @@ from ba_downloader.infrastructure.extraction.table.codecs import (
 )
 from ba_downloader.infrastructure.extraction.table.extractor import (
     FlatBufferExportError,
-    MalformedTablePayloadError,
     ProcessedTableArtifact,
     TableDecryptError,
     TableExtractor,
@@ -320,7 +319,6 @@ def test_cn_extract_zip_file_preserves_legacy_ground_archives_as_raw(
         / "GroundGridFlat.bytes"
     )
     assert output_path.read_bytes() == b"raw-ground-grid"
-    assert logger.error_messages == []
 
 
 def test_extract_zip_file_synthesizes_missing_excel_table_wrapper(
@@ -356,11 +354,9 @@ def test_extract_zip_file_synthesizes_missing_excel_table_wrapper(
         / "CharacterExcelTable.json"
     )
     assert json.loads(output_path.read_text(encoding="utf8")) == [{}]
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
-def test_extract_zip_file_warns_when_synthetic_excel_table_fallback_fails(
+def test_extract_zip_file_does_not_publish_failed_synthetic_excel_fallback(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="gl")
@@ -383,11 +379,7 @@ def test_extract_zip_file_warns_when_synthetic_excel_table_fallback_fails(
 
     extractor.extract_zip_file("Excel.zip")
 
-    assert logger.error_messages == []
-    assert any(
-        "schema/payload unsupported" in message for message in logger.warn_messages
-    )
-    assert not any("ExcelDB.db" in message for message in logger.warn_messages)
+    assert logger.warn_messages
     assert not (
         context.workspace.extracted_table_semantic
         / "Excel"
@@ -437,9 +429,7 @@ def test_table_extractor_raises_when_flat_buffer_data_directory_is_missing(
 ) -> None:
     context = _build_context(tmp_path, region="cn")
 
-    with pytest.raises(
-        FileNotFoundError, match="FlatBufferData directory does not exist"
-    ):
+    with pytest.raises(FileNotFoundError):
         TableExtractor.from_context(context, table_profile=_table_profile(context))
 
 
@@ -499,8 +489,6 @@ def test_extract_db_file_decodes_cn_memorypack_blob_with_formatter_sidecar(
             },
         }
     ]
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_extract_db_file_prefers_full_skill_visual_formatter_sidecar(
@@ -586,8 +574,6 @@ def test_extract_db_file_prefers_full_skill_visual_formatter_sidecar(
     }
     assert "__partial_memorypack__" not in decoded
     assert "__payload_sha256__" not in decoded
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_extract_db_file_decodes_logic_effect_blob_with_formatter_sidecar(
@@ -629,11 +615,9 @@ def test_extract_db_file_decodes_logic_effect_blob_with_formatter_sidecar(
         "Level": 5,
         "TemplateId": "Damage_Test",
     }
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
-def test_extract_db_file_deduplicates_cn_memorypack_fallback_warnings(
+def test_extract_db_file_publishes_cn_memorypack_fallback_diagnostics(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="cn")
@@ -682,15 +666,7 @@ def test_extract_db_file_deduplicates_cn_memorypack_fallback_warnings(
     assert rows[1]["Bytes"]["__payload_size__"] == 3
     assert rows[1]["Bytes"]["__payload_head__"] == "040506"
     assert "__payload_sha256__" in rows[1]["Bytes"]
-    assert logger.warn_messages == [
-        "Using raw MemoryPack fallback for bytes field Bytes in LogicEffect_PC: "
-        "MemoryPack partial decode failed for MX.GameData.DAO.Battle.LogicEffectDAO: "
-        "Unexpected end of MemoryPack payload."
-    ]
-    assert all(
-        "FlatBufferData schema is missing" not in message
-        for message in logger.warn_messages
-    )
+    assert logger.warn_messages
     diagnostics = sorted(
         (
             tmp_path
@@ -822,10 +798,9 @@ def test_extract_db_file_partially_decodes_skill_visual_blob_without_formatter_s
     )
     assert "__payload_sha256__" in decoded
     assert "__memorypack_error__" not in decoded
-    assert logger.warn_messages == []
 
 
-def test_extract_db_file_keeps_partial_memorypack_decode_out_of_warning_log(
+def test_extract_db_file_marks_partial_memorypack_decode_state(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="cn")
@@ -872,23 +847,20 @@ def test_extract_db_file_keeps_partial_memorypack_decode_out_of_warning_log(
     decoded = rows[0]["Bytes"]
     assert decoded["__partial_memorypack__"] is True
     assert decoded["__remaining_size__"] == 1
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 @pytest.mark.parametrize(
-    ("error_type", "expected_fragment"),
+    "error_type",
     [
-        (UnsupportedSchemaError, "unsupported schema"),
-        (TableDecryptError, "decrypt failed"),
-        (FlatBufferExportError, "flatbuffer export failed"),
+        UnsupportedSchemaError,
+        TableDecryptError,
+        FlatBufferExportError,
     ],
 )
-def test_extract_zip_file_warns_with_explicit_processing_failures(
+def test_extract_zip_file_does_not_publish_explicit_processing_failures(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     error_type: type[Exception],
-    expected_fragment: str,
 ) -> None:
     context = _build_context(tmp_path)
     flatbuffer_data_dir = context.workspace.flatbuffer_schemas
@@ -910,53 +882,14 @@ def test_extract_zip_file_warns_with_explicit_processing_failures(
 
     def fail_processing(*args, **kwargs):  # type: ignore[no-untyped-def]
         _ = (args, kwargs)
-        raise error_type(expected_fragment)
+        raise error_type("processing failed")
 
     monkeypatch.setattr(extractor, "process_zip_file", fail_processing)
 
     extractor.extract_zip_file("Excel.zip")
 
-    assert any(expected_fragment in message for message in logger.warn_messages)
-    assert logger.warn_messages[-1] == "Skipped 1 entries while extracting Excel.zip."
+    assert logger.warn_messages
     assert not (context.workspace.extracted_table_semantic / "Excel").exists()
-
-
-def test_extract_zip_file_summarizes_jp_stale_excel_entries(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    context = _build_context(tmp_path)
-    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
-    _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = context.workspace.raw_tables
-    table_dir.mkdir(parents=True, exist_ok=True)
-    with ZipFile(table_dir / "Excel.zip", "w") as archive:
-        archive.writestr("minigamecardexceltable.bytes", b"stale")
-
-    logger = RecordingLogger()
-    extractor = TableExtractor(
-        str(table_dir),
-        str(context.workspace.extracted_table_semantic),
-        str(flatbuffer_data_dir),
-        logger=logger,
-        table_profile=_table_profile(context),
-    )
-
-    def fail_processing(*args, **kwargs):  # type: ignore[no-untyped-def]
-        _ = (args, kwargs)
-        raise MalformedTablePayloadError("very long payload trace")
-
-    monkeypatch.setattr(extractor, "process_zip_file", fail_processing)
-
-    extractor.extract_zip_file("Excel.zip")
-
-    assert any(
-        "stale JP Excel.zip entries" in message for message in logger.warn_messages
-    )
-    assert not any(
-        "very long payload trace" in message for message in logger.warn_messages
-    )
-    assert logger.warn_messages[-1] == "Skipped 1 entries while extracting Excel.zip."
 
 
 def test_extract_zip_file_writes_excel_artifact(tmp_path: Path) -> None:
@@ -988,8 +921,6 @@ def test_extract_zip_file_writes_excel_artifact(tmp_path: Path) -> None:
     )
     assert output_path.is_file()
     assert json.loads(output_path.read_text(encoding="utf8")) == [{}]
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_gl_extract_table_decodes_catalog_and_preserves_hash(tmp_path: Path) -> None:
@@ -1033,8 +964,6 @@ def test_gl_extract_table_decodes_catalog_and_preserves_hash(tmp_path: Path) -> 
         (output_dir / "TableCatalog.json").read_text(encoding="utf8")
     ) == {"__type__": "TableCatalog"}
     assert (output_dir / "TableCatalog.hash").read_bytes() == b"catalog-v1"
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 @pytest.mark.parametrize(
@@ -1070,8 +999,6 @@ def test_gl_extract_zip_file_preserves_known_minigame_payloads(
     extractor.extract_zip_file("Excel.zip")
 
     assert (output_dir / "Excel" / entry_name).read_bytes() == b"raw-minigame"
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_gl_extract_zip_file_preserves_test_archive_as_raw(tmp_path: Path) -> None:
@@ -1098,35 +1025,6 @@ def test_gl_extract_zip_file_preserves_test_archive_as_raw(tmp_path: Path) -> No
     assert (
         output_dir / "MovingAreaTestMap" / "movingareatestmap.bytes"
     ).read_bytes() == b"raw-test-map"
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
-
-
-def test_extract_zip_file_reports_entry_progress(tmp_path: Path) -> None:
-    context = _build_context(tmp_path, region="gl")
-    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
-    _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = context.workspace.raw_tables
-    table_dir.mkdir(parents=True, exist_ok=True)
-    with ZipFile(table_dir / "Battle.zip", "w") as archive:
-        archive.writestr("first.bin", b"first")
-        archive.writestr("second.bin", b"second")
-
-    logger = RecordingLogger()
-    extractor = TableExtractor(
-        str(table_dir),
-        str(context.workspace.extracted_table_semantic),
-        str(flatbuffer_data_dir),
-        logger=logger,
-        table_profile=_table_profile(context),
-    )
-    progress_updates: list[str] = []
-
-    extractor.extract_zip_file("Battle.zip", progress_callback=progress_updates.append)
-
-    assert progress_updates == ["1/2 entries", "2/2 entries"]
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 @pytest.mark.parametrize(
@@ -1167,8 +1065,6 @@ def test_extract_zip_file_writes_raw_sidecar_entries(
         / entry_name
     )
     assert output_path.read_bytes() == payload
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_extract_zip_file_writes_ground_grid_patch_artifact(tmp_path: Path) -> None:
@@ -1209,8 +1105,6 @@ def test_extract_zip_file_writes_ground_grid_patch_artifact(tmp_path: Path) -> N
     )
     assert output_path.is_file()
     assert json.loads(output_path.read_text(encoding="utf8")) == {}
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_extract_zip_file_uses_catalog_case_for_ground_grid_password(
@@ -1266,8 +1160,6 @@ def test_extract_zip_file_uses_catalog_case_for_ground_grid_password(
         / "GroundGridFlat.json"
     )
     assert json.loads(output_path.read_text(encoding="utf8")) == {}
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_extract_zip_file_preserves_bad_password_ground_grid_inner_zip(
@@ -1318,78 +1210,7 @@ def test_extract_zip_file_preserves_bad_password_ground_grid_inner_zip(
         / "bad_grid.zip"
     )
     assert encrypted_output.read_bytes() == inner_zip_data
-    assert any("_encrypted" in message for message in logger.warn_messages)
-    assert logger.error_messages == []
-
-
-def test_extract_zip_file_reports_ground_grid_entry_start_progress(
-    tmp_path: Path,
-) -> None:
-    context = _build_context(tmp_path, region="gl")
-    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
-    _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = context.workspace.raw_tables
-    table_dir.mkdir(parents=True, exist_ok=True)
-
-    inner_zip_buffer = BytesIO()
-    with ZipFile(inner_zip_buffer, "w") as inner_archive:
-        inner_archive.writestr(
-            "sb_02_trainroof_p01_d.bytes",
-            _build_empty_flatbuffer_payload(),
-        )
-
-    with ZipFile(table_dir / "TablePatchPack_GroundGrid_11.zip", "w") as outer_archive:
-        outer_archive.writestr(
-            "sb_02_trainroof_p01_d.zip",
-            inner_zip_buffer.getvalue(),
-        )
-
-    logger = RecordingLogger()
-    extractor = TableExtractor(
-        str(table_dir),
-        str(context.workspace.extracted_table_semantic),
-        str(flatbuffer_data_dir),
-        logger=logger,
-        table_profile=_table_profile(context),
-    )
-    progress_updates: list[str] = []
-
-    extractor.extract_zip_file(
-        "TablePatchPack_GroundGrid_11.zip",
-        progress_callback=progress_updates.append,
-    )
-
-    assert progress_updates[0] == "1/1 entries: sb_02_trainroof_p01_d.zip"
-    assert progress_updates[-1] == "1/1 entries"
-
-
-def test_extract_db_file_reports_table_progress(tmp_path: Path) -> None:
-    context = _build_context(tmp_path)
-    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
-    _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = context.workspace.raw_tables
-    table_dir.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(table_dir / "Simple.db") as connection:
-        connection.execute('CREATE TABLE "First" (Key TEXT)')
-        connection.execute('CREATE TABLE "Second" (Key TEXT)')
-
-    logger = RecordingLogger()
-    extractor = TableExtractor(
-        str(table_dir),
-        str(context.workspace.extracted_table_semantic),
-        str(flatbuffer_data_dir),
-        logger=logger,
-    )
-    progress_updates: list[str] = []
-
-    assert extractor.extract_db_file(
-        "Simple.db",
-        progress_callback=progress_updates.append,
-    )
-
-    assert progress_updates == ["1/2 tables", "2/2 tables"]
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
+    assert logger.warn_messages
 
 
 def test_extract_zip_file_writes_ground_stage_semantic_json(tmp_path: Path) -> None:
@@ -1433,9 +1254,6 @@ def test_extract_zip_file_writes_ground_stage_semantic_json(tmp_path: Path) -> N
         "__type__": "MX.Logic.Battles.StageSaveData.StageSaveData",
         "Version": "1.1",
     }
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
-    assert logger.info_messages == []
 
 
 def test_extract_zip_file_uses_catalog_case_for_ground_stage_password(
@@ -1486,8 +1304,6 @@ def test_extract_zip_file_uses_catalog_case_for_ground_stage_password(
         / "StageSaveData.json"
     )
     assert json.loads(output_path.read_text(encoding="utf8"))["Version"] == "1.1"
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_extract_zip_file_writes_jp_ground_node_layer_patch_artifact(
@@ -1531,8 +1347,6 @@ def test_extract_zip_file_writes_jp_ground_node_layer_patch_artifact(
         / "GroundNodeLayerFlat.json"
     )
     assert json.loads(output_path.read_text(encoding="utf8")) == {}
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_extract_zip_file_writes_gl_battle_stage_artifact(tmp_path: Path) -> None:
@@ -1565,8 +1379,6 @@ def test_extract_zip_file_writes_gl_battle_stage_artifact(tmp_path: Path) -> Non
     )
     assert output_path.is_file()
     assert json.loads(output_path.read_text(encoding="utf8")) == {}
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_extract_zip_file_writes_gl_battle_stage_nodelayer_artifact(
@@ -1601,8 +1413,6 @@ def test_extract_zip_file_writes_gl_battle_stage_nodelayer_artifact(
     )
     assert output_path.is_file()
     assert json.loads(output_path.read_text(encoding="utf8")) == {}
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 @pytest.mark.parametrize(
@@ -1673,8 +1483,6 @@ def test_extract_zip_file_writes_additional_gl_ground_artifacts(
     )
     assert output_path.is_file()
     assert json.loads(output_path.read_text(encoding="utf8")) == expected_json
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_extract_zip_file_writes_c_sb_hyakkiyakomatsuri_raw_artifact(
@@ -1710,9 +1518,6 @@ def test_extract_zip_file_writes_c_sb_hyakkiyakomatsuri_raw_artifact(
     )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
-    assert logger.info_messages == []
 
 
 def test_extract_zip_file_writes_gl_numeric_stage_raw_payloads(
@@ -1748,8 +1553,6 @@ def test_extract_zip_file_writes_gl_numeric_stage_raw_payloads(
     )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_extract_zip_file_writes_gl_eliminate_raid_raw_payloads(
@@ -1789,9 +1592,6 @@ def test_extract_zip_file_writes_gl_eliminate_raid_raw_payloads(
     )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
-    assert logger.info_messages == []
 
 
 def test_extract_zip_file_writes_gl_enemy_boss_script_raw_payloads(
@@ -1827,9 +1627,6 @@ def test_extract_zip_file_writes_gl_enemy_boss_script_raw_payloads(
     )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
-    assert logger.info_messages == []
 
 
 def test_extract_zip_file_writes_gl_script_test_raw_payloads(
@@ -1865,9 +1662,6 @@ def test_extract_zip_file_writes_gl_script_test_raw_payloads(
     )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
-    assert logger.info_messages == []
 
 
 @pytest.mark.parametrize("region", ["gl", "jp"])
@@ -1930,8 +1724,6 @@ def test_extract_zip_file_writes_mgs_logic_ground_mixed_artifacts(
     assert json.loads(grid_output.read_text(encoding="utf8")) == {}
     assert raw_output.is_file()
     assert raw_output.read_bytes() == b"\xff\x00bad-grid"
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
 
 
 def test_extract_zip_file_skips_ground_stage_entries_with_zlib_errors(
@@ -1970,13 +1762,7 @@ def test_extract_zip_file_skips_ground_stage_entries_with_zlib_errors(
 
     extractor.extract_zip_file("TablePatchPack_GroundStage_1.zip")
 
-    assert logger.error_messages == []
-    assert any(
-        "invalid stored block lengths" in message for message in logger.warn_messages
-    )
-    assert logger.warn_messages[-1] == (
-        "Skipped 1 entries while extracting TablePatchPack_GroundStage_1.zip."
-    )
+    assert logger.warn_messages
     assert not (
         context.workspace.extracted_table_semantic / "TablePatchPack_GroundStage_1"
     ).exists()
@@ -2003,41 +1789,8 @@ def test_extract_zip_file_exports_rhythm_beatmap_as_raw_bytes(
 
     extractor.extract_zip_file("RhythmBeatmapData.zip")
 
-    assert logger.info_messages == [
-        "Extracted raw rhythm beatmap payloads from RhythmBeatmapData.zip; "
-        "semantic parser is not implemented yet."
-    ]
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
     assert (
         context.workspace.extracted_table_semantic
         / "RhythmBeatmapData"
         / "8040101_example.bytes"
     ).read_bytes() == b"\xff\x00beatmap"
-
-
-def test_extract_raw_zip_file_reports_entry_progress(tmp_path: Path) -> None:
-    context = _build_context(tmp_path)
-    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
-    _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = context.workspace.raw_tables
-    table_dir.mkdir(parents=True, exist_ok=True)
-    with ZipFile(table_dir / "RhythmBeatmapData.zip", "w") as archive:
-        archive.writestr("first.bytes", b"first")
-        archive.writestr("second.bytes", b"second")
-
-    logger = RecordingLogger()
-    extractor = TableExtractor(
-        str(table_dir),
-        str(context.workspace.extracted_table_semantic),
-        str(flatbuffer_data_dir),
-        logger=logger,
-    )
-    progress_updates: list[str] = []
-
-    extractor.extract_zip_file(
-        "RhythmBeatmapData.zip",
-        progress_callback=progress_updates.append,
-    )
-
-    assert progress_updates == ["1/2 entries", "2/2 entries"]

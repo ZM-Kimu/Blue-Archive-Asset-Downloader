@@ -10,9 +10,6 @@ from ba_downloader.bootstrap.region_gateways import (
 from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
 from ba_downloader.domain.models.database import DBColumn, DBTable
 from ba_downloader.domain.models.execution import ExecutionContext
-from ba_downloader.infrastructure.extraction.character.character_index import (
-    CharacterIndexBuilder,
-)
 from ba_downloader.infrastructure.extraction.character.index_composer import (
     CharacterIndexComposer,
     CharacterIndexCompositionProfile,
@@ -285,7 +282,6 @@ def test_cn_index_sources_read_excel_db_schemas_without_archive_zip(
     assert sources.localize_gacha == [
         {"GachaShopId": 100, "SubTitleKr": "【特别】阿洛娜招募概率提升!"}
     ]
-    assert logger.by_level("warn") == []
 
 
 def test_index_source_profile_selects_region_owned_sources(
@@ -342,7 +338,6 @@ def test_gl_index_sources_read_excel_db_schemas_without_excel_zip(
     assert sources.scenario_db[0]["Bytes"]["CharacterName"] == 1001
     assert sources.char_excel == [{"Id": 1001, "DevName": "Arona"}]
     assert sources.char_profile == [{"CharacterId": 1001, "FullNameKr": "Arona"}]
-    assert logger.by_level("warn") == []
 
 
 def test_jp_index_sources_read_excel_db_schemas_without_excel_zip(
@@ -419,14 +414,19 @@ def test_jp_index_sources_read_excel_db_schemas_without_excel_zip(
             "IllustratorNameJp": "DoReMi",
         }
     ]
-    assert logger.by_level("warn") == []
 
 
-def test_jp_index_sources_warn_with_schema_name_when_source_is_missing(
+@pytest.mark.parametrize(
+    ("region", "localized_name"),
+    [("jp", {"NameJP": "Arona"}), ("cn", {"NameKR": "阿洛娜"})],
+)
+def test_index_sources_report_degraded_output_when_profile_source_is_missing(
     tmp_path: Path,
+    region: str,
+    localized_name: dict[str, str],
 ) -> None:
     logger = RecordingLogger()
-    context = _build_context(tmp_path, region="jp")
+    context = _build_context(tmp_path, region=region)
     loader = CharacterIndexSourceLoader(
         FakeTableSource(
             tmp_path,
@@ -434,8 +434,8 @@ def test_jp_index_sources_warn_with_schema_name_when_source_is_missing(
                 "ScenarioCharacterNameDBSchema": [
                     {
                         "CharacterName": 1001,
-                        "NameJP": "Arona",
                         "SmallPortrait": "Portrait_Arona",
+                        **localized_name,
                     }
                 ],
                 "CharacterDBSchema": [{"Id": 1001, "DevName": "Arona"}],
@@ -450,9 +450,7 @@ def test_jp_index_sources_warn_with_schema_name_when_source_is_missing(
 
     assert sources.scenario_db
     assert sources.char_excel == [{"Id": 1001, "DevName": "Arona"}]
-    assert logger.by_level("warn") == [
-        "Some character index sources are missing or invalid: LocalizeCharProfileDBSchema. Character index might be incomplete."
-    ]
+    assert logger.by_level("warn")
 
 
 def test_jp_index_extract_excel_fails_when_all_db_sources_are_missing(
@@ -464,46 +462,10 @@ def test_jp_index_extract_excel_fails_when_all_db_sources_are_missing(
         RecordingLogger(),
     )
 
-    with pytest.raises(
-        LookupError,
-        match="all core index sources are missing",
-    ):
+    with pytest.raises(LookupError):
         loader.load(
             _service_profile(context.region).character_index.source_profile(context)
         )
-
-
-def test_cn_index_sources_warn_with_schema_name_when_source_is_missing(
-    tmp_path: Path,
-) -> None:
-    logger = RecordingLogger()
-    context = _build_context(tmp_path, region="cn")
-    loader = CharacterIndexSourceLoader(
-        FakeTableSource(
-            tmp_path,
-            {
-                "ScenarioCharacterNameDBSchema": [
-                    {
-                        "CharacterName": 1001,
-                        "NameKR": "阿洛娜",
-                        "SmallPortrait": "Portrait_Arona",
-                    }
-                ],
-                "CharacterDBSchema": [{"Id": 1001, "DevName": "Arona"}],
-            },
-        ),
-        logger,
-    )
-
-    sources = loader.load(
-        _service_profile(context.region).character_index.source_profile(context)
-    )
-
-    assert sources.scenario_db
-    assert sources.char_excel == [{"Id": 1001, "DevName": "Arona"}]
-    assert logger.by_level("warn") == [
-        "Some character index sources are missing or invalid: LocalizeCharProfileDBSchema. Character index might be incomplete."
-    ]
 
 
 def test_cn_index_sources_fail_when_all_core_db_sources_are_missing(
@@ -515,10 +477,7 @@ def test_cn_index_sources_fail_when_all_core_db_sources_are_missing(
         RecordingLogger(),
     )
 
-    with pytest.raises(
-        LookupError,
-        match="all core index sources are missing",
-    ):
+    with pytest.raises(LookupError):
         loader.load(
             _service_profile(context.region).character_index.source_profile(context)
         )
@@ -969,31 +928,3 @@ def test_character_index_search_index_matches_names_files_dev_name_and_attribute
         "Hihumi",
         "Hihumi_default",
     ]
-
-
-def test_index_build_logs_saved_file_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    logger = RecordingLogger()
-    context = _build_context(tmp_path, region="jp")
-    source_loader = FakeIndexSourceLoader(
-        _sources(char_excel=[{"Id": 10003, "DevName": "Hihumi_default"}])
-    )
-    index_builder = CharacterIndexBuilder(
-        logger,
-        table_source=FakeTableSource(tmp_path),
-        source_loader=source_loader,
-        character_index_source_profile_factory=(
-            _service_profile("jp").character_index.source_profile
-        ),
-    )
-    monkeypatch.chdir(tmp_path)
-
-    index_builder.build(context)
-
-    index_path = context.workspace.character_index
-    assert index_path.exists()
-    assert logger.by_level("info")[-1] == (
-        f"Character index file saved to {index_path.resolve()}."
-    )

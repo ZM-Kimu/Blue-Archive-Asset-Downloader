@@ -18,7 +18,9 @@ uv sync --group dev --extra api
 Run focused tests while editing, then run the full gate before handing off broad changes.
 
 ```bash
-uv run pytest
+./scripts/run-tests.ps1 -Suite smoke
+./scripts/run-tests.ps1 -Suite extraction
+./scripts/run-tests.ps1 -Suite all
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy
@@ -26,7 +28,19 @@ uv run lint-imports
 git diff --check
 ```
 
-Use `scripts/preflight_check.ps1` when a single local gate is more convenient.
+The available focused suites are `application`, `runtime`, `extraction`, `regions`, and
+`api`. They are local development shortcuts only. CI runs the complete core suite on
+Python 3.11, 3.12, and 3.13. Static quality gates and the actual AssetRipper exporter
+.NET build run once on Python 3.13.
+
+The AssetRipper integration build is opt-in locally:
+
+```powershell
+$env:BAAD_RUN_DOTNET_BUILD = "1"
+uv run pytest -q tests/test_assetripper_dotnet.py
+```
+
+Use `scripts/run-preflight.ps1` when a single local gate is more convenient.
 
 ## Architecture
 

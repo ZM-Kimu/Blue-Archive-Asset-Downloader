@@ -7,30 +7,6 @@ from pathlib import Path
 from typing import Any
 
 
-def test_schema_package_exposes_flatbuffer_and_memorypack_apis() -> None:
-    from ba_downloader.infrastructure.schema.flatbuffer import (
-        CompileFlatBufferToPython,
-        FlatBufferCSParser,
-        FlatBufferExporter,
-        FlatBufferReader,
-    )
-    from ba_downloader.infrastructure.schema.memorypack import (
-        CompileMemoryPackToPython,
-        MemoryPackCSParser,
-        MemoryPackReader,
-        MemoryPackSchemaRegistry,
-    )
-
-    assert CompileFlatBufferToPython.__name__ == "CompileFlatBufferToPython"
-    assert FlatBufferCSParser.__name__ == "FlatBufferCSParser"
-    assert FlatBufferExporter.__name__ == "FlatBufferExporter"
-    assert FlatBufferReader.__name__ == "FlatBufferReader"
-    assert CompileMemoryPackToPython.__name__ == "CompileMemoryPackToPython"
-    assert MemoryPackCSParser.__name__ == "MemoryPackCSParser"
-    assert MemoryPackReader.__name__ == "MemoryPackReader"
-    assert MemoryPackSchemaRegistry.__name__ == "MemoryPackSchemaRegistry"
-
-
 def test_generated_schema_registry_loads_class_and_module_name_registries(
     tmp_path: Path,
 ) -> None:

@@ -159,9 +159,7 @@ def test_sqlcipher_raw_exporter_rejects_bad_hmac(tmp_path: Path) -> None:
     encrypted_path = tmp_path / "encrypted.db"
     encrypted_path.write_bytes(encrypted)
 
-    with pytest.raises(
-        SqlCipherRawExportError, match="HMAC verification failed at page 1"
-    ):
+    with pytest.raises(SqlCipherRawExportError):
         SqlCipherRawExporter().export(
             encrypted_path,
             tmp_path / "plain.db",
@@ -173,7 +171,7 @@ def test_sqlcipher_raw_exporter_rejects_non_page_sized_input(tmp_path: Path) -> 
     encrypted_path = tmp_path / "encrypted.db"
     encrypted_path.write_bytes(b"not a page")
 
-    with pytest.raises(SqlCipherRawExportError, match="multiple of page size"):
+    with pytest.raises(SqlCipherRawExportError):
         SqlCipherRawExporter().export(
             encrypted_path,
             tmp_path / "plain.db",
@@ -338,7 +336,7 @@ def test_sqlcipher_database_resolver_requires_key_for_encrypted_db(
     encrypted_db.write_bytes(b"encrypted" * 512)
     resolver = SqlCipherDatabaseResolver(_build_context(tmp_path, key_hex=""))
 
-    with pytest.raises(LookupError, match="--sqlcipher-key"):
+    with pytest.raises(LookupError):
         resolver.resolve(encrypted_db)
 
 

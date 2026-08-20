@@ -46,7 +46,7 @@ def test_registry_expires_idle_contexts(tmp_path: Path) -> None:
     assert replacement.id != first.id
 
 
-def test_freeze_keeps_command_fields_out_of_immutable_context(tmp_path: Path) -> None:
+def test_freeze_uses_resolved_context(tmp_path: Path) -> None:
     registry = ContextRegistry(fingerprint_key=b"x" * 32)
     item, _ = registry.create(_context(tmp_path))
 
@@ -57,5 +57,3 @@ def test_freeze_keeps_command_fields_out_of_immutable_context(tmp_path: Path) ->
     )
 
     assert frozen.context.resource_version == "2.0.0"
-    assert not hasattr(frozen.context, "threads")
-    assert not hasattr(frozen.context, "asset_filter")

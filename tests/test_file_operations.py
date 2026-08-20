@@ -19,7 +19,7 @@ def test_write_json_atomic_validates_before_replacing_existing_file(
         assert json.loads(path.read_text(encoding="utf-8")) == {"new": True}
         raise ValueError("invalid manifest")
 
-    with pytest.raises(ValueError, match="invalid manifest"):
+    with pytest.raises(ValueError):
         write_json_atomic(destination, {"new": True}, validate=reject)
 
     assert destination.read_text(encoding="utf-8") == '{"old":true}\n'

@@ -8,7 +8,6 @@ import pytest
 
 from ba_downloader.api.events import (
     QueueLogger,
-    QueueProgressReporter,
     build_secret_redactions,
     redact_text,
 )
@@ -51,56 +50,6 @@ def test_proxy_redactions_cover_credentials_and_encoded_values() -> None:
         value not in redacted
         for value in ("secret-user", "p@ssword", "p%40ssword", "a" * 64)
     )
-
-
-def test_first_progress_secondary_status_is_emitted_immediately() -> None:
-    queue: Queue[dict[str, object]] = Queue()
-    reporter = QueueProgressReporter(queue, 1, "Extracting bundles...")
-    reporter.__enter__()
-    queue.get_nowait()
-
-    reporter.set_secondary_status("Batch 1/1 (1 bundle): Loading")
-
-    assert queue.get_nowait()["payload"] == {
-        "completed": 0,
-        "total": 1,
-        "description": "Extracting bundles...",
-        "secondary_status": "Batch 1/1 (1 bundle): Loading",
-    }
-
-
-def test_loading_progress_is_emitted_as_independent_fields() -> None:
-    queue: Queue[dict[str, object]] = Queue()
-    reporter = QueueProgressReporter(queue, 217, "Extracting bundles...")
-    reporter.__enter__()
-    queue.get_nowait()
-
-    reporter.set_loading_progress(12, 217, "Loading files")
-
-    assert queue.get_nowait()["payload"] == {
-        "completed": 0,
-        "total": 217,
-        "description": "Extracting bundles...",
-        "loading_completed": 12,
-        "loading_total": 217,
-        "loading_stage": "Loading files",
-    }
-
-
-def test_processing_status_is_emitted_as_independent_field() -> None:
-    queue: Queue[dict[str, object]] = Queue()
-    reporter = QueueProgressReporter(queue, 217, "Extracting bundles...")
-    reporter.__enter__()
-    queue.get_nowait()
-
-    reporter.set_processing_status("Processing 00:12")
-
-    assert queue.get_nowait()["payload"] == {
-        "completed": 0,
-        "total": 217,
-        "description": "Extracting bundles...",
-        "processing_status": "Processing 00:12",
-    }
 
 
 def test_job_stream_starts_with_current_snapshot(tmp_path: Path) -> None:

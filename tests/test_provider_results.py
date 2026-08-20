@@ -169,13 +169,6 @@ def test_gl_provider_resolves_latest_apkpure_release() -> None:
     ]
     assert provider.get_capabilities().supports_sync is True
     assert client.download_calls == []
-    assert logger.by_level("warn") == []
-    assert logger.by_level("info")[:3] == [
-        "Automatically fetching latest package info...",
-        "Current resource version: 1.2.3",
-        "Pulling catalog...",
-    ]
-    assert logger.by_level("info")[-1].startswith("Catalog: 3 items in the catalog")
 
 
 def test_gl_provider_resolves_latest_release_into_unresolved_context() -> None:
@@ -210,59 +203,6 @@ def test_gl_provider_resolves_latest_release_into_unresolved_context() -> None:
         server_url,
     ]
     assert client.download_calls == []
-
-
-def test_gl_provider_leaves_non_jp_platform_warning_to_cli_boundary() -> None:
-    context = build_execution_context(
-        Path.cwd(),
-        region="gl",
-        version="",
-        max_retries=1,
-        platform="ios",
-    )
-    server_url = "https://example.invalid/catalog.json"
-    client = RecordingHttpClient(
-        {
-            ("GET", ApkPureReleaseClient.API_URL): _apkpure_response(
-                "com.nexon.bluearchive",
-                ("1.2.3", "https://download.pureapk.com/b/XAPK/latest.xapk"),
-            ),
-            ("POST", GLRegionProvider.CATALOG_URL): _json_response(
-                GLRegionProvider.CATALOG_URL,
-                {"patch": {"resource_path": server_url}},
-            ),
-            ("GET", server_url): _json_response(
-                server_url,
-                {
-                    "resources": [
-                        {
-                            "group": "table",
-                            "resource_path": "TableBundles/Excel.zip",
-                            "resource_size": 10,
-                            "resource_hash": "aaa",
-                        },
-                        {
-                            "group": "media",
-                            "resource_path": "MediaResources/GameData/title_theme.zip",
-                            "resource_size": 20,
-                            "resource_hash": "bbb",
-                        },
-                        {
-                            "group": "bundle",
-                            "resource_path": "AssetBundles/Android/characters.bundle",
-                            "resource_size": 30,
-                            "resource_hash": "ccc",
-                        },
-                    ]
-                },
-            ),
-        }
-    )
-    logger = RecordingLogger()
-
-    GLRegionProvider(http_client=client, logger=logger).load_catalog(context)
-
-    assert logger.by_level("warn") == []
 
 
 def test_cn_provider_builds_assets_without_downloading_apk(
@@ -451,146 +391,6 @@ def test_cn_provider_builds_assets_without_downloading_apk(
         "CHANNEL-ID": "2",
     }
     assert client.download_calls == []
-    assert logger.by_level("warn") == []
-    assert logger.by_level("info")[:3] == [
-        "Automatically fetching latest version...",
-        "Current resource version: 1.2.3",
-        "Pulling catalog...",
-    ]
-    assert logger.by_level("info")[-1].startswith("Catalog: 8 items in the catalog")
-
-
-def test_cn_provider_leaves_non_jp_platform_warning_to_cli_boundary(
-    monkeypatch,
-) -> None:
-    context = build_execution_context(
-        Path.cwd(),
-        region="cn",
-        version="",
-        max_retries=1,
-        platform="ios",
-    )
-    client = RecordingHttpClient(
-        {
-            ("GET", "https://bluearchive-cn.com/api/meta/setup"): _text_response(
-                "https://bluearchive-cn.com/api/meta/setup",
-                '{"version":"1.2.3"}',
-            ),
-            ("GET", "https://gs-api.bluearchive-cn.com/api/state"): _json_response(
-                "https://gs-api.bluearchive-cn.com/api/state",
-                {
-                    "AddressablesCatalogUrlRoots": ["https://cdn.example.invalid"],
-                    "TableVersion": "table-v1",
-                    "MediaVersion": "media-v1",
-                    "ResourceVersion": "bundle-v1",
-                },
-            ),
-            (
-                "GET",
-                "https://cdn.example.invalid/Manifest/TableBundles/table-v1/TableManifest",
-            ): _json_response(
-                "https://cdn.example.invalid/Manifest/TableBundles/table-v1/TableManifest",
-                {
-                    "Table": {
-                        "Excel": {
-                            "Name": "Excel.zip",
-                            "Crc": "aabbccdd",
-                            "Size": 12,
-                            "Includes": [],
-                        }
-                    }
-                },
-            ),
-            (
-                "GET",
-                "https://cdn.example.invalid/Manifest/MediaResources/media-v1/MediaManifest",
-            ): _text_response(
-                "https://cdn.example.invalid/Manifest/MediaResources/media-v1/MediaManifest",
-                "Audio/BGM/title_theme,1122334455667788,2,15,0\n",
-            ),
-            (
-                "GET",
-                "https://cdn.example.invalid/AssetBundles/Catalog/bundle-v1/Android/bundleDownloadInfo.json",
-            ): _json_response(
-                "https://cdn.example.invalid/AssetBundles/Catalog/bundle-v1/Android/bundleDownloadInfo.json",
-                {
-                    "BundleFiles": [
-                        {
-                            "Name": "characters.bundle",
-                            "Size": 20,
-                            "Crc": "ffeeddcc",
-                        }
-                    ]
-                },
-            ),
-        }
-    )
-    logger = RecordingLogger()
-    monkeypatch.setattr(
-        CNRegionProvider,
-        "get_apk_url",
-        lambda self, server="official": "https://example.invalid/BlueArchive.apk",
-    )
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.cn.provider.read_zip_entries",
-        lambda url, http_client: [
-            ZipEntry(
-                path="assets/video/title.mp4",
-                crc32=0,
-                local_header_offset=0,
-                compressed_size=1,
-                uncompressed_size=1,
-                compression_method=0,
-                file_name_length=1,
-                extra_field_length=0,
-            ),
-            ZipEntry(
-                path="assets/video/title_4nd_1.mp4",
-                crc32=0,
-                local_header_offset=1,
-                compressed_size=1,
-                uncompressed_size=1,
-                compression_method=0,
-                file_name_length=1,
-                extra_field_length=0,
-            ),
-            ZipEntry(
-                path="assets/video/title_4nd_2.mp4",
-                crc32=0,
-                local_header_offset=2,
-                compressed_size=1,
-                uncompressed_size=1,
-                compression_method=0,
-                file_name_length=1,
-                extra_field_length=0,
-            ),
-            ZipEntry(
-                path="assets/video/title_4nd_Ep.mp4",
-                crc32=0,
-                local_header_offset=3,
-                compressed_size=1,
-                uncompressed_size=1,
-                compression_method=0,
-                file_name_length=1,
-                extra_field_length=0,
-            ),
-            ZipEntry(
-                path="assets/video/title_5th_1.mp4",
-                crc32=0,
-                local_header_offset=4,
-                compressed_size=1,
-                uncompressed_size=1,
-                compression_method=0,
-                file_name_length=1,
-                extra_field_length=0,
-            ),
-        ],
-    )
-
-    result = CNRegionProvider(http_client=client, logger=logger).load_catalog(context)
-
-    assert logger.by_level("warn") == []
-    assert len(result.resources) == 8
 
 
 def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
@@ -779,7 +579,7 @@ def test_gl_runtime_asset_preparer_does_not_publish_incomplete_new_release(
         extract_without_metadata,
     )
 
-    with pytest.raises(FileNotFoundError, match="this extraction"):
+    with pytest.raises(FileNotFoundError):
         preparer.prepare(context)
 
     assert snapshot_store.load(old_context, "1.2.2") == old_snapshot

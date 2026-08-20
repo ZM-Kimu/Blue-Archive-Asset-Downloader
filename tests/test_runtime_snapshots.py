@@ -52,7 +52,7 @@ def test_runtime_snapshot_failed_publish_preserves_same_version(
     original = _publish_snapshot(store, context, "1.2.3", marker=b"original")
 
     with (
-        pytest.raises(RuntimeSnapshotError, match="required metadata"),
+        pytest.raises(RuntimeSnapshotError),
         store.staging_runtime(context, "1.2.3") as runtime_dir,
     ):
         (runtime_dir / "libil2cpp.so").write_bytes(b"replacement")

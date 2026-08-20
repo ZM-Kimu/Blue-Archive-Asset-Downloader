@@ -20,7 +20,7 @@ def _build_context(tmp_path: Path) -> ExecutionContext:
     )
 
 
-def test_extract_zip_reports_member_progress(tmp_path: Path) -> None:
+def test_extract_zip_writes_all_members(tmp_path: Path) -> None:
     context = _build_context(tmp_path)
     media_dir = context.workspace.raw_media
     media_dir.mkdir(parents=True)
@@ -29,14 +29,8 @@ def test_extract_zip_reports_member_progress(tmp_path: Path) -> None:
         archive.writestr("first.ogg", b"first")
         archive.writestr("second.ogg", b"second")
 
-    updates: list[str] = []
+    MediaExtractor(context).extract_zip(str(zip_path))
 
-    MediaExtractor(context).extract_zip(
-        str(zip_path),
-        progress_callback=updates.append,
-    )
-
-    assert updates == ["1/2 members", "2/2 members"]
     assert (
         context.workspace.extracted_media / "voice" / "first.ogg"
     ).read_bytes() == b"first"

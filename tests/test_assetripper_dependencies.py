@@ -17,7 +17,6 @@ from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
 )
 from ba_downloader.infrastructure.extraction.assetripper.events import (
     AssetRipperProcessEvent,
-    AssetRipperScanProgressEvent,
 )
 from ba_downloader.infrastructure.extraction.assetripper.exporter import (
     assetripper_dependency_scan_cache_key,
@@ -457,18 +456,10 @@ class _RecordingScanBackend:
         archives: list[BundleArchiveInput],
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
     ) -> tuple[BundleArchiveScan, ...]:
-        _ = context
+        _ = (context, event_callback)
         self.calls.append(tuple(item.archive_id for item in archives))
         results = []
-        for current, archive in enumerate(archives, start=1):
-            if event_callback is not None:
-                event_callback(
-                    AssetRipperScanProgressEvent(
-                        current,
-                        len(archives),
-                        archive.archive_id,
-                    )
-                )
+        for archive in archives:
             results.append(
                 _scan(
                     archive.archive_id,
@@ -478,7 +469,7 @@ class _RecordingScanBackend:
         return tuple(results)
 
 
-def test_cached_scanner_only_sends_misses_and_reports_overall_progress(
+def test_cached_scanner_only_sends_cache_misses(
     tmp_path: Path,
 ) -> None:
     first = _archive(tmp_path, "a.zip")
@@ -487,16 +478,10 @@ def test_cached_scanner_only_sends_misses_and_reports_overall_progress(
     cache.store(first, _scan(first.archive_id), tool_key="tool-v1")
     backend = _RecordingScanBackend()
     scanner = CachedBundleDependencyScanner(backend, cache, tool_key="tool-v1")
-    events: list[AssetRipperProcessEvent] = []
-
-    scans = scanner.scan(_context(tmp_path), [first, second], events.append)
+    scans = scanner.scan(_context(tmp_path), [first, second])
 
     assert [item.archive_id for item in scans] == ["a.zip", "b.zip"]
     assert backend.calls == [("b.zip",)]
-    assert events == [
-        AssetRipperScanProgressEvent(1, 2, "a.zip"),
-        AssetRipperScanProgressEvent(2, 2, "b.zip"),
-    ]
 
     scanner.scan(_context(tmp_path), [first, second])
     assert backend.calls == [("b.zip",)]

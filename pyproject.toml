@@ -78,6 +78,9 @@ exclude = [
 [tool.uv]
 default-groups = ["dev"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 88
 target-version = "py311"

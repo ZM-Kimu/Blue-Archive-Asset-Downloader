@@ -5,7 +5,7 @@ import tomllib
 from pathlib import Path
 
 
-def test_api_dependencies_are_optional() -> None:
+def test_api_dependencies_remain_optional_to_normal_cli() -> None:
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]
@@ -21,9 +21,6 @@ def test_api_dependencies_are_optional() -> None:
         "fastapi",
         "uvicorn",
     }
-
-
-def test_normal_cli_module_does_not_import_api_frameworks() -> None:
     tree = ast.parse(Path("src/ba_downloader/cli/main.py").read_text(encoding="utf-8"))
     imported_roots = {
         alias.name.split(".", 1)[0]
@@ -38,10 +35,6 @@ def test_normal_cli_module_does_not_import_api_frameworks() -> None:
     )
 
     assert imported_roots.isdisjoint({"fastapi", "uvicorn"})
-
-
-def test_cli_does_not_import_http_api_adapter() -> None:
-    tree = ast.parse(Path("src/ba_downloader/cli/main.py").read_text(encoding="utf-8"))
     imported_modules = {
         alias.name
         for node in ast.walk(tree)

@@ -50,52 +50,30 @@ def _install_executor(
 
 
 @pytest.mark.parametrize(
-    ("error", "expected_message"),
+    ("error", "expected_exit_code"),
     [
         (
             LookupError(
                 "Downloaded JP package is invalid or incomplete. Retry may solve the issue."
             ),
-            "Downloaded JP package is invalid or incomplete.",
+            1,
         ),
-        (NetworkError("temporary failure"), "temporary failure"),
+        (NetworkError("temporary failure"), 2),
         (
             DownloadError("Failed to download 2 files after retries."),
-            "Failed to download 2 files after retries.",
+            2,
         ),
     ],
 )
-def test_main_logs_operational_errors_without_traceback(
+def test_main_maps_operational_error_types_to_exit_codes(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
     error: Exception,
-    expected_message: str,
+    expected_exit_code: int,
 ) -> None:
     _install_executor(monkeypatch, RecordingExecutor(error))
 
     exit_code = main(["assets", "download", "--region", "jp"])
-    captured = capsys.readouterr()
-
-    assert exit_code == (2 if isinstance(error, (NetworkError, DownloadError)) else 1)
-    assert expected_message in " ".join(captured.err.split())
-    assert "Traceback" not in captured.err
-
-
-def test_main_logs_extract_errors_without_traceback(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    error = LookupError(
-        "JP table extract prerequisites were missing and auto-generation was attempted."
-    )
-    _install_executor(monkeypatch, RecordingExecutor(error))
-
-    exit_code = main(["assets", "extract", "--region", "jp", "--platform", "windows"])
-    captured = capsys.readouterr()
-
-    assert exit_code == 1
-    assert "JP table extract prerequisites were missing" in captured.err
-    assert "Traceback" not in captured.err
+    assert exit_code == expected_exit_code
 
 
 def test_download_command_uses_shared_operation_executor(

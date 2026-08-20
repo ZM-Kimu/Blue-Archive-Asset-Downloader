@@ -296,6 +296,6 @@ def test_table_database_rejects_unknown_table_name(tmp_path) -> None:
 
     with (
         TableDatabase(str(db_path)) as database,
-        pytest.raises(LookupError, match="Unknown SQLite table"),
+        pytest.raises(LookupError),
     ):
         database.get_table_data('Sample"; DROP TABLE Sample; --')

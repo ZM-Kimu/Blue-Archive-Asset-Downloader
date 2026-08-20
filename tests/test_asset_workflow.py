@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from threading import Event
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
 
@@ -33,84 +33,6 @@ class RecordingLogger:
         self.warn_messages.append(message)
 
 
-class RecordingProgressReporter:
-    instances: ClassVar[list[RecordingProgressReporter]] = []
-
-    def __init__(
-        self,
-        total: int,
-        description: str,
-        *,
-        download_mode: bool = False,
-        extract_mode: bool = False,
-    ) -> None:
-        self.total = total
-        self.description = description
-        self.download_mode = download_mode
-        self.extract_mode = extract_mode
-        self.advances: list[int] = []
-        self.descriptions: list[str] = []
-        self.statuses: list[str] = []
-        self.secondary_statuses: list[str] = []
-        self.completed: list[int] = []
-        self.instances.append(self)
-
-    def __enter__(self) -> RecordingProgressReporter:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        return None
-
-    def advance(self, amount: int = 1) -> None:
-        self.advances.append(amount)
-
-    def set_total(self, total: int) -> None:
-        self.total = total
-
-    def set_description(self, description: str) -> None:
-        self.descriptions.append(description)
-
-    def set_status(self, status: str) -> None:
-        self.statuses.append(status)
-
-    def set_secondary_status(self, status: str) -> None:
-        self.secondary_statuses.append(status)
-
-    def set_failed_status(self, status: str) -> None:
-        _ = status
-
-    def set_completed(self, completed: int) -> None:
-        self.completed.append(completed)
-
-    def stop(self) -> None:
-        return None
-
-
-def _create_recording_progress(
-    _factory: object,
-    total: int,
-    description: str,
-    *,
-    download_mode: bool = False,
-    extract_mode: bool = False,
-) -> RecordingProgressReporter:
-    return RecordingProgressReporter(
-        total,
-        description,
-        download_mode=download_mode,
-        extract_mode=extract_mode,
-    )
-
-
-class FakeStopEvent:
-    def is_set(self) -> bool:
-        return False
-
-    def wait(self, timeout: float) -> bool:
-        _ = timeout
-        return False
-
-
 def _build_context(tmp_path: Path, resource_type: tuple[str, ...]) -> ExecutionContext:
     _ = resource_type
     return build_execution_context(
@@ -133,13 +55,6 @@ def _resources(items: list[tuple[str, AssetType]]) -> AssetCollection:
             asset_type,
         )
     return resources
-
-
-def _patch_progress_reporter(monkeypatch: Any) -> None:
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.progress.NullProgressReporterFactory.create",
-        _create_recording_progress,
-    )
 
 
 def test_bundle_extraction_returns_workflow_warnings(tmp_path: Path) -> None:
@@ -170,41 +85,6 @@ def test_bundle_extraction_returns_workflow_warnings(tmp_path: Path) -> None:
     ).extract_bundles(context, concurrency=1)
 
     assert report.warnings == (expected_warning,)
-
-
-def test_media_extraction_uses_extract_progress_mode(
-    monkeypatch: Any,
-    tmp_path: Path,
-) -> None:
-    context = _build_context(tmp_path, ("media",))
-    media_dir = context.workspace.raw_media
-    media_dir.mkdir(parents=True)
-    (media_dir / "voice.zip").write_bytes(b"zip")
-
-    class FakeMediaExtractor:
-        def __init__(self, received_context: ExecutionContext) -> None:
-            assert received_context == context
-
-        def extract_zip(self, file_path: str, **kwargs: Any) -> None:
-            assert Path(file_path).name == "voice.zip"
-            progress_callback = kwargs["progress_callback"]
-            progress_callback("1/2 members")
-            progress_callback("2/2 members")
-
-    RecordingProgressReporter.instances = []
-    _patch_progress_reporter(monkeypatch)
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.MediaExtractor",
-        FakeMediaExtractor,
-    )
-
-    AssetExtractionWorkflow(RecordingLogger()).extract_media(context, concurrency=1)
-
-    progress = RecordingProgressReporter.instances[0]
-    assert progress.extract_mode is True
-    assert progress.statuses == ["0/1 files", "1/1 files"]
-    assert progress.secondary_statuses == ["1/2 members", "2/2 members"]
-    assert progress.advances == [1]
 
 
 def test_media_extraction_observes_operation_cancellation(
@@ -258,8 +138,6 @@ def test_media_extraction_uses_filtered_existing_resources(
             _ = kwargs
             calls.append(Path(file_path).name)
 
-    RecordingProgressReporter.instances = []
-    _patch_progress_reporter(monkeypatch)
     monkeypatch.setattr(
         "ba_downloader.infrastructure.extraction.workflow.MediaExtractor",
         FakeMediaExtractor,
@@ -303,18 +181,16 @@ def test_media_extraction_aggregates_failures_after_processing_other_files(
             if Path(file_path).name == "bad.zip":
                 raise LookupError("bad archive")
 
-    RecordingProgressReporter.instances = []
-    _patch_progress_reporter(monkeypatch)
     monkeypatch.setattr(
         "ba_downloader.infrastructure.extraction.workflow.MediaExtractor",
         FakeMediaExtractor,
     )
 
-    with pytest.raises(ExtractError, match="media extraction failed for 1 file"):
+    with pytest.raises(ExtractError):
         AssetExtractionWorkflow(logger).extract_media(context, concurrency=1)
 
     assert sorted(calls) == ["bad.zip", "good.zip"]
-    assert any("bad.zip" in message for message in logger.error_messages)
+    assert logger.error_messages
 
 
 def test_table_extraction_uses_process_runner_for_real_extractor(

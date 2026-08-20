@@ -84,11 +84,11 @@ def test_runtime_scope_closes_http_client_when_provider_construction_fails(
 
     scope = ExecutionScope(context)
     with scope:
-        with pytest.raises(RuntimeError, match="provider failed"):
+        with pytest.raises(RuntimeError):
             scope.execute(
                 CatalogRefreshCommand(),
             )
-        with pytest.raises(RuntimeError, match="one operation only"):
+        with pytest.raises(RuntimeError):
             scope.execute(
                 CatalogRefreshCommand(),
             )

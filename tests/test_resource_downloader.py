@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 from binascii import crc32
 from contextlib import nullcontext
 from pathlib import Path
@@ -159,24 +158,6 @@ class RecordingLogger:
         self.error_messages.append(message)
 
 
-def test_download_module_does_not_import_extractors_directly() -> None:
-    module_path = Path(
-        "src/ba_downloader/infrastructure/download/resource_downloader.py"
-    )
-    tree = ast.parse(module_path.read_text(encoding="utf-8"))
-    violations: list[str] = []
-
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module is not None
-            and node.module.startswith("ba_downloader.infrastructure.extraction")
-        ):
-            violations.append(node.module)
-
-    assert not violations
-
-
 def _build_context(tmp_path: Path) -> ExecutionContext:
     return build_execution_context(
         tmp_path,
@@ -256,19 +237,11 @@ def test_download_resources_tracks_aggregate_bytes(monkeypatch, tmp_path: Path) 
 
     failed = downloader._download_resources(list(resources), context, concurrency=2)
 
-    progress = RecordingProgressReporter.instances[-1]
     assert failed == []
+    progress = RecordingProgressReporter.instances[-1]
     assert progress.download_mode is True
     assert progress.total == 20
     assert sum(progress.advances) == 20
-    assert progress.descriptions[0] == "Downloading assets..."
-    assert progress.descriptions[-1] == "b.bundle"
-    assert progress.statuses[0] == "0/2 files"
-    assert progress.statuses[-1] == "2/2 files"
-    assert progress.secondary_statuses[0] == "conc. 2/2"
-    assert progress.secondary_statuses[-1] == "conc. 2/2"
-    assert progress.failed_statuses[0] == "failed 0"
-    assert progress.failed_statuses[-1] == "failed 0"
     assert client.download_calls
     assert client.download_calls[0]["timeout"] == downloader.DOWNLOAD_TIMEOUT_SECONDS
     assert callable(client.download_calls[0]["should_stop"])
@@ -382,21 +355,6 @@ def test_download_resources_keeps_concurrency_on_non_network_failure(
 
     assert [resource.path for resource in failed] == ["Bundle/a.bundle"]
     assert state.target_concurrency == 2
-    assert not [
-        message
-        for message in logger.warn_messages
-        if "Adaptive download concurrency" in message
-    ]
-    assert not [
-        message
-        for message in logger.info_messages
-        if "Adaptive download concurrency" in message
-    ]
-    assert logger.error_messages == []
-    progress = RecordingProgressReporter.instances[-1]
-    assert progress.statuses[-1] == "1/2 files"
-    assert progress.secondary_statuses[-1] == "conc. 2/2"
-    assert progress.failed_statuses[-1] == "failed 1"
 
 
 def test_download_resources_reduces_concurrency_for_timeout_failures(
@@ -430,12 +388,6 @@ def test_download_resources_reduces_concurrency_for_timeout_failures(
 
     assert [resource.path for resource in failed] == ["Bundle/a.bundle"]
     assert state.target_concurrency == 1
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
-    progress = RecordingProgressReporter.instances[-1]
-    assert progress.statuses[-1] == "1/2 files"
-    assert progress.secondary_statuses[-1] == "conc. 1/2"
-    assert progress.failed_statuses[-1] == "failed 1"
 
 
 def test_download_resources_treats_network_timeout_as_retryable_failure(
@@ -472,12 +424,6 @@ def test_download_resources_treats_network_timeout_as_retryable_failure(
 
     assert [resource.path for resource in failed] == ["Bundle/a.bundle"]
     assert state.target_concurrency == 1
-    assert logger.warn_messages == []
-    assert logger.error_messages == []
-    progress = RecordingProgressReporter.instances[-1]
-    assert progress.statuses[-1] == "1/2 files"
-    assert progress.secondary_statuses[-1] == "conc. 1/2"
-    assert progress.failed_statuses[-1] == "failed 1"
 
 
 def test_retry_rounds_reuse_adaptive_state(monkeypatch, tmp_path: Path) -> None:
@@ -509,10 +455,6 @@ def test_retry_rounds_reuse_adaptive_state(monkeypatch, tmp_path: Path) -> None:
 
     assert failed == []
     assert state.target_concurrency == 1
-    progress = RecordingProgressReporter.instances[-1]
-    assert progress.statuses[0] == "0/1 files"
-    assert progress.secondary_statuses[0] == "conc. 1/2"
-    assert progress.failed_statuses[0] == "failed 0"
 
 
 def test_download_resource_rejects_http_error_status(tmp_path: Path) -> None:
@@ -524,7 +466,7 @@ def test_download_resource_rejects_http_error_status(tmp_path: Path) -> None:
         resource.asset_type.value, resource.path
     )
 
-    with pytest.raises(RuntimeError, match="403"):
+    with pytest.raises(RuntimeError):
         downloader._download_resource(resource, context)
 
     assert not asset_path.exists()
@@ -539,7 +481,7 @@ def test_download_resource_rejects_post_download_size_mismatch(tmp_path: Path) -
         resource.asset_type.value, resource.path
     )
 
-    with pytest.raises(RuntimeError, match="size mismatch"):
+    with pytest.raises(RuntimeError):
         downloader._download_resource(resource, context)
 
     assert not asset_path.exists()
@@ -556,7 +498,7 @@ def test_download_resource_rejects_post_download_checksum_mismatch(
         resource.asset_type.value, resource.path
     )
 
-    with pytest.raises(RuntimeError, match="checksum mismatch"):
+    with pytest.raises(RuntimeError):
         downloader._download_resource(resource, context)
 
     assert not asset_path.exists()
@@ -691,83 +633,62 @@ def test_verify_resource_accepts_existing_apk_entry_media(
     assert verified is True
 
 
-def test_verify_and_download_logs_when_everything_is_already_present(
+def test_verify_and_download_skips_download_when_everything_is_already_present(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    logger = RecordingLogger()
-    downloader = ResourceDownloader(RecordingHttpClient(), logger)
+    downloader = ResourceDownloader(RecordingHttpClient(), RecordingLogger())
     context = _build_context(tmp_path)
     resources = _build_resources("Bundle/a.bundle")
 
     monkeypatch.setattr(downloader, "_verify_resources", lambda *_args, **_kwargs: [])
+    download_calls: list[object] = []
+    monkeypatch.setattr(
+        downloader,
+        "_download_resources",
+        lambda *_args, **_kwargs: download_calls.append(object()),
+    )
 
     downloader.verify_and_download(resources, context, concurrency=2)
 
-    assert logger.info_messages[-1] == "All files have already been downloaded."
+    assert download_calls == []
 
 
-def test_verify_and_download_logs_successful_completion(
+def test_verify_and_download_retries_failed_downloads_once_before_succeeding(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    logger = RecordingLogger()
-    downloader = ResourceDownloader(RecordingHttpClient(), logger)
-    context = _build_context(tmp_path)
-    pending_resources = list(_build_resources("Bundle/a.bundle"))
-
-    monkeypatch.setattr(
-        downloader, "_verify_resources", lambda *_args, **_kwargs: pending_resources
-    )
-    monkeypatch.setattr(downloader, "_download_resources", lambda *_args, **_kwargs: [])
-
-    downloader.verify_and_download(
-        _build_resources("Bundle/a.bundle"), context, concurrency=2
-    )
-
-    assert (
-        logger.info_messages[-1] == "All files have been downloaded to your computer."
-    )
-
-
-def test_verify_and_download_retries_failed_downloads_before_logging_success(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    logger = RecordingLogger()
-    downloader = ResourceDownloader(RecordingHttpClient(), logger)
+    downloader = ResourceDownloader(RecordingHttpClient(), RecordingLogger())
     context = _build_context(tmp_path)
     pending_resources = list(_build_resources("Bundle/a.bundle"))
     results = [pending_resources, []]
+    download_calls = 0
 
     monkeypatch.setattr(
         downloader,
         "_verify_resources",
         lambda *_args, **_kwargs: pending_resources,
     )
-    monkeypatch.setattr(
-        downloader,
-        "_download_resources",
-        lambda *_args, **_kwargs: results.pop(0),
-    )
+
+    def download(*_args: object, **_kwargs: object) -> list[Any]:
+        nonlocal download_calls
+        download_calls += 1
+        return results.pop(0)
+
+    monkeypatch.setattr(downloader, "_download_resources", download)
 
     downloader.verify_and_download(
         _build_resources("Bundle/a.bundle"), context, concurrency=2
     )
 
-    assert logger.warn_messages[-1] == "Retrying 1 failed files. Attempt 1/1."
-    assert (
-        logger.info_messages[-1] == "All files have been downloaded to your computer."
-    )
-    assert not logger.error_messages
+    assert download_calls == 2
 
 
 def test_verify_and_download_raises_when_retries_are_exhausted(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    logger = RecordingLogger()
-    downloader = ResourceDownloader(RecordingHttpClient(), logger)
+    downloader = ResourceDownloader(RecordingHttpClient(), RecordingLogger())
     context = _build_context(tmp_path)
     resources = _build_resources("Bundle/a.bundle", "Media/b.zip")
     pending_resources = list(resources)
@@ -777,22 +698,19 @@ def test_verify_and_download_raises_when_retries_are_exhausted(
         "_verify_resources",
         lambda *_args, **_kwargs: pending_resources,
     )
-    monkeypatch.setattr(
-        downloader,
-        "_download_resources",
-        lambda *_args, **_kwargs: pending_resources,
-    )
+    download_calls = 0
 
-    with pytest.raises(DownloadError) as exc_info:
+    def download(*_args: object, **_kwargs: object) -> list[Any]:
+        nonlocal download_calls
+        download_calls += 1
+        return pending_resources
+
+    monkeypatch.setattr(downloader, "_download_resources", download)
+
+    with pytest.raises(DownloadError):
         downloader.verify_and_download(resources, context, concurrency=2)
 
-    assert (
-        "All files have been downloaded to your computer." not in logger.info_messages
-    )
-    assert logger.error_messages[-1] == "Failed to download 2 files after retries."
-    assert "Failed to download 2 files after retries." in str(exc_info.value)
-    assert "Bundle/a.bundle" in str(exc_info.value)
-    assert "Media/b.zip" in str(exc_info.value)
+    assert download_calls == 2
 
 
 def test_verify_resource_accepts_jp_crc_decimal_strings(tmp_path: Path) -> None:

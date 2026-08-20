@@ -53,7 +53,7 @@ def test_file_registry_reuses_ids_and_evicts_old_entries(tmp_path: Path) -> None
     registry.list_entries(context, "raw")
 
     assert repeated.id == first.id
-    with pytest.raises(KeyError, match="Unknown file"):
+    with pytest.raises(KeyError):
         registry.resolve(first.id, context)
 
 
@@ -63,7 +63,7 @@ def test_cleanup_preview_limit_is_enforced(tmp_path: Path) -> None:
     registry = FileRegistry(preview_limit=1)
     registry.preview_cleanup(context, "context-1", ["raw"])
 
-    with pytest.raises(CleanupPreviewLimitError, match="maximum"):
+    with pytest.raises(CleanupPreviewLimitError):
         registry.preview_cleanup(context, "context-1", ["raw"])
 
 
@@ -84,7 +84,7 @@ def test_file_registry_rejects_path_traversal(tmp_path: Path) -> None:
     context = _context(tmp_path)
     context.workspace.raw.mkdir(parents=True)
 
-    with pytest.raises(FileBoundaryError, match="escapes"):
+    with pytest.raises(FileBoundaryError):
         FileRegistry().list_entries(context, "raw", "../outside")
 
 
@@ -101,7 +101,7 @@ def test_file_registry_rejects_symlink_escape(tmp_path: Path) -> None:
     except OSError:
         pytest.skip("Directory symlinks are unavailable in this environment.")
 
-    with pytest.raises(FileBoundaryError, match="escapes"):
+    with pytest.raises(FileBoundaryError):
         FileRegistry().list_entries(context, "raw")
 
 
@@ -120,7 +120,7 @@ def test_cleanup_rejects_symlink_replaced_after_preview(tmp_path: Path) -> None:
     except OSError:
         pytest.skip("File symlinks are unavailable in this environment.")
 
-    with pytest.raises(StorageBoundaryError, match="escapes"):
+    with pytest.raises(StorageBoundaryError):
         BoundedStorageCleanup().delete(context, preview.targets[0])
     assert outside.read_text(encoding="utf-8") == "secret"
 

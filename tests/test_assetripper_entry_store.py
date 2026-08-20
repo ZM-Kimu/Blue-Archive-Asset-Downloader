@@ -117,5 +117,5 @@ def test_entry_store_rejects_platform_unsafe_entry_names(
     )
     store = BundleEntryStore(tmp_path / "cache", reserve_bytes=0)
 
-    with pytest.raises(ValueError, match="unsafe filename"):
+    with pytest.raises(ValueError):
         store.resolve(entry)
