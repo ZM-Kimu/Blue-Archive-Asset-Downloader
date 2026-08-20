@@ -9,7 +9,7 @@ from typing import Annotated, Any, get_args, get_origin, get_type_hints
 import flatbuffers
 import pytest
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.schema.crypto import convert_int, create_key
 from ba_downloader.infrastructure.schema.flatbuffer import (
     reader as flatbuffer_reader_module,
@@ -22,6 +22,7 @@ from ba_downloader.infrastructure.schema.flatbuffer.parser import FlatBufferCSPa
 from ba_downloader.infrastructure.schema.flatbuffer.reader import FlatBufferReader
 from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
 from generated_modules import load_generated_module
+from support.fixtures import build_execution_context
 
 
 class DummyHttpClient:
@@ -45,20 +46,12 @@ class RecordingLogger:
         self.error_messages.append(message)
 
 
-def _build_context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
+def _build_context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="jp",
-        threads=1,
         version="",
-        raw_dir=str(tmp_path / "Raw"),
-        extract_dir=str(tmp_path / "Extracted"),
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
@@ -673,7 +666,7 @@ def test_schema_workflow_compile_generates_flatbuffer_and_memorypack_data(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
-    dumps_dir = Path(context.extract_dir) / "Dumps"
+    dumps_dir = context.workspace.dumps
     dumps_dir.mkdir(parents=True, exist_ok=True)
     (dumps_dir / "dump.cs").write_text(_sample_dump_cs(), encoding="utf8")
 
@@ -681,13 +674,13 @@ def test_schema_workflow_compile_generates_flatbuffer_and_memorypack_data(
     workflow = SchemaWorkflow(DummyHttpClient(), logger)
     workflow.compile(context)
 
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     assert (flatbuffer_data_dir / "SampleEntry.py").is_file()
     assert (flatbuffer_data_dir / "_registry.py").is_file()
     for python_file in flatbuffer_data_dir.glob("*.py"):
         py_compile.compile(str(python_file), doraise=True)
 
-    memorypack_data_dir = Path(context.extract_dir) / "MemoryPackData"
+    memorypack_data_dir = context.workspace.memorypack_schemas
     assert (memorypack_data_dir / "TableBundle.py").is_file()
     assert (memorypack_data_dir / "_registry.py").is_file()
     for python_file in memorypack_data_dir.glob("*.py"):
@@ -702,7 +695,7 @@ def test_schema_workflow_warns_when_memorypack_codegen_fails(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
-    dumps_dir = Path(context.extract_dir) / "Dumps"
+    dumps_dir = context.workspace.dumps
     dumps_dir.mkdir(parents=True, exist_ok=True)
     (dumps_dir / "dump.cs").write_text(_sample_dump_cs(), encoding="utf8")
 
@@ -718,7 +711,7 @@ def test_schema_workflow_warns_when_memorypack_codegen_fails(
 
     SchemaWorkflow(DummyHttpClient(), logger).compile(context)
 
-    assert (Path(context.extract_dir) / "FlatBufferData" / "SampleEntry.py").is_file()
+    assert (context.workspace.flatbuffer_schemas / "SampleEntry.py").is_file()
     assert any(
         "MemoryPackData generation failed" in item for item in logger.warn_messages
     )

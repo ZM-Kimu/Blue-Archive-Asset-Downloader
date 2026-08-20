@@ -11,33 +11,31 @@ from ba_downloader.api.events import (
     redact_text,
     utc_now,
 )
-from ba_downloader.application.operations import (
-    ApplicationOperationCommand,
-)
-from ba_downloader.bootstrap.container import application_operation_executor
+from ba_downloader.application.contracts import ApplicationCommand
+from ba_downloader.bootstrap.container import ExecutionScope
 from ba_downloader.domain.exceptions import OperationCancelledError
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import ArtifactCollector, EventCancellation
 
 LOGGER = logging.getLogger(__name__)
 
 
 def run_application_job(
-    command: ApplicationOperationCommand,
-    context: RuntimeContext,
+    command: ApplicationCommand,
+    context: ExecutionContext,
     event_queue: Any,
     terminal_sender: Any,
     cancel_event: Any,
 ) -> None:
     redactions = build_secret_redactions(
-        sqlcipher_key_hex=context.sqlcipher_key_hex,
+        sqlcipher_key_hex=context.sqlcipher_key,
         proxy_url=context.proxy_url,
     )
     logger = QueueLogger(event_queue, redactions=redactions)
     cancellation = EventCancellation(cancel_event)
     artifacts = ArtifactCollector()
     try:
-        with application_operation_executor(
+        with ExecutionScope(
             context,
             logger=logger,
             progress_factory=QueueProgressReporterFactory(event_queue),

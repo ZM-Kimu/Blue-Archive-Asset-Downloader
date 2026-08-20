@@ -1,13 +1,13 @@
 from pathlib import Path
 from typing import Protocol
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.storage import StorageCleanupTarget
 
 
 class StorageCleanupPort(Protocol):
     def delete(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         target: StorageCleanupTarget,
     ) -> Path: ...

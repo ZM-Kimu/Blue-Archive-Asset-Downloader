@@ -10,7 +10,7 @@ from threading import Event
 from zipfile import BadZipFile
 
 from ba_downloader.domain.exceptions import ExtractError, OperationCancelledError
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import (
@@ -57,18 +57,6 @@ class ExtractionFailureError(ExtractError):
             f"{operation_name} failed for {len(failures)} {file_word}{suffix}{detail}"
         )
 
-    @classmethod
-    def from_count(
-        cls,
-        operation_name: str,
-        failure_count: int,
-    ) -> ExtractionFailureError:
-        failures = [
-            ExtractionFailure(file_path=f"<unknown #{index}>", error=RuntimeError(""))
-            for index in range(1, failure_count + 1)
-        ]
-        return cls(operation_name, failures)
-
 
 class ThreadedExtractionRunner:
     def __init__(
@@ -97,8 +85,9 @@ class ThreadedExtractionRunner:
     def run(
         self,
         files: list[str],
-        context: RuntimeContext,
+        context: ExecutionContext,
         *,
+        concurrency: int,
         progress_title: str,
         operation_name: str,
         task: ExtractionTask,
@@ -109,9 +98,7 @@ class ThreadedExtractionRunner:
 
         stop_event = Event()
         future_map: dict[Future[None], str] = {}
-        executor = ThreadPoolExecutor(
-            max_workers=min(max(context.threads, 1), len(files))
-        )
+        executor = ThreadPoolExecutor(max_workers=min(max(concurrency, 1), len(files)))
 
         try:
             with (

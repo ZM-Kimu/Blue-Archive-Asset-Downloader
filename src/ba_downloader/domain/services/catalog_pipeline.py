@@ -4,7 +4,7 @@ from dataclasses import replace
 from typing import Generic, TypeVar
 
 from ba_downloader.domain.models.asset import AssetCollection
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.pipeline import (
     AssetNormalizer,
     CatalogDecoder,
@@ -31,9 +31,11 @@ class CatalogPipeline(Generic[TDecoded]):
         self.decoder = decoder
         self.normalizer = normalizer
 
-    def load(self, context: RuntimeContext) -> tuple[AssetCollection, RuntimeContext]:
+    def load(
+        self, context: ExecutionContext
+    ) -> tuple[AssetCollection, ExecutionContext]:
         release = self.release_resolver.resolve(context)
-        resolved_context = context.with_updates(version=release.version)
+        resolved_context = context.resolve_resource_version(release.version)
         session = self.bootstrapper.bootstrap(release, resolved_context)
         raw_candidates = session.metadata.get("catalog_root_candidates", ())
         candidates = (

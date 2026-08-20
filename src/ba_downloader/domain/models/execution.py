@@ -46,3 +46,17 @@ class ExecutionContext:
                 f"'{self.resource_version}'."
             )
         return self
+
+    def without_resource_version(self) -> ExecutionContext:
+        return replace(self, resource_version=None)
+
+    def require_resource_version(self) -> str:
+        if self.resource_version is None:
+            raise ConfigError("Resource version has not been resolved.")
+        return self.resource_version
+
+    @property
+    def proxy(self) -> dict[str, str] | None:
+        if not self.proxy_url:
+            return None
+        return {"http": self.proxy_url, "https": self.proxy_url}

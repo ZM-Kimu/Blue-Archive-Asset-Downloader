@@ -3,32 +3,23 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.models.schema import SchemaPurpose
 from ba_downloader.infrastructure.schema.snapshots import (
     SCHEMA_TOOL_VERSIONS,
     SchemaSnapshotStore,
 )
+from support.fixtures import build_execution_context
 
 
-def _context(tmp_path: Path, version: str = "1.2.3") -> RuntimeContext:
-    platform_root = tmp_path / "jp" / "android"
-    return RuntimeContext(
+def _context(tmp_path: Path, version: str = "1.2.3") -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="jp",
         platform="android",
-        threads=1,
         version=version,
-        raw_dir=str(platform_root / "raw"),
-        extract_dir=str(platform_root / "extracted"),
-        temp_dir=str(platform_root / ".state" / "temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=0,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
-        workspace_mode="v3",
     )
 
 

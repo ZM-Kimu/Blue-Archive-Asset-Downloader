@@ -7,7 +7,7 @@ from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.infrastructure.storage.table_metadata_manifest import (
     JpTableMetadataManifestStore,
 )
-from support import build_runtime_context
+from support import build_execution_context
 
 
 def _build_resources() -> AssetCollection:
@@ -35,7 +35,7 @@ def _build_resources() -> AssetCollection:
 def test_jp_table_metadata_manifest_round_trips_table_includes(
     tmp_path: Path,
 ) -> None:
-    context = build_runtime_context(
+    context = build_execution_context(
         tmp_path,
         region="jp",
         platform="android",
@@ -46,7 +46,7 @@ def test_jp_table_metadata_manifest_round_trips_table_includes(
     store.write(context, _build_resources())
 
     manifest_path = (
-        Path(context.temp_dir)
+        context.workspace.temp_state
         / "catalog"
         / "jp"
         / "android"
@@ -76,7 +76,7 @@ def test_jp_table_metadata_manifest_round_trips_table_includes(
 
 
 def test_jp_table_metadata_manifest_rejects_stale_payload(tmp_path: Path) -> None:
-    context = build_runtime_context(
+    context = build_execution_context(
         tmp_path,
         region="jp",
         platform="android",

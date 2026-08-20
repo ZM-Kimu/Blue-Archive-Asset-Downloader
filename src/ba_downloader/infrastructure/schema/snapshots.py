@@ -9,10 +9,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.models.schema import SchemaPurpose
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
+from ba_downloader.infrastructure.files.checksum import calculate_sha256
 
 SCHEMA_MANIFEST_VERSION = 2
 SCHEMA_TOOL_VERSIONS = {
@@ -22,13 +24,8 @@ SCHEMA_TOOL_VERSIONS = {
 }
 
 
-def schema_state_root(context: RuntimeContext) -> Path:
-    temp_root = Path(context.temp_dir)
-    return (
-        temp_root.parent / "schema"
-        if context.workspace_mode == "v3"
-        else temp_root / "schema"
-    )
+def schema_state_root(context: ExecutionContext) -> Path:
+    return context.workspace.schema_state
 
 
 class SchemaSnapshotError(RuntimeError):
@@ -87,33 +84,33 @@ class SchemaSnapshotStore:
         )
         self.cancellation = cancellation or NeverCancelled()
 
-    def state_root(self, context: RuntimeContext) -> Path:
+    def state_root(self, context: ExecutionContext) -> Path:
         return schema_state_root(context)
 
     def snapshots_root(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
     ) -> Path:
         return self.state_root(context) / purpose.value / "snapshots"
 
     def staging_root(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
     ) -> Path:
         return self.state_root(context) / purpose.value / ".staging"
 
     def current_pointer(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
     ) -> Path:
         return self.state_root(context) / purpose.value / "current.json"
 
     def fingerprint(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         runtime: PreparedRuntimeAssets,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
         target_types: tuple[str, ...] = (),
@@ -135,7 +132,7 @@ class SchemaSnapshotStore:
     @contextmanager
     def staging(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         fingerprint: str,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
     ) -> Iterator[Path]:
@@ -147,7 +144,7 @@ class SchemaSnapshotStore:
 
     def begin_staging(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         fingerprint: str,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
     ) -> Path:
@@ -163,7 +160,7 @@ class SchemaSnapshotStore:
 
     def publish(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         runtime: PreparedRuntimeAssets,
         fingerprint: str,
         staging: Path,
@@ -207,20 +204,22 @@ class SchemaSnapshotStore:
             shutil.rmtree(staging, ignore_errors=True)
         else:
             staging.replace(destination)
-        self._write_json_atomic(
+        write_json_atomic(
             self.current_pointer(context, purpose),
             {
                 "schema_version": SCHEMA_MANIFEST_VERSION,
                 "snapshot_id": fingerprint,
                 "purpose": purpose.value,
             },
+            indent=2,
+            sort_keys=True,
         )
         self._prune(context, fingerprint, purpose)
         return SchemaSnapshot(destination, manifest)
 
     def load(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         fingerprint: str,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
     ) -> SchemaSnapshot | None:
@@ -243,34 +242,20 @@ class SchemaSnapshotStore:
                 if (
                     not path.is_file()
                     or path.stat().st_size != artifact.size
-                    or self._sha256(path) != artifact.sha256
+                    or calculate_sha256(
+                        path,
+                        on_chunk=self.cancellation.raise_if_cancelled,
+                    )
+                    != artifact.sha256
                 ):
                     return None
             return SchemaSnapshot(root, manifest)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return None
 
-    def load_current(
-        self,
-        context: RuntimeContext,
-        purpose: SchemaPurpose = SchemaPurpose.FULL,
-    ) -> SchemaSnapshot | None:
-        try:
-            payload = json.loads(
-                self.current_pointer(context, purpose).read_text(encoding="utf8")
-            )
-            snapshot_id = payload["snapshot_id"]
-        except (OSError, KeyError, TypeError, json.JSONDecodeError):
-            return None
-        return (
-            self.load(context, snapshot_id, purpose)
-            if isinstance(snapshot_id, str)
-            else None
-        )
-
     def cleanup(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
     ) -> None:
         shutil.rmtree(self.staging_root(context, purpose), ignore_errors=True)
@@ -323,7 +308,15 @@ class SchemaSnapshotStore:
                 )
                 continue
             result.append(
-                SchemaInput(role, path.name, path.stat().st_size, self._sha256(path))
+                SchemaInput(
+                    role,
+                    path.name,
+                    path.stat().st_size,
+                    calculate_sha256(
+                        path,
+                        on_chunk=self.cancellation.raise_if_cancelled,
+                    ),
+                )
             )
         return tuple(result)
 
@@ -335,13 +328,20 @@ class SchemaSnapshotStore:
                 continue
             relative = path.relative_to(root).as_posix()
             result.append(
-                SchemaArtifact(relative, path.stat().st_size, self._sha256(path))
+                SchemaArtifact(
+                    relative,
+                    path.stat().st_size,
+                    calculate_sha256(
+                        path,
+                        on_chunk=self.cancellation.raise_if_cancelled,
+                    ),
+                )
             )
         return tuple(result)
 
     def _prune(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         current: str,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
     ) -> None:
@@ -395,17 +395,7 @@ class SchemaSnapshotStore:
     def _write_manifest(path: Path, manifest: SchemaSnapshotManifest) -> None:
         payload = asdict(manifest)
         payload["tool_versions"] = dict(manifest.tool_versions)
-        SchemaSnapshotStore._write_json_atomic(path, payload)
-
-    @staticmethod
-    def _write_json_atomic(path: Path, payload: object) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-        temporary.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf8",
-        )
-        temporary.replace(path)
+        write_json_atomic(path, payload, indent=2, sort_keys=True)
 
     @staticmethod
     def _resolve(root: Path, relative: str) -> Path:
@@ -417,11 +407,3 @@ class SchemaSnapshotStore:
                 f"Schema artifact escapes snapshot root: {relative}."
             ) from exc
         return path
-
-    def _sha256(self, path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                self.cancellation.raise_if_cancelled()
-                digest.update(chunk)
-        return digest.hexdigest()

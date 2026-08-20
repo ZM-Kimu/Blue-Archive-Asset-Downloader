@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort
@@ -45,15 +45,15 @@ class GLRuntimeAssetPreparer(RuntimeAssetPreparerPort):
         )
         self.progress_factory = progress_factory
 
-    def prepare(self, context: RuntimeContext) -> PreparedRuntimeAssets:
+    def prepare(self, context: ExecutionContext) -> PreparedRuntimeAssets:
         self.cancellation.raise_if_cancelled()
-        if context.version:
-            prepared = self.snapshot_store.load(context, context.version)
+        if context.resource_version:
+            prepared = self.snapshot_store.load(context, context.resource_version)
             if prepared is not None:
                 return prepared
         release = (
-            self.release_resolver.resolve_version(context, context.version)
-            if context.version
+            self.release_resolver.resolve_version(context, context.resource_version)
+            if context.resource_version
             else self.release_resolver.resolve_latest(context)
         )
         if prepared := self.snapshot_store.load(context, release.version):

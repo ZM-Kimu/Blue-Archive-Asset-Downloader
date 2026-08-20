@@ -37,7 +37,7 @@ def create_router(services: ApiServices) -> APIRouter:
         catalog = require_catalog(services, context_id)
         item = require_context(services, context_id)
         return {
-            "resource_version": item.context.version,
+            "resource_version": item.context.resource_version,
             "items": len(catalog),
             "bytes": sum(max(asset.size, 0) for asset in catalog),
         }

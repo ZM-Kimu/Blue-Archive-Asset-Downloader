@@ -10,7 +10,7 @@ from typing import TypedDict
 from uuid import uuid4
 
 from ba_downloader.domain.exceptions import ProcessExecutionError
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.process import (
     ProcessCommand,
     ProcessOutputLine,
@@ -34,6 +34,7 @@ from ba_downloader.infrastructure.extraction.assetripper.source import (
     ASSETRIPPER_OVERLAY_VERSION,
     AssetRipperSourceResolver,
 )
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
 
 ASSETRIPPER_EXPORTER_WRAPPER_VERSION = "7"
 ASSETRIPPER_DEPENDENCY_SCANNER_VERSION = "1"
@@ -130,7 +131,7 @@ class _AssetRipperTool:
 
     def _run(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         inputs: list[Path],
         request: dict[str, object],
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
@@ -145,14 +146,18 @@ class _AssetRipperTool:
 
         source_root = self._source_resolver.resolve_patched(context)
         exporter_dll = self._ensure_exporter(context, source_root)
-        job_root = Path(context.temp_dir) / "assetripper" / f"job-{uuid4().hex}"
+        job_root = (
+            Path(context.workspace.temp_state) / "assetripper" / f"job-{uuid4().hex}"
+        )
         job_root.mkdir(parents=True)
         request_path = job_root / "request.json"
         result_path = job_root / "result.json"
         request["inputs"] = request_inputs or [str(path) for path in normalized_inputs]
-        self._write_json_atomic(
+        write_json_atomic(
             request_path,
             request,
+            indent=2,
+            sort_keys=True,
         )
         try:
             command = ProcessCommand(
@@ -180,7 +185,7 @@ class _AssetRipperTool:
         finally:
             shutil.rmtree(job_root, ignore_errors=True)
 
-    def _ensure_exporter(self, context: RuntimeContext, source_root: Path) -> Path:
+    def _ensure_exporter(self, context: ExecutionContext, source_root: Path) -> Path:
         build_root = self._tool_cache_root(context)
         exporter_dll = build_root / "AssetRipperExporter.dll"
         marker = build_root / "source-commit.txt"
@@ -194,17 +199,7 @@ class _AssetRipperTool:
 
         shutil.rmtree(build_root, ignore_errors=True)
         build_root.mkdir(parents=True)
-        packaged_project = (
-            Path(__file__).with_name("tool") / "AssetRipperExporter.csproj"
-        )
-        project = packaged_project
-        if not project.is_file():
-            project = (
-                self._repository_root
-                / "tools"
-                / "assetripper_exporter"
-                / "AssetRipperExporter.csproj"
-            )
+        project = Path(__file__).with_name("tool") / "AssetRipperExporter.csproj"
         result = self._process_runner.run(
             ProcessCommand(
                 (
@@ -284,34 +279,23 @@ class _AssetRipperTool:
         }
 
     @staticmethod
-    def _write_json_atomic(path: Path, payload: object) -> None:
-        temporary = path.with_suffix(f"{path.suffix}.tmp")
-        temporary.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf8",
-        )
-        temporary.replace(path)
-
-    @staticmethod
     def _process_error(value: str) -> str:
         lines = [line.strip() for line in value.splitlines() if line.strip()]
         return lines[-1] if lines else "process exited without diagnostics"
 
     @staticmethod
-    def _tool_cache_root(context: RuntimeContext) -> Path:
-        temp_root = Path(context.temp_dir)
-        state_root = temp_root.parent if context.workspace_mode == "v3" else temp_root
-        return state_root / "cache" / "tools" / "assetripper" / "exporter"
+    def _tool_cache_root(context: ExecutionContext) -> Path:
+        return context.workspace.tools_cache / "assetripper" / "exporter"
 
 
 class AssetRipperBatchExporter(_AssetRipperTool):
-    def prepare(self, context: RuntimeContext) -> None:
+    def prepare(self, context: ExecutionContext) -> None:
         source_root = self._source_resolver.resolve_patched(context)
         self._ensure_exporter(context, source_root)
 
     def export(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         inputs: list[AssetRipperExportInput],
         output_directory: Path,
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
@@ -360,7 +344,7 @@ class AssetRipperBatchExporter(_AssetRipperTool):
 class AssetRipperDependencyScanner(_AssetRipperTool):
     def scan(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         archives: list[BundleArchiveInput],
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
     ) -> tuple[BundleArchiveScan, ...]:
@@ -517,7 +501,7 @@ class AssetRipperDependencyScanner(_AssetRipperTool):
 class AssetRipperRuntimeMetadataInspector(_AssetRipperTool):
     def inspect(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         data_root: Path,
     ) -> AssetRipperRuntimeMetadata:
         process_result, payload = self._run(

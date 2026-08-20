@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import struct
-from collections.abc import Iterable
 
 from .standard_metadata import (
     HEADER_V24_4 as STANDARD_HEADER_ORDER_V24_4,
@@ -60,11 +59,6 @@ TRAILING_TARGETS = {
     "windowsRuntimeTypeNames",
     "exportedTypeDefinitions",
 }
-
-
-def iter_field_rows(buf: bytes, section: Section) -> Iterable[tuple[int, int, int]]:
-    for idx in range(section.size // 0x0C):
-        yield struct.unpack_from("<III", buf, section.offset + idx * 0x0C)
 
 
 def infer_type_element_index(

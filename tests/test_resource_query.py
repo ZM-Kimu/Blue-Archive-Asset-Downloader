@@ -52,13 +52,3 @@ def test_filter_type_does_not_treat_any_three_values_as_all_types() -> None:
         AssetType.media,
         AssetType.table,
     ]
-
-
-def test_search_name_deduplicates_results() -> None:
-    results = ResourceQueryService.search_name(
-        _build_resource(), ["character", "excel"]
-    )
-
-    assert len(results) == 2
-    assert results[0].path == "Bundle/characters.pack"
-    assert results[1].path == "Table/CharacterExcel.bytes"

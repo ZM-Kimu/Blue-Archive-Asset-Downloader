@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from ba_downloader.domain.exceptions import OperationCancelledError
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.models.schema import PreparedSchemaSnapshot, SchemaPurpose
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
@@ -32,10 +32,6 @@ from ba_downloader.infrastructure.schema.memorypack.supplemental import (
 from ba_downloader.infrastructure.schema.snapshots import (
     SchemaSnapshot,
     SchemaSnapshotStore,
-)
-from ba_downloader.infrastructure.storage.workspace_paths import (
-    extracted_dumps_root,
-    extracted_schema_root,
 )
 from ba_downloader.infrastructure.tools.dump_backend import (
     BackendFactory,
@@ -66,7 +62,6 @@ class SchemaWorkflow(SchemaWorkflowPort):
             cancellation=self.cancellation
         )
         self._staging_root: Path | None = None
-        self._staged_context: RuntimeContext | None = None
         self._runtime_assets: PreparedRuntimeAssets | None = None
         self._fingerprint = ""
         self._cached_snapshot: SchemaSnapshot | None = None
@@ -75,7 +70,7 @@ class SchemaWorkflow(SchemaWorkflowPort):
 
     def dump(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         runtime_assets: PreparedRuntimeAssets,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
     ) -> None:
@@ -108,16 +103,12 @@ class SchemaWorkflow(SchemaWorkflowPort):
             return
 
         staging_root = self.snapshot_store.begin_staging(context, fingerprint, purpose)
-        staged_context = context.with_updates(
-            extract_dir=str(staging_root), workspace_mode="v3"
-        )
         self._staging_root = staging_root
-        self._staged_context = staged_context
         self._runtime_assets = runtime_assets
         self._fingerprint = fingerprint
         self._cached_snapshot = None
         (staging_root / "diagnostics").mkdir()
-        extract_path = extracted_dumps_root(staged_context)
+        extract_path = staging_root / "dumps"
         backend = self.dumper_backend_factory(
             self.http_client,
             self.logger,
@@ -125,7 +116,7 @@ class SchemaWorkflow(SchemaWorkflowPort):
         )
         try:
             backend.dump(
-                staged_context,
+                context,
                 str(extract_path.resolve()),
                 runtime_assets,
             )
@@ -147,9 +138,9 @@ class SchemaWorkflow(SchemaWorkflowPort):
                 ) from exc
 
     def _generate_memorypack_data(
-        self, dump_cs_file_path: str, context: RuntimeContext
+        self, dump_cs_file_path: str, output_root: Path
     ) -> None:
-        memorypack_data_dir = extracted_schema_root(context, "memorypack")
+        memorypack_data_dir = output_root / "schemas" / "memorypack"
         try:
             self.cancellation.raise_if_cancelled()
             self.logger.info("Generating MemoryPackData schema files...")
@@ -172,10 +163,10 @@ class SchemaWorkflow(SchemaWorkflowPort):
     def _generate_supplemental_memorypack_formatters(
         self,
         dump_cs_file_path: str,
-        context: RuntimeContext,
+        output_root: Path,
     ) -> None:
-        dumps_dir = extracted_dumps_root(context)
-        memorypack_data_dir = extracted_schema_root(context, "memorypack")
+        dumps_dir = output_root / "dumps"
+        memorypack_data_dir = output_root / "schemas" / "memorypack"
         sidecar_path = dumps_dir / "memorypack_formatters.json"
         try:
             self.cancellation.raise_if_cancelled()
@@ -195,7 +186,7 @@ class SchemaWorkflow(SchemaWorkflowPort):
 
     def compile(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
     ) -> PreparedSchemaSnapshot | None:
         if purpose is not self._purpose:
@@ -206,20 +197,20 @@ class SchemaWorkflow(SchemaWorkflowPort):
             prepared = self._prepared_snapshot(self._cached_snapshot)
             self._reset_state()
             return prepared
-        compile_context = self._staged_context or context
+        output_root = self._staging_root or context.workspace.extracted
         try:
-            self._compile(compile_context)
-            if self._staged_context is not None:
+            self._compile(output_root)
+            if self._staging_root is not None:
                 return self._publish_staging(context)
         except BaseException:
             self._discard_staging()
             raise
         return None
 
-    def _compile(self, context: RuntimeContext) -> None:
+    def _compile(self, output_root: Path) -> None:
         self.cancellation.raise_if_cancelled()
-        dump_cs_file_path = str(extracted_dumps_root(context) / "dump.cs")
-        flatbuffer_data_dir = extracted_schema_root(context, "flatbuffer")
+        dump_cs_file_path = str(output_root / "dumps" / "dump.cs")
+        flatbuffer_data_dir = output_root / "schemas" / "flatbuffers"
 
         self.logger.info("Parsing dump.cs...")
         parser = FlatBufferCSParser(dump_cs_file_path)
@@ -243,9 +234,9 @@ class SchemaWorkflow(SchemaWorkflowPort):
         self.cancellation.raise_if_cancelled()
         self._validate_generated_python(flatbuffer_data_dir, "FlatBufferData")
         if self._purpose is SchemaPurpose.FULL:
-            self._generate_memorypack_data(dump_cs_file_path, context)
+            self._generate_memorypack_data(dump_cs_file_path, output_root)
             self._generate_supplemental_memorypack_formatters(
-                dump_cs_file_path, context
+                dump_cs_file_path, output_root
             )
         else:
             Path(dump_cs_file_path).unlink(missing_ok=True)
@@ -253,7 +244,7 @@ class SchemaWorkflow(SchemaWorkflowPort):
                 Path(dump_cs_file_path).parent.rmdir()
         self.cancellation.raise_if_cancelled()
 
-    def _publish_staging(self, context: RuntimeContext) -> PreparedSchemaSnapshot:
+    def _publish_staging(self, context: ExecutionContext) -> PreparedSchemaSnapshot:
         staging_root = self._staging_root
         runtime_assets = self._runtime_assets
         if staging_root is None or runtime_assets is None or not self._fingerprint:
@@ -337,10 +328,10 @@ class SchemaWorkflow(SchemaWorkflowPort):
 
     def _materialize_snapshot(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         snapshot: SchemaSnapshot,
     ) -> None:
-        target_root = Path(context.extract_dir).resolve()
+        target_root = Path(context.workspace.extracted).resolve()
         marker_path = target_root / ".schema-fingerprint.json"
         try:
             if marker_path.read_text(
@@ -348,18 +339,18 @@ class SchemaWorkflow(SchemaWorkflowPort):
             ).strip() == snapshot.manifest.fingerprint and all(
                 path.exists()
                 for path in (
-                    extracted_dumps_root(context),
-                    extracted_schema_root(context, "flatbuffer"),
-                    extracted_schema_root(context, "memorypack"),
+                    context.workspace.dumps,
+                    context.workspace.flatbuffer_schemas,
+                    context.workspace.memorypack_schemas,
                 )
             ):
                 return
         except OSError:
             pass
         target_paths = (
-            extracted_dumps_root(context),
-            extracted_schema_root(context, "flatbuffer"),
-            extracted_schema_root(context, "memorypack"),
+            context.workspace.dumps,
+            context.workspace.flatbuffer_schemas,
+            context.workspace.memorypack_schemas,
         )
         sources = (
             snapshot.root / "dumps",
@@ -411,7 +402,6 @@ class SchemaWorkflow(SchemaWorkflowPort):
 
     def _reset_state(self) -> None:
         self._staging_root = None
-        self._staged_context = None
         self._runtime_assets = None
         self._fingerprint = ""
         self._cached_snapshot = None

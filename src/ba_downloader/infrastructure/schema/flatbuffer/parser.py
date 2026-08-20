@@ -117,12 +117,6 @@ class FlatBufferCSParser:
 
         return descriptors
 
-    def parse_struct(self) -> list[FlatBufferTypeDescriptor]:
-        return self.parse_types()
-
-    def parse_enum(self) -> list[FlatBufferEnumDescriptor]:
-        return self.parse_enums()
-
     def _build_type_descriptor(
         self,
         namespace: str,

@@ -5,7 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ba_downloader.domain.models.asset import ChecksumSpec
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
     BundleArchiveScan,
@@ -29,6 +29,7 @@ from ba_downloader.infrastructure.extraction.assetripper.scan_cache import (
 from ba_downloader.infrastructure.extraction.assetripper.scanner import (
     CachedBundleDependencyScanner,
 )
+from support.fixtures import build_execution_context
 
 
 def _archive(tmp_path: Path, archive_id: str) -> BundleArchiveInput:
@@ -37,22 +38,13 @@ def _archive(tmp_path: Path, archive_id: str) -> BundleArchiveInput:
     return BundleArchiveInput.from_path(path, archive_id=archive_id)
 
 
-def _context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
+def _context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="jp",
         platform="android",
-        threads=1,
         version="1",
-        raw_dir=str(tmp_path / "raw"),
-        extract_dir=str(tmp_path / "extracted"),
-        temp_dir=str(tmp_path / ".state" / "temp"),
-        resource_type=("bundle",),
-        proxy_url="",
         max_retries=0,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
-        workspace_mode="v3",
     )
 
 
@@ -346,10 +338,6 @@ def test_batch_planner_reloads_shared_dependency_without_coupling_targets(
         ("a.zip", "shared.zip"),
         ("b.zip", "shared.zip"),
     ]
-    assert [batch.target_archive_ids for batch in batches] == [
-        ("a.zip", "shared.zip"),
-        ("b.zip",),
-    ]
     target_ids = [
         component.component_id
         for batch in batches
@@ -418,7 +406,7 @@ def test_scan_cache_uses_catalog_checksum_identity(tmp_path: Path) -> None:
     assert cache.load(touched, tool_key="tool-v2") is None
 
 
-def test_scan_cache_migrates_legacy_exporter_key_for_same_assetripper_commit(
+def test_scan_cache_invalidates_legacy_exporter_key(
     tmp_path: Path,
 ) -> None:
     archive = _archive(tmp_path, "legacy.zip")
@@ -431,7 +419,7 @@ def test_scan_cache_migrates_legacy_exporter_key_for_same_assetripper_commit(
     scanner_key = f"{commit}\nscanner-version=1"
     cache.store(archive, scan, tool_key=legacy_key)
 
-    assert cache.load(archive, tool_key=scanner_key) == scan
+    assert cache.load(archive, tool_key=scanner_key) is None
 
 
 def test_scan_cache_invalidates_local_input_changes(tmp_path: Path) -> None:
@@ -465,7 +453,7 @@ class _RecordingScanBackend:
 
     def scan(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         archives: list[BundleArchiveInput],
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
     ) -> tuple[BundleArchiveScan, ...]:

@@ -66,12 +66,6 @@ class BlobReader:
         self.pos += 1
         return value
 
-    def u16(self) -> int:
-        self.need(2)
-        value = struct.unpack_from("<H", self.data, self.pos)[0]
-        self.pos += 2
-        return value
-
     def u32_unaligned(self) -> int:
         self.need(4)
         value = struct.unpack_from("<I", self.data, self.pos)[0]

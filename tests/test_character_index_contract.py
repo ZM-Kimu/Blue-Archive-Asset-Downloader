@@ -10,7 +10,7 @@ from ba_downloader.domain.models.character import CharacterIndexEntry
 from ba_downloader.infrastructure.extraction.character.index_store import (
     CharacterIndexFileStore,
 )
-from support import RecordingLogger, build_runtime_context
+from support import RecordingLogger, build_execution_context
 
 
 def test_character_index_build_command_parses() -> None:
@@ -27,7 +27,7 @@ def test_character_index_store_writes_entries_schema(
     tmp_path: Path,
 ) -> None:
     store = CharacterIndexFileStore(RecordingLogger())
-    context = build_runtime_context(tmp_path, region="jp", version="1.0.0")
+    context = build_execution_context(tmp_path, region="jp", version="1.0.0")
 
     index_path = store.save(
         context,
@@ -41,7 +41,7 @@ def test_character_index_store_writes_entries_schema(
         ],
     )
 
-    assert index_path == (tmp_path / "indexes" / "characters.json").resolve()
+    assert index_path == context.workspace.character_index.resolve()
     assert json.loads(index_path.read_text(encoding="utf8")) == {
         "schema_version": 1,
         "metadata": {
@@ -70,7 +70,8 @@ def test_character_index_store_writes_entries_schema(
 def test_character_index_store_rejects_pre_index_schema(
     tmp_path: Path,
 ) -> None:
-    index_path = tmp_path / "indexes" / "characters.json"
+    context = build_execution_context(tmp_path, region="jp")
+    index_path = context.workspace.character_index
     index_path.parent.mkdir(parents=True)
     index_path.write_text(
         json.dumps({"version": "JP1.0.0", "relations": []}),
@@ -79,14 +80,14 @@ def test_character_index_store_rejects_pre_index_schema(
     store = CharacterIndexFileStore(RecordingLogger())
 
     with pytest.raises(ValueError, match="schema_version"):
-        store.load_path(index_path, build_runtime_context(tmp_path, region="jp"))
+        store.load_path(index_path, context)
 
 
 def test_character_index_store_rejects_empty_output_without_replacing_old_index(
     tmp_path: Path,
 ) -> None:
     store = CharacterIndexFileStore(RecordingLogger())
-    context = build_runtime_context(tmp_path, region="jp", version="1.0.0")
+    context = build_execution_context(tmp_path, region="jp", version="1.0.0")
     index_path = store.save(context, [CharacterIndexEntry(10003)])
     original_payload = index_path.read_bytes()
 
@@ -100,8 +101,8 @@ def test_character_index_store_rejects_empty_output_without_replacing_old_index(
 def test_character_index_store_semantically_validates_every_entry(
     tmp_path: Path,
 ) -> None:
-    context = build_runtime_context(tmp_path, region="jp", version="1.0.0")
-    index_path = tmp_path / "indexes" / "characters.json"
+    context = build_execution_context(tmp_path, region="jp", version="1.0.0")
+    index_path = context.workspace.character_index
     index_path.parent.mkdir(parents=True)
     index_path.write_text(
         json.dumps(

@@ -1,31 +1,30 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from ba_downloader.domain.models.asset import AssetCollection, AssetRecord, AssetType
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
 
 
 class JpTableMetadataManifestStore:
     SCHEMA_VERSION = 2
 
-    def manifest_path(self, context: RuntimeContext) -> Path:
+    def manifest_path(self, context: ExecutionContext) -> Path:
         return (
-            Path(context.temp_dir)
+            Path(context.workspace.temp_state)
             / "catalog"
             / "jp"
             / context.platform
-            / f"{context.version}.table-metadata.json"
+            / f"{context.resource_version}.table-metadata.json"
         )
 
-    def load(self, context: RuntimeContext) -> AssetCollection | None:
-        if context.region != "jp" or not context.version:
+    def load(self, context: ExecutionContext) -> AssetCollection | None:
+        if context.region != "jp" or not context.resource_version:
             return None
 
         manifest_path = self.manifest_path(context)
@@ -54,8 +53,8 @@ class JpTableMetadataManifestStore:
             self._add_manifest_entry(resources, entry)
         return resources
 
-    def write(self, context: RuntimeContext, resources: AssetCollection) -> None:
-        if context.region != "jp" or not context.version:
+    def write(self, context: ExecutionContext, resources: AssetCollection) -> None:
+        if context.region != "jp" or not context.resource_version:
             return
 
         tables = [
@@ -68,33 +67,22 @@ class JpTableMetadataManifestStore:
             "schema_version": self.SCHEMA_VERSION,
             "region": context.region,
             "platform": context.platform,
-            "version": context.version,
+            "version": context.resource_version,
             "tables": normalized_tables,
         }
         manifest_path = self.manifest_path(context)
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temp_name = tempfile.mkstemp(
-            prefix=f".{manifest_path.name}.",
-            suffix=".tmp",
-            dir=manifest_path.parent,
+        write_json_atomic(
+            manifest_path,
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
-        temp_path = Path(temp_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-                json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, manifest_path)
-        except BaseException:
-            temp_path.unlink(missing_ok=True)
-            raise
 
     @classmethod
     def _is_current_payload(
         cls,
         payload: object,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> bool:
         if not isinstance(payload, dict):
             return False
@@ -102,7 +90,7 @@ class JpTableMetadataManifestStore:
             payload.get("schema_version") == cls.SCHEMA_VERSION
             and payload.get("region") == context.region
             and payload.get("platform") == context.platform
-            and payload.get("version") == context.version
+            and payload.get("version") == context.resource_version
         )
 
     @classmethod

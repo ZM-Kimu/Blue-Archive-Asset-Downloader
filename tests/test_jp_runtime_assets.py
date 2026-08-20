@@ -9,10 +9,10 @@ import pytest
 from Crypto.Cipher import AES
 from Crypto.PublicKey import RSA
 
-from ba_downloader.bootstrap.region_profiles import (
-    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+from ba_downloader.bootstrap.region_gateways import (
+    DEFAULT_REGION_GATEWAY_REGISTRY,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import NeverCancelled
 from ba_downloader.infrastructure.regions.jp.runtime_assets import (
     JpEncryptedRuntimeExtractor,
@@ -22,25 +22,18 @@ from ba_downloader.infrastructure.regions.jp.runtime_assets import (
     locate_jp_runtime_payload,
 )
 from support import RecordingLogger
+from support.fixtures import build_execution_context
 
 PADDED_65537 = b"\x00" * 125 + b"\x01\x00\x01"
 TARA_MAGIC = 0x41524154
 
 
-def _build_context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
+def _build_context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="jp",
-        threads=1,
         version="1.70.436321",
-        raw_dir=str(tmp_path / "Raw"),
-        extract_dir=str(tmp_path / "Extracted"),
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
@@ -269,12 +262,17 @@ class RecordingRuntimeExtractor:
 
 
 def _write_jp_package_runtime(
-    context: RuntimeContext,
+    context: ExecutionContext,
     *,
     binary_name: str,
     binary_data: bytes,
 ) -> Path:
-    package_root = Path(context.temp_dir) / context.version / "Package" / "Extracted"
+    package_root = (
+        context.workspace.runtime_state
+        / context.require_resource_version()
+        / "Package"
+        / "Extracted"
+    )
     runtime_dir = package_root / "lib" / "arm64-v8a"
     runtime_dir.mkdir(parents=True)
     (runtime_dir / binary_name).write_bytes(binary_data)
@@ -361,9 +359,7 @@ def test_jp_mftl_extractor_never_reads_parent_as_one_bytes_object(
 
 
 def test_default_region_service_profile_uses_jp_runtime_preparer() -> None:
-    preparer = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
-        "jp"
-    ).runtime_asset_preparer_factory(
+    preparer = DEFAULT_REGION_GATEWAY_REGISTRY.resolve("jp").runtime.asset_preparer(
         http_client=object(),
         logger=RecordingLogger(),
         cancellation=NeverCancelled(),

@@ -3,19 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ba_downloader.domain.models.asset import AssetCollection
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_profile import (
     RegionSettingsPolicy,
     RegionWorkflowPolicy,
     SyncExtractionMode,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.catalog_metadata import CatalogMetadataPolicy
 
 
 class NoopCatalogMetadataPolicy:
     def on_catalog_loaded(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection,
     ) -> None:
         _ = context
@@ -23,8 +23,8 @@ class NoopCatalogMetadataPolicy:
 
     def resolve_existing_table_resources(
         self,
-        context: RuntimeContext,
-    ) -> tuple[RuntimeContext, AssetCollection | None]:
+        context: ExecutionContext,
+    ) -> tuple[ExecutionContext, AssetCollection | None]:
         return context, None
 
 

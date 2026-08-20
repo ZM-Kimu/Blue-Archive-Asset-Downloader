@@ -1,18 +1,21 @@
-from ba_downloader.bootstrap.region_profiles import (
-    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+from pathlib import Path
+
+from ba_downloader.bootstrap.region_gateways import (
+    DEFAULT_REGION_GATEWAY_REGISTRY,
     build_application_region_profile,
 )
 from ba_downloader.domain.models.asset import AssetCollection, RegionCapabilities
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.region_profile import SyncExtractionMode
-from ba_downloader.domain.models.runtime import RuntimeContext
+from support.fixtures import build_execution_context
 
 
 class DummyProvider:
     def get_capabilities(self) -> RegionCapabilities:
         return RegionCapabilities()
 
-    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
+    def load_catalog(self, context: ExecutionContext) -> RegionCatalogResult:
         return RegionCatalogResult(AssetCollection(), context)
 
 
@@ -28,37 +31,27 @@ class DummyLogger:
 
 
 class DummyTableMetadataStore:
-    def load(self, context: RuntimeContext) -> AssetCollection | None:
+    def load(self, context: ExecutionContext) -> AssetCollection | None:
         _ = context
         return None
 
-    def write(self, context: RuntimeContext, resources: AssetCollection) -> None:
+    def write(self, context: ExecutionContext, resources: AssetCollection) -> None:
         _ = (context, resources)
 
 
-def _context(region: str) -> RuntimeContext:
-    return RuntimeContext(
+def _context(region: str) -> ExecutionContext:
+    return build_execution_context(
+        Path.cwd(),
         region=region,  # type: ignore[arg-type]
-        threads=1,
         version="1.0.0",
-        raw_dir="RawData",
-        extract_dir="Extracted",
-        temp_dir="Temp",
-        resource_type=("bundle",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=".",
     )
 
 
 def _profile(region: str):
-    service_profile = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(region)  # type: ignore[arg-type]
+    service_profile = DEFAULT_REGION_GATEWAY_REGISTRY.resolve(region)  # type: ignore[arg-type]
     return build_application_region_profile(
         service_profile,
-        _context(region),
-        http_client=object(),
         logger=DummyLogger(),
         table_metadata_store=DummyTableMetadataStore(),
         provider=DummyProvider(),

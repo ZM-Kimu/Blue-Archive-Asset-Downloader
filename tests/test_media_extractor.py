@@ -6,30 +6,23 @@ from zipfile import ZipFile
 import pytest
 
 from ba_downloader.domain.exceptions import OperationCancelledError
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.media.exporter import MediaExtractor
+from support.fixtures import build_execution_context
 
 
-def _build_context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
+def _build_context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="jp",
-        threads=2,
         version="1.0.0",
-        raw_dir=str(tmp_path / "Raw"),
-        extract_dir=str(tmp_path / "Extracted"),
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("media",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
 def test_extract_zip_reports_member_progress(tmp_path: Path) -> None:
     context = _build_context(tmp_path)
-    media_dir = Path(context.raw_dir) / "Media"
+    media_dir = context.workspace.raw_media
     media_dir.mkdir(parents=True)
     zip_path = media_dir / "voice.zip"
     with ZipFile(zip_path, "w") as archive:
@@ -45,23 +38,23 @@ def test_extract_zip_reports_member_progress(tmp_path: Path) -> None:
 
     assert updates == ["1/2 members", "2/2 members"]
     assert (
-        Path(context.extract_dir) / "Media" / "voice" / "first.ogg"
+        context.workspace.extracted_media / "voice" / "first.ogg"
     ).read_bytes() == b"first"
     assert (
-        Path(context.extract_dir) / "Media" / "voice" / "second.ogg"
+        context.workspace.extracted_media / "voice" / "second.ogg"
     ).read_bytes() == b"second"
 
 
 def test_v3_extract_zip_publishes_only_complete_output(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(workspace_mode="v3")
-    media_dir = Path(context.raw_dir) / "media"
+    context = _build_context(tmp_path)
+    media_dir = context.workspace.raw_media
     media_dir.mkdir(parents=True)
     zip_path = media_dir / "voice.zip"
     with ZipFile(zip_path, "w") as archive:
         archive.writestr("first.ogg", b"first")
         archive.writestr("second.ogg", b"second")
 
-    output = Path(context.extract_dir) / "media" / "voice"
+    output = context.workspace.extracted_media / "voice"
     output.mkdir(parents=True)
     (output / "previous.ogg").write_bytes(b"previous")
     checks = iter((False, True))

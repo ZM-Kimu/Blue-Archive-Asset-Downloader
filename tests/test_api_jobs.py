@@ -6,16 +6,14 @@ from pathlib import Path
 from typing import Any
 
 from ba_downloader.api.jobs import JobManager
-from ba_downloader.application.operations import (
-    ApplicationOperation,
-    ApplicationOperationCommand,
-)
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.application.contracts import ApplicationCommand, AssetsExtractCommand
+from ba_downloader.domain.models.execution import ExecutionContext
+from support.fixtures import build_execution_context
 
 
 def successful_worker(
-    command: ApplicationOperationCommand,
-    context: RuntimeContext,
+    command: ApplicationCommand,
+    context: ExecutionContext,
     event_queue: Any,
     terminal_sender: Any,
     cancel_event: Any,
@@ -35,8 +33,8 @@ def successful_worker(
 
 
 def crashing_worker(
-    command: ApplicationOperationCommand,
-    context: RuntimeContext,
+    command: ApplicationCommand,
+    context: ExecutionContext,
     event_queue: Any,
     terminal_sender: Any,
     cancel_event: Any,
@@ -46,8 +44,8 @@ def crashing_worker(
 
 
 def cooperative_worker(
-    command: ApplicationOperationCommand,
-    context: RuntimeContext,
+    command: ApplicationCommand,
+    context: ExecutionContext,
     event_queue: Any,
     terminal_sender: Any,
     cancel_event: Any,
@@ -59,34 +57,24 @@ def cooperative_worker(
     terminal_sender.close()
 
 
-def _context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
+def _context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="cn",
-        threads=1,
         version="",
-        raw_dir=str(tmp_path / "raw"),
-        extract_dir=str(tmp_path / "extracted"),
-        temp_dir=str(tmp_path / "temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
-def _command(operation: ApplicationOperation) -> ApplicationOperationCommand:
-    return ApplicationOperationCommand(operation)
+def _command() -> ApplicationCommand:
+    return AssetsExtractCommand()
 
 
 def test_job_manager_executes_spawned_job(tmp_path: Path) -> None:
     manager = JobManager(process_target=successful_worker)
     manager.start()
     try:
-        job = manager.submit(
-            _command(ApplicationOperation.extract), _context(tmp_path), "context-1"
-        )
+        job = manager.submit(_command(), _context(tmp_path), "context-1")
         deadline = time.monotonic() + 10
         while manager.get(job.id).status not in {"succeeded", "failed"}:
             assert time.monotonic() < deadline
@@ -107,9 +95,7 @@ def test_job_manager_executes_spawned_job(tmp_path: Path) -> None:
 
 def test_queued_job_can_be_cancelled_before_start(tmp_path: Path) -> None:
     manager = JobManager(process_target=successful_worker)
-    job = manager.submit(
-        _command(ApplicationOperation.extract), _context(tmp_path), "context-1"
-    )
+    job = manager.submit(_command(), _context(tmp_path), "context-1")
 
     cancelled = manager.cancel(job.id)
 
@@ -118,14 +104,10 @@ def test_queued_job_can_be_cancelled_before_start(tmp_path: Path) -> None:
 
 def test_cancelled_job_releases_queue_capacity(tmp_path: Path) -> None:
     manager = JobManager(queue_limit=1, process_target=successful_worker)
-    first = manager.submit(
-        _command(ApplicationOperation.extract), _context(tmp_path), "context-1"
-    )
+    first = manager.submit(_command(), _context(tmp_path), "context-1")
 
     manager.cancel(first.id)
-    replacement = manager.submit(
-        _command(ApplicationOperation.extract), _context(tmp_path), "context-1"
-    )
+    replacement = manager.submit(_command(), _context(tmp_path), "context-1")
 
     assert replacement.status == "queued"
 
@@ -136,9 +118,7 @@ def test_job_manager_reports_worker_exit_without_terminal_message(
     manager = JobManager(process_target=crashing_worker)
     manager.start()
     try:
-        job = manager.submit(
-            _command(ApplicationOperation.extract), _context(tmp_path), "context-1"
-        )
+        job = manager.submit(_command(), _context(tmp_path), "context-1")
         deadline = time.monotonic() + 10
         while manager.get(job.id).status not in {"succeeded", "failed"}:
             assert time.monotonic() < deadline
@@ -160,9 +140,7 @@ def test_running_job_cancels_cooperatively_before_termination_timeout(
     manager = JobManager(process_target=cooperative_worker)
     manager.start()
     try:
-        job = manager.submit(
-            _command(ApplicationOperation.extract), _context(tmp_path), "context-1"
-        )
+        job = manager.submit(_command(), _context(tmp_path), "context-1")
         deadline = time.monotonic() + 10
         while manager.get(job.id).status != "running":
             assert time.monotonic() < deadline

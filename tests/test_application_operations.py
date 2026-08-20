@@ -5,54 +5,51 @@ from types import SimpleNamespace
 
 import pytest
 
-from ba_downloader.application.operations import (
-    ApplicationOperation,
-    ApplicationOperationCommand,
-    ApplicationOperationExecutor,
-    ApplicationOperationHandlerResult,
+from ba_downloader.application.contracts import (
+    AssetsExtractCommand,
+    CatalogRefreshCommand,
 )
 from ba_downloader.bootstrap.container import ExecutionScope
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import ArtifactCollector, NeverCancelled
+from support.fixtures import build_execution_context
 
 
-def _context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
+def _context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="cn",
-        threads=2,
         version="1.0.0",
-        raw_dir=str(tmp_path / "raw"),
-        extract_dir=str(tmp_path / "extracted"),
-        temp_dir=str(tmp_path / "temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
-def test_operation_executor_records_existing_output_artifacts(tmp_path: Path) -> None:
+def test_execution_scope_records_existing_output_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     context = _context(tmp_path)
-    Path(context.raw_dir).mkdir()
-    Path(context.extract_dir).mkdir()
+    context.workspace.raw.mkdir(parents=True)
+    context.workspace.extracted.mkdir(parents=True)
 
-    class Handler:
-        def execute(
-            self,
-            command: ApplicationOperationCommand,
-        ) -> ApplicationOperationHandlerResult:
-            assert command.operation is ApplicationOperation.extract
-            return ApplicationOperationHandlerResult(context)
+    class ExtractService:
+        @staticmethod
+        def run(_context: ExecutionContext, _options: object) -> object:
+            return SimpleNamespace(warnings=())
 
-    result = ApplicationOperationExecutor(
-        Handler(), NeverCancelled(), ArtifactCollector(), context
-    ).execute(ApplicationOperationCommand(ApplicationOperation.extract))
+    monkeypatch.setattr(
+        ExecutionScope, "extract_service", lambda _self: ExtractService()
+    )
+    with ExecutionScope(
+        context,
+        cancellation=NeverCancelled(),
+        artifacts=ArtifactCollector(),
+    ) as scope:
+        result = scope.execute(AssetsExtractCommand())
 
     assert result.context == context
     assert result.artifacts == (
-        ("extracted", str(Path(context.extract_dir).resolve())),
+        ("extracted", str(context.workspace.extracted.resolve())),
     )
 
 
@@ -89,11 +86,11 @@ def test_runtime_scope_closes_http_client_when_provider_construction_fails(
     with scope:
         with pytest.raises(RuntimeError, match="provider failed"):
             scope.execute(
-                ApplicationOperationCommand(ApplicationOperation.catalog_refresh),
+                CatalogRefreshCommand(),
             )
         with pytest.raises(RuntimeError, match="one operation only"):
             scope.execute(
-                ApplicationOperationCommand(ApplicationOperation.catalog_refresh),
+                CatalogRefreshCommand(),
             )
 
     assert RecordingHttpClient.close_calls == 1

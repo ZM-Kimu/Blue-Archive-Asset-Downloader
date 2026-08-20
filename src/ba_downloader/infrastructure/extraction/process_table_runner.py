@@ -11,7 +11,8 @@ from time import monotonic
 from typing import Any
 
 from ba_downloader.domain.exceptions import OperationCancelledError
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.database import DatabaseSourceIdentity
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import (
@@ -38,7 +39,9 @@ from ba_downloader.infrastructure.runtime.process_supervisor import (
     WorkerCommand,
 )
 
-TableProfileFactory = Callable[[RuntimeContext], TableExtractionProfile]
+TableProfileFactory = Callable[
+    [ExecutionContext, DatabaseSourceIdentity | None], TableExtractionProfile
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +78,7 @@ class QueueTableLogger(LoggerPort):
 
 def table_extraction_process_worker(
     queue: multiprocessing.queues.Queue[Any],
-    context: RuntimeContext,
+    context: ExecutionContext,
     events: multiprocessing.queues.Queue[TableExtractionEvent],
     table_profile_factory: TableProfileFactory = build_default_table_profile_for_context,
     stop_event: Any | None = None,
@@ -101,7 +104,7 @@ def table_extraction_process_worker(
             extractor = TableExtractor.from_context(
                 context,
                 logger,
-                table_profile=table_profile_factory(context),
+                table_profile=table_profile_factory(context, None),
             )
             extractor.extract_table(
                 table_file,
@@ -140,8 +143,9 @@ class ProcessTableExtractionRunner:
     def run(
         self,
         files: list[str],
-        context: RuntimeContext,
+        context: ExecutionContext,
         *,
+        concurrency: int,
         metadata_by_file: Mapping[str, Mapping[str, object]] | None = None,
     ) -> None:
         self.cancellation.raise_if_cancelled()
@@ -154,7 +158,7 @@ class ProcessTableExtractionRunner:
         events: multiprocessing.queues.Queue[TableExtractionEvent] = (
             process_context.Queue()
         )
-        process_count = self._process_count(context, len(files))
+        process_count = self._process_count(concurrency, len(files))
         for file_path in files:
             queue.put((file_path, dict((metadata_by_file or {}).get(file_path, {}))))
         for _ in range(process_count):
@@ -216,7 +220,7 @@ class ProcessTableExtractionRunner:
     def _build_supervisor(
         self,
         queue: multiprocessing.queues.Queue[Any],
-        context: RuntimeContext,
+        context: ExecutionContext,
         events: multiprocessing.queues.Queue[TableExtractionEvent],
         stop_event: Any,
         process_context: Any,
@@ -241,8 +245,8 @@ class ProcessTableExtractionRunner:
         )
 
     @staticmethod
-    def _process_count(context: RuntimeContext, file_count: int) -> int:
-        return min(max(context.threads, 1), file_count, os.cpu_count() or 1)
+    def _process_count(concurrency: int, file_count: int) -> int:
+        return min(max(concurrency, 1), file_count, os.cpu_count() or 1)
 
     def _monitor(
         self,

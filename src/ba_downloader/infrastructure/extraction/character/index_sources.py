@@ -22,25 +22,6 @@ class CharacterIndexSources:
     shop_recruit: list[dict[str, Any]]
     localize_gacha: list[dict[str, Any]]
 
-    def as_tuple(
-        self,
-    ) -> tuple[
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-    ]:
-        return (
-            self.scenario_db,
-            self.char_profile,
-            self.char_excel,
-            self.costume_excel,
-            self.shop_recruit,
-            self.localize_gacha,
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class DatabaseIndexSourceSpec:

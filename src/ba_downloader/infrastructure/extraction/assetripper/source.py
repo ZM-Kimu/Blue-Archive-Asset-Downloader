@@ -8,10 +8,15 @@ from uuid import uuid4
 from zipfile import BadZipFile, ZipFile
 
 from ba_downloader.domain.exceptions import OperationCancelledError
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.infrastructure.files.atomic import (
+    publish_staged_directory,
+    write_json_atomic,
+)
+from ba_downloader.infrastructure.files.checksum import calculate_sha256
 
 ASSETRIPPER_VERSION = "1.3.14"
 ASSETRIPPER_COMMIT = "7534ed93857d1ef4464bab6e3c7a13777529f94d"
@@ -55,7 +60,7 @@ class AssetRipperSourceResolver:
         self._archive_sha256 = archive_sha256.lower()
         self._commit = commit
 
-    def resolve(self, context: RuntimeContext) -> Path:
+    def resolve(self, context: ExecutionContext) -> Path:
         self._cancellation.raise_if_cancelled()
         submodule_root = self._repository_root / "third_party" / "AssetRipper"
         if self._is_valid_source(submodule_root):
@@ -83,7 +88,7 @@ class AssetRipperSourceResolver:
             f"retry the fallback download. Details: {last_error}"
         ) from last_error
 
-    def resolve_patched(self, context: RuntimeContext) -> Path:
+    def resolve_patched(self, context: ExecutionContext) -> Path:
         source_root = self.resolve(context)
         overlay_root = Path(__file__).with_name("overlay")
         manifest_path = overlay_root / "manifest.json"
@@ -137,13 +142,8 @@ class AssetRipperSourceResolver:
         try:
             shutil.copytree(source_root, staging)
             self._apply_overlay(staging, overlay_root, files)
-            self._publish_directory(staging, cache_root)
-            marker_temporary = marker.with_name(f".{marker.name}.{uuid4().hex}.tmp")
-            marker_temporary.write_text(
-                json.dumps(marker_payload, indent=2, sort_keys=True) + "\n",
-                encoding="utf8",
-            )
-            marker_temporary.replace(marker)
+            publish_staged_directory(staging, cache_root)
+            write_json_atomic(marker, marker_payload, indent=2, sort_keys=True)
         except (OSError, ValueError, AssetRipperSourceOverlayError):
             shutil.rmtree(staging, ignore_errors=True)
             if not marker.is_file():
@@ -197,14 +197,14 @@ class AssetRipperSourceResolver:
                     f"AssetRipper source overlay target is missing: {relative_path}"
                 )
             if expected_source_hash is not None:
-                actual_source_hash = self._sha256(target)
+                actual_source_hash = calculate_sha256(target)
                 if actual_source_hash != expected_source_hash.lower():
                     raise AssetRipperSourceOverlayError(
                         "AssetRipper source changed; the source overlay no longer "
                         f"matches {relative_path}. Expected {expected_source_hash}, "
                         f"got {actual_source_hash}."
                     )
-            actual_replacement_hash = self._sha256(overlay_file)
+            actual_replacement_hash = calculate_sha256(overlay_file)
             if actual_replacement_hash != expected_replacement_hash.lower():
                 raise AssetRipperSourceOverlayError(
                     f"AssetRipper source overlay replacement is corrupted: {replacement}"
@@ -214,12 +214,9 @@ class AssetRipperSourceResolver:
             shutil.copyfile(overlay_file, temporary)
             temporary.replace(target)
 
-    def _overlay_cache_root(self, context: RuntimeContext) -> Path:
-        return (
-            Path(context.work_dir)
-            / ".ba-downloader"
-            / "tools"
-            / f"AssetRipper-{self._commit[:12]}-overlay-{ASSETRIPPER_OVERLAY_VERSION}"
+    def _overlay_cache_root(self, context: ExecutionContext) -> Path:
+        return context.workspace.tools_cache / (
+            f"AssetRipper-{self._commit[:12]}-overlay-{ASSETRIPPER_OVERLAY_VERSION}"
         )
 
     @staticmethod
@@ -245,16 +242,6 @@ class AssetRipperSourceResolver:
             ) from exc
         return hashlib.sha256(content).hexdigest()
 
-    @staticmethod
-    def _publish_directory(staging: Path, destination: Path) -> None:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.rmtree(destination, ignore_errors=True)
-        try:
-            shutil.move(staging, destination)
-        except BaseException:
-            shutil.rmtree(destination, ignore_errors=True)
-            raise
-
     def _download_to_cache(self, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         archive = destination.parent / f"AssetRipper-{self._commit}.zip"
@@ -264,7 +251,10 @@ class AssetRipperSourceResolver:
         try:
             self._http_client.download_to_file(self._archive_url, str(archive))
             self._cancellation.raise_if_cancelled()
-            actual_hash = self._sha256(archive)
+            actual_hash = calculate_sha256(
+                archive,
+                on_chunk=self._cancellation.raise_if_cancelled,
+            )
             if actual_hash != self._archive_sha256:
                 raise AssetRipperSourceError(
                     "AssetRipper source archive checksum mismatch: "
@@ -284,7 +274,7 @@ class AssetRipperSourceResolver:
                 raise AssetRipperSourceError(
                     "Downloaded AssetRipper archive is missing required projects."
                 )
-            self._publish_directory(source_root, destination)
+            publish_staged_directory(source_root, destination)
         finally:
             archive.unlink(missing_ok=True)
             shutil.rmtree(staging, ignore_errors=True)
@@ -328,18 +318,5 @@ class AssetRipperSourceResolver:
             / "AssetRipper.Export.UnityProjects.csproj"
         ).is_file()
 
-    def _cache_root(self, context: RuntimeContext) -> Path:
-        return (
-            Path(context.work_dir)
-            / ".ba-downloader"
-            / "tools"
-            / f"AssetRipper-{self._commit[:12]}"
-        )
-
-    @staticmethod
-    def _sha256(path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
+    def _cache_root(self, context: ExecutionContext) -> Path:
+        return context.workspace.tools_cache / f"AssetRipper-{self._commit[:12]}"

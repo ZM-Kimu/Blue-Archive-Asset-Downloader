@@ -170,10 +170,6 @@ def i32(value: int) -> int:
     return struct.unpack("<i", struct.pack("<I", value))[0]
 
 
-def i32_to_u32(value: int) -> int:
-    return value & 0xFFFFFFFF
-
-
 def read_section(buf: bytes, header_off: int) -> Section:
     return Section(u32(buf, header_off), u32(buf, header_off + 4))
 

@@ -3,9 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from uuid import uuid4
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
     BundleArchiveScan,
@@ -13,14 +12,13 @@ from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     SerializedFileScan,
     StreamedResourceScan,
 )
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
 
 SCAN_CACHE_SCHEMA_VERSION = 2
 
 
-def dependency_scan_cache_root(context: RuntimeContext) -> Path:
-    temp_root = Path(context.temp_dir)
-    state_root = temp_root.parent if context.workspace_mode == "v3" else temp_root
-    return state_root / "cache" / "assetripper" / "dependency-scans"
+def dependency_scan_cache_root(context: ExecutionContext) -> Path:
+    return context.workspace.cache_state / "assetripper" / "dependency-scans"
 
 
 class BundleDependencyScanCache:
@@ -42,7 +40,7 @@ class BundleDependencyScanCache:
             if (
                 not isinstance(payload, dict)
                 or payload.get("schema_version") != SCAN_CACHE_SCHEMA_VERSION
-                or not self._tool_keys_are_compatible(payload.get("tool_key"), tool_key)
+                or payload.get("tool_key") != tool_key
                 or payload.get("identity") != self._identity(archive)
             ):
                 return None
@@ -56,23 +54,6 @@ class BundleDependencyScanCache:
         except (KeyError, OSError, TypeError, ValueError):
             return None
 
-    @staticmethod
-    def _tool_keys_are_compatible(cached: object, configured: str) -> bool:
-        if cached == configured:
-            return True
-        if not isinstance(cached, str):
-            return False
-        cached_lines = cached.splitlines()
-        configured_lines = configured.splitlines()
-        return (
-            len(cached_lines) >= 2
-            and len(configured_lines) == 2
-            and cached_lines[0] == configured_lines[0]
-            and configured_lines[1].startswith("scanner-version=")
-            and any(line.startswith("overlay-version=") for line in cached_lines[1:])
-            and any(line.startswith("wrapper-version=") for line in cached_lines[1:])
-        )
-
     def store(
         self,
         archive: BundleArchiveInput,
@@ -83,26 +64,17 @@ class BundleDependencyScanCache:
         if scan.archive_id != archive.archive_id:
             raise ValueError("Dependency scan result does not match bundle input.")
         path = self.path_for(archive)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-        try:
-            temporary.write_text(
-                json.dumps(
-                    {
-                        "schema_version": SCAN_CACHE_SCHEMA_VERSION,
-                        "tool_key": tool_key,
-                        "identity": self._identity(archive),
-                        "scan": self._write_scan(scan),
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf8",
-            )
-            temporary.replace(path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        write_json_atomic(
+            path,
+            {
+                "schema_version": SCAN_CACHE_SCHEMA_VERSION,
+                "tool_key": tool_key,
+                "identity": self._identity(archive),
+                "scan": self._write_scan(scan),
+            },
+            indent=2,
+            sort_keys=True,
+        )
 
     @staticmethod
     def _identity(archive: BundleArchiveInput) -> dict[str, object]:

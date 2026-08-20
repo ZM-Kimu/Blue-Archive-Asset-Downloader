@@ -199,15 +199,6 @@ class BundleExportBatch:
         )
 
     @property
-    def target_archive_ids(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                {entry.archive.archive_id for entry in self.target_entries},
-                key=str.casefold,
-            )
-        )
-
-    @property
     def total_bytes(self) -> int:
         return sum(entry.size for entry in self.entries)
 

@@ -5,13 +5,14 @@ from typing import Any
 
 import pytest
 
+from ba_downloader.application.contracts import AssetOperationOptions
 from ba_downloader.application.profiles import RegionProfile
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
 from ba_downloader.application.use_cases.schema_preparation import (
     SchemaPreparationService,
 )
-from ba_downloader.bootstrap.region_profiles import (
-    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+from ba_downloader.bootstrap.region_gateways import (
+    DEFAULT_REGION_GATEWAY_REGISTRY,
     build_application_region_profile,
 )
 from ba_downloader.domain.models.asset import (
@@ -19,14 +20,18 @@ from ba_downloader.domain.models.asset import (
     AssetType,
     RegionCapabilities,
 )
+from ba_downloader.domain.models.asset_filter import AssetFilter
+from ba_downloader.domain.models.asset_type_selection import ResourceTypeSelection
+from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.extraction import ExtractionReport
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.infrastructure.extraction.table.prerequisites import (
     TableExtractionPrerequisite,
 )
 from support import DummyCharacterIndexBuilder, RecordingLogger, StaticProvider
+from support.fixtures import build_execution_context
 
 
 class RecordingExtractionWorkflow:
@@ -43,30 +48,36 @@ class RecordingExtractionWorkflow:
 
     def extract_tables(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None = None,
+        *,
+        concurrency: int,
     ) -> ExtractionReport:
-        _ = context
+        _ = (context, concurrency)
         self.calls.append("extract_tables")
         self.resource_calls.append(self._resource_paths(resources))
         return ExtractionReport(self.warnings)
 
     def extract_bundles(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None = None,
+        *,
+        concurrency: int,
     ) -> ExtractionReport:
-        _ = context
+        _ = (context, concurrency)
         self.calls.append("extract_bundles")
         self.resource_calls.append(self._resource_paths(resources))
         return ExtractionReport(self.warnings)
 
     def extract_media(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None = None,
+        *,
+        concurrency: int,
     ) -> ExtractionReport:
-        _ = context
+        _ = (context, concurrency)
         self.calls.append("extract_media")
         self.resource_calls.append(self._resource_paths(resources))
         return ExtractionReport(self.warnings)
@@ -75,12 +86,12 @@ class RecordingExtractionWorkflow:
 class FailingProvider:
     def __init__(self, error: Exception) -> None:
         self.error = error
-        self.calls: list[RuntimeContext] = []
+        self.calls: list[ExecutionContext] = []
 
     def get_capabilities(self) -> RegionCapabilities:
         return RegionCapabilities()
 
-    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
+    def load_catalog(self, context: ExecutionContext) -> RegionCatalogResult:
         self.calls.append(context)
         raise self.error
 
@@ -88,14 +99,14 @@ class FailingProvider:
 class RecordingTableMetadataStore:
     def __init__(self, loaded: AssetCollection | None = None) -> None:
         self.loaded = loaded
-        self.load_calls: list[RuntimeContext] = []
-        self.write_calls: list[tuple[RuntimeContext, AssetCollection]] = []
+        self.load_calls: list[ExecutionContext] = []
+        self.write_calls: list[tuple[ExecutionContext, AssetCollection]] = []
 
-    def load(self, context: RuntimeContext) -> AssetCollection | None:
+    def load(self, context: ExecutionContext) -> AssetCollection | None:
         self.load_calls.append(context)
         return self.loaded
 
-    def write(self, context: RuntimeContext, resources: AssetCollection) -> None:
+    def write(self, context: ExecutionContext, resources: AssetCollection) -> None:
         self.write_calls.append((context, resources))
 
 
@@ -103,11 +114,11 @@ class RecordingRuntimeAssetPreparer:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
 
-    def prepare(self, context: RuntimeContext) -> PreparedRuntimeAssets:
+    def prepare(self, context: ExecutionContext) -> PreparedRuntimeAssets:
         self.calls.append("prepare")
-        root = Path(context.temp_dir) / "test" / "Runtime"
+        root = context.workspace.temp_state / "test" / "Runtime"
         return PreparedRuntimeAssets(
-            version=context.version or "test",
+            version=context.resource_version or "test",
             root_dir=root,
             binary_path=root / "libil2cpp.so",
             metadata_path=root / "global-metadata.dat",
@@ -128,63 +139,68 @@ class RecordingSchemaWorkflow:
 
     def dump(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         runtime_assets: PreparedRuntimeAssets,
     ) -> None:
         _ = runtime_assets
         self.calls.append("dump")
         if self.fail_on == "dump" and self.error is not None:
             raise self.error
-        dump_dir = Path(context.extract_dir) / "Dumps"
+        dump_dir = context.workspace.dumps
         dump_dir.mkdir(parents=True, exist_ok=True)
         (dump_dir / "dump.cs").write_text("// generated", encoding="utf8")
 
-    def compile(self, context: RuntimeContext) -> None:
+    def compile(self, context: ExecutionContext) -> None:
         self.calls.append("compile")
         if self.fail_on == "compile" and self.error is not None:
             raise self.error
         _create_table_schema_directories(context)
 
 
-def _build_context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
+def _build_context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="jp",
-        threads=1,
         version="",
-        raw_dir=str(tmp_path / "JP_Windows_RawData"),
-        extract_dir=str(tmp_path / "JP_Windows_Extracted"),
-        temp_dir=str(tmp_path / "JP_Windows_Temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
         platform="windows",
     )
 
 
-def _create_table_folder(context: RuntimeContext) -> None:
-    table_dir = Path(context.raw_dir) / "Table"
+def _options(
+    *resources: str,
+    filters: tuple[str, ...] = (),
+) -> AssetOperationOptions:
+    return AssetOperationOptions(
+        concurrency=1,
+        resources=ResourceTypeSelection.from_values(resources),
+        asset_filter=AssetFilter.parse(filters),
+    )
+
+
+def _create_table_folder(context: ExecutionContext) -> None:
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     (table_dir / "Excel.zip").write_bytes(b"placeholder")
 
 
-def _create_table_schema_directories(context: RuntimeContext) -> None:
-    for directory in ("FlatBufferData", "MemoryPackData"):
-        schema_dir = Path(context.extract_dir) / directory
+def _create_table_schema_directories(context: ExecutionContext) -> None:
+    for schema_dir in (
+        context.workspace.flatbuffer_schemas,
+        context.workspace.memorypack_schemas,
+    ):
         schema_dir.mkdir(parents=True, exist_ok=True)
         (schema_dir / "__init__.py").write_text("", encoding="utf8")
         (schema_dir / "_registry.py").write_text("", encoding="utf8")
 
 
-def _create_dump_cs(context: RuntimeContext) -> None:
-    dump_dir = Path(context.extract_dir) / "Dumps"
+def _create_dump_cs(context: ExecutionContext) -> None:
+    dump_dir = context.workspace.dumps
     dump_dir.mkdir(parents=True, exist_ok=True)
     (dump_dir / "dump.cs").write_text("// generated", encoding="utf8")
 
 
-def _build_filter_catalog(context: RuntimeContext) -> RegionCatalogResult:
+def _build_filter_catalog(context: ExecutionContext) -> RegionCatalogResult:
     resources = AssetCollection()
     resources.add(
         "https://example.invalid/Bundle/shiroko.bundle",
@@ -230,7 +246,7 @@ def _build_table_metadata_resources() -> AssetCollection:
     return resources
 
 
-def _build_table_catalog(context: RuntimeContext) -> RegionCatalogResult:
+def _build_table_catalog(context: ExecutionContext) -> RegionCatalogResult:
     resources = _build_table_metadata_resources()
     resources.add(
         "https://example.invalid/Bundle/ignored.bundle",
@@ -244,22 +260,20 @@ def _build_table_catalog(context: RuntimeContext) -> RegionCatalogResult:
 
 
 def _build_profile(
-    context: RuntimeContext,
+    context: ExecutionContext,
     provider: Any,
     logger: RecordingLogger,
     metadata_store: RecordingTableMetadataStore | None = None,
 ) -> RegionProfile:
     return build_application_region_profile(
-        DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(context.region),
-        context,
-        http_client=object(),
+        DEFAULT_REGION_GATEWAY_REGISTRY.resolve(context.region),
         logger=logger,
         table_metadata_store=metadata_store or RecordingTableMetadataStore(),
         provider=provider,
     )
 
 
-def _build_noop_profile(context: RuntimeContext) -> RegionProfile:
+def _build_noop_profile(context: ExecutionContext) -> RegionProfile:
     return _build_profile(
         context,
         StaticProvider(RegionCatalogResult(AssetCollection(), context)),
@@ -267,14 +281,14 @@ def _build_noop_profile(context: RuntimeContext) -> RegionProfile:
     )
 
 
-def _create_existing_bundle(context: RuntimeContext, name: str) -> None:
-    bundle_dir = Path(context.raw_dir) / "Bundle"
+def _create_existing_bundle(context: ExecutionContext, name: str) -> None:
+    bundle_dir = context.workspace.raw_bundles
     bundle_dir.mkdir(parents=True, exist_ok=True)
     (bundle_dir / name).write_bytes(b"bundle")
 
 
-def _create_existing_table(context: RuntimeContext, name: str) -> None:
-    table_dir = Path(context.raw_dir) / "Table"
+def _create_existing_table(context: ExecutionContext, name: str) -> None:
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     (table_dir / name).write_bytes(b"table")
 
@@ -309,7 +323,7 @@ def test_extract_service_skips_bootstrap_when_flatbufferdata_exists(
         workflow_profile=_build_noop_profile(context),
     )
 
-    service.run(context, _build_table_metadata_resources())
+    service.run(context, _options("table"), _build_table_metadata_resources())
 
     assert calls == []
     assert extraction_workflow.calls == ["extract_tables"]
@@ -329,11 +343,11 @@ def test_extract_service_compiles_when_dump_cs_exists_but_flatbufferdata_is_miss
         workflow_profile=_build_noop_profile(context),
     )
 
-    service.run(context, _build_table_metadata_resources())
+    service.run(context, _options("table"), _build_table_metadata_resources())
 
     assert calls == ["compile"]
     assert extraction_workflow.calls == ["extract_tables"]
-    assert (Path(context.extract_dir) / "FlatBufferData" / "_registry.py").is_file()
+    assert (context.workspace.flatbuffer_schemas / "_registry.py").is_file()
 
 
 def test_extract_service_bootstraps_when_dump_cs_and_flatbufferdata_are_missing(
@@ -349,12 +363,12 @@ def test_extract_service_bootstraps_when_dump_cs_and_flatbufferdata_are_missing(
         workflow_profile=_build_noop_profile(context),
     )
 
-    service.run(context, _build_table_metadata_resources())
+    service.run(context, _options("table"), _build_table_metadata_resources())
 
     assert calls == ["prepare", "dump", "compile"]
     assert extraction_workflow.calls == ["extract_tables"]
-    assert (Path(context.extract_dir) / "Dumps" / "dump.cs").is_file()
-    assert (Path(context.extract_dir) / "FlatBufferData" / "__init__.py").is_file()
+    assert (context.workspace.dumps / "dump.cs").is_file()
+    assert (context.workspace.flatbuffer_schemas / "__init__.py").is_file()
 
 
 @pytest.mark.parametrize(
@@ -396,15 +410,15 @@ def test_extract_service_translates_jp_bootstrap_failures_to_lookup_error(
     with pytest.raises(
         LookupError, match="JP table extraction prerequisites were missing"
     ) as exc_info:
-        service.run(context, _build_table_metadata_resources())
+        service.run(context, _options("table"), _build_table_metadata_resources())
 
     message = str(exc_info.value)
     if fail_on == "dump":
-        assert context.temp_dir in message
+        assert str(context.workspace.temp_state) in message
         assert "global-metadata.dat" in message
         assert "GameAssembly.dll" in message
     else:
-        assert context.extract_dir in message
+        assert str(context.workspace.extracted) in message
 
 
 def test_extract_service_does_not_bootstrap_when_jp_table_folder_is_missing(
@@ -419,7 +433,7 @@ def test_extract_service_does_not_bootstrap_when_jp_table_folder_is_missing(
         workflow_profile=_build_noop_profile(context),
     )
 
-    service.run(context)
+    service.run(context, _options("table"))
 
     assert calls == []
     assert extraction_workflow.calls == []
@@ -428,7 +442,7 @@ def test_extract_service_does_not_bootstrap_when_jp_table_folder_is_missing(
 def test_extract_service_plain_jp_table_uses_manifest_metadata_resources(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(version="1.70.436321")
+    context = _build_context(tmp_path).resolve_resource_version("1.70.436321")
     _create_existing_table(context, "TablePatchPack_GroundStage_1.zip")
     extraction_workflow = RecordingExtractionWorkflow()
     metadata_store = RecordingTableMetadataStore(_build_table_metadata_resources())
@@ -439,7 +453,7 @@ def test_extract_service_plain_jp_table_uses_manifest_metadata_resources(
         workflow_profile=_build_profile(context, provider, logger, metadata_store),
     )
 
-    service.run(context)
+    service.run(context, _options("table"))
 
     assert metadata_store.load_calls == [context]
     assert extraction_workflow.calls == ["extract_tables"]
@@ -451,7 +465,7 @@ def test_extract_service_plain_jp_table_uses_manifest_metadata_resources(
 def test_extract_service_plain_jp_table_rebuilds_missing_manifest_from_catalog(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(version="1.70.436321")
+    context = _build_context(tmp_path).resolve_resource_version("1.70.436321")
     _create_existing_table(context, "TablePatchPack_GroundStage_1.zip")
     extraction_workflow = RecordingExtractionWorkflow()
     metadata_store = RecordingTableMetadataStore()
@@ -464,7 +478,7 @@ def test_extract_service_plain_jp_table_rebuilds_missing_manifest_from_catalog(
         workflow_profile=_build_profile(context, provider, logger, metadata_store),
     )
 
-    service.run(context)
+    service.run(context, _options("table"))
 
     assert provider.calls == [context]
     assert metadata_store.write_calls == [(context, provider.result.resources)]
@@ -477,7 +491,7 @@ def test_extract_service_plain_jp_table_rebuilds_missing_manifest_from_catalog(
 def test_extract_service_plain_jp_table_requires_manifest_or_catalog_metadata(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(version="1.70.436321")
+    context = _build_context(tmp_path).resolve_resource_version("1.70.436321")
     _create_existing_table(context, "Excel.zip")
     extraction_workflow = RecordingExtractionWorkflow()
     logger = RecordingLogger()
@@ -494,7 +508,7 @@ def test_extract_service_plain_jp_table_requires_manifest_or_catalog_metadata(
         LookupError,
         match="JP table metadata manifest is missing or stale",
     ):
-        service.run(context)
+        service.run(context, _options("table"))
 
     assert provider.calls == [context]
     assert extraction_workflow.calls == []
@@ -503,10 +517,7 @@ def test_extract_service_plain_jp_table_requires_manifest_or_catalog_metadata(
 def test_extract_service_search_extracts_only_existing_filtered_resources(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(
-        resource_type=("bundle",),
-        search=("Shiroko",),
-    )
+    context = _build_context(tmp_path)
     _create_existing_bundle(context, "Shiroko.bundle")
     _create_existing_bundle(context, "Other.bundle")
     extraction_workflow = RecordingExtractionWorkflow()
@@ -520,7 +531,7 @@ def test_extract_service_search_extracts_only_existing_filtered_resources(
         workflow_profile=_build_profile(context, provider, logger),
     )
 
-    service.run(context)
+    service.run(context, _options("bundle", filters=("path~Shiroko",)))
 
     assert extraction_workflow.calls == ["extract_bundles"]
     assert extraction_workflow.resource_calls == [["Bundle/Shiroko.bundle"]]
@@ -529,12 +540,20 @@ def test_extract_service_search_extracts_only_existing_filtered_resources(
 def test_extract_service_advanced_search_filters_existing_resources(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(
-        resource_type=("bundle",),
-        advanced_search=("シロコ",),
-    )
+    context = _build_context(tmp_path)
     _create_existing_bundle(context, "Shiroko.bundle")
-    character_index_builder = DummyCharacterIndexBuilder(search_results=["Shiroko"])
+    character_index_builder = DummyCharacterIndexBuilder(
+        index=CharacterIndex(
+            "1.70.436321",
+            [
+                CharacterIndexEntry(
+                    10000,
+                    names=["シロコ"],
+                    file_aliases={"Shiroko"},
+                )
+            ],
+        )
+    )
     extraction_workflow = RecordingExtractionWorkflow()
     provider = StaticProvider(_build_filter_catalog(context))
     logger = RecordingLogger()
@@ -546,9 +565,9 @@ def test_extract_service_advanced_search_filters_existing_resources(
         workflow_profile=_build_profile(context, provider, logger),
     )
 
-    service.run(context)
+    service.run(context, _options("bundle", filters=("name~シロコ",)))
 
-    assert character_index_builder.search_calls == [["シロコ"]]
+    assert character_index_builder.verify_calls == 1
     assert extraction_workflow.calls == ["extract_bundles"]
     assert extraction_workflow.resource_calls == [["Bundle/Shiroko.bundle"]]
 
@@ -556,11 +575,7 @@ def test_extract_service_advanced_search_filters_existing_resources(
 def test_extract_service_advanced_search_requires_current_index_file(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(
-        version="1.70.436321",
-        resource_type=("bundle",),
-        advanced_search=("シロコ",),
-    )
+    context = _build_context(tmp_path).resolve_resource_version("1.70.436321")
     character_index_builder = DummyCharacterIndexBuilder(index_file_valid=False)
     extraction_workflow = RecordingExtractionWorkflow()
     provider = StaticProvider(_build_filter_catalog(context))
@@ -574,24 +589,25 @@ def test_extract_service_advanced_search_requires_current_index_file(
     )
 
     with pytest.raises(LookupError) as exc_info:
-        service.run(context)
+        service.run(context, _options("bundle", filters=("name~シロコ",)))
 
     message = str(exc_info.value)
     assert "Character index file is missing or does not match" in message
     assert "ba-downloader index build --region jp`" in message
     assert "ba-downloader assets sync --region jp --filter name~<keyword>`" in message
     assert "--version" not in message
-    assert character_index_builder.search_calls == []
+    assert character_index_builder.verify_calls == 1
     assert extraction_workflow.calls == []
 
 
 def test_extract_service_advanced_search_respects_region_capabilities(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(
+    context = build_execution_context(
+        tmp_path,
         region="cn",
-        resource_type=("bundle",),
-        advanced_search=("シロコ",),
+        platform="android",
+        version="1.0.0",
     )
     catalog = _build_filter_catalog(context)
     provider = StaticProvider(
@@ -615,13 +631,13 @@ def test_extract_service_advanced_search_respects_region_capabilities(
         LookupError,
         match="Advanced search is not supported for region 'cn'",
     ):
-        service.run(context)
+        service.run(context, _options("bundle", filters=("name~シロコ",)))
 
     assert extraction_workflow.calls == []
 
 
 def test_extract_service_returns_combined_extraction_warnings(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(resource_type=("bundle", "media"))
+    context = _build_context(tmp_path)
     warnings = (
         "[BUNDLE_BATCH_FAILED] batch-1 failed",
         "[BUNDLE_EXTRACTION_PARTIAL] partial output",
@@ -632,7 +648,7 @@ def test_extract_service_returns_combined_extraction_warnings(tmp_path: Path) ->
         workflow_profile=_build_noop_profile(context),
     )
 
-    report = service.run(context)
+    report = service.run(context, _options("bundle", "media"))
 
     assert extraction_workflow.calls == ["extract_bundles", "extract_media"]
     assert report.warnings == warnings + warnings

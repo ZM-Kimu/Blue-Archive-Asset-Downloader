@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from ba_downloader.domain.models.asset import BootstrapSession, CatalogSource
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_catalog import DecodedJPCatalog
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.schema.memorypack.cursor import MemoryPackCursor
 from ba_downloader.infrastructure.schema.memorypack.reader import (
     MemoryPackReader,
@@ -54,7 +54,7 @@ class JPCatalogDecoder:
         cls,
         session: BootstrapSession,
         sources: list[CatalogSource],
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> DecodedJPCatalog:
         _ = session
         memorypack_registry: MemoryPackSchemaRegistry | None = None
@@ -105,9 +105,9 @@ class JPCatalogDecoder:
     @classmethod
     def __load_memorypack_registry(
         cls,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> MemoryPackSchemaRegistry | None:
-        memorypack_data_dir = Path(context.extract_dir) / "MemoryPackData"
+        memorypack_data_dir = Path(context.workspace.extracted) / "MemoryPackData"
         if not (
             memorypack_data_dir.is_dir()
             and (memorypack_data_dir / "__init__.py").is_file()

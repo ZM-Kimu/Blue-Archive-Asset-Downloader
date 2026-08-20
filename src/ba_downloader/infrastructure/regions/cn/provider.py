@@ -11,8 +11,8 @@ from ba_downloader.domain.models.asset import (
     AssetType,
     RegionCapabilities,
 )
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort, get_header
@@ -29,7 +29,6 @@ from ba_downloader.infrastructure.regions.common import (
     build_region_catalog_result,
     coerce_int,
     join_catalog_url,
-    warn_if_platform_ignored,
 )
 from ba_downloader.infrastructure.runtime import RuntimeSnapshotStore
 
@@ -56,25 +55,19 @@ class CNRegionProvider:
     def get_capabilities(self) -> RegionCapabilities:
         return self.CAPABILITIES
 
-    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
-        if context.version:
+    def load_catalog(self, context: ExecutionContext) -> RegionCatalogResult:
+        if context.resource_version:
             self.logger.warn(
                 "Specifying a version is not allowed with CNRegionProvider."
             )
-        warn_if_platform_ignored(context, self.logger)
-
         self.logger.info("Automatically fetching latest version...")
         version = self.get_latest_version()
-        resolved_context = context.with_updates(version=version)
+        resolved_context = context.resolve_resource_version(version)
         self.logger.info(f"Current resource version: {version}")
 
         self.logger.info("Pulling catalog...")
         resources = self.get_resource_manifest(self.get_server_info(resolved_context))
-        if (
-            "all" in resolved_context.resource_type
-            or "media" in resolved_context.resource_type
-        ):
-            self._append_apk_only_media_assets(resources)
+        self._append_apk_only_media_assets(resources)
         return build_region_catalog_result(
             self.logger,
             resources=resources,
@@ -213,12 +206,12 @@ class CNRegionProvider:
         )
         return True
 
-    def get_server_info(self, context: RuntimeContext) -> dict[str, object]:
+    def get_server_info(self, context: ExecutionContext) -> dict[str, object]:
         response = self.http_client.request(
             "GET",
             self.urls["info"],
             headers={
-                "APP-VER": context.version,
+                "APP-VER": context.require_resource_version(),
                 "PLATFORM-ID": "1",
                 "CHANNEL-ID": "2",
             },
@@ -313,13 +306,13 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
             cancellation=self.cancellation
         )
 
-    def prepare(self, context: RuntimeContext) -> PreparedRuntimeAssets:
+    def prepare(self, context: ExecutionContext) -> PreparedRuntimeAssets:
         self.cancellation.raise_if_cancelled()
-        if not context.version:
+        if not context.resource_version:
             raise ValueError(
                 "CN runtime preparation requires a resolved release version."
             )
-        if prepared := self.snapshot_store.load(context, context.version):
+        if prepared := self.snapshot_store.load(context, context.resource_version):
             return prepared
 
         self.logger.info("Preparing CN runtime assets from APK central directory...")
@@ -338,7 +331,7 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
         )
         with self.snapshot_store.staging_runtime(
             context,
-            context.version,
+            context.resource_version,
         ) as runtime_dir:
             metadata_path = runtime_dir / self.METADATA_NAME
             binary_path = runtime_dir / self.BINARY_NAME
@@ -371,7 +364,7 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
 
             return self.snapshot_store.publish(
                 context,
-                context.version,
+                context.resource_version,
                 runtime_dir,
                 binary_name=self.BINARY_NAME,
                 metadata_name=self.METADATA_NAME,

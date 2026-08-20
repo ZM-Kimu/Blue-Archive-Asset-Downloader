@@ -7,9 +7,8 @@ from os import path
 from pathlib import Path
 from typing import Any
 
-from ba_downloader.domain.models.asset import AssetType
 from ba_downloader.domain.models.database import DBTable
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.table.archives import TableArchiveRouter
 from ba_downloader.infrastructure.extraction.table.codecs import (
@@ -41,12 +40,6 @@ from ba_downloader.infrastructure.extraction.table.raw_archives import (
 )
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
 from ba_downloader.infrastructure.schema.snapshots import schema_state_root
-from ba_downloader.infrastructure.storage.workspace_paths import (
-    extracted_dumps_root,
-    extracted_schema_root,
-    extracted_type_root,
-    raw_type_root,
-)
 
 __all__ = [
     "FlatBufferExportError",
@@ -69,7 +62,7 @@ class TableExtractor:
         logger: LoggerPort | None = None,
         memorypack_data_dir: str | None = None,
         memorypack_formatter_path: str | None = None,
-        context: RuntimeContext | None = None,
+        context: ExecutionContext | None = None,
         database_path_resolver: DatabasePathResolver | None = None,
         table_profile: TableExtractionProfile | None = None,
         schema_cache_identity: str | None = None,
@@ -79,11 +72,11 @@ class TableExtractor:
         self.extract_folder = extract_folder
         self.flatbuffer_data_dir = flatbuffer_data_dir
         self.memorypack_data_dir = memorypack_data_dir or str(
-            Path(flatbuffer_data_dir).parent / "MemoryPackData"
+            Path(flatbuffer_data_dir).parent / "memorypack"
         )
         self.memorypack_formatter_path = memorypack_formatter_path or str(
-            Path(flatbuffer_data_dir).parent
-            / "Dumps"
+            Path(flatbuffer_data_dir).parent.parent
+            / "dumps"
             / TablePayloadCodecAdapter.MEMORYPACK_FORMATTER_SIDECAR_NAME
         )
         self.logger = logger or ConsoleLogger()
@@ -133,27 +126,22 @@ class TableExtractor:
     @classmethod
     def from_context(
         cls,
-        context: RuntimeContext,
+        context: ExecutionContext,
         logger: LoggerPort | None = None,
         table_profile: TableExtractionProfile | None = None,
     ) -> TableExtractor:
         return cls(
-            str(raw_type_root(context, AssetType.table)),
-            str(extracted_type_root(context, AssetType.table)),
-            str(extracted_schema_root(context, "flatbuffer")),
+            str(context.workspace.raw_tables),
+            str(context.workspace.extracted_table_semantic),
+            str(context.workspace.flatbuffer_schemas),
             logger=logger,
-            memorypack_data_dir=str(extracted_schema_root(context, "memorypack")),
+            memorypack_data_dir=str(context.workspace.memorypack_schemas),
             memorypack_formatter_path=str(
-                extracted_dumps_root(context)
+                context.workspace.dumps
                 / TablePayloadCodecAdapter.MEMORYPACK_FORMATTER_SIDECAR_NAME
             ),
             context=context,
             table_profile=table_profile,
-            schema_cache_identity=(
-                Path(context.schema_snapshot_root).name
-                if context.schema_snapshot_root
-                else None
-            ),
         )
 
     @staticmethod

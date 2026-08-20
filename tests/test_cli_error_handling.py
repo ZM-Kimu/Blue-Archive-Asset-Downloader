@@ -6,31 +6,31 @@ from typing import cast
 
 import pytest
 
-from ba_downloader.application.operations import (
-    ApplicationOperation,
-    ApplicationOperationCommand,
-    ApplicationOperationResult,
+from ba_downloader.application.contracts import (
+    ApplicationCommand,
+    AssetsDownloadCommand,
+    OperationOutcome,
 )
 from ba_downloader.cli.main import main
 from ba_downloader.domain.exceptions import DownloadError, NetworkError
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 
 
 class RecordingExecutor:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
-        self.operations: list[ApplicationOperation] = []
-        self.context: RuntimeContext | None = None
+        self.commands: list[ApplicationCommand] = []
+        self.context: ExecutionContext | None = None
 
     def execute(
         self,
-        command: ApplicationOperationCommand,
-    ) -> ApplicationOperationResult:
-        self.operations.append(command.operation)
+        command: ApplicationCommand,
+    ) -> OperationOutcome:
+        self.commands.append(command)
         if self.error is not None:
             raise self.error
         assert self.context is not None
-        return ApplicationOperationResult(self.context, ())
+        return OperationOutcome(self.context)
 
 
 def _install_executor(
@@ -40,11 +40,11 @@ def _install_executor(
     @contextmanager
     def fake_scope(*args: object, **kwargs: object) -> Iterator[RecordingExecutor]:
         _ = (args, kwargs)
-        executor.context = cast(RuntimeContext, args[0])
+        executor.context = cast(ExecutionContext, args[0])
         yield executor
 
     monkeypatch.setattr(
-        "ba_downloader.cli.main.application_operation_executor",
+        "ba_downloader.cli.main.ExecutionScope",
         fake_scope,
     )
 
@@ -105,4 +105,5 @@ def test_download_command_uses_shared_operation_executor(
     _install_executor(monkeypatch, executor)
 
     assert main(["assets", "download", "--region", "jp"]) == 0
-    assert executor.operations == [ApplicationOperation.download]
+    assert len(executor.commands) == 1
+    assert isinstance(executor.commands[0], AssetsDownloadCommand)

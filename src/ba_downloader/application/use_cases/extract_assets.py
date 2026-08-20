@@ -1,12 +1,12 @@
+from ba_downloader.application.contracts.commands import AssetOperationOptions
 from ba_downloader.application.profiles import RegionProfile
-from ba_downloader.application.use_cases.asset_selection import AssetSelectionService
 from ba_downloader.application.use_cases.character_index_search import (
     CharacterIndexBuilderFactory,
     CharacterIndexSearchService,
 )
 from ba_downloader.domain.models.asset import AssetCollection
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.extraction import ExtractionReport
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.extract import (
     AssetExtractionPort,
@@ -39,9 +39,6 @@ class ExtractAssetsUseCase:
         self.prerequisite_service = prerequisite_service
         self.workflow_profile = workflow_profile
         self.cancellation = cancellation or NeverCancelled()
-        self.asset_selector = (
-            AssetSelectionService(logger) if logger is not None else None
-        )
         self.character_index_search = (
             CharacterIndexSearchService(
                 character_index_builder_factory,
@@ -54,19 +51,18 @@ class ExtractAssetsUseCase:
 
     def _resolve_search_resources(
         self,
-        context: RuntimeContext,
-    ) -> tuple[RuntimeContext, AssetCollection]:
+        context: ExecutionContext,
+        options: AssetOperationOptions,
+    ) -> tuple[ExecutionContext, AssetCollection]:
         if self.provider is None:
             raise LookupError("Extract search requires a configured region provider.")
 
         capabilities = self.provider.get_capabilities()
         has_character_filters = any(
             predicate.field not in RESOURCE_FIELDS
-            for predicate in context.asset_filter.predicates
+            for predicate in options.asset_filter.predicates
         )
-        if (
-            context.advanced_search or has_character_filters
-        ) and not capabilities.supports_advanced_search:
+        if has_character_filters and not capabilities.supports_advanced_search:
             raise LookupError(
                 f"Advanced search is not supported for region '{context.region}'."
             )
@@ -77,26 +73,28 @@ class ExtractAssetsUseCase:
             active_context,
             catalog.resources,
         )
-        resources = self._filter_search_resources(catalog.resources, active_context)
+        resources = self._filter_search_resources(
+            catalog.resources, active_context, options
+        )
         resources = ResourceQueryService.filter_type(
             resources,
-            active_context.resource_type,
+            options.resources,
         )
-        return active_context, AssetSelectionService.filter_existing_resources(
-            resources,
-            active_context,
+        return active_context, ResourceQueryService.filter_existing(
+            resources, active_context
         )
 
     def _filter_search_resources(
         self,
         resources: AssetCollection,
-        context: RuntimeContext,
+        context: ExecutionContext,
+        options: AssetOperationOptions,
     ) -> AssetCollection:
-        if context.asset_filter.predicates:
+        if options.asset_filter.predicates:
             entries = None
             if any(
                 predicate.field not in RESOURCE_FIELDS
-                for predicate in context.asset_filter.predicates
+                for predicate in options.asset_filter.predicates
             ):
                 if self.character_index_search is None:
                     raise LookupError(
@@ -105,37 +103,15 @@ class ExtractAssetsUseCase:
                 entries = self.character_index_search.resolve_existing_entries(context)
             return AssetFilterService.apply(
                 resources,
-                context.asset_filter,
+                options.asset_filter,
                 character_entries=entries,
             )
-        if self.asset_selector is not None:
-            advanced_keywords = None
-            if context.advanced_search:
-                if self.character_index_search is None:
-                    raise LookupError(
-                        "Extract advanced search requires a configured character-index builder."
-                    )
-                advanced_keywords = (
-                    self.character_index_search.resolve_existing_keywords(context)
-                )
-            return self.asset_selector.filter_search_resources(
-                resources,
-                context,
-                advanced_keywords=advanced_keywords,
-            )
-
-        if context.advanced_search:
-            raise LookupError(
-                "Extract advanced search requires a configured character-index builder."
-            )
-        if context.search:
-            return ResourceQueryService.search_name(resources, context.search)
         return resources
 
     def _resolve_table_metadata_resources(
         self,
-        context: RuntimeContext,
-    ) -> tuple[RuntimeContext, AssetCollection | None]:
+        context: ExecutionContext,
+    ) -> tuple[ExecutionContext, AssetCollection | None]:
         return self.workflow_profile.catalog_metadata.resolve_existing_table_resources(
             context
         )
@@ -155,19 +131,16 @@ class ExtractAssetsUseCase:
 
     def run(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
+        options: AssetOperationOptions,
         resources: AssetCollection | None = None,
     ) -> ExtractionReport:
         self.cancellation.raise_if_cancelled()
         active_context = context
         active_resources = resources
-        if active_resources is None and (
-            active_context.search
-            or active_context.advanced_search
-            or active_context.asset_filter.predicates
-        ):
+        if active_resources is None and options.asset_filter.predicates:
             active_context, active_resources = self._resolve_search_resources(
-                active_context
+                active_context, options
             )
 
         if active_resources is not None and not active_resources:
@@ -175,7 +148,7 @@ class ExtractAssetsUseCase:
 
         reports: list[ExtractionReport] = []
 
-        if "table" in active_context.resource_type:
+        if options.resources.contains("table"):
             table_resources = self._filter_resources_for_type(
                 active_resources,
                 "table",
@@ -195,10 +168,11 @@ class ExtractAssetsUseCase:
                     self.extraction_workflow.extract_tables(
                         active_context,
                         table_resources,
+                        concurrency=options.concurrency,
                     )
                 )
                 self.cancellation.raise_if_cancelled()
-        if "bundle" in active_context.resource_type:
+        if options.resources.contains("bundle"):
             bundle_resources = self._filter_resources_for_type(
                 active_resources,
                 "bundle",
@@ -209,10 +183,11 @@ class ExtractAssetsUseCase:
                     self.extraction_workflow.extract_bundles(
                         active_context,
                         bundle_resources,
+                        concurrency=options.concurrency,
                     )
                 )
                 self.cancellation.raise_if_cancelled()
-        if "media" in active_context.resource_type:
+        if options.resources.contains("media"):
             media_resources = self._filter_resources_for_type(
                 active_resources,
                 "media",
@@ -223,6 +198,7 @@ class ExtractAssetsUseCase:
                     self.extraction_workflow.extract_media(
                         active_context,
                         media_resources,
+                        concurrency=options.concurrency,
                     )
                 )
                 self.cancellation.raise_if_cancelled()
@@ -230,7 +206,8 @@ class ExtractAssetsUseCase:
 
     def run_post_download(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
+        options: AssetOperationOptions,
         resources: AssetCollection | None = None,
     ) -> ExtractionReport:
-        return self.run(context, resources)
+        return self.run(context, options, resources)

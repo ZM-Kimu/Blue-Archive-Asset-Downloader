@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import lzma
 import shutil
 import struct
@@ -11,11 +10,12 @@ from uuid import uuid4
 
 from Crypto.Cipher import AES
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
+from ba_downloader.infrastructure.files.checksum import calculate_sha256
 from ba_downloader.infrastructure.runtime import RuntimeSnapshotStore
 
 MFTL_FOOTER_SIZE = 0x2C
@@ -568,17 +568,17 @@ class JPRuntimeAssetPreparer(RuntimeAssetPreparerPort):
             cancellation=self.cancellation
         )
 
-    def prepare(self, context: RuntimeContext) -> PreparedRuntimeAssets:
+    def prepare(self, context: ExecutionContext) -> PreparedRuntimeAssets:
         self.cancellation.raise_if_cancelled()
-        if not context.version:
+        if not context.resource_version:
             raise ValueError(
                 "JP runtime preparation requires a resolved release version."
             )
-        if prepared := self.snapshot_store.load(context, context.version):
+        if prepared := self.snapshot_store.load(context, context.resource_version):
             return prepared
 
         package_root = (
-            self.snapshot_store.version_root(context, context.version)
+            self.snapshot_store.version_root(context, context.resource_version)
             / "Package"
             / "Extracted"
         )
@@ -599,7 +599,7 @@ class JPRuntimeAssetPreparer(RuntimeAssetPreparerPort):
 
         with self.snapshot_store.staging_runtime(
             context,
-            context.version,
+            context.resource_version,
         ) as runtime_dir:
             shutil.copy2(metadata_source, runtime_dir / self.METADATA_NAME)
             self.cancellation.raise_if_cancelled()
@@ -613,7 +613,10 @@ class JPRuntimeAssetPreparer(RuntimeAssetPreparerPort):
                 "Restoring JP libil2cpp.so from MFTL runtime payload "
                 f"'{runtime_payload.path.name}'..."
             )
-            parent_hash = self._sha256(runtime_payload.path)
+            parent_hash = calculate_sha256(
+                runtime_payload.path,
+                on_chunk=self.cancellation.raise_if_cancelled,
+            )
             self.extractor.extract(runtime_payload.path, output_path)
             self.cancellation.raise_if_cancelled()
             self.logger.info("Restored JP libil2cpp.so successfully.")
@@ -624,7 +627,7 @@ class JPRuntimeAssetPreparer(RuntimeAssetPreparerPort):
                 )
             prepared = self.snapshot_store.publish(
                 context,
-                context.version,
+                context.resource_version,
                 runtime_dir,
                 binary_name=self.BINARY_NAME,
                 metadata_name=self.METADATA_NAME,
@@ -653,22 +656,14 @@ class JPRuntimeAssetPreparer(RuntimeAssetPreparerPort):
                 },
             )
             metadata_cache = (
-                self.snapshot_store.version_root(context, context.version)
+                self.snapshot_store.version_root(context, context.resource_version)
                 / "Metadata"
                 / "manifest.json"
             )
             if metadata_cache.is_file():
                 shutil.rmtree(
-                    self.snapshot_store.version_root(context, context.version)
+                    self.snapshot_store.version_root(context, context.resource_version)
                     / "Package",
                     ignore_errors=True,
                 )
             return prepared
-
-    def _sha256(self, path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as source:
-            while chunk := source.read(STREAM_CHUNK_SIZE):
-                self.cancellation.raise_if_cancelled()
-                digest.update(chunk)
-        return digest.hexdigest()

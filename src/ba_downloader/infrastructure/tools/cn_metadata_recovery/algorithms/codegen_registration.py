@@ -104,12 +104,6 @@ class RelocatedElf:
     def is_mapped_va(self, va: int) -> bool:
         return self.va_to_offset(va) is not None
 
-    def read_u64_va(self, va: int) -> int | None:
-        offset = self.va_to_offset(va)
-        if offset is None or offset + 8 > len(self.data):
-            return None
-        return struct.unpack_from("<Q", self.data, offset)[0]
-
     def read_u64_offset(self, offset: int) -> int:
         return struct.unpack_from("<Q", self.data, offset)[0]
 

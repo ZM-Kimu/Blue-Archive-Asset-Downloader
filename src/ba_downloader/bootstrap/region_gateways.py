@@ -9,12 +9,13 @@ from ba_downloader.application.profiles import (
     build_region_profile,
 )
 from ba_downloader.domain.models.asset import RegionCapabilities
+from ba_downloader.domain.models.database import DatabaseSourceIdentity
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region import Region
 from ba_downloader.domain.models.region_profile import (
     RegionSettingsPolicy,
     RegionWorkflowPolicy,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.catalog_metadata import (
     CatalogMetadataPolicy,
     TableMetadataManifestPort,
@@ -62,17 +63,19 @@ DumpBackendFactory = Callable[
     [HttpClientPort, LoggerPort, CancellationPort],
     Il2CppDumpBackendPort,
 ]
-TableExtractionProfileFactory = Callable[[RuntimeContext], TableExtractionProfile]
+TableExtractionProfileFactory = Callable[
+    [ExecutionContext, DatabaseSourceIdentity | None], TableExtractionProfile
+]
 ExtractionPrerequisiteFactory = Callable[
     [SchemaPreparationPort, LoggerPort],
     ExtractionPrerequisitePort | None,
 ]
 CharacterIndexSourceFactory = Callable[
-    [RuntimeContext],
+    [ExecutionContext],
     CharacterIndexSourceProfile,
 ]
 CharacterIndexCompositionFactory = Callable[
-    [RuntimeContext],
+    [ExecutionContext],
     CharacterIndexCompositionProfile,
 ]
 CatalogMetadataPolicyFactory = Callable[

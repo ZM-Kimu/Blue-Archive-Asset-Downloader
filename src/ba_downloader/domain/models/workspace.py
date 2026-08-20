@@ -45,6 +45,17 @@ class WorkspaceLayout:
     def raw_bundles(self) -> Path:
         return self.raw / "bundles"
 
+    def raw_resource_path(self, asset_type: str, resource_path: str) -> Path:
+        roots = {
+            "table": self.raw_tables,
+            "media": self.raw_media,
+            "bundle": self.raw_bundles,
+        }
+        relative = Path(resource_path)
+        if relative.parts and relative.parts[0].casefold() in roots:
+            relative = Path(*relative.parts[1:])
+        return roots[asset_type] / relative
+
     @property
     def extracted(self) -> Path:
         return self.base / "extracted"
@@ -56,10 +67,6 @@ class WorkspaceLayout:
     @property
     def extracted_table_semantic(self) -> Path:
         return self.extracted_tables / "semantic"
-
-    @property
-    def extracted_table_raw(self) -> Path:
-        return self.extracted_tables / "raw"
 
     @property
     def extracted_media(self) -> Path:
@@ -114,9 +121,5 @@ class WorkspaceLayout:
         return self.state / "temp"
 
     @property
-    def log_state(self) -> Path:
-        return self.state / "logs"
-
-    @property
-    def manifest_state(self) -> Path:
-        return self.state / "manifests"
+    def tools_cache(self) -> Path:
+        return self.root / ".ba-downloader" / "tools"

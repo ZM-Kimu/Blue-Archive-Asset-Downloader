@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import shutil
 from collections.abc import Mapping
@@ -10,7 +9,7 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from ba_downloader.domain.models.asset import BootstrapSession, ResolvedRelease
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
@@ -19,6 +18,8 @@ from ba_downloader.infrastructure.extraction.assetripper.exporter import (
     AssetRipperRuntimeMetadata,
     assetripper_exporter_cache_key,
 )
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
+from ba_downloader.infrastructure.files.checksum import calculate_sha256
 from ba_downloader.infrastructure.packages import (
     PackageArchiveError,
     download_package_file,
@@ -37,7 +38,7 @@ from ba_downloader.infrastructure.runtime import RuntimeSnapshotStore
 class RuntimeMetadataInspector(Protocol):
     def inspect(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         data_root: Path,
     ) -> AssetRipperRuntimeMetadata: ...
 
@@ -49,7 +50,7 @@ class ServerInfoDecoder(Protocol):
 class _MissingRuntimeMetadataInspector:
     def inspect(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         data_root: Path,
     ) -> AssetRipperRuntimeMetadata:
         _ = (context, data_root)
@@ -79,27 +80,33 @@ class JPBootstrapper:
         self.progress_factory = progress_factory
         self.cancellation = cancellation or NeverCancelled()
 
-    def package_dir(self, context: RuntimeContext) -> Path:
-        return self.snapshot_store.version_root(context, context.version) / "Package"
+    def package_dir(self, context: ExecutionContext) -> Path:
+        return (
+            self.snapshot_store.version_root(
+                context, context.require_resource_version()
+            )
+            / "Package"
+        )
 
-    def apk_extract_folder(self, context: RuntimeContext) -> str:
+    def apk_extract_folder(self, context: ExecutionContext) -> str:
         return str(self.package_dir(context) / "Extracted")
 
     def bootstrap(
         self,
         release: ResolvedRelease,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> BootstrapSession:
         if not release.package_url:
             raise LookupError("JP release does not contain a package URL.")
-        if not context.version or context.version != release.version:
+        if not context.resource_version or context.resource_version != release.version:
             raise ValueError(
                 "JP bootstrap requires a context resolved to the package version."
             )
 
         cached_metadata = self._load_runtime_metadata_cache(context)
         runtime_manifest = (
-            self.snapshot_store.runtime_dir(context, context.version) / "manifest.json"
+            self.snapshot_store.runtime_dir(context, context.resource_version)
+            / "manifest.json"
         )
         apk_path = ""
         if cached_metadata is None or not runtime_manifest.is_file():
@@ -141,7 +148,7 @@ class JPBootstrapper:
     def _prepare_package(
         self,
         release: ResolvedRelease,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> str:
         package_dir = self.package_dir(context)
         if self._has_required_package_assets(package_dir):
@@ -247,7 +254,7 @@ class JPBootstrapper:
             "AddressablesCatalogUrlRoot not found in JP addressables response."
         )
 
-    def get_server_url(self, context: RuntimeContext) -> str:
+    def get_server_url(self, context: ExecutionContext) -> str:
         self.logger.info("Retrieving game info...")
         cached = self._load_runtime_metadata_cache(context)
         if cached is not None:
@@ -277,16 +284,18 @@ class JPBootstrapper:
         self._log_runtime_metadata(url, version, context)
         return url
 
-    def _metadata_cache_path(self, context: RuntimeContext) -> Path:
+    def _metadata_cache_path(self, context: ExecutionContext) -> Path:
         return (
-            self.snapshot_store.version_root(context, context.version)
+            self.snapshot_store.version_root(
+                context, context.require_resource_version()
+            )
             / "Metadata"
             / "manifest.json"
         )
 
     def _load_runtime_metadata_cache(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> tuple[str, str] | None:
         manifest_path = self._metadata_cache_path(context)
         try:
@@ -299,7 +308,7 @@ class JPBootstrapper:
             and payload.get("schema_version") == self.METADATA_CACHE_SCHEMA_VERSION
             and payload.get("region") == context.region
             and payload.get("platform") == context.platform
-            and payload.get("release") == context.version
+            and payload.get("release") == context.resource_version
             and payload.get("tool_fingerprint") == assetripper_exporter_cache_key()
             and isinstance(package, dict)
             and isinstance(package.get("size"), int)
@@ -323,25 +332,28 @@ class JPBootstrapper:
 
     def _publish_runtime_metadata_cache(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         metadata: AssetRipperRuntimeMetadata,
         server_url: str,
         package_archive: Path,
     ) -> None:
         with self.snapshot_store.staging_directory(
             context,
-            context.version,
+            context.require_resource_version(),
             directory_name="Metadata",
         ) as metadata_dir:
             payload = {
                 "schema_version": self.METADATA_CACHE_SCHEMA_VERSION,
                 "region": context.region,
                 "platform": context.platform,
-                "release": context.version,
+                "release": context.resource_version,
                 "tool_fingerprint": assetripper_exporter_cache_key(),
                 "package": {
                     "size": package_archive.stat().st_size,
-                    "sha256": self._sha256(package_archive),
+                    "sha256": calculate_sha256(
+                        package_archive,
+                        on_chunk=self.cancellation.raise_if_cancelled,
+                    ),
                 },
                 "server_url": server_url,
                 "bundle_version": metadata.bundle_version,
@@ -349,35 +361,29 @@ class JPBootstrapper:
                     metadata.game_main_config
                 ).decode("ascii"),
             }
-            (metadata_dir / "manifest.json").write_text(
-                json.dumps(payload, indent=2, sort_keys=True) + "\n",
-                encoding="utf8",
+            write_json_atomic(
+                metadata_dir / "manifest.json",
+                payload,
+                indent=2,
+                sort_keys=True,
             )
             self.snapshot_store.publish_directory(
                 context,
-                context.version,
+                context.require_resource_version(),
                 metadata_dir,
                 directory_name="Metadata",
             )
-
-    def _sha256(self, path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                self.cancellation.raise_if_cancelled()
-                digest.update(chunk)
-        return digest.hexdigest()
 
     def _log_runtime_metadata(
         self,
         url: str,
         version: str,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> None:
         self.logger.info(f"Resolved server URL: {url}")
         if version:
             self.logger.info(f"The apk version is {version}.")
-        if version and version != context.version:
+        if version and version != context.resource_version:
             self.logger.warn("Server version is different with apk version.")
         elif not version:
             self.logger.warn("Cannot retrieve apk version data.")

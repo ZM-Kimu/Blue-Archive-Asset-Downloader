@@ -4,8 +4,8 @@ from collections.abc import Callable
 from urllib.parse import urljoin
 
 from ba_downloader.domain.models.asset import AssetCollection
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
 
 
@@ -30,16 +30,11 @@ def coerce_string_list(value: object) -> list[str]:
     return [str(item) for item in value]
 
 
-def warn_if_platform_ignored(context: RuntimeContext, logger: LoggerPort) -> None:
-    if context.platform_explicit:
-        logger.warn("The --platform option only applies to JP and was ignored.")
-
-
 def build_region_catalog_result(
     logger: LoggerPort,
     *,
     resources: AssetCollection,
-    context: RuntimeContext,
+    context: ExecutionContext,
 ) -> RegionCatalogResult:
     logger.info(f"Catalog: {resources}.")
     return RegionCatalogResult(

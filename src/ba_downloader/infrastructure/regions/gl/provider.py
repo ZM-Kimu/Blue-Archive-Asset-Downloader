@@ -8,13 +8,12 @@ from ba_downloader.domain.models.asset import (
     AssetType,
     RegionCapabilities,
 )
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.regions.common import (
     build_region_catalog_result,
-    warn_if_platform_ignored,
 )
 from ba_downloader.infrastructure.regions.gl.release_resolver import GLReleaseResolver
 
@@ -35,11 +34,10 @@ class GLRegionProvider:
     def get_capabilities(self) -> RegionCapabilities:
         return self.CAPABILITIES
 
-    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
-        warn_if_platform_ignored(context, self.logger)
+    def load_catalog(self, context: ExecutionContext) -> RegionCatalogResult:
         self.logger.info("Automatically fetching latest package info...")
         release = self.release_resolver.resolve_latest(context)
-        resolved_context = context.with_updates(version=release.version)
+        resolved_context = context.resolve_resource_version(release.version)
 
         self.logger.info(f"Current resource version: {release.version}")
         self.logger.info("Pulling catalog...")
@@ -49,7 +47,7 @@ class GLRegionProvider:
     def _build_catalog_result(
         self,
         resources: AssetCollection,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> RegionCatalogResult:
         return build_region_catalog_result(
             self.logger,

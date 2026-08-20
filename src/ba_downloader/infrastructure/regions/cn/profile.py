@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from ba_downloader.domain.models.database import DatabaseSourceIdentity
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_profile import (
     RegionSettingsPolicy,
     RegionWorkflowPolicy,
     SyncExtractionMode,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.execution import CancellationPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
@@ -105,9 +106,10 @@ def build_dumper_backend(
 
 
 def build_table_extraction_profile(
-    context: RuntimeContext,
+    context: ExecutionContext,
+    database_source_identity: DatabaseSourceIdentity | None = None,
 ) -> TableExtractionProfile:
-    _ = context
+    _ = (context, database_source_identity)
     return TableExtractionProfile(
         archive_registry=TableArchiveRegistry(
             classifier=classify_cn_table_archive,
@@ -121,14 +123,14 @@ def build_table_extraction_profile(
 
 
 def build_character_index_source_profile(
-    context: RuntimeContext,
+    context: ExecutionContext,
 ) -> CharacterIndexSourceProfile:
     _ = context
     return CnDbCharacterIndexSourceProfile()
 
 
 def build_character_index_composition_profile(
-    context: RuntimeContext,
+    context: ExecutionContext,
 ) -> CharacterIndexCompositionProfile:
     _ = context
     return CharacterIndexCompositionProfile(

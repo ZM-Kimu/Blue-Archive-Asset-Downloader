@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 import shutil
 from collections.abc import Callable, Mapping
@@ -11,13 +10,14 @@ from ba_downloader.domain.exceptions import (
     OperationCancelledError,
     ProcessExecutionError,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.extract import Il2CppDumpBackendPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.process import ProcessCommand, ProcessRunnerPort
+from ba_downloader.infrastructure.files.checksum import calculate_sha256
 from ba_downloader.infrastructure.runtime.process import CancellableProcessRunner
 from ba_downloader.infrastructure.tools.runtime_probe import (
     get_installed_dotnet_sdk_major_versions,
@@ -73,7 +73,7 @@ class Cpp2ILSourceResolver:
         self.max_archive_bytes = max_archive_bytes
         self.cancellation = cancellation or NeverCancelled()
 
-    def resolve(self, context: RuntimeContext) -> Path:
+    def resolve(self, context: ExecutionContext) -> Path:
         self.cancellation.raise_if_cancelled()
         submodule_root = _repo_root() / "third_party" / "Cpp2IL"
         if self._is_valid_cpp2il_root(submodule_root):
@@ -94,13 +94,8 @@ class Cpp2ILSourceResolver:
             return cache_root
         raise FileNotFoundError("Unable to resolve a valid Cpp2IL source tree.")
 
-    def _cache_root(self, context: RuntimeContext) -> Path:
-        return (
-            Path(context.work_dir)
-            / ".ba-downloader"
-            / "tools"
-            / f"Cpp2IL-{self.commit[:12]}"
-        )
+    def _cache_root(self, context: ExecutionContext) -> Path:
+        return context.workspace.tools_cache / f"Cpp2IL-{self.commit[:12]}"
 
     @staticmethod
     def _is_valid_cpp2il_root(root: Path) -> bool:
@@ -185,7 +180,10 @@ class Cpp2ILSourceResolver:
     def _verify_archive_checksum(self, archive_path: Path) -> None:
         if not self.archive_sha256:
             return
-        digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        digest = calculate_sha256(
+            archive_path,
+            on_chunk=self.cancellation.raise_if_cancelled,
+        )
         if digest.lower() != self.archive_sha256.lower():
             raise ValueError(
                 "Cpp2IL source archive checksum mismatch: "
@@ -243,7 +241,7 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
 
     def dump(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         output_dir: str,
         runtime_assets: PreparedRuntimeAssets,
     ) -> None:
@@ -325,13 +323,16 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
 
     @staticmethod
     def _ensure_exporter_project(
-        context: RuntimeContext,
+        context: ExecutionContext,
         cpp2il_root: Path,
         target_framework: str,
         extra_source_templates: Mapping[str, Path] | None = None,
     ) -> Path:
         export_root = (
-            Path(context.work_dir) / ".ba-downloader" / "tools" / EXPORTER_PROJECT_NAME
+            Path(context.workspace.base)
+            / ".ba-downloader"
+            / "tools"
+            / EXPORTER_PROJECT_NAME
         )
         export_root.mkdir(parents=True, exist_ok=True)
 

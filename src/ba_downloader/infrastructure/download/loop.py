@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.models.asset import AssetRecord
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.infrastructure.download.adaptive import (
     AdaptiveDownloadState,
@@ -37,7 +37,7 @@ class DownloadProgress(Protocol):
 
 
 DownloadFunction = Callable[
-    [AssetRecord, RuntimeContext, Callable[[int], None] | None, Callable[[], bool]],
+    [AssetRecord, ExecutionContext, Callable[[int], None] | None, Callable[[], bool]],
     AssetRecord,
 ]
 
@@ -57,7 +57,7 @@ class DownloadSessionState:
 @dataclass(slots=True)
 class DownloadLoopContext:
     progress: DownloadProgress
-    context: RuntimeContext
+    context: ExecutionContext
     progress_lock: Lock
     download_mode: bool
     executor: ThreadPoolExecutor

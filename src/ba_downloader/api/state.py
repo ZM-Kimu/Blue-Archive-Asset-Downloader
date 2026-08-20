@@ -12,7 +12,7 @@ from threading import RLock
 from uuid import uuid4
 
 from ba_downloader.domain.models.asset import AssetCollection
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 
 
 class ContextCapacityError(RuntimeError):
@@ -26,7 +26,7 @@ class ContextInUseError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class ApiContext:
     id: str
-    context: RuntimeContext
+    context: ExecutionContext
     created_at: datetime
     last_used_at: datetime
     fingerprint: str
@@ -34,7 +34,7 @@ class ApiContext:
 
     @property
     def resolved(self) -> bool:
-        return bool(self.context.version)
+        return bool(self.context.resource_version)
 
 
 class ContextRegistry:
@@ -54,9 +54,9 @@ class ContextRegistry:
         self._fingerprints: dict[str, str] = {}
         self._lock = RLock()
 
-    def create(self, context: RuntimeContext) -> tuple[ApiContext, bool]:
+    def create(self, context: ExecutionContext) -> tuple[ApiContext, bool]:
         now = self._clock()
-        fingerprint = self._fingerprint(context.with_updates(version=""))
+        fingerprint = self._fingerprint(context.without_resource_version())
         with self._lock:
             self._purge_expired(now)
             existing_id = self._fingerprints.get(fingerprint)
@@ -103,7 +103,7 @@ class ContextRegistry:
                 raise ContextCapacityError("The context registry is full.")
             refreshed = ApiContext(
                 uuid4().hex,
-                source.context.with_updates(version=""),
+                source.context.without_resource_version(),
                 now,
                 now,
                 source.fingerprint,
@@ -114,15 +114,23 @@ class ContextRegistry:
     def freeze(
         self,
         context_id: str,
-        context: RuntimeContext,
+        context: ExecutionContext,
         catalog: AssetCollection | None = None,
     ) -> ApiContext:
         now = self._clock()
         with self._lock:
             current = self._items[context_id]
-            if current.resolved and current.context.version != context.version:
+            if (
+                current.resolved
+                and current.context.resource_version != context.resource_version
+            ):
                 raise ValueError("A resolved context cannot change resource version.")
-            resolved_context = current.context.with_updates(version=context.version)
+            if context.resource_version is None:
+                resolved_context = current.context
+            else:
+                resolved_context = current.context.resolve_resource_version(
+                    context.resource_version
+                )
             updated = replace(
                 current,
                 context=resolved_context,
@@ -147,15 +155,15 @@ class ContextRegistry:
                 if self._fingerprints.get(item.fingerprint) == context_id:
                     self._fingerprints.pop(item.fingerprint, None)
 
-    def _fingerprint(self, context: RuntimeContext) -> str:
+    def _fingerprint(self, context: ExecutionContext) -> str:
         payload = json.dumps(
             {
                 "region": context.region,
                 "platform": context.platform,
-                "workspace": context.work_dir,
+                "workspace": str(context.workspace.base),
                 "proxy": context.proxy_url,
                 "retries": context.max_retries,
-                "sqlcipher_key": context.sqlcipher_key_hex,
+                "sqlcipher_key": context.sqlcipher_key,
             },
             sort_keys=True,
             separators=(",", ":"),

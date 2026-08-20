@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager
+from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
-from typing import cast
 
-from ba_downloader.application.bus import CommandBus, MessageRegistration
-from ba_downloader.application.middleware import CancellationMiddleware
-from ba_downloader.application.operations import (
-    ApplicationOperation,
-    ApplicationOperationCommand,
-    ApplicationOperationExecutor,
-    ApplicationOperationHandlerResult,
+from ba_downloader.application.contracts import (
+    ApplicationCommand,
+    AssetsDownloadCommand,
+    AssetsExtractCommand,
+    AssetsSyncCommand,
+    BuildCharacterIndexCommand,
+    CatalogRefreshCommand,
+    OperationOutcome,
+    StorageCleanupCommand,
 )
 from ba_downloader.application.profiles import RegionProfile
 from ba_downloader.application.use_cases.build_character_index import (
@@ -31,8 +32,6 @@ from ba_downloader.bootstrap.region_gateways import (
     build_application_region_profile,
 )
 from ba_downloader.domain.models.execution import ExecutionContext
-from ba_downloader.domain.models.runtime import RuntimeContext
-from ba_downloader.domain.models.workspace import WorkspaceLayout
 from ba_downloader.domain.ports.catalog_metadata import TableMetadataManifestPort
 from ba_downloader.domain.ports.character_index import CharacterIndexBuilderPort
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
@@ -48,109 +47,25 @@ from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
 from ba_downloader.domain.ports.region import RegionProvider
 
-CharacterIndexBuilderFactory = Callable[[RuntimeContext], CharacterIndexBuilderPort]
-
-
-class _OperationHandler:
-    def __init__(self, scope: ExecutionScope) -> None:
-        self._scope = scope
-
-    def __call__(
-        self,
-        _context: ExecutionContext,
-        command: ApplicationOperationCommand,
-    ) -> ApplicationOperationHandlerResult:
-        context = self._scope.context
-        cancellation = self._scope.cancellation
-        operation = command.operation
-
-        if operation is ApplicationOperation.storage_cleanup:
-            from ba_downloader.infrastructure.storage.cleanup import (
-                BoundedStorageCleanup,
-            )
-
-            deleted = CleanupStorageUseCase(BoundedStorageCleanup(), cancellation).run(
-                context, command.cleanup_targets
-            )
-            return ApplicationOperationHandlerResult(
-                context,
-                statistics=(("deleted", deleted),),
-            )
-
-        if operation is ApplicationOperation.sync:
-            sync_result = SyncAssetsUseCase(
-                self._scope.provider(),
-                self._scope.downloader(),
-                self._scope.extract_service(),
-                self._scope.schema_preparation(),
-                self._scope.character_index_builder_factory(),
-                self._scope.logger,
-                workflow_profile=self._scope.workflow_profile(),
-                cancellation=cancellation,
-            ).run(context)
-            return ApplicationOperationHandlerResult(
-                sync_result.context,
-                warnings=sync_result.extraction.warnings,
-            )
-
-        if operation is ApplicationOperation.download:
-            active_context = DownloadAssetsUseCase(
-                self._scope.provider(),
-                self._scope.downloader(),
-                workflow_profile=self._scope.workflow_profile(),
-                cancellation=cancellation,
-                character_index_builder_factory=(
-                    self._scope.character_index_builder_factory()
-                ),
-            ).run(context)
-            return ApplicationOperationHandlerResult(active_context)
-
-        if operation is ApplicationOperation.extract:
-            extraction = self._scope.extract_service().run(context)
-            return ApplicationOperationHandlerResult(
-                context,
-                warnings=extraction.warnings,
-            )
-
-        if operation is ApplicationOperation.character_index:
-            active_context = BuildCharacterIndexUseCase(
-                self._scope.provider(),
-                self._scope.downloader(),
-                self._scope.schema_preparation(),
-                self._scope.character_index_builder_factory(),
-                cancellation=cancellation,
-                catalog_metadata=self._scope.workflow_profile().catalog_metadata,
-            ).build(context)
-            return ApplicationOperationHandlerResult(active_context)
-
-        if operation is ApplicationOperation.catalog_refresh:
-            catalog = self._scope.provider().load_catalog(context)
-            self._scope.workflow_profile().catalog_metadata.on_catalog_loaded(
-                catalog.context,
-                catalog.resources,
-            )
-            return ApplicationOperationHandlerResult(
-                catalog.context,
-                catalog.resources,
-            )
-
-        raise LookupError(f"Unsupported operation '{operation.value}'.")
+CharacterIndexBuilderFactory = Callable[[ExecutionContext], CharacterIndexBuilderPort]
 
 
 class ExecutionScope:
     def __init__(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         *,
         logger: LoggerPort | None = None,
         progress_factory: ProgressReporterFactoryPort | None = None,
         cancellation: CancellationPort | None = None,
+        artifacts: ArtifactSinkPort | None = None,
         gateway_registry: RegionGatewayRegistry = DEFAULT_REGION_GATEWAY_REGISTRY,
     ) -> None:
         self.context = context
         self._provided_logger = logger
         self._progress_factory = progress_factory
         self.cancellation = cancellation or NeverCancelled()
+        self._artifacts = artifacts or ArtifactCollector()
         self._gateway_registry = gateway_registry
         self._resources = ExitStack()
         self._entered = False
@@ -164,7 +79,6 @@ class ExecutionScope:
         self._downloader: ResourceDownloaderPort | None = None
         self._extract_service: ExtractAssetsUseCase | None = None
         self._index_builder_factory: CharacterIndexBuilderFactory | None = None
-        self._bus: CommandBus | None = None
 
     @property
     def logger(self) -> LoggerPort:
@@ -182,11 +96,6 @@ class ExecutionScope:
             raise RuntimeError("Execution scope is already active.")
         self._resources.__enter__()
         self._entered = True
-        handler = _OperationHandler(self)
-        self._bus = CommandBus(
-            [MessageRegistration(ApplicationOperationCommand, handler)],
-            middleware=[CancellationMiddleware(self.cancellation)],
-        )
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -195,15 +104,88 @@ class ExecutionScope:
 
     def execute(
         self,
-        command: ApplicationOperationCommand,
-    ) -> ApplicationOperationHandlerResult:
+        command: ApplicationCommand,
+    ) -> OperationOutcome:
         self._require_active()
         if self._executed:
             raise RuntimeError("Execution scope supports one operation only.")
         self._executed = True
-        assert self._bus is not None
-        result = self._bus.dispatch(self._bus_context(), command)
-        return cast(ApplicationOperationHandlerResult, result)
+        self.cancellation.raise_if_cancelled()
+        result = self._dispatch(command)
+        self.cancellation.raise_if_cancelled()
+        self._record_artifacts(command, result.context)
+        return OperationOutcome(
+            context=result.context,
+            artifacts=self._artifacts.snapshot(),
+            catalog=result.catalog,
+            statistics=result.statistics,
+            warnings=result.warnings,
+        )
+
+    def _dispatch(self, command: ApplicationCommand) -> OperationOutcome:
+        context = self.context
+        cancellation = self.cancellation
+
+        if isinstance(command, StorageCleanupCommand):
+            from ba_downloader.infrastructure.storage.cleanup import (
+                BoundedStorageCleanup,
+            )
+
+            deleted = CleanupStorageUseCase(BoundedStorageCleanup(), cancellation).run(
+                context, command.targets
+            )
+            return OperationOutcome(context, statistics=(("deleted", deleted),))
+
+        if isinstance(command, AssetsSyncCommand):
+            sync_result = SyncAssetsUseCase(
+                self.provider(),
+                self.downloader(),
+                self.extract_service(),
+                self.schema_preparation(),
+                self.character_index_builder_factory(),
+                self.logger,
+                workflow_profile=self.workflow_profile(),
+                cancellation=cancellation,
+            ).run(context, command.options)
+            return OperationOutcome(
+                sync_result.context,
+                warnings=sync_result.extraction.warnings,
+            )
+
+        if isinstance(command, AssetsDownloadCommand):
+            active_context = DownloadAssetsUseCase(
+                self.provider(),
+                self.downloader(),
+                workflow_profile=self.workflow_profile(),
+                cancellation=cancellation,
+                character_index_builder_factory=self.character_index_builder_factory(),
+            ).run(context, command.options)
+            return OperationOutcome(active_context)
+
+        if isinstance(command, AssetsExtractCommand):
+            extraction = self.extract_service().run(context, command.options)
+            return OperationOutcome(context, warnings=extraction.warnings)
+
+        if isinstance(command, BuildCharacterIndexCommand):
+            active_context = BuildCharacterIndexUseCase(
+                self.provider(),
+                self.downloader(),
+                self.schema_preparation(),
+                self.character_index_builder_factory(),
+                cancellation=cancellation,
+                catalog_metadata=self.workflow_profile().catalog_metadata,
+            ).build(context, concurrency=command.concurrency)
+            return OperationOutcome(active_context)
+
+        if isinstance(command, CatalogRefreshCommand):
+            catalog = self.provider().load_catalog(context)
+            self.workflow_profile().catalog_metadata.on_catalog_loaded(
+                catalog.context,
+                catalog.resources,
+            )
+            return OperationOutcome(catalog.context, catalog=catalog.resources)
+
+        raise LookupError(f"Unsupported command '{type(command).__name__}'.")
 
     def definition(self) -> RegionGatewayDefinition:
         self._require_active()
@@ -292,9 +274,9 @@ class ExecutionScope:
 
             definition = self.definition()
 
-            def build(active_context: RuntimeContext) -> CharacterIndexBuilderPort:
+            def build(active_context: ExecutionContext) -> CharacterIndexBuilderPort:
+                _ = active_context
                 return CharacterIndexBuilder(
-                    active_context,
                     self.logger,
                     table_profile_factory=definition.tables.extraction_profile,
                     character_index_source_profile_factory=(
@@ -372,25 +354,57 @@ class ExecutionScope:
             )
         return self._extract_service
 
-    def _bus_context(self) -> ExecutionContext:
-        platform = self.context.platform or "android"
-        workspace_root = Path(self.context.work_dir)
-        if self.context.workspace_mode == "v3":
-            workspace_root = workspace_root.parents[1]
-        workspace = WorkspaceLayout.create(
-            workspace_root,
-            self.context.region,
-            platform,
-        )
-        return ExecutionContext(
-            region=self.context.region,
-            platform=platform,
-            workspace=workspace,
-            proxy_url=self.context.proxy_url,
-            max_retries=self.context.max_retries,
-            sqlcipher_key=self.context.sqlcipher_key_hex,
-            resource_version=self.context.version or None,
-        )
+    def _record_artifacts(
+        self, command: ApplicationCommand, context: ExecutionContext
+    ) -> None:
+        paths: tuple[tuple[str, Path], ...]
+        if isinstance(command, AssetsSyncCommand):
+            paths = (
+                ("raw", context.workspace.raw),
+                ("extracted", context.workspace.extracted),
+                ("temporary", context.workspace.temp_state),
+            )
+        elif isinstance(command, AssetsDownloadCommand):
+            paths = (("raw", context.workspace.raw),)
+        elif isinstance(command, AssetsExtractCommand):
+            paths = (("extracted", context.workspace.extracted),)
+        elif isinstance(command, BuildCharacterIndexCommand):
+            paths = (
+                ("raw", context.workspace.raw),
+                ("extracted", context.workspace.extracted),
+                ("temporary", context.workspace.temp_state),
+            )
+        else:
+            paths = ()
+        for kind, path in paths:
+            if path.exists():
+                self._artifacts.record(kind, path)
+
+        for kind, path in (
+            ("dump-cs", context.workspace.dumps / "dump.cs"),
+            (
+                "memorypack-formatters",
+                context.workspace.dumps / "memorypack_formatters.json",
+            ),
+        ):
+            if path.is_file():
+                self._artifacts.record(kind, path)
+
+        if context.region == "cn" and context.resource_version:
+            recovery_metadata = (
+                context.workspace.runtime_state
+                / context.resource_version
+                / "MetadataRecovery"
+                / "global-metadata.standard-v29.dat"
+            )
+            if recovery_metadata.is_file():
+                self._artifacts.record("cn-recovery-metadata", recovery_metadata)
+
+        if (
+            isinstance(command, (AssetsSyncCommand, BuildCharacterIndexCommand))
+            and context.workspace.character_index.is_file()
+        ):
+            self._artifacts.record("character-index", context.workspace.character_index)
 
     def _require_active(self) -> None:
         if not self._entered:
@@ -403,28 +417,3 @@ class ExecutionScope:
         )
 
         return JpTableMetadataManifestStore()
-
-
-@contextmanager
-def application_operation_executor(
-    context: RuntimeContext,
-    *,
-    logger: LoggerPort | None = None,
-    progress_factory: ProgressReporterFactoryPort | None = None,
-    cancellation: CancellationPort | None = None,
-    artifacts: ArtifactSinkPort | None = None,
-) -> Iterator[ApplicationOperationExecutor]:
-    active_cancellation = cancellation or NeverCancelled()
-    active_artifacts = artifacts or ArtifactCollector()
-    with ExecutionScope(
-        context,
-        logger=logger,
-        progress_factory=progress_factory,
-        cancellation=active_cancellation,
-    ) as scope:
-        yield ApplicationOperationExecutor(
-            scope,
-            active_cancellation,
-            active_artifacts,
-            context,
-        )

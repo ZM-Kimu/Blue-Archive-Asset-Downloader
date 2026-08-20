@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ba_downloader.domain.models.asset import AssetCollection
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.catalog_metadata import TableMetadataManifestPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.region import RegionProvider
@@ -21,15 +21,15 @@ class JpTableCatalogMetadataPolicy:
 
     def on_catalog_loaded(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection,
     ) -> None:
         self.store.write(context, resources)
 
     def resolve_existing_table_resources(
         self,
-        context: RuntimeContext,
-    ) -> tuple[RuntimeContext, AssetCollection | None]:
+        context: ExecutionContext,
+    ) -> tuple[ExecutionContext, AssetCollection | None]:
         stored_resources = self.store.load(context)
         if stored_resources is not None:
             return context, ResourceQueryService.filter_existing(

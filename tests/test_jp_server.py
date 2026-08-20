@@ -11,10 +11,9 @@ from ba_downloader.domain.models.asset import (
     CatalogSource,
     ResolvedRelease,
 )
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_catalog import DecodedJPCatalog
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.http import HttpResponse
-from ba_downloader.domain.services.resource_query import ResourceQueryService
 from ba_downloader.infrastructure.extraction.assetripper.exporter import (
     AssetRipperRuntimeMetadata,
 )
@@ -37,6 +36,7 @@ from ba_downloader.infrastructure.schema.memorypack.generator import (
 )
 from ba_downloader.infrastructure.schema.memorypack.parser import MemoryPackCSParser
 from support import build_apkpure_version_list
+from support.fixtures import build_execution_context
 
 
 class MemoryPackWriter:
@@ -151,6 +151,15 @@ def _jp_provider(client: RecordingHttpClient, logger: Any) -> JPRegionProvider:
     return JPRegionProvider(client, logger, JPCatalogDecoder())
 
 
+def _catalog_context() -> ExecutionContext:
+    return build_execution_context(
+        Path.cwd(),
+        region="jp",
+        platform="android",
+        version="1.2.3",
+    )
+
+
 def test_jp_provider_supports_advanced_search() -> None:
     provider = _jp_provider(RecordingHttpClient({}), NullLogger())
 
@@ -174,19 +183,11 @@ def test_jp_table_only_catalog_sends_only_table_request() -> None:
             )
         }
     )
-    context = RuntimeContext(
+    context = build_execution_context(
+        Path.cwd(),
         region="jp",
-        threads=1,
         version="1.2.3",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir="Temp",
-        resource_type=("table",),
-        proxy_url="",
         max_retries=0,
-        search=(),
-        advanced_search=(),
-        work_dir=".",
     )
     session = BootstrapSession(
         ResolvedRelease("jp", "1.2.3"),
@@ -207,19 +208,11 @@ def test_jp_table_only_catalog_sends_only_table_request() -> None:
 def test_jp_table_only_decode_does_not_load_generated_memorypack_registry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    context = RuntimeContext(
+    context = build_execution_context(
+        Path.cwd(),
         region="jp",
-        threads=1,
         version="1.2.3",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir="Temp",
-        resource_type=("table",),
-        proxy_url="",
         max_retries=0,
-        search=(),
-        advanced_search=(),
-        work_dir=".",
     )
     session = BootstrapSession(
         ResolvedRelease("jp", "1.2.3"),
@@ -575,7 +568,23 @@ def test_get_resource_manifest_uses_second_root_and_bundle_packing_info() -> Non
     client = RecordingHttpClient(responses)
     provider = _jp_provider(client, NullLogger())
 
-    resources = provider.get_resource_manifest(server_url)
+    session = BootstrapSession(
+        ResolvedRelease("jp", "1.2.3"),
+        server_url,
+        catalog_root,
+        {
+            "catalog_root_candidates": (
+                "https://ignore.invalid/root",
+                catalog_root,
+                "https://last.invalid/root",
+            )
+        },
+    )
+    resources = provider._load_selected_catalog(
+        session,
+        _catalog_context(),
+        CatalogSelection.FULL,
+    )
 
     assert len(resources) == 5
     assert (
@@ -603,21 +612,13 @@ def test_jp_catalog_decoder_uses_builtin_table_and_generated_media_schema(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    context = RuntimeContext(
+    context = build_execution_context(
+        tmp_path,
         region="jp",
-        threads=4,
         version="1.2.3",
-        raw_dir=str(tmp_path / "Raw"),
-        extract_dir=str(tmp_path / "Extracted"),
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("table", "media", "bundle"),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
-    _create_jp_catalog_memorypack_data(context.extract_dir)
+    _create_jp_catalog_memorypack_data(str(context.workspace.extracted))
     session = BootstrapSession(
         release=ResolvedRelease(region="jp", version="1.2.3"),
         server_url="https://example.invalid/server-info.json",
@@ -678,7 +679,7 @@ def test_jp_catalog_decoder_uses_builtin_table_and_generated_media_schema(
     ]
 
 
-def test_search_name_matches_jp_bundle_files_from_patch_pack() -> None:
+def test_jp_catalog_preserves_bundle_files_from_patch_pack() -> None:
     server_url = "https://example.invalid/server-info.json"
     catalog_root = "https://cdn.example.invalid/catalog-root"
     client = RecordingHttpClient(
@@ -743,11 +744,24 @@ def test_search_name_matches_jp_bundle_files_from_patch_pack() -> None:
     )
     provider = _jp_provider(client, NullLogger())
 
-    resources = provider.get_resource_manifest(server_url)
-    filtered = ResourceQueryService.search_name(resources, ["character.bundle"])
-
-    assert len(filtered) == 1
-    assert filtered[0].path == "Bundle/bundle/full.pack"
+    session = BootstrapSession(
+        ResolvedRelease("jp", "1.2.3"),
+        server_url,
+        catalog_root,
+        {
+            "catalog_root_candidates": (
+                "https://ignore.invalid/root",
+                catalog_root,
+            )
+        },
+    )
+    resources = provider._load_selected_catalog(
+        session,
+        _catalog_context(),
+        CatalogSelection.FULL,
+    )
+    bundle = next(item for item in resources if item.path == "Bundle/bundle/full.pack")
+    assert bundle.metadata["bundle_files"] == ["character.bundle"]
 
 
 @pytest.mark.parametrize(
@@ -762,21 +776,12 @@ def test_jp_catalog_source_provider_uses_selected_platform_for_bundle_manifest(
     patch_dir: str,
 ) -> None:
     catalog_root = "https://cdn.example.invalid/catalog-root"
-    context = RuntimeContext(
+    context = build_execution_context(
+        Path.cwd(),
         region="jp",
-        threads=4,
         version="1.2.3",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir="Temp",
-        resource_type=("bundle",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=".",
         platform=platform,
-        platform_explicit=True,
     )
     session = BootstrapSession(
         release=ResolvedRelease(region="jp", version="1.2.3"),
@@ -869,21 +874,13 @@ def test_load_catalog_logs_happy_path_at_info_level(
 ) -> None:
     logger = RecordingLogger()
     provider = _jp_provider(RecordingHttpClient({}), logger)
-    context = RuntimeContext(
+    context = build_execution_context(
+        Path.cwd(),
         region="jp",
-        threads=4,
         version="",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir="Temp",
-        resource_type=("media",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=".",
     )
-    resolved_context = context.with_updates(version="1.2.3")
+    resolved_context = context.resolve_resource_version("1.2.3")
     resources = AssetCollection()
 
     monkeypatch.setattr(
@@ -971,9 +968,9 @@ def test_jp_bootstrap_accepts_structural_mftl_runtime_with_renamed_container(
 def test_jp_bootstrap_uses_runtime_metadata_inspector(tmp_path: Path) -> None:
     class MetadataInspector:
         def inspect(
-            self, context: RuntimeContext, data_root: Path
+            self, context: ExecutionContext, data_root: Path
         ) -> AssetRipperRuntimeMetadata:
-            assert context.version == "1.2.3"
+            assert context.resource_version == "1.2.3"
             assert data_root == tmp_path / "Package" / "Extracted" / "assets/bin/Data"
             return AssetRipperRuntimeMetadata(b"encrypted", "1.2.3")
 
@@ -982,19 +979,11 @@ def test_jp_bootstrap_uses_runtime_metadata_inspector(tmp_path: Path) -> None:
             assert data == b"encrypted"
             return "https://example.invalid/server-info.json"
 
-    context = RuntimeContext(
+    context = build_execution_context(
+        tmp_path,
         region="jp",
-        threads=1,
         version="1.2.3",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir=str(tmp_path),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=0,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
     logger = RecordingLogger()
     bootstrapper = JPBootstrapper(
@@ -1016,19 +1005,11 @@ def test_jp_bootstrap_translates_package_download_validation_errors(
     tmp_path,
 ) -> None:
     bootstrapper = JPBootstrapper(RecordingHttpClient({}), NullLogger())
-    context = RuntimeContext(
+    context = build_execution_context(
+        tmp_path,
         region="jp",
-        threads=4,
         version="1.2.3",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("bundle",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
     release = ResolvedRelease(
         region="jp",
@@ -1047,7 +1028,9 @@ def test_jp_bootstrap_translates_package_download_validation_errors(
         LookupError, match="Downloaded JP package is invalid or incomplete"
     ):
         bootstrapper.bootstrap(release, context)
-    assert not (Path(context.temp_dir) / context.version / "Package").exists()
+    assert not (
+        context.workspace.temp_state / context.resource_version / "Package"
+    ).exists()
 
 
 def test_jp_bootstrap_translates_package_extraction_errors(
@@ -1057,19 +1040,11 @@ def test_jp_bootstrap_translates_package_extraction_errors(
     package_path = tmp_path / "broken.xapk"
     package_path.write_bytes(b"not a zip archive")
     bootstrapper = JPBootstrapper(RecordingHttpClient({}), NullLogger())
-    context = RuntimeContext(
+    context = build_execution_context(
+        tmp_path,
         region="jp",
-        threads=4,
         version="1.2.3",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("bundle",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
     release = ResolvedRelease(
         region="jp",
@@ -1086,4 +1061,6 @@ def test_jp_bootstrap_translates_package_extraction_errors(
         LookupError, match="Downloaded JP package is invalid or incomplete"
     ):
         bootstrapper.bootstrap(release, context)
-    assert not (Path(context.temp_dir) / context.version / "Package").exists()
+    assert not (
+        context.workspace.temp_state / context.resource_version / "Package"
+    ).exists()

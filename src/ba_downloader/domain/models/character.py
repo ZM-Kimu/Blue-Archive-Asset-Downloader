@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Any
 
 
 @dataclass
@@ -15,12 +14,6 @@ class CharacterIndexEntry:
     illustrator: str = ""
     school_en: str = ""
     club_en: str = ""
-
-    @staticmethod
-    def serialize(obj: Any) -> Any:
-        if isinstance(obj, set):
-            return list(obj)
-        raise TypeError(f"Type {type(obj)} not serializable")
 
 
 @dataclass

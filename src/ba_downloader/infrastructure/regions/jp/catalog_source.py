@@ -4,7 +4,7 @@ from enum import StrEnum
 from urllib.parse import urljoin
 
 from ba_downloader.domain.models.asset import BootstrapSession, CatalogSource
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.regions.jp.platform import build_jp_platform_profile
@@ -23,7 +23,7 @@ class JPCatalogSourceProvider:
     def fetch(
         self,
         session: BootstrapSession,
-        context: RuntimeContext,
+        context: ExecutionContext,
         selection: CatalogSelection = CatalogSelection.FULL,
     ) -> list[CatalogSource]:
         base_url = session.catalog_root.rstrip("/") + "/"

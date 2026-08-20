@@ -8,7 +8,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.http import HttpResponse
 from ba_downloader.infrastructure.packages import (
     ZipEntry,
@@ -26,22 +26,15 @@ from ba_downloader.infrastructure.regions.cn.provider import (
     CNRuntimeAssetPreparer,
 )
 from support import RecordingLogger
+from support.fixtures import build_execution_context
 
 
-def _build_context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
+def _build_context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="cn",
-        threads=1,
         version="2.1.2",
-        raw_dir=str(tmp_path / "Raw"),
-        extract_dir=str(tmp_path / "Extracted"),
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
@@ -223,7 +216,7 @@ def test_cn_runtime_asset_preparer_extracts_runtime_assets_without_full_download
 
     prepared = preparer.prepare(context)
 
-    assert prepared.root_dir == Path(context.temp_dir) / "2.1.2" / "Runtime"
+    assert prepared.root_dir == context.workspace.runtime_state / "2.1.2" / "Runtime"
     assert prepared.metadata_path.read_bytes() == b"metadata"
     assert prepared.binary_path.read_bytes() == b"binary"
     assert prepared.globalgamemanagers_path is not None
@@ -257,7 +250,9 @@ def test_cn_runtime_asset_preparer_raises_when_metadata_entry_is_missing(
 
     with pytest.raises(ZipEntryNotFoundError, match=r"global-metadata\.dat"):
         preparer.prepare(context)
-    assert not (Path(context.temp_dir) / context.version / "Runtime").exists()
+    assert not (
+        context.workspace.temp_state / context.resource_version / "Runtime"
+    ).exists()
 
 
 def test_cn_runtime_asset_preparer_raises_when_libil2cpp_entry_is_missing(
@@ -282,7 +277,9 @@ def test_cn_runtime_asset_preparer_raises_when_libil2cpp_entry_is_missing(
 
     with pytest.raises(ZipEntryNotFoundError, match=r"libil2cpp\.so"):
         preparer.prepare(context)
-    assert not (Path(context.temp_dir) / context.version / "Runtime").exists()
+    assert not (
+        context.workspace.temp_state / context.resource_version / "Runtime"
+    ).exists()
 
 
 def test_cn_runtime_asset_preparer_allows_missing_globalgamemanagers(

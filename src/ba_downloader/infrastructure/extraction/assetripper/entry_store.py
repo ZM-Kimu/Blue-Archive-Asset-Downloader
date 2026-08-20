@@ -10,11 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleEntryInput,
 )
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
 
 DEFAULT_ENTRY_CACHE_RESERVE_BYTES = 8 * 1024 * 1024 * 1024
 MIN_ENTRY_CACHE_RESERVE_BYTES = 512 * 1024 * 1024
@@ -31,10 +32,8 @@ class BundleEntryStoreResult:
     bytes_written: int
 
 
-def bundle_entry_store_root(context: RuntimeContext) -> Path:
-    temp_root = Path(context.temp_dir)
-    state_root = temp_root.parent if context.workspace_mode == "v3" else temp_root
-    return state_root / "cache" / "assetripper" / "entries"
+def bundle_entry_store_root(context: ExecutionContext) -> Path:
+    return context.workspace.cache_state / "assetripper" / "entries"
 
 
 class BundleEntryStore:
@@ -97,7 +96,6 @@ class BundleEntryStore:
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
-        marker_temporary = marker.with_name(f".{marker.name}.{uuid4().hex}.tmp")
         try:
             digest = hashlib.sha256()
             written = 0
@@ -118,23 +116,18 @@ class BundleEntryStore:
                 )
             temporary.replace(destination)
             stat = destination.stat()
-            marker_temporary.write_text(
-                json.dumps(
-                    {
-                        "sha256": entry.sha256,
-                        "size": entry.size,
-                        "mtime_ns": stat.st_mtime_ns,
-                    },
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf8",
+            write_json_atomic(
+                marker,
+                {
+                    "sha256": entry.sha256,
+                    "size": entry.size,
+                    "mtime_ns": stat.st_mtime_ns,
+                },
+                sort_keys=True,
             )
-            marker_temporary.replace(marker)
             return BundleEntryStoreResult(destination, False, written)
         finally:
             temporary.unlink(missing_ok=True)
-            marker_temporary.unlink(missing_ok=True)
 
     def _path_for(self, entry: BundleEntryInput) -> Path:
         digest = entry.sha256.lower()

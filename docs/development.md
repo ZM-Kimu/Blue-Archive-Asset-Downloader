@@ -30,9 +30,13 @@ Use `scripts/preflight_check.ps1` when a single local gate is more convenient.
 
 ## Architecture
 
-- CLI and HTTP API adapters translate input into application commands and queries.
+- CLI and HTTP API adapters translate input directly into typed application commands.
+- `ExecutionScope` is the only application executor: it dispatches one typed command to
+  one use case, owns the operation-scoped service graph, and closes its resources after
+  execution.
+- Operation-only values such as concurrency, resource selection, and filters stay on the
+  typed command instead of being copied into `ExecutionContext`.
 - Application use cases own workflows and depend on domain ports.
-- Bootstrap creates one operation-scoped service graph and closes its resources after execution.
 - Region gateways own catalog providers, runtime preparation, dump backend selection, table routing, character index sources, and catalog metadata policy.
 - Shared extraction code must stay region-neutral and consume profile-provided strategies.
 - CN metadata recovery stays in `infrastructure.tools.cn_metadata_recovery` as a reusable engine; the CN region backend only orchestrates it.
@@ -51,6 +55,8 @@ Use `scripts/preflight_check.ps1` when a single local gate is more convenient.
 - Schema snapshots use separate `full` and `character-index` purpose namespaces. The character-index purpose generates only the three JP target types and their transitive FlatBuffer dependencies; it does not publish MemoryPack formatters or replace the canonical full schema.
 - Generated Python is validated with in-memory `compile()` and must not publish `.pyc` files.
 - Published artifacts use staging, complete validation, fsync where applicable, and atomic replacement. A failed operation must preserve the previous valid artifact.
+- Streaming SHA-256, atomic JSON writes, and rollback-safe staging-directory publication
+  live in `infrastructure.files`; manifests retain their own schemas and validation rules.
 
 ## JP Character Index
 
@@ -65,6 +71,12 @@ Use `scripts/preflight_check.ps1` when a single local gate is more convenient.
 ## AssetRipper
 
 AssetRipper source is pinned as a submodule. The fallback archive is verified before use. Overlay manifests validate both upstream source SHA-256 and replacement SHA-256; `.gitattributes` forces every overlay C# file to LF because replacement hashes are byte-sensitive on Windows.
+
+The patched source and exporter build are shared at
+`<workspace>/.ba-downloader/tools`, keyed by the AssetRipper commit, overlay, and wrapper
+fingerprints. They are not copied once per region or platform. The wheel source under
+`src/ba_downloader/infrastructure/extraction/assetripper/tool` is the only exporter
+wrapper source; repository builds and tests must reference it directly.
 
 Bundle planning scans Unity entries, deduplicates historical content by SHA-256, groups serialized/resource dependencies into strongly connected components and transitive closures, and targets 500 MiB batches. Shared dependencies may appear in multiple batches; an indivisible oversized closure runs separately with a warning.
 

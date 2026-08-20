@@ -1,7 +1,8 @@
 from collections.abc import Callable
 
+from ba_downloader.application.contracts.commands import AssetOperationOptions
 from ba_downloader.application.profiles import RegionProfile
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.character_index import CharacterIndexBuilderPort
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
@@ -22,7 +23,7 @@ class DownloadAssetsUseCase:
         workflow_profile: RegionProfile,
         cancellation: CancellationPort | None = None,
         character_index_builder_factory: Callable[
-            [RuntimeContext], CharacterIndexBuilderPort
+            [ExecutionContext], CharacterIndexBuilderPort
         ]
         | None = None,
     ) -> None:
@@ -32,7 +33,9 @@ class DownloadAssetsUseCase:
         self.cancellation = cancellation or NeverCancelled()
         self.character_index_builder_factory = character_index_builder_factory
 
-    def run(self, context: RuntimeContext) -> RuntimeContext:
+    def run(
+        self, context: ExecutionContext, options: AssetOperationOptions
+    ) -> ExecutionContext:
         self.cancellation.raise_if_cancelled()
         catalog = self.provider.load_catalog(context)
         self.cancellation.raise_if_cancelled()
@@ -41,11 +44,11 @@ class DownloadAssetsUseCase:
             catalog.context,
             resources,
         )
-        if catalog.context.asset_filter.predicates:
+        if options.asset_filter.predicates:
             entries = None
             if any(
                 predicate.field not in RESOURCE_FIELDS
-                for predicate in catalog.context.asset_filter.predicates
+                for predicate in options.asset_filter.predicates
             ):
                 if self.character_index_builder_factory is None:
                     raise LookupError(
@@ -60,16 +63,12 @@ class DownloadAssetsUseCase:
                 entries = builder.load(catalog.context).entries
             resources = AssetFilterService.apply(
                 resources,
-                catalog.context.asset_filter,
+                options.asset_filter,
                 character_entries=entries,
             )
-        if catalog.context.search:
-            resources = ResourceQueryService.search_name(
-                resources, catalog.context.search
-            )
-        filtered = ResourceQueryService.filter_type(
-            resources, catalog.context.resource_type
+        filtered = ResourceQueryService.filter_type(resources, options.resources)
+        self.downloader.verify_and_download(
+            filtered, catalog.context, concurrency=options.concurrency
         )
-        self.downloader.verify_and_download(filtered, catalog.context)
         self.cancellation.raise_if_cancelled()
         return catalog.context

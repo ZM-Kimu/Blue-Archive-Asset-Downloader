@@ -10,34 +10,27 @@ from ba_downloader.api.files import (
     FileBoundaryError,
     FileRegistry,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.storage.cleanup import (
     BoundedStorageCleanup,
     StorageBoundaryError,
 )
+from support.fixtures import build_execution_context
 
 
-def _context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
+def _context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="cn",
-        threads=1,
         version="",
-        raw_dir=str(tmp_path / "raw"),
-        extract_dir=str(tmp_path / "extracted"),
-        temp_dir=str(tmp_path / "temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
 def test_file_registry_lists_only_configured_roots(tmp_path: Path) -> None:
     context = _context(tmp_path)
-    raw = Path(context.raw_dir)
-    raw.mkdir()
+    raw = context.workspace.raw
+    raw.mkdir(parents=True)
     (raw / "asset.bin").write_bytes(b"payload")
     registry = FileRegistry()
 
@@ -49,8 +42,8 @@ def test_file_registry_lists_only_configured_roots(tmp_path: Path) -> None:
 
 def test_file_registry_reuses_ids_and_evicts_old_entries(tmp_path: Path) -> None:
     context = _context(tmp_path)
-    raw = Path(context.raw_dir)
-    raw.mkdir()
+    raw = context.workspace.raw
+    raw.mkdir(parents=True)
     (raw / "a.bin").write_bytes(b"a")
     registry = FileRegistry(file_limit=1)
 
@@ -66,7 +59,7 @@ def test_file_registry_reuses_ids_and_evicts_old_entries(tmp_path: Path) -> None
 
 def test_cleanup_preview_limit_is_enforced(tmp_path: Path) -> None:
     context = _context(tmp_path)
-    Path(context.raw_dir).mkdir()
+    context.workspace.raw.mkdir(parents=True)
     registry = FileRegistry(preview_limit=1)
     registry.preview_cleanup(context, "context-1", ["raw"])
 
@@ -76,8 +69,8 @@ def test_cleanup_preview_limit_is_enforced(tmp_path: Path) -> None:
 
 def test_cleanup_targets_are_relative_and_revalidated(tmp_path: Path) -> None:
     context = _context(tmp_path)
-    raw = Path(context.raw_dir)
-    raw.mkdir()
+    raw = context.workspace.raw
+    raw.mkdir(parents=True)
     target_path = raw / "asset.bin"
     target_path.write_bytes(b"payload")
     preview = FileRegistry().preview_cleanup(context, "context-1", ["raw"])
@@ -89,7 +82,7 @@ def test_cleanup_targets_are_relative_and_revalidated(tmp_path: Path) -> None:
 
 def test_file_registry_rejects_path_traversal(tmp_path: Path) -> None:
     context = _context(tmp_path)
-    Path(context.raw_dir).mkdir()
+    context.workspace.raw.mkdir(parents=True)
 
     with pytest.raises(FileBoundaryError, match="escapes"):
         FileRegistry().list_entries(context, "raw", "../outside")
@@ -97,9 +90,9 @@ def test_file_registry_rejects_path_traversal(tmp_path: Path) -> None:
 
 def test_file_registry_rejects_symlink_escape(tmp_path: Path) -> None:
     context = _context(tmp_path)
-    raw = Path(context.raw_dir)
+    raw = context.workspace.raw
     outside = tmp_path / "outside"
-    raw.mkdir()
+    raw.mkdir(parents=True)
     outside.mkdir()
     (outside / "secret.txt").write_text("secret", encoding="utf-8")
     link = raw / "escape"
@@ -114,9 +107,9 @@ def test_file_registry_rejects_symlink_escape(tmp_path: Path) -> None:
 
 def test_cleanup_rejects_symlink_replaced_after_preview(tmp_path: Path) -> None:
     context = _context(tmp_path)
-    raw = Path(context.raw_dir)
+    raw = context.workspace.raw
     outside = tmp_path / "outside.txt"
-    raw.mkdir()
+    raw.mkdir(parents=True)
     outside.write_text("secret", encoding="utf-8")
     target = raw / "asset.bin"
     target.write_text("payload", encoding="utf-8")
@@ -135,8 +128,8 @@ def test_cleanup_rejects_symlink_replaced_after_preview(tmp_path: Path) -> None:
 def test_old_snapshot_preview_protects_current_runtime_and_schema(
     tmp_path: Path,
 ) -> None:
-    context = _context(tmp_path).with_updates(version="current-runtime")
-    state = tmp_path / ".state"
+    context = _context(tmp_path).resolve_resource_version("current-runtime")
+    state = context.workspace.state
     for version in ("current-runtime", "old-runtime"):
         root = state / "runtime" / version
         root.mkdir(parents=True)

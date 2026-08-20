@@ -17,27 +17,17 @@ from ba_downloader.api.jobs import JobManager
 from ba_downloader.api.services import ApiServices
 from ba_downloader.api.state import ContextRegistry
 from ba_downloader.api.streams import job_event_stream
-from ba_downloader.application.operations import (
-    ApplicationOperation,
-    ApplicationOperationCommand,
-)
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.application.contracts import AssetsExtractCommand
+from ba_downloader.domain.models.execution import ExecutionContext
+from support import build_execution_context
 
 
-def _context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
-        "cn",
-        1,
-        "",
-        str(tmp_path / "raw"),
-        str(tmp_path / "extracted"),
-        str(tmp_path / ".state/temp"),
-        ("table",),
-        "",
-        1,
-        (),
-        (),
-        str(tmp_path),
+def _context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
+        region="cn",
+        version="",
+        max_retries=1,
     )
 
 
@@ -116,7 +106,7 @@ def test_processing_status_is_emitted_as_independent_field() -> None:
 def test_job_stream_starts_with_current_snapshot(tmp_path: Path) -> None:
     jobs = JobManager()
     job = jobs.submit(
-        ApplicationOperationCommand(ApplicationOperation.extract),
+        AssetsExtractCommand(),
         _context(tmp_path),
         "context-1",
     )
@@ -129,7 +119,7 @@ def test_job_stream_starts_with_current_snapshot(tmp_path: Path) -> None:
 def test_shutdown_signal_closes_job_stream(tmp_path: Path) -> None:
     jobs = JobManager()
     job = jobs.submit(
-        ApplicationOperationCommand(ApplicationOperation.extract),
+        AssetsExtractCommand(),
         _context(tmp_path),
         "context-1",
     )

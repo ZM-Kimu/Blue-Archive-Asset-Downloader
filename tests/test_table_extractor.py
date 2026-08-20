@@ -10,10 +10,10 @@ from zipfile import ZipFile
 import flatbuffers
 import pytest
 
-from ba_downloader.bootstrap.region_profiles import (
-    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+from ba_downloader.bootstrap.region_gateways import (
+    DEFAULT_REGION_GATEWAY_REGISTRY,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.table.codecs import (
     TablePayloadCodecAdapter,
 )
@@ -34,12 +34,13 @@ from ba_downloader.infrastructure.schema.flatbuffer.generator import (
     CompileFlatBufferToPython,
 )
 from ba_downloader.infrastructure.schema.flatbuffer.parser import FlatBufferCSParser
+from support.fixtures import build_execution_context
 
 
-def _table_profile(context: RuntimeContext):
-    return DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
+def _table_profile(context: ExecutionContext):
+    return DEFAULT_REGION_GATEWAY_REGISTRY.resolve(
         context.region
-    ).table_profile_factory(context)
+    ).tables.extraction_profile(context, None)
 
 
 class RecordingLogger:
@@ -58,20 +59,12 @@ class RecordingLogger:
         self.error_messages.append(message)
 
 
-def _build_context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
-        region="jp",
-        threads=4,
+def _build_context(tmp_path: Path, *, region: str = "jp") -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
+        region=region,
         version="1.0.0",
-        raw_dir=str(tmp_path / "Raw"),
-        extract_dir=str(tmp_path / "Extracted"),
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
@@ -145,7 +138,7 @@ def _create_empty_memorypack_data_package(memorypack_data_dir: Path) -> None:
 
 
 def _write_memorypack_formatter_sidecar(extract_dir: Path, payload: dict) -> None:
-    dumps_dir = extract_dir / "Dumps"
+    dumps_dir = extract_dir / "dumps"
     dumps_dir.mkdir(parents=True, exist_ok=True)
     (dumps_dir / "memorypack_formatters.json").write_text(
         json.dumps(payload),
@@ -279,8 +272,8 @@ def _build_character_excel_table_payload() -> bytes:
 def test_table_extractor_processes_generated_flat_buffer_data_from_directory(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="cn")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="cn")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
 
     extractor = TableExtractor.from_context(
@@ -301,10 +294,10 @@ def test_table_extractor_processes_generated_flat_buffer_data_from_directory(
 def test_cn_extract_zip_file_preserves_legacy_ground_archives_as_raw(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="cn")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="cn")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(table_dir / "sb_02_desertcity_p01_e.zip", "w") as archive:
         archive.writestr("GroundGridFlat.bytes", b"raw-ground-grid")
@@ -312,7 +305,7 @@ def test_cn_extract_zip_file_preserves_legacy_ground_archives_as_raw(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir) / "Table"),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         context=context,
@@ -322,8 +315,7 @@ def test_cn_extract_zip_file_preserves_legacy_ground_archives_as_raw(
     extractor.extract_zip_file("sb_02_desertcity_p01_e.zip")
 
     output_path = (
-        Path(context.extract_dir)
-        / "Table"
+        context.workspace.extracted_table_semantic
         / "sb_02_desertcity_p01_e"
         / "GroundGridFlat.bytes"
     )
@@ -335,9 +327,9 @@ def test_extract_zip_file_synthesizes_missing_excel_table_wrapper(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_row_only_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     encrypted_payload = xor_with_key(
         "CharacterExcelTable",
@@ -349,7 +341,7 @@ def test_extract_zip_file_synthesizes_missing_excel_table_wrapper(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         context=context,
@@ -358,7 +350,11 @@ def test_extract_zip_file_synthesizes_missing_excel_table_wrapper(
 
     extractor.extract_zip_file("Excel.zip")
 
-    output_path = Path(context.extract_dir) / "Excel" / "CharacterExcelTable.json"
+    output_path = (
+        context.workspace.extracted_table_semantic
+        / "Excel"
+        / "CharacterExcelTable.json"
+    )
     assert json.loads(output_path.read_text(encoding="utf8")) == [{}]
     assert logger.warn_messages == []
     assert logger.error_messages == []
@@ -367,10 +363,10 @@ def test_extract_zip_file_synthesizes_missing_excel_table_wrapper(
 def test_extract_zip_file_warns_when_synthetic_excel_table_fallback_fails(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_row_only_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(table_dir / "Excel.zip", "w") as archive:
         archive.writestr("characterexceltable.bytes", b"not-a-flatbuffer")
@@ -378,7 +374,7 @@ def test_extract_zip_file_warns_when_synthetic_excel_table_fallback_fails(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         context=context,
@@ -393,7 +389,9 @@ def test_extract_zip_file_warns_when_synthetic_excel_table_fallback_fails(
     )
     assert not any("ExcelDB.db" in message for message in logger.warn_messages)
     assert not (
-        Path(context.extract_dir) / "Excel" / "CharacterExcelTable.json"
+        context.workspace.extracted_table_semantic
+        / "Excel"
+        / "CharacterExcelTable.json"
     ).exists()
 
 
@@ -401,10 +399,10 @@ def test_extract_zip_file_uses_compact_json_for_large_table_payloads(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="cn")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="cn")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     encrypted_payload = xor_with_key(
         "CharacterExcelTable",
@@ -417,7 +415,7 @@ def test_extract_zip_file_uses_compact_json_for_large_table_payloads(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         context=context,
@@ -426,14 +424,18 @@ def test_extract_zip_file_uses_compact_json_for_large_table_payloads(
 
     extractor.extract_zip_file("Excel.zip")
 
-    output_path = Path(context.extract_dir) / "Excel" / "CharacterExcelTable.json"
+    output_path = (
+        context.workspace.extracted_table_semantic
+        / "Excel"
+        / "CharacterExcelTable.json"
+    )
     assert output_path.read_text(encoding="utf8") == "[{}]"
 
 
 def test_table_extractor_raises_when_flat_buffer_data_directory_is_missing(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="cn")
+    context = _build_context(tmp_path, region="cn")
 
     with pytest.raises(
         FileNotFoundError, match="FlatBufferData directory does not exist"
@@ -444,12 +446,12 @@ def test_table_extractor_raises_when_flat_buffer_data_directory_is_missing(
 def test_extract_db_file_decodes_cn_memorypack_blob_with_formatter_sidecar(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="cn")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="cn")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    _create_empty_memorypack_data_package(Path(context.extract_dir) / "MemoryPackData")
+    _create_empty_memorypack_data_package(context.workspace.memorypack_schemas)
     _write_memorypack_formatter_sidecar(
-        Path(context.extract_dir),
+        context.workspace.extracted,
         {
             "version": 1,
             "formatters": [
@@ -462,7 +464,7 @@ def test_extract_db_file_decodes_cn_memorypack_blob_with_formatter_sidecar(
             ],
         },
     )
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     _create_blob_database(
         table_dir,
         "LevelSkillDataDBSchema.db",
@@ -473,7 +475,7 @@ def test_extract_db_file_decodes_cn_memorypack_blob_with_formatter_sidecar(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         context=context,
@@ -482,7 +484,11 @@ def test_extract_db_file_decodes_cn_memorypack_blob_with_formatter_sidecar(
 
     assert extractor.extract_db_file("LevelSkillDataDBSchema.db")
 
-    output_path = Path(context.extract_dir) / "LevelSkillDataDBSchema" / "Enemy.json"
+    output_path = (
+        context.workspace.extracted_table_semantic
+        / "LevelSkillDataDBSchema"
+        / "Enemy.json"
+    )
     rows = json.loads(output_path.read_text(encoding="utf8"))
     assert rows == [
         {
@@ -500,12 +506,12 @@ def test_extract_db_file_decodes_cn_memorypack_blob_with_formatter_sidecar(
 def test_extract_db_file_prefers_full_skill_visual_formatter_sidecar(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="cn")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="cn")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    _create_empty_memorypack_data_package(Path(context.extract_dir) / "MemoryPackData")
+    _create_empty_memorypack_data_package(context.workspace.memorypack_schemas)
     _write_memorypack_formatter_sidecar(
-        Path(context.extract_dir),
+        context.workspace.extracted,
         {
             "version": 1,
             "formatters": [
@@ -530,7 +536,7 @@ def test_extract_db_file_prefers_full_skill_visual_formatter_sidecar(
             ],
         },
     )
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     _create_blob_database(
         table_dir,
         "SkillVisualEffectDataDBSchema.db",
@@ -549,7 +555,7 @@ def test_extract_db_file_prefers_full_skill_visual_formatter_sidecar(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         context=context,
@@ -559,7 +565,9 @@ def test_extract_db_file_prefers_full_skill_visual_formatter_sidecar(
     assert extractor.extract_db_file("SkillVisualEffectDataDBSchema.db")
 
     output_path = (
-        Path(context.extract_dir) / "SkillVisualEffectDataDBSchema" / "Challenge.json"
+        context.workspace.extracted_table_semantic
+        / "SkillVisualEffectDataDBSchema"
+        / "Challenge.json"
     )
     rows = json.loads(output_path.read_text(encoding="utf8"))
     decoded = rows[0]["Bytes"]
@@ -586,11 +594,11 @@ def test_extract_db_file_decodes_logic_effect_blob_with_formatter_sidecar(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    _create_empty_memorypack_data_package(Path(context.extract_dir) / "MemoryPackData")
-    _write_logic_effect_sidecar(Path(context.extract_dir))
-    table_dir = Path(context.raw_dir) / "Table"
+    _create_empty_memorypack_data_package(context.workspace.memorypack_schemas)
+    _write_logic_effect_sidecar(context.workspace.extracted)
+    table_dir = context.workspace.raw_tables
     _create_blob_database(
         table_dir,
         "LogicEffectDataDBSchema.db",
@@ -601,7 +609,7 @@ def test_extract_db_file_decodes_logic_effect_blob_with_formatter_sidecar(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         context=context,
@@ -611,7 +619,9 @@ def test_extract_db_file_decodes_logic_effect_blob_with_formatter_sidecar(
     assert extractor.extract_db_file("LogicEffectDataDBSchema.db")
 
     output_path = (
-        Path(context.extract_dir) / "LogicEffectDataDBSchema" / "LogicEffect_PC.json"
+        context.workspace.extracted_table_semantic
+        / "LogicEffectDataDBSchema"
+        / "LogicEffect_PC.json"
     )
     rows = json.loads(output_path.read_text(encoding="utf8"))
     assert rows[0]["Bytes"] == {
@@ -626,14 +636,10 @@ def test_extract_db_file_decodes_logic_effect_blob_with_formatter_sidecar(
 def test_extract_db_file_deduplicates_cn_memorypack_fallback_warnings(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(
-        region="cn",
-        workspace_mode="v3",
-        temp_dir=str(tmp_path / "cn" / "android" / ".state" / "temp"),
-    )
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="cn")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     _create_blob_database(
         table_dir,
         "LogicEffectDataDBSchema.db",
@@ -647,7 +653,7 @@ def test_extract_db_file_deduplicates_cn_memorypack_fallback_warnings(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         context=context,
@@ -657,7 +663,9 @@ def test_extract_db_file_deduplicates_cn_memorypack_fallback_warnings(
     assert extractor.extract_db_file("LogicEffectDataDBSchema.db")
 
     output_path = (
-        Path(context.extract_dir) / "LogicEffectDataDBSchema" / "LogicEffect_PC.json"
+        context.workspace.extracted_table_semantic
+        / "LogicEffectDataDBSchema"
+        / "LogicEffect_PC.json"
     )
     rows = json.loads(output_path.read_text(encoding="utf8"))
     assert rows[0]["Bytes"]["__memorypack_error__"] == (
@@ -705,7 +713,7 @@ def test_extract_db_file_deduplicates_cn_memorypack_fallback_warnings(
 def test_jp_table_payload_router_routes_known_dao_blobs_without_partial_fallback() -> (
     None
 ):
-    context = _build_context(Path(".")).with_updates(region="jp")
+    context = _build_context(Path("."), region="jp")
     router = _table_profile(context).payload_router
 
     route = router.resolve_database_blob(
@@ -722,7 +730,7 @@ def test_jp_table_payload_router_routes_known_dao_blobs_without_partial_fallback
 def test_cn_legacy_table_payload_router_routes_known_dao_blobs_with_partial_fallback() -> (
     None
 ):
-    context = _build_context(Path(".")).with_updates(region="cn")
+    context = _build_context(Path("."), region="cn")
     router = _table_profile(context).payload_router
 
     route = router.resolve_database_blob(
@@ -762,10 +770,10 @@ def test_table_payload_router_keeps_excel_and_unknown_blobs_on_flatbuffer_path()
 def test_extract_db_file_partially_decodes_skill_visual_blob_without_formatter_sidecar(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="cn")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="cn")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     _create_blob_database(
         table_dir,
         "SkillVisualEffectDataDBSchema.db",
@@ -784,7 +792,7 @@ def test_extract_db_file_partially_decodes_skill_visual_blob_without_formatter_s
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         context=context,
@@ -794,7 +802,9 @@ def test_extract_db_file_partially_decodes_skill_visual_blob_without_formatter_s
     assert extractor.extract_db_file("SkillVisualEffectDataDBSchema.db")
 
     output_path = (
-        Path(context.extract_dir) / "SkillVisualEffectDataDBSchema" / "Challenge.json"
+        context.workspace.extracted_table_semantic
+        / "SkillVisualEffectDataDBSchema"
+        / "Challenge.json"
     )
     rows = json.loads(output_path.read_text(encoding="utf8"))
     decoded = rows[0]["Bytes"]
@@ -818,10 +828,10 @@ def test_extract_db_file_partially_decodes_skill_visual_blob_without_formatter_s
 def test_extract_db_file_keeps_partial_memorypack_decode_out_of_warning_log(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="cn")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="cn")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     partial_payload = (
         _skill_visual_payload(
             "Buff_AttackPower_Ally_10s_150_Ratio_SkillVisual01",
@@ -844,7 +854,7 @@ def test_extract_db_file_keeps_partial_memorypack_decode_out_of_warning_log(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         context=context,
@@ -854,7 +864,9 @@ def test_extract_db_file_keeps_partial_memorypack_decode_out_of_warning_log(
     assert extractor.extract_db_file("SkillVisualEffectDataDBSchema.db")
 
     output_path = (
-        Path(context.extract_dir) / "SkillVisualEffectDataDBSchema" / "Challenge.json"
+        context.workspace.extracted_table_semantic
+        / "SkillVisualEffectDataDBSchema"
+        / "Challenge.json"
     )
     rows = json.loads(output_path.read_text(encoding="utf8"))
     decoded = rows[0]["Bytes"]
@@ -879,9 +891,9 @@ def test_extract_zip_file_warns_with_explicit_processing_failures(
     expected_fragment: str,
 ) -> None:
     context = _build_context(tmp_path)
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     zip_path = table_dir / "Excel.zip"
     with ZipFile(zip_path, "w") as archive:
@@ -890,7 +902,7 @@ def test_extract_zip_file_warns_with_explicit_processing_failures(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -906,7 +918,7 @@ def test_extract_zip_file_warns_with_explicit_processing_failures(
 
     assert any(expected_fragment in message for message in logger.warn_messages)
     assert logger.warn_messages[-1] == "Skipped 1 entries while extracting Excel.zip."
-    assert not (Path(context.extract_dir) / "Excel").exists()
+    assert not (context.workspace.extracted_table_semantic / "Excel").exists()
 
 
 def test_extract_zip_file_summarizes_jp_stale_excel_entries(
@@ -914,9 +926,9 @@ def test_extract_zip_file_summarizes_jp_stale_excel_entries(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(table_dir / "Excel.zip", "w") as archive:
         archive.writestr("minigamecardexceltable.bytes", b"stale")
@@ -924,7 +936,7 @@ def test_extract_zip_file_summarizes_jp_stale_excel_entries(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -948,10 +960,10 @@ def test_extract_zip_file_summarizes_jp_stale_excel_entries(
 
 
 def test_extract_zip_file_writes_excel_artifact(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(table_dir / "Excel.zip", "w") as archive:
         archive.writestr(
@@ -961,7 +973,7 @@ def test_extract_zip_file_writes_excel_artifact(tmp_path: Path) -> None:
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -969,7 +981,11 @@ def test_extract_zip_file_writes_excel_artifact(tmp_path: Path) -> None:
 
     extractor.extract_zip_file("Excel.zip")
 
-    output_path = Path(context.extract_dir) / "Excel" / "CharacterExcelTable.json"
+    output_path = (
+        context.workspace.extracted_table_semantic
+        / "Excel"
+        / "CharacterExcelTable.json"
+    )
     assert output_path.is_file()
     assert json.loads(output_path.read_text(encoding="utf8")) == [{}]
     assert logger.warn_messages == []
@@ -977,12 +993,12 @@ def test_extract_zip_file_writes_excel_artifact(tmp_path: Path) -> None:
 
 
 def test_gl_extract_table_decodes_catalog_and_preserves_hash(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    _create_empty_memorypack_data_package(Path(context.extract_dir) / "MemoryPackData")
+    _create_empty_memorypack_data_package(context.workspace.memorypack_schemas)
     _write_memorypack_formatter_sidecar(
-        Path(context.extract_dir),
+        context.workspace.extracted,
         {
             "version": 1,
             "formatters": [
@@ -995,13 +1011,13 @@ def test_gl_extract_table_decodes_catalog_and_preserves_hash(tmp_path: Path) -> 
             ],
         },
     )
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     (table_dir / "TableCatalog.bytes").write_bytes(b"\x00")
     (table_dir / "TableCatalog.hash").write_bytes(b"catalog-v1")
 
     logger = RecordingLogger()
-    output_dir = Path(context.extract_dir) / "Table"
+    output_dir = context.workspace.extracted_table_semantic
     extractor = TableExtractor(
         str(table_dir),
         str(output_dir),
@@ -1033,16 +1049,16 @@ def test_gl_extract_zip_file_preserves_known_minigame_payloads(
     tmp_path: Path,
     entry_name: str,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(table_dir / "Excel.zip", "w") as archive:
         archive.writestr(entry_name, b"raw-minigame")
 
     logger = RecordingLogger()
-    output_dir = Path(context.extract_dir) / "Table"
+    output_dir = context.workspace.extracted_table_semantic
     extractor = TableExtractor(
         str(table_dir),
         str(output_dir),
@@ -1059,16 +1075,16 @@ def test_gl_extract_zip_file_preserves_known_minigame_payloads(
 
 
 def test_gl_extract_zip_file_preserves_test_archive_as_raw(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(table_dir / "MovingAreaTestMap.zip", "w") as archive:
         archive.writestr("movingareatestmap.bytes", b"raw-test-map")
 
     logger = RecordingLogger()
-    output_dir = Path(context.extract_dir) / "Table"
+    output_dir = context.workspace.extracted_table_semantic
     extractor = TableExtractor(
         str(table_dir),
         str(output_dir),
@@ -1087,10 +1103,10 @@ def test_gl_extract_zip_file_preserves_test_archive_as_raw(tmp_path: Path) -> No
 
 
 def test_extract_zip_file_reports_entry_progress(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(table_dir / "Battle.zip", "w") as archive:
         archive.writestr("first.bin", b"first")
@@ -1099,7 +1115,7 @@ def test_extract_zip_file_reports_entry_progress(tmp_path: Path) -> None:
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1126,10 +1142,10 @@ def test_extract_zip_file_writes_raw_sidecar_entries(
     entry_name: str,
     payload: bytes,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(table_dir / archive_name, "w") as archive:
         archive.writestr(entry_name, payload)
@@ -1137,7 +1153,7 @@ def test_extract_zip_file_writes_raw_sidecar_entries(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1146,7 +1162,9 @@ def test_extract_zip_file_writes_raw_sidecar_entries(
     extractor.extract_zip_file(archive_name)
 
     output_path = (
-        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+        context.workspace.extracted_table_semantic
+        / archive_name.removesuffix(".zip")
+        / entry_name
     )
     assert output_path.read_bytes() == payload
     assert logger.warn_messages == []
@@ -1154,10 +1172,10 @@ def test_extract_zip_file_writes_raw_sidecar_entries(
 
 
 def test_extract_zip_file_writes_ground_grid_patch_artifact(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     inner_zip_buffer = BytesIO()
@@ -1175,7 +1193,7 @@ def test_extract_zip_file_writes_ground_grid_patch_artifact(tmp_path: Path) -> N
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1184,7 +1202,7 @@ def test_extract_zip_file_writes_ground_grid_patch_artifact(tmp_path: Path) -> N
     extractor.extract_zip_file("TablePatchPack_GroundGrid_11.zip")
 
     output_path = (
-        Path(context.extract_dir)
+        context.workspace.extracted_table_semantic
         / "TablePatchPack_GroundGrid_11"
         / "sb_02_trainroof_p01_d"
         / "GroundGridFlat.json"
@@ -1200,9 +1218,9 @@ def test_extract_zip_file_uses_catalog_case_for_ground_grid_password(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     inner_zip_buffer = BytesIO()
@@ -1230,7 +1248,7 @@ def test_extract_zip_file_uses_catalog_case_for_ground_grid_password(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1242,7 +1260,7 @@ def test_extract_zip_file_uses_catalog_case_for_ground_grid_password(
     )
 
     output_path = (
-        Path(context.extract_dir)
+        context.workspace.extracted_table_semantic
         / "TablePatchPack_GroundGrid_6"
         / "sb_01_redwinterstreet_p01_d_arena"
         / "GroundGridFlat.json"
@@ -1256,10 +1274,10 @@ def test_extract_zip_file_preserves_bad_password_ground_grid_inner_zip(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     inner_zip_buffer = BytesIO()
@@ -1285,7 +1303,7 @@ def test_extract_zip_file_preserves_bad_password_ground_grid_inner_zip(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1294,7 +1312,7 @@ def test_extract_zip_file_preserves_bad_password_ground_grid_inner_zip(
     extractor.extract_zip_file("TablePatchPack_GroundGrid_11.zip")
 
     encrypted_output = (
-        Path(context.extract_dir)
+        context.workspace.extracted_table_semantic
         / "TablePatchPack_GroundGrid_11"
         / "_encrypted"
         / "bad_grid.zip"
@@ -1307,10 +1325,10 @@ def test_extract_zip_file_preserves_bad_password_ground_grid_inner_zip(
 def test_extract_zip_file_reports_ground_grid_entry_start_progress(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     inner_zip_buffer = BytesIO()
@@ -1329,7 +1347,7 @@ def test_extract_zip_file_reports_ground_grid_entry_start_progress(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1347,9 +1365,9 @@ def test_extract_zip_file_reports_ground_grid_entry_start_progress(
 
 def test_extract_db_file_reports_table_progress(tmp_path: Path) -> None:
     context = _build_context(tmp_path)
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(table_dir / "Simple.db") as connection:
         connection.execute('CREATE TABLE "First" (Key TEXT)')
@@ -1358,7 +1376,7 @@ def test_extract_db_file_reports_table_progress(tmp_path: Path) -> None:
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
     )
@@ -1376,10 +1394,10 @@ def test_extract_db_file_reports_table_progress(tmp_path: Path) -> None:
 
 def test_extract_zip_file_writes_ground_stage_semantic_json(tmp_path: Path) -> None:
     context = _build_context(tmp_path)
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    _write_stage_save_data_sidecar(Path(context.extract_dir))
-    table_dir = Path(context.raw_dir) / "Table"
+    _write_stage_save_data_sidecar(context.workspace.extracted)
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     inner_zip_buffer = BytesIO()
@@ -1397,7 +1415,7 @@ def test_extract_zip_file_writes_ground_stage_semantic_json(tmp_path: Path) -> N
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
     )
@@ -1405,7 +1423,7 @@ def test_extract_zip_file_writes_ground_stage_semantic_json(tmp_path: Path) -> N
     extractor.extract_zip_file("TablePatchPack_GroundStage_1.zip")
 
     output_path = (
-        Path(context.extract_dir)
+        context.workspace.extracted_table_semantic
         / "TablePatchPack_GroundStage_1"
         / "1052103_02_s3_02_excavation_p02_n"
         / "StageSaveData.json"
@@ -1424,11 +1442,11 @@ def test_extract_zip_file_uses_catalog_case_for_ground_stage_password(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    _write_stage_save_data_sidecar(Path(context.extract_dir))
-    table_dir = Path(context.raw_dir) / "Table"
+    _write_stage_save_data_sidecar(context.workspace.extracted)
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     inner_zip_buffer = BytesIO()
@@ -1450,7 +1468,7 @@ def test_extract_zip_file_uses_catalog_case_for_ground_stage_password(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1462,7 +1480,7 @@ def test_extract_zip_file_uses_catalog_case_for_ground_stage_password(
     )
 
     output_path = (
-        Path(context.extract_dir)
+        context.workspace.extracted_table_semantic
         / "TablePatchPack_GroundStage_1"
         / "en0010_veryhard"
         / "StageSaveData.json"
@@ -1475,10 +1493,10 @@ def test_extract_zip_file_uses_catalog_case_for_ground_stage_password(
 def test_extract_zip_file_writes_jp_ground_node_layer_patch_artifact(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     inner_zip_buffer = BytesIO()
@@ -1498,7 +1516,7 @@ def test_extract_zip_file_writes_jp_ground_node_layer_patch_artifact(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1507,7 +1525,7 @@ def test_extract_zip_file_writes_jp_ground_node_layer_patch_artifact(
     extractor.extract_zip_file("TablePatchPack_GroundNodeLayer_1.zip")
 
     output_path = (
-        Path(context.extract_dir)
+        context.workspace.extracted_table_semantic
         / "TablePatchPack_GroundNodeLayer_1"
         / "combattest_dtest00_nodelayer"
         / "GroundNodeLayerFlat.json"
@@ -1518,10 +1536,10 @@ def test_extract_zip_file_writes_jp_ground_node_layer_patch_artifact(
 
 
 def test_extract_zip_file_writes_gl_battle_stage_artifact(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     with ZipFile(table_dir / "sb_02_desertcity_p01_e.zip", "w") as archive:
@@ -1532,7 +1550,7 @@ def test_extract_zip_file_writes_gl_battle_stage_artifact(tmp_path: Path) -> Non
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1541,7 +1559,9 @@ def test_extract_zip_file_writes_gl_battle_stage_artifact(tmp_path: Path) -> Non
     extractor.extract_zip_file("sb_02_desertcity_p01_e.zip")
 
     output_path = (
-        Path(context.extract_dir) / "sb_02_desertcity_p01_e" / "GroundGridFlat.json"
+        context.workspace.extracted_table_semantic
+        / "sb_02_desertcity_p01_e"
+        / "GroundGridFlat.json"
     )
     assert output_path.is_file()
     assert json.loads(output_path.read_text(encoding="utf8")) == {}
@@ -1552,10 +1572,10 @@ def test_extract_zip_file_writes_gl_battle_stage_artifact(tmp_path: Path) -> Non
 def test_extract_zip_file_writes_gl_battle_stage_nodelayer_artifact(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     with ZipFile(table_dir / "sb_02_desertcity_p01_e_nodelayer.zip", "w") as archive:
@@ -1566,7 +1586,7 @@ def test_extract_zip_file_writes_gl_battle_stage_nodelayer_artifact(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1575,7 +1595,7 @@ def test_extract_zip_file_writes_gl_battle_stage_nodelayer_artifact(
     extractor.extract_zip_file("sb_02_desertcity_p01_e_nodelayer.zip")
 
     output_path = (
-        Path(context.extract_dir)
+        context.workspace.extracted_table_semantic
         / "sb_02_desertcity_p01_e_nodelayer"
         / "GroundNodeLayerFlat.json"
     )
@@ -1626,10 +1646,10 @@ def test_extract_zip_file_writes_additional_gl_ground_artifacts(
     expected_file_name: str,
     expected_json: dict[str, str],
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     with ZipFile(table_dir / archive_name, "w") as archive:
@@ -1638,7 +1658,7 @@ def test_extract_zip_file_writes_additional_gl_ground_artifacts(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1647,7 +1667,7 @@ def test_extract_zip_file_writes_additional_gl_ground_artifacts(
     extractor.extract_zip_file(archive_name)
 
     output_path = (
-        Path(context.extract_dir)
+        context.workspace.extracted_table_semantic
         / archive_name.removesuffix(".zip")
         / expected_file_name
     )
@@ -1660,10 +1680,10 @@ def test_extract_zip_file_writes_additional_gl_ground_artifacts(
 def test_extract_zip_file_writes_c_sb_hyakkiyakomatsuri_raw_artifact(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     archive_name = "C_sb_01_hyakkiyakomatsuri_p02_Little.zip"
@@ -1675,7 +1695,7 @@ def test_extract_zip_file_writes_c_sb_hyakkiyakomatsuri_raw_artifact(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1684,7 +1704,9 @@ def test_extract_zip_file_writes_c_sb_hyakkiyakomatsuri_raw_artifact(
     extractor.extract_zip_file(archive_name)
 
     output_path = (
-        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+        context.workspace.extracted_table_semantic
+        / archive_name.removesuffix(".zip")
+        / entry_name
     )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
@@ -1696,10 +1718,10 @@ def test_extract_zip_file_writes_c_sb_hyakkiyakomatsuri_raw_artifact(
 def test_extract_zip_file_writes_gl_numeric_stage_raw_payloads(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     archive_name = "1041104_03_s3_boss_02_desertcity_p01_d.zip"
@@ -1711,7 +1733,7 @@ def test_extract_zip_file_writes_gl_numeric_stage_raw_payloads(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1720,7 +1742,9 @@ def test_extract_zip_file_writes_gl_numeric_stage_raw_payloads(
     extractor.extract_zip_file(archive_name)
 
     output_path = (
-        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+        context.workspace.extracted_table_semantic
+        / archive_name.removesuffix(".zip")
+        / entry_name
     )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
@@ -1731,10 +1755,10 @@ def test_extract_zip_file_writes_gl_numeric_stage_raw_payloads(
 def test_extract_zip_file_writes_gl_eliminate_raid_raw_payloads(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     archive_name = (
@@ -1750,7 +1774,7 @@ def test_extract_zip_file_writes_gl_eliminate_raid_raw_payloads(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1759,7 +1783,9 @@ def test_extract_zip_file_writes_gl_eliminate_raid_raw_payloads(
     extractor.extract_zip_file(archive_name)
 
     output_path = (
-        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+        context.workspace.extracted_table_semantic
+        / archive_name.removesuffix(".zip")
+        / entry_name
     )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
@@ -1771,10 +1797,10 @@ def test_extract_zip_file_writes_gl_eliminate_raid_raw_payloads(
 def test_extract_zip_file_writes_gl_enemy_boss_script_raw_payloads(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     archive_name = "EN0006_Eliminate_LightArmor_Hard.zip"
@@ -1786,7 +1812,7 @@ def test_extract_zip_file_writes_gl_enemy_boss_script_raw_payloads(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1795,7 +1821,9 @@ def test_extract_zip_file_writes_gl_enemy_boss_script_raw_payloads(
     extractor.extract_zip_file(archive_name)
 
     output_path = (
-        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+        context.workspace.extracted_table_semantic
+        / archive_name.removesuffix(".zip")
+        / entry_name
     )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
@@ -1807,10 +1835,10 @@ def test_extract_zip_file_writes_gl_enemy_boss_script_raw_payloads(
 def test_extract_zip_file_writes_gl_script_test_raw_payloads(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region="gl")
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region="gl")
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     archive_name = "DamageTest_Street_LightArmor.zip"
@@ -1822,7 +1850,7 @@ def test_extract_zip_file_writes_gl_script_test_raw_payloads(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1831,7 +1859,9 @@ def test_extract_zip_file_writes_gl_script_test_raw_payloads(
     extractor.extract_zip_file(archive_name)
 
     output_path = (
-        Path(context.extract_dir) / archive_name.removesuffix(".zip") / entry_name
+        context.workspace.extracted_table_semantic
+        / archive_name.removesuffix(".zip")
+        / entry_name
     )
     assert output_path.is_file()
     assert output_path.read_bytes() == payload
@@ -1845,10 +1875,10 @@ def test_extract_zip_file_writes_mgs_logic_ground_mixed_artifacts(
     tmp_path: Path,
     region: str,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(region=region)
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    context = _build_context(tmp_path, region=region)
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     with ZipFile(table_dir / "MGSLogicGroundData.zip", "w") as archive:
@@ -1858,7 +1888,7 @@ def test_extract_zip_file_writes_mgs_logic_ground_mixed_artifacts(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
         table_profile=_table_profile(context),
@@ -1887,10 +1917,14 @@ def test_extract_zip_file_writes_mgs_logic_ground_mixed_artifacts(
     extractor.extract_zip_file("MGSLogicGroundData.zip")
 
     grid_output = (
-        Path(context.extract_dir) / "MGSLogicGroundData" / "GroundGridFlat.json"
+        context.workspace.extracted_table_semantic
+        / "MGSLogicGroundData"
+        / "GroundGridFlat.json"
     )
     raw_output = (
-        Path(context.extract_dir) / "MGSLogicGroundData" / "logicground_hard.bytes"
+        context.workspace.extracted_table_semantic
+        / "MGSLogicGroundData"
+        / "logicground_hard.bytes"
     )
     assert grid_output.is_file()
     assert json.loads(grid_output.read_text(encoding="utf8")) == {}
@@ -1905,9 +1939,9 @@ def test_extract_zip_file_skips_ground_stage_entries_with_zlib_errors(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
 
     inner_zip_buffer = BytesIO()
@@ -1929,7 +1963,7 @@ def test_extract_zip_file_skips_ground_stage_entries_with_zlib_errors(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
     )
@@ -1943,16 +1977,18 @@ def test_extract_zip_file_skips_ground_stage_entries_with_zlib_errors(
     assert logger.warn_messages[-1] == (
         "Skipped 1 entries while extracting TablePatchPack_GroundStage_1.zip."
     )
-    assert not (Path(context.extract_dir) / "TablePatchPack_GroundStage_1").exists()
+    assert not (
+        context.workspace.extracted_table_semantic / "TablePatchPack_GroundStage_1"
+    ).exists()
 
 
 def test_extract_zip_file_exports_rhythm_beatmap_as_raw_bytes(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(table_dir / "RhythmBeatmapData.zip", "w") as archive:
         archive.writestr("8040101_example.bytes", b"\xff\x00beatmap")
@@ -1960,7 +1996,7 @@ def test_extract_zip_file_exports_rhythm_beatmap_as_raw_bytes(
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
     )
@@ -1974,15 +2010,17 @@ def test_extract_zip_file_exports_rhythm_beatmap_as_raw_bytes(
     assert logger.warn_messages == []
     assert logger.error_messages == []
     assert (
-        Path(context.extract_dir) / "RhythmBeatmapData" / "8040101_example.bytes"
+        context.workspace.extracted_table_semantic
+        / "RhythmBeatmapData"
+        / "8040101_example.bytes"
     ).read_bytes() == b"\xff\x00beatmap"
 
 
 def test_extract_raw_zip_file_reports_entry_progress(tmp_path: Path) -> None:
     context = _build_context(tmp_path)
-    flatbuffer_data_dir = Path(context.extract_dir) / "FlatBufferData"
+    flatbuffer_data_dir = context.workspace.flatbuffer_schemas
     _create_flat_buffer_data_package(flatbuffer_data_dir)
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True, exist_ok=True)
     with ZipFile(table_dir / "RhythmBeatmapData.zip", "w") as archive:
         archive.writestr("first.bytes", b"first")
@@ -1991,7 +2029,7 @@ def test_extract_raw_zip_file_reports_entry_progress(tmp_path: Path) -> None:
     logger = RecordingLogger()
     extractor = TableExtractor(
         str(table_dir),
-        str(Path(context.extract_dir)),
+        str(context.workspace.extracted_table_semantic),
         str(flatbuffer_data_dir),
         logger=logger,
     )

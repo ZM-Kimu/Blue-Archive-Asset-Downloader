@@ -18,7 +18,7 @@ from ba_downloader.domain.models.asset import (
     AssetRecord,
     ChecksumSpec,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort
@@ -50,7 +50,6 @@ from ba_downloader.infrastructure.runtime.interrupts import (
     cancel_pending_futures,
     install_interrupt_handler,
 )
-from ba_downloader.infrastructure.storage.workspace_paths import raw_resource_path
 
 _AdaptiveDownloadState = AdaptiveDownloadState
 
@@ -92,23 +91,25 @@ class ResourceDownloader(ResourceDownloaderPort):
     def verify_and_download(
         self,
         resources: AssetCollection,
-        context: RuntimeContext,
+        context: ExecutionContext,
+        *,
+        concurrency: int,
     ) -> None:
         self._cancellation.raise_if_cancelled()
         if not resources:
             return
 
-        Path(context.temp_dir).mkdir(parents=True, exist_ok=True)
-        Path(context.raw_dir).mkdir(parents=True, exist_ok=True)
-        Path(context.extract_dir).mkdir(parents=True, exist_ok=True)
+        Path(context.workspace.temp_state).mkdir(parents=True, exist_ok=True)
+        Path(context.workspace.raw).mkdir(parents=True, exist_ok=True)
+        Path(context.workspace.extracted).mkdir(parents=True, exist_ok=True)
 
         resources.sorted_by_size()
-        pending = self._verify_resources(resources, context)
+        pending = self._verify_resources(resources, context, concurrency)
         if not pending:
             self.logger.info("All files have already been downloaded.")
             return
 
-        adaptive_state = self._create_adaptive_download_state(pending, context)
+        adaptive_state = self._create_adaptive_download_state(pending, concurrency)
         attempt = 0
         while pending and attempt <= context.max_retries:
             self._cancellation.raise_if_cancelled()
@@ -120,6 +121,7 @@ class ResourceDownloader(ResourceDownloaderPort):
                 pending,
                 context,
                 adaptive_state=adaptive_state,
+                concurrency=concurrency,
             )
             attempt += 1
 
@@ -137,7 +139,8 @@ class ResourceDownloader(ResourceDownloaderPort):
     def _verify_resources(
         self,
         resources: AssetCollection,
-        context: RuntimeContext,
+        context: ExecutionContext,
+        concurrency: int,
     ) -> list[AssetRecord]:
         if len(resources) == 1:
             stop_event = Event()
@@ -156,7 +159,7 @@ class ResourceDownloader(ResourceDownloaderPort):
             return [] if verified else [resource]
 
         pending: list[AssetRecord] = []
-        workers = min(max(context.threads, 1), max(len(resources), 1))
+        workers = min(max(concurrency, 1), max(len(resources), 1))
         stop_event = Event()
         executor = ThreadPoolExecutor(max_workers=workers)
 
@@ -189,12 +192,13 @@ class ResourceDownloader(ResourceDownloaderPort):
     def _download_resources(
         self,
         resources: list[AssetRecord],
-        context: RuntimeContext,
+        context: ExecutionContext,
         *,
         adaptive_state: _AdaptiveDownloadState | None = None,
+        concurrency: int,
     ) -> list[AssetRecord]:
         state = adaptive_state or self._create_adaptive_download_state(
-            resources, context
+            resources, concurrency
         )
         progress_total, download_mode = self._resolve_download_progress(resources)
         stop_event = Event()
@@ -275,7 +279,7 @@ class ResourceDownloader(ResourceDownloaderPort):
     def _download_resource_for_loop(
         self,
         resource: AssetRecord,
-        context: RuntimeContext,
+        context: ExecutionContext,
         progress_callback: Callable[[int], None] | None,
         should_stop: Callable[[], bool],
     ) -> AssetRecord:
@@ -316,9 +320,9 @@ class ResourceDownloader(ResourceDownloaderPort):
     def _create_adaptive_download_state(
         self,
         resources: list[AssetRecord],
-        context: RuntimeContext,
+        concurrency: int,
     ) -> _AdaptiveDownloadState:
-        upper_bound = min(max(context.threads, 1), max(len(resources), 1))
+        upper_bound = min(max(concurrency, 1), max(len(resources), 1))
         return _AdaptiveDownloadState(
             upper_bound=upper_bound,
             target_concurrency=upper_bound,
@@ -339,10 +343,13 @@ class ResourceDownloader(ResourceDownloaderPort):
     def _verify_resource(
         self,
         resource: AssetRecord,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> tuple[AssetRecord, bool]:
         self._cancellation.raise_if_cancelled()
-        asset_path = raw_resource_path(context, resource)
+        asset_path = context.workspace.raw_resource_path(
+            resource.asset_type.value,
+            resource.path,
+        )
         asset_path = self._canonicalize_existing_case_path(asset_path)
         if not asset_path.exists():
             return resource, False
@@ -427,12 +434,15 @@ class ResourceDownloader(ResourceDownloaderPort):
     def _download_resource(
         self,
         resource: AssetRecord,
-        context: RuntimeContext,
+        context: ExecutionContext,
         progress_callback: Callable[[int], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
     ) -> AssetRecord:
         self._cancellation.raise_if_cancelled()
-        asset_path = raw_resource_path(context, resource)
+        asset_path = context.workspace.raw_resource_path(
+            resource.asset_type.value,
+            resource.path,
+        )
         asset_path.parent.mkdir(parents=True, exist_ok=True)
         asset_path = self._canonicalize_existing_case_path(asset_path)
         if self._is_apk_entry_resource(resource):

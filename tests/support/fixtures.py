@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from ba_downloader.domain.models.asset import (
     AssetCollection,
@@ -9,9 +9,10 @@ from ba_downloader.domain.models.asset import (
     RegionCapabilities,
 )
 from ba_downloader.domain.models.character import CharacterIndex
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region import Platform, Region
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.workspace import WorkspaceLayout
 
 LogLevel = Literal["info", "warn", "error"]
 
@@ -98,36 +99,25 @@ class RecordingLogger:
         )
 
 
-def build_runtime_context(
+def build_execution_context(
     tmp_path: Path,
     *,
     region: Region = "jp",
     version: str = "1.0.0",
     platform: Platform = "android",
-    resource_type: tuple[str, ...] = ("table", "media", "bundle"),
-    search: tuple[str, ...] = (),
-    advanced_search: tuple[str, ...] = (),
-    **overrides: Any,
-) -> RuntimeContext:
-    values: dict[str, Any] = {
-        "region": region,
-        "threads": 1,
-        "version": version,
-        "raw_dir": str(tmp_path / "RawData"),
-        "extract_dir": str(tmp_path / "Extracted"),
-        "temp_dir": str(tmp_path / "Temp"),
-        "resource_type": resource_type,
-        "proxy_url": "",
-        "max_retries": 1,
-        "search": search,
-        "advanced_search": advanced_search,
-        "work_dir": str(tmp_path),
-        "platform": platform,
-        "platform_explicit": False,
-        "sqlcipher_key_hex": "",
-    }
-    values.update(overrides)
-    return RuntimeContext(**values)
+    proxy_url: str = "",
+    max_retries: int = 1,
+    sqlcipher_key: str = "",
+) -> ExecutionContext:
+    return ExecutionContext(
+        region=region,
+        platform=platform,
+        workspace=WorkspaceLayout.create(tmp_path, region, platform),
+        proxy_url=proxy_url,
+        max_retries=max_retries,
+        sqlcipher_key=sqlcipher_key,
+        resource_version=version or None,
+    )
 
 
 def build_asset_collection(
@@ -157,12 +147,12 @@ class StaticProvider:
     ) -> None:
         self.result = result
         self.capabilities = capabilities or RegionCapabilities()
-        self.calls: list[RuntimeContext] = []
+        self.calls: list[ExecutionContext] = []
 
     def get_capabilities(self) -> RegionCapabilities:
         return self.capabilities
 
-    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
+    def load_catalog(self, context: ExecutionContext) -> RegionCatalogResult:
         self.calls.append(context)
         return self.result
 
@@ -172,35 +162,27 @@ class DummyCharacterIndexBuilder:
         self,
         *,
         index_file_valid: bool = True,
-        search_results: list[str] | None = None,
         excel_resources: AssetCollection | None = None,
         index: CharacterIndex | None = None,
     ) -> None:
         self.index_file_valid = index_file_valid
-        self.search_results = search_results or ["Shiroko"]
         self.excel_resources = excel_resources
         self.index = index or CharacterIndex("", [])
-        self.build_calls: list[RuntimeContext] = []
-        self.search_calls: list[list[str]] = []
+        self.build_calls: list[ExecutionContext] = []
         self.verify_calls = 0
 
-    def build(self, context: RuntimeContext) -> None:
+    def build(self, context: ExecutionContext, **_: object) -> None:
         self.build_calls.append(context)
         self.index_file_valid = True
 
     def get_excel_resources(self, resources: AssetCollection) -> AssetCollection:
         return self.excel_resources or resources
 
-    def search(self, context: RuntimeContext, search_terms: list[str]) -> list[str]:
-        _ = context
-        self.search_calls.append(list(search_terms))
-        return self.search_results
-
-    def verify_index_file(self, context: RuntimeContext) -> bool:
+    def verify_index_file(self, context: ExecutionContext) -> bool:
         _ = context
         self.verify_calls += 1
         return self.index_file_valid
 
-    def load(self, context: RuntimeContext) -> CharacterIndex:
+    def load(self, context: ExecutionContext) -> CharacterIndex:
         _ = context
         return self.index

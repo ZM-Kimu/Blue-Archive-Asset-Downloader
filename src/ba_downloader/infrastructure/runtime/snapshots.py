@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import shutil
@@ -10,9 +9,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
+from ba_downloader.infrastructure.files.atomic import (
+    publish_staged_directory,
+    write_json_atomic,
+)
+from ba_downloader.infrastructure.files.checksum import calculate_sha256
 
 MANIFEST_NAME = "manifest.json"
 MANIFEST_SCHEMA_VERSION = 2
@@ -38,15 +42,15 @@ class RuntimeSnapshotStore:
         self.retained_versions = retained_versions
         self.cancellation = cancellation or NeverCancelled()
 
-    def version_root(self, context: RuntimeContext, version: str) -> Path:
+    def version_root(self, context: ExecutionContext, version: str) -> Path:
         return self._snapshot_root(context) / self._validate_version(version)
 
-    def runtime_dir(self, context: RuntimeContext, version: str) -> Path:
+    def runtime_dir(self, context: ExecutionContext, version: str) -> Path:
         return self.version_root(context, version) / RUNTIME_DIR_NAME
 
     def load(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         version: str,
     ) -> PreparedRuntimeAssets | None:
         runtime_dir = self.runtime_dir(context, version)
@@ -62,7 +66,7 @@ class RuntimeSnapshotStore:
     @contextmanager
     def staging_runtime(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         version: str,
     ) -> Iterator[Path]:
         with self.staging_directory(
@@ -75,7 +79,7 @@ class RuntimeSnapshotStore:
     @contextmanager
     def staging_directory(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         version: str,
         *,
         directory_name: str,
@@ -95,7 +99,7 @@ class RuntimeSnapshotStore:
 
     def publish_directory(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         version: str,
         staged_directory: Path,
         *,
@@ -103,14 +107,14 @@ class RuntimeSnapshotStore:
     ) -> Path:
         destination = self.version_root(context, version) / directory_name
         destination.parent.mkdir(parents=True, exist_ok=True)
-        self._replace_directory(staged_directory, destination)
+        publish_staged_directory(staged_directory, destination)
         self._write_version_manifest(context, version)
         self._prune(context, current_version=version)
         return destination
 
     def publish(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         version: str,
         staged_runtime_dir: Path,
         *,
@@ -146,9 +150,11 @@ class RuntimeSnapshotStore:
             "files": files,
             "provenance": dict(provenance or {"type": "direct_runtime"}),
         }
-        (staged_runtime_dir / MANIFEST_NAME).write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf8",
+        write_json_atomic(
+            staged_runtime_dir / MANIFEST_NAME,
+            manifest,
+            indent=2,
+            sort_keys=True,
         )
 
         final_runtime_dir = self.publish_directory(
@@ -166,7 +172,7 @@ class RuntimeSnapshotStore:
 
     def _validate_manifest(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         version: str,
         runtime_dir: Path,
         manifest: object,
@@ -220,7 +226,13 @@ class RuntimeSnapshotStore:
                 )
             if path.stat().st_size != expected_size:
                 raise ValueError(f"Runtime snapshot size mismatch: {relative_path}.")
-            if self._sha256(path) != expected_hash:
+            if (
+                calculate_sha256(
+                    path,
+                    on_chunk=self.cancellation.raise_if_cancelled,
+                )
+                != expected_hash
+            ):
                 raise ValueError(f"Runtime snapshot hash mismatch: {relative_path}.")
             validated_paths[relative_path] = path
 
@@ -269,11 +281,14 @@ class RuntimeSnapshotStore:
             relative_path = path.relative_to(runtime_dir).as_posix()
             files[relative_path] = {
                 "size": path.stat().st_size,
-                "sha256": self._sha256(path),
+                "sha256": calculate_sha256(
+                    path,
+                    on_chunk=self.cancellation.raise_if_cancelled,
+                ),
             }
         return files
 
-    def _prune(self, context: RuntimeContext, *, current_version: str) -> None:
+    def _prune(self, context: ExecutionContext, *, current_version: str) -> None:
         temp_dir = self._snapshot_root(context)
         managed: list[tuple[tuple[tuple[int, int | str], ...], Path]] = []
         if not temp_dir.is_dir():
@@ -310,46 +325,23 @@ class RuntimeSnapshotStore:
             if path not in keep:
                 shutil.rmtree(path)
 
-    @staticmethod
-    def _replace_directory(source: Path, destination: Path) -> None:
-        backup = destination.with_name(f".{destination.name}.replaced-{uuid4().hex}")
-        had_destination = destination.exists()
-        if had_destination:
-            destination.replace(backup)
-        try:
-            source.replace(destination)
-        except OSError:
-            if had_destination and backup.exists() and not destination.exists():
-                backup.replace(destination)
-            raise
-        else:
-            if backup.exists():
-                shutil.rmtree(backup)
-
     def _write_version_manifest(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         version: str,
     ) -> None:
         manifest_path = self.version_root(context, version) / VERSION_MANIFEST_NAME
-        temporary_path = manifest_path.with_name(
-            f".{manifest_path.name}.{uuid4().hex}.tmp"
+        write_json_atomic(
+            manifest_path,
+            {
+                "schema_version": MANIFEST_SCHEMA_VERSION,
+                "region": context.region,
+                "platform": context.platform,
+                "release_version": version,
+            },
+            indent=2,
+            sort_keys=True,
         )
-        temporary_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": MANIFEST_SCHEMA_VERSION,
-                    "region": context.region,
-                    "platform": context.platform,
-                    "release_version": version,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf8",
-        )
-        temporary_path.replace(manifest_path)
 
     @staticmethod
     def _resolve_relative_path(root: Path, relative_path: str) -> Path:
@@ -369,21 +361,8 @@ class RuntimeSnapshotStore:
         return version
 
     @staticmethod
-    def _snapshot_root(context: RuntimeContext) -> Path:
-        temp_root = Path(context.temp_dir)
-        return (
-            temp_root.parent / "runtime"
-            if context.workspace_mode == "v3"
-            else temp_root
-        )
-
-    def _sha256(self, path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                self.cancellation.raise_if_cancelled()
-                digest.update(chunk)
-        return digest.hexdigest()
+    def _snapshot_root(context: ExecutionContext) -> Path:
+        return context.workspace.runtime_state
 
     @staticmethod
     def _version_key(version: str) -> tuple[tuple[int, int | str], ...]:

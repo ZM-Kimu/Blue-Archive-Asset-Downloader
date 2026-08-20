@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, SecretStr
 
 from ba_downloader.api.state import ApiContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region import Platform, Region
-from ba_downloader.domain.models.runtime import RuntimeContext
 
 
 class StrictModel(BaseModel):
@@ -276,25 +275,22 @@ class CleanupPreviewResponse(StrictModel):
 
 def context_view(item: ApiContext) -> dict[str, object]:
     context = item.context
-    workspace = Path(context.work_dir)
-    if context.workspace_mode == "v3":
-        workspace = workspace.parents[1]
     return {
         "id": item.id,
         "region": context.region,
         "platform": context.platform,
-        "workspace": str(workspace),
+        "workspace": str(context.workspace.root),
         "proxy_configured": bool(context.proxy_url),
         "retries": context.max_retries,
-        "sqlcipher_key_configured": bool(context.sqlcipher_key_hex),
-        "resource_version": context.version or None,
+        "sqlcipher_key_configured": bool(context.sqlcipher_key),
+        "resource_version": context.resource_version,
         "created_at": item.created_at.isoformat(),
         "last_used_at": item.last_used_at.isoformat(),
     }
 
 
 def effective_context_view(
-    context: RuntimeContext, context_id: str
+    context: ExecutionContext, context_id: str
 ) -> dict[str, object]:
     now = "1970-01-01T00:00:00+00:00"
     return context_view(ApiContext(context_id, context, _epoch(), _epoch(), "")) | {

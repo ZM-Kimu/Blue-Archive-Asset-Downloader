@@ -1,19 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
-from pathlib import PurePosixPath
-from typing import Literal, TypeAlias
+from typing import TypeAlias
 
 from ba_downloader.domain.exceptions import ConfigError
 from ba_downloader.domain.models.asset_filter import AssetFilter
 from ba_downloader.domain.models.asset_type_selection import ResourceTypeSelection
-
-
-class AssetOperationKind(StrEnum):
-    sync = "assets.sync"
-    download = "assets.download"
-    extract = "assets.extract"
+from ba_downloader.domain.models.storage import StorageCleanupTarget
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,38 +44,14 @@ class BuildCharacterIndexCommand:
         _validate_concurrency(self.concurrency)
 
 
-class CleanupScope(StrEnum):
-    raw = "raw"
-    extracted = "extracted"
-    indexes = "indexes"
-    cache = "cache"
-    temp = "temp"
-    old_snapshots = "old-snapshots"
-    failed_staging = "failed-staging"
-    logs = "logs"
-
-
-CleanupTargetType = Literal["file", "directory"]
-
-
 @dataclass(frozen=True, slots=True)
-class CleanupTarget:
-    scope: CleanupScope
-    relative_path: PurePosixPath
-    expected_type: CleanupTargetType
-
-    def __post_init__(self) -> None:
-        if (
-            self.relative_path.is_absolute()
-            or self.relative_path == PurePosixPath(".")
-            or ".." in self.relative_path.parts
-        ):
-            raise ConfigError("Cleanup target path must be a safe relative path.")
+class CatalogRefreshCommand:
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class StorageCleanupCommand:
-    targets: tuple[CleanupTarget, ...]
+    targets: tuple[StorageCleanupTarget, ...]
 
     def __post_init__(self) -> None:
         if not self.targets:
@@ -94,6 +63,7 @@ ApplicationCommand: TypeAlias = (
     | AssetsDownloadCommand
     | AssetsExtractCommand
     | BuildCharacterIndexCommand
+    | CatalogRefreshCommand
     | StorageCleanupCommand
 )
 

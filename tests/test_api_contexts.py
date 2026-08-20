@@ -7,24 +7,17 @@ import pytest
 
 from ba_downloader.api.state import ContextCapacityError, ContextRegistry
 from ba_downloader.domain.models.asset import AssetCollection
-from ba_downloader.domain.models.asset_filter import AssetFilter
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
+from support import build_execution_context
 
 
-def _context(tmp_path: Path, *, proxy: str = "") -> RuntimeContext:
-    return RuntimeContext(
-        "cn",
-        30,
-        "",
-        str(tmp_path / "raw"),
-        str(tmp_path / "extracted"),
-        str(tmp_path / ".state/temp"),
-        ("table",),
-        proxy,
-        5,
-        (),
-        (),
-        str(tmp_path),
+def _context(tmp_path: Path, *, proxy: str = "") -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
+        region="cn",
+        version="",
+        proxy_url=proxy,
+        max_retries=5,
     )
 
 
@@ -59,14 +52,10 @@ def test_freeze_keeps_command_fields_out_of_immutable_context(tmp_path: Path) ->
 
     frozen = registry.freeze(
         item.id,
-        item.context.with_updates(
-            version="2.0.0",
-            threads=99,
-            asset_filter=AssetFilter.parse(["path~temporary"]),
-        ),
+        item.context.resolve_resource_version("2.0.0"),
         AssetCollection(),
     )
 
-    assert frozen.context.version == "2.0.0"
-    assert frozen.context.threads == item.context.threads
-    assert not frozen.context.asset_filter.predicates
+    assert frozen.context.resource_version == "2.0.0"
+    assert not hasattr(frozen.context, "threads")
+    assert not hasattr(frozen.context, "asset_filter")

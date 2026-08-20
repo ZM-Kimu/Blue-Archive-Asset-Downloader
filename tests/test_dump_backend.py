@@ -7,10 +7,10 @@ from zipfile import ZipFile
 
 import pytest
 
-from ba_downloader.bootstrap.region_profiles import (
-    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+from ba_downloader.bootstrap.region_gateways import (
+    DEFAULT_REGION_GATEWAY_REGISTRY,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.execution import EventCancellation, NeverCancelled
 from ba_downloader.domain.ports.process import ProcessCommand, ProcessResult
@@ -31,6 +31,7 @@ from ba_downloader.infrastructure.tools.dump_backend import (
     Cpp2IlDumpCsBackend,
     Cpp2ILSourceResolver,
 )
+from support.fixtures import build_execution_context
 
 
 class DummyHttpClient:
@@ -82,9 +83,9 @@ class HashMismatchArchiveHttpClient(ArchiveHttpClient):
 class StaticSourceResolver:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.contexts: list[RuntimeContext] = []
+        self.contexts: list[ExecutionContext] = []
 
-    def resolve(self, context: RuntimeContext) -> Path:
+    def resolve(self, context: ExecutionContext) -> Path:
         self.contexts.append(context)
         return self.root
 
@@ -112,20 +113,12 @@ class RecordingLogger:
         self.error_messages.append(message)
 
 
-def _build_context(tmp_path: Path, *, region: str = "jp") -> RuntimeContext:
-    return RuntimeContext(
+def _build_context(tmp_path: Path, *, region: str = "jp") -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region=region,
-        threads=1,
         version="1.2.3",
-        raw_dir=str(tmp_path / "Raw"),
-        extract_dir=str(tmp_path / "Extracted"),
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("table", "media", "bundle"),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
@@ -137,11 +130,11 @@ def _create_cpp2il_tree(root: Path) -> None:
 
 
 def _prepared_runtime(
-    context: RuntimeContext,
+    context: ExecutionContext,
     *,
     binary_name: str = "libil2cpp.so",
 ) -> PreparedRuntimeAssets:
-    runtime_dir = Path(context.temp_dir) / context.version / "Runtime"
+    runtime_dir = context.workspace.temp_state / context.resource_version / "Runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     binary_path = runtime_dir / binary_name
     binary_path.write_bytes(b"binary")
@@ -150,7 +143,7 @@ def _prepared_runtime(
     managers_path = runtime_dir / "globalgamemanagers"
     managers_path.write_bytes(b"Unity 2021.3.45f1")
     return PreparedRuntimeAssets(
-        version=context.version,
+        version=context.resource_version,
         root_dir=runtime_dir,
         binary_path=binary_path,
         metadata_path=metadata_path,
@@ -165,17 +158,17 @@ def test_default_dumper_policy_maps_regions_to_expected_backends(
     http_client = DummyHttpClient()
 
     assert isinstance(
-        DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("jp").dumper_backend_factory(
+        DEFAULT_REGION_GATEWAY_REGISTRY.resolve("jp").runtime.dump_backend(
             http_client, logger, NeverCancelled()
         ),
         Cpp2IlDumpCsBackend,
     )
-    gl_backend = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
-        "gl"
-    ).dumper_backend_factory(http_client, logger, NeverCancelled())
+    gl_backend = DEFAULT_REGION_GATEWAY_REGISTRY.resolve("gl").runtime.dump_backend(
+        http_client, logger, NeverCancelled()
+    )
     assert isinstance(gl_backend, Cpp2IlDumpCsBackend)
     assert isinstance(
-        DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("cn").dumper_backend_factory(
+        DEFAULT_REGION_GATEWAY_REGISTRY.resolve("cn").runtime.dump_backend(
             http_client, logger, NeverCancelled()
         ),
         CnMetadataRecoveryDumpBackend,
@@ -188,7 +181,7 @@ def test_schema_workflow_does_not_fallback_when_jp_backend_fails(
     class FailingBackend:
         def dump(
             self,
-            context: RuntimeContext,
+            context: ExecutionContext,
             output_dir: str,
             runtime_assets: PreparedRuntimeAssets,
         ) -> None:
@@ -215,7 +208,7 @@ def test_schema_workflow_discards_cancelled_staging_snapshot(
     class CancellingBackend:
         def dump(
             self,
-            context: RuntimeContext,
+            context: ExecutionContext,
             output_dir: str,
             runtime_assets: PreparedRuntimeAssets,
         ) -> None:
@@ -227,7 +220,7 @@ def test_schema_workflow_discards_cancelled_staging_snapshot(
 
     cancellation_event = Event()
     context = _build_context(tmp_path, region="jp")
-    dumps_dir = Path(context.extract_dir) / "Dumps"
+    dumps_dir = context.workspace.dumps
     dumps_dir.mkdir(parents=True)
     (dumps_dir / "dump.cs").write_text("previous", encoding="utf8")
     workflow = SchemaWorkflow(
@@ -241,7 +234,7 @@ def test_schema_workflow_discards_cancelled_staging_snapshot(
         workflow.dump(context, _prepared_runtime(context))
 
     assert (dumps_dir / "dump.cs").read_text(encoding="utf8") == "previous"
-    assert not (Path(context.extract_dir) / ".staging").exists()
+    assert not (context.workspace.extracted / ".staging").exists()
 
 
 def test_schema_workflow_reuses_matching_runtime_snapshot(
@@ -253,7 +246,7 @@ def test_schema_workflow_reuses_matching_runtime_snapshot(
     class Backend:
         def dump(
             self,
-            context: RuntimeContext,
+            context: ExecutionContext,
             output_dir: str,
             runtime_assets: PreparedRuntimeAssets,
         ) -> None:
@@ -264,8 +257,7 @@ def test_schema_workflow_reuses_matching_runtime_snapshot(
             output.mkdir(parents=True)
             (output / "dump.cs").write_text("dump", encoding="utf8")
 
-    def compile_artifacts(active_context: RuntimeContext) -> None:
-        root = Path(active_context.extract_dir)
+    def compile_artifacts(root: Path) -> None:
         for relative in ("schemas/flatbuffers", "schemas/memorypack"):
             directory = root / relative
             directory.mkdir(parents=True)
@@ -296,7 +288,7 @@ def test_schema_workflow_reuses_matching_runtime_snapshot(
     second.compile(context)
 
     assert dump_calls == 1
-    assert (Path(context.extract_dir) / "Dumps" / "dump.cs").read_text() == "dump"
+    assert (context.workspace.dumps / "dump.cs").read_text() == "dump"
 
 
 def test_schema_workflow_dump_requires_configured_backend(tmp_path: Path) -> None:
@@ -312,7 +304,7 @@ def test_schema_workflow_builds_supplemental_memorypack_formatters(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path)
-    dumps_dir = Path(context.extract_dir) / "Dumps"
+    dumps_dir = context.workspace.dumps
     dumps_dir.mkdir(parents=True, exist_ok=True)
     (dumps_dir / "dump.cs").write_text(
         """// Namespace: FlatData
@@ -427,12 +419,7 @@ def test_cpp2il_source_resolver_uses_cache_when_submodule_missing(
     )
 
     context = _build_context(tmp_path)
-    cache_root = (
-        Path(context.work_dir)
-        / ".ba-downloader"
-        / "tools"
-        / f"Cpp2IL-{CPP2IL_COMMIT[:12]}"
-    )
+    cache_root = context.workspace.tools_cache / f"Cpp2IL-{CPP2IL_COMMIT[:12]}"
     _create_cpp2il_tree(cache_root)
 
     resolver = Cpp2ILSourceResolver(DummyHttpClient(), NullLogger())
@@ -591,7 +578,7 @@ def test_cpp2il_backend_uses_single_net10_framework_and_logs_success_as_info(
     )
 
     def fake_ensure_exporter_project(
-        _context: RuntimeContext,
+        _context: ExecutionContext,
         _cpp2il_root: Path,
         framework: str,
     ) -> Path:
@@ -657,8 +644,8 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
     cpp2il_root = tmp_path / "fallback" / "Cpp2IL"
     source_resolver = StaticSourceResolver(cpp2il_root)
     final_metadata_path = (
-        Path(context.temp_dir)
-        / context.version
+        context.workspace.temp_state
+        / context.resource_version
         / "MetadataRecovery"
         / "global-metadata.standard-v29.dat"
     )
@@ -679,7 +666,7 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
         return ProcessResult(command, 0, "", "")
 
     def fake_ensure_exporter_project(
-        _context: RuntimeContext,
+        _context: ExecutionContext,
         _cpp2il_root: Path,
         framework: str,
         extra_source_templates=None,  # type: ignore[no-untyped-def]
@@ -783,12 +770,12 @@ def test_cn_metadata_recovery_backend_requires_prepared_metadata_and_binary(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, region="cn")
-    runtime_dir = Path(context.temp_dir) / context.version / "Runtime"
+    runtime_dir = context.workspace.temp_state / context.resource_version / "Runtime"
     runtime_dir.mkdir(parents=True)
     metadata_path = runtime_dir / "global-metadata.dat"
     metadata_path.write_bytes(b"metadata")
     runtime_assets = PreparedRuntimeAssets(
-        version=context.version,
+        version=context.resource_version,
         root_dir=runtime_dir,
         binary_path=runtime_dir / "libil2cpp.so",
         metadata_path=metadata_path,

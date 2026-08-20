@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.storage import StorageCleanupTarget
 
 
@@ -12,7 +12,7 @@ class StorageBoundaryError(ValueError):
 class BoundedStorageCleanup:
     def delete(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         target: StorageCleanupTarget,
     ) -> Path:
         root = self._roots(context)[target.scope]
@@ -30,12 +30,12 @@ class BoundedStorageCleanup:
         return candidate
 
     @staticmethod
-    def _roots(context: RuntimeContext) -> dict[str, Path]:
-        base = Path(context.work_dir).resolve()
+    def _roots(context: ExecutionContext) -> dict[str, Path]:
+        base = Path(context.workspace.base).resolve()
         state = base / ".state"
         return {
-            "raw": Path(context.raw_dir).resolve(),
-            "extracted": Path(context.extract_dir).resolve(),
+            "raw": Path(context.workspace.raw).resolve(),
+            "extracted": Path(context.workspace.extracted).resolve(),
             "indexes": base / "indexes",
             "cache": state / "cache",
             "temp": state / "temp",
@@ -46,7 +46,7 @@ class BoundedStorageCleanup:
 
     @staticmethod
     def _validate_category(
-        context: RuntimeContext, root: Path, candidate: Path, scope: str
+        context: ExecutionContext, root: Path, candidate: Path, scope: str
     ) -> None:
         relative = candidate.relative_to(root.resolve())
         if scope == "failed-staging" and not any(
@@ -56,7 +56,7 @@ class BoundedStorageCleanup:
         if scope != "old-snapshots" or len(relative.parts) < 2:
             return
         if relative.parts[0] == "runtime":
-            if relative.parts[1] == context.version:
+            if relative.parts[1] == context.resource_version:
                 raise StorageBoundaryError(
                     "Current runtime snapshot cannot be deleted."
                 )

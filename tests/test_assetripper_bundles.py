@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.progress import ProgressReporterPort
 from ba_downloader.infrastructure.extraction.assetripper.bundles import (
     AssetRipperBundleWorkflow,
@@ -50,25 +50,16 @@ from ba_downloader.infrastructure.extraction.assetripper.source import (
 from ba_downloader.infrastructure.extraction.threaded_runner import (
     ExtractionFailureError,
 )
-from support.fixtures import RecordingLogger
+from support.fixtures import RecordingLogger, build_execution_context
 
 
-def _context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
+def _context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="jp",
         platform="android",
-        threads=1,
         version="1",
-        raw_dir=str(tmp_path / "raw"),
-        extract_dir=str(tmp_path / "extracted"),
-        temp_dir=str(tmp_path / ".state" / "temp"),
-        resource_type=("bundle",),
-        proxy_url="",
         max_retries=0,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
-        workspace_mode="v3",
     )
 
 
@@ -85,7 +76,7 @@ class FakeExporter:
 
     def export(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         inputs: list[AssetRipperExportInput],
         output_directory: Path,
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
@@ -140,7 +131,7 @@ class ScriptedExporter:
 
     def export(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         inputs: list[AssetRipperExportInput],
         output_directory: Path,
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
@@ -184,7 +175,7 @@ class FakeDependencyScanner:
 
     def scan(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         archives: list[BundleArchiveInput],
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
     ) -> tuple[BundleArchiveScan, ...]:
@@ -262,7 +253,7 @@ class _ConcurrentExporter:
 
     def export(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         inputs: list[AssetRipperExportInput],
         output_directory: Path,
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
@@ -376,7 +367,9 @@ def test_workflow_sorts_inputs_and_calls_exporter_once(tmp_path: Path) -> None:
 
     assert exporter.calls == [(b"a" * 4, b"c" * 4)]
     assert scanner.calls == [("a.zip", "c.zip")]
-    assert (tmp_path / "extracted" / "bundles" / "content" / "asset.bin").is_file()
+    assert (
+        _context(tmp_path).workspace.extracted_bundles / "content" / "asset.bin"
+    ).is_file()
 
 
 def test_workflow_runs_memory_safe_batches_concurrently(tmp_path: Path) -> None:
@@ -565,7 +558,7 @@ def test_workflow_failure_does_not_publish_partial_output(tmp_path: Path) -> Non
     exporter = FakeExporter(fail=True)
     logger = RecordingLogger()
     workflow = AssetRipperBundleWorkflow(exporter, FakeDependencyScanner(), logger)
-    output_root = tmp_path / "extracted" / "bundles"
+    output_root = _context(tmp_path).workspace.extracted_bundles
     output_root.mkdir(parents=True)
     (output_root / "old-batch").mkdir()
     (output_root / "old-batch" / "asset.bin").write_bytes(b"old")
@@ -587,7 +580,7 @@ def test_workflow_replaces_old_batch_layout_with_content_manifest(
         FakeDependencyScanner(),
         RecordingLogger(),
     )
-    output_root = tmp_path / "extracted" / "bundles"
+    output_root = _context(tmp_path).workspace.extracted_bundles
     old_batch = output_root / "batch-old"
     old_batch.mkdir(parents=True)
     (old_batch / "asset.bin").write_bytes(b"old")
@@ -646,7 +639,7 @@ def test_workflow_rebuilds_complete_output_when_inventory_is_damaged(
     bundle = _bundle(tmp_path, "a.zip")
 
     workflow.run(_context(tmp_path), [bundle])
-    output = tmp_path / "extracted" / "bundles" / "content" / "asset.bin"
+    output = _context(tmp_path).workspace.extracted_bundles / "content" / "asset.bin"
     if damage == "missing":
         output.unlink()
     else:
@@ -685,7 +678,7 @@ def test_workflow_resumes_only_failed_batches_for_matching_partial_output(
         max_batch_bytes=4,
     ).run(_context(tmp_path), bundles)
 
-    content_root = tmp_path / "extracted" / "bundles" / "content"
+    content_root = _context(tmp_path).workspace.extracted_bundles / "content"
     assert first.complete is False
     assert resumed.complete is True
     assert resumed_exporter.calls == [(b"b" * 4,)]
@@ -726,7 +719,7 @@ def test_workflow_partial_resume_preserves_existing_conflict_variants(
         max_batch_bytes=4,
     ).run(_context(tmp_path), bundles)
 
-    content_root = tmp_path / "extracted" / "bundles" / "content"
+    content_root = _context(tmp_path).workspace.extracted_bundles / "content"
     conflict_hash = hashlib.sha256(b"variant").hexdigest()
     conflict = content_root / "_baad_conflicts" / conflict_hash / "Assets/shared.bin"
     manifest = json.loads((content_root / "manifest.json").read_text(encoding="utf8"))
@@ -761,9 +754,7 @@ def test_workflow_rebuilds_partial_output_with_damaged_conflict_variant(
     ).run(_context(tmp_path), bundles)
     conflict_hash = hashlib.sha256(b"variant").hexdigest()
     conflict = (
-        tmp_path
-        / "extracted"
-        / "bundles"
+        _context(tmp_path).workspace.extracted_bundles
         / "content"
         / "_baad_conflicts"
         / conflict_hash
@@ -800,10 +791,13 @@ def test_workflow_does_not_hash_outputs_without_path_conflicts(
         RecordingLogger(),
     )
 
-    def unexpected_hash(_path: Path) -> str:
+    def unexpected_hash(_path: Path, **_kwargs: object) -> str:
         raise AssertionError("uncontested output was hashed")
 
-    monkeypatch.setattr(workflow, "_sha256_file", unexpected_hash)
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.extraction.assetripper.bundles.calculate_sha256",
+        unexpected_hash,
+    )
 
     report = workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
 
@@ -833,9 +827,9 @@ def test_workflow_batches_only_between_dependency_components(tmp_path: Path) -> 
     assert exporter.calls == [(b"a" * 4, b"b" * 4), (b"c" * 4,)]
     assert logger.contains("exceeds the 7-byte batch target", level="warn")
     manifest = json.loads(
-        (tmp_path / "extracted" / "bundles" / "content" / "manifest.json").read_text(
-            encoding="utf8"
-        )
+        (
+            _context(tmp_path).workspace.extracted_bundles / "content" / "manifest.json"
+        ).read_text(encoding="utf8")
     )
     assert [item["entries"] for item in manifest["batches"]] == [
         ["a.zip::a.bundle", "b.zip::b.bundle"],
@@ -859,7 +853,7 @@ def test_workflow_rejects_incomplete_dependency_scan_before_export(
 
     assert "missing-cab" in str(captured.value.failures[0].error)
     assert exporter.calls == []
-    assert not (tmp_path / "extracted" / "bundles").exists()
+    assert not (_context(tmp_path).workspace.extracted_bundles).exists()
 
 
 def test_workflow_extracts_only_entries_selected_for_each_batch(
@@ -920,9 +914,9 @@ def test_workflow_reloads_shared_dependency_without_double_counting_progress(
     ]
     assert progress_factory.progress.completed == [0, 2, 3]
     manifest = json.loads(
-        (tmp_path / "extracted" / "bundles" / "content" / "manifest.json").read_text(
-            encoding="utf8"
-        )
+        (
+            _context(tmp_path).workspace.extracted_bundles / "content" / "manifest.json"
+        ).read_text(encoding="utf8")
     )
     assert [item["targets"] for item in manifest["batches"]] == [
         ["a.zip::a.bundle", "shared.zip::shared.bundle"],
@@ -935,9 +929,9 @@ def test_workflow_reloads_shared_dependency_without_double_counting_progress(
     }
     cached_payloads = [
         path
-        for path in (tmp_path / ".state" / "cache" / "assetripper" / "entries").rglob(
-            "*"
-        )
+        for path in (
+            _context(tmp_path).workspace.cache_state / "assetripper" / "entries"
+        ).rglob("*")
         if path.is_file() and path.suffix != ".json"
     ]
     assert len(cached_payloads) == 3
@@ -989,7 +983,7 @@ def test_workflow_preserves_conflicting_variants_and_tracks_all_sources(
         ],
     )
 
-    content_root = tmp_path / "extracted" / "bundles" / "content"
+    content_root = _context(tmp_path).workspace.extracted_bundles / "content"
     second_sha256 = hashlib.sha256(second).hexdigest()
     assert (content_root / "Assets" / "shared.bin").read_bytes() == first
     assert (
@@ -1084,7 +1078,7 @@ def test_workflow_continues_after_batch_failure_and_publishes_partial_output(
         [_bundle(tmp_path, "a.zip"), _bundle(tmp_path, "b.zip")],
     )
 
-    content_root = tmp_path / "extracted" / "bundles" / "content"
+    content_root = _context(tmp_path).workspace.extracted_bundles / "content"
     assert (content_root / "Assets" / "succeeded.bin").read_bytes() == b"ok"
     assert report.complete is False
     assert report.succeeded_batches == 1
@@ -1123,7 +1117,7 @@ def test_workflow_skips_batch_when_selective_export_coverage_is_incomplete(
         [_bundle(tmp_path, "a.zip"), _bundle(tmp_path, "b.zip")],
     )
 
-    content_root = tmp_path / "extracted" / "bundles" / "content"
+    content_root = _context(tmp_path).workspace.extracted_bundles / "content"
     assert not (content_root / "Assets" / "incomplete.bin").exists()
     assert (content_root / "Assets" / "succeeded.bin").read_bytes() == b"ok"
     assert report.succeeded_batches == 1
@@ -1144,7 +1138,7 @@ def test_workflow_all_failed_batches_preserve_existing_output(tmp_path: Path) ->
         RecordingLogger(),
         max_batch_bytes=4,
     )
-    output_root = tmp_path / "extracted" / "bundles"
+    output_root = _context(tmp_path).workspace.extracted_bundles
     old_output = output_root / "content" / "old.bin"
     old_output.parent.mkdir(parents=True)
     old_output.write_bytes(b"old")
@@ -1184,7 +1178,7 @@ def test_workflow_treats_staging_permission_error_as_fatal(
         workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
 
     assert exporter.calls == []
-    assert not (tmp_path / "extracted" / "bundles").exists()
+    assert not (_context(tmp_path).workspace.extracted_bundles).exists()
 
 
 def test_workflow_treats_batch_cleanup_error_as_fatal(
@@ -1217,7 +1211,7 @@ def test_workflow_treats_batch_cleanup_error_as_fatal(
     with pytest.raises(PermissionError, match="batch cleanup denied"):
         workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
 
-    assert not (tmp_path / "extracted" / "bundles").exists()
+    assert not (_context(tmp_path).workspace.extracted_bundles).exists()
 
 
 def test_workflow_skips_invalid_component_and_transitive_dependents(
@@ -1249,7 +1243,9 @@ def test_workflow_skips_invalid_component_and_transitive_dependents(
     assert exporter.calls == [(b"c" * 4,)]
     assert report.complete is False
     assert report.skipped_components == 2
-    manifest_path = tmp_path / "extracted" / "bundles" / "content" / "manifest.json"
+    manifest_path = (
+        _context(tmp_path).workspace.extracted_bundles / "content" / "manifest.json"
+    )
     manifest = json.loads(manifest_path.read_text(encoding="utf8"))
     skipped_entries = {
         entry
@@ -1291,7 +1287,9 @@ def test_workflow_records_archive_scan_failure_and_extracts_other_components(
         for warning in report.warnings
         if "[BUNDLE_EXTRACTION_PARTIAL]" in warning
     )
-    manifest_path = tmp_path / "extracted" / "bundles" / "content" / "manifest.json"
+    manifest_path = (
+        _context(tmp_path).workspace.extracted_bundles / "content" / "manifest.json"
+    )
     manifest = json.loads(manifest_path.read_text(encoding="utf8"))
     assert manifest["skipped_archives"] == [
         {"archive": "a.zip", "entry": None, "reason": "archive is corrupt"}
@@ -1310,7 +1308,7 @@ def test_workflow_rejects_exporter_use_of_conflict_namespace(tmp_path: Path) -> 
     with pytest.raises(ExtractionFailureError, match="reserved output path"):
         workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
 
-    assert not (tmp_path / "extracted" / "bundles").exists()
+    assert not (_context(tmp_path).workspace.extracted_bundles).exists()
 
 
 @pytest.mark.parametrize(

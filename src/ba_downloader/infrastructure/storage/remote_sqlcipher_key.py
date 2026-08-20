@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.http.client import ResilientHttpClient
 
 DEFAULT_SQLCIPHER_KEY_TIMEOUT = 10.0
@@ -9,7 +9,7 @@ DEFAULT_SQLCIPHER_KEY_TIMEOUT = 10.0
 class RemoteSqlCipherKeyProvider:
     def __init__(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         *,
         region: str,
         endpoint: str,

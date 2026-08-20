@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
     BundleArchiveScan,
@@ -20,7 +20,7 @@ from ba_downloader.infrastructure.extraction.assetripper.scan_cache import (
 class BundleDependencyScanBackend(Protocol):
     def scan(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         archives: list[BundleArchiveInput],
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
     ) -> tuple[BundleArchiveScan, ...]: ...
@@ -40,7 +40,7 @@ class CachedBundleDependencyScanner:
 
     def scan(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         archives: list[BundleArchiveInput],
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
     ) -> tuple[BundleArchiveScan, ...]:

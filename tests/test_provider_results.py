@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from ba_downloader.domain.models.asset import AssetType, ResolvedRelease
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.packages import ZipEntry
@@ -18,6 +18,7 @@ from ba_downloader.infrastructure.regions.gl.runtime_assets import (
 )
 from ba_downloader.infrastructure.runtime import RuntimeSnapshotStore
 from support import RecordingLogger, build_apkpure_version_list
+from support.fixtures import build_execution_context
 
 
 class RecordingHttpClient:
@@ -105,19 +106,11 @@ def _apkpure_response(
 
 
 def test_gl_provider_resolves_latest_apkpure_release() -> None:
-    context = RuntimeContext(
+    context = build_execution_context(
+        Path.cwd(),
         region="gl",
-        threads=4,
         version="",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir="Temp",
-        resource_type=("media",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=".",
     )
     server_url = "https://example.invalid/catalog.json"
     client = RecordingHttpClient(
@@ -163,7 +156,7 @@ def test_gl_provider_resolves_latest_apkpure_release() -> None:
 
     result = provider.load_catalog(context)
 
-    assert result.context.version == "1.2.3"
+    assert result.context.resource_version == "1.2.3"
     assert [item.asset_type for item in result.resources] == [
         AssetType.table,
         AssetType.media,
@@ -185,20 +178,12 @@ def test_gl_provider_resolves_latest_apkpure_release() -> None:
     assert logger.by_level("info")[-1].startswith("Catalog: 3 items in the catalog")
 
 
-def test_gl_provider_replaces_stale_context_version_with_latest_release() -> None:
-    context = RuntimeContext(
+def test_gl_provider_resolves_latest_release_into_unresolved_context() -> None:
+    context = build_execution_context(
+        Path.cwd(),
         region="gl",
-        threads=4,
-        version="9.9.9",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir="Temp",
-        resource_type=("media",),
-        proxy_url="",
+        version="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=".",
     )
     server_url = "https://example.invalid/catalog.json"
     client = RecordingHttpClient(
@@ -218,7 +203,7 @@ def test_gl_provider_replaces_stale_context_version_with_latest_release() -> Non
 
     result = provider.load_catalog(context)
 
-    assert result.context.version == "1.2.3"
+    assert result.context.resource_version == "1.2.3"
     assert [call["url"] for call in client.request_calls] == [
         ApkPureReleaseClient.API_URL,
         GLRegionProvider.CATALOG_URL,
@@ -227,22 +212,13 @@ def test_gl_provider_replaces_stale_context_version_with_latest_release() -> Non
     assert client.download_calls == []
 
 
-def test_gl_provider_warns_when_platform_is_explicitly_ignored() -> None:
-    context = RuntimeContext(
+def test_gl_provider_leaves_non_jp_platform_warning_to_cli_boundary() -> None:
+    context = build_execution_context(
+        Path.cwd(),
         region="gl",
-        threads=4,
-        version="9.9.9",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir="Temp",
-        resource_type=("media",),
-        proxy_url="",
+        version="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=".",
         platform="ios",
-        platform_explicit=True,
     )
     server_url = "https://example.invalid/catalog.json"
     client = RecordingHttpClient(
@@ -286,27 +262,17 @@ def test_gl_provider_warns_when_platform_is_explicitly_ignored() -> None:
 
     GLRegionProvider(http_client=client, logger=logger).load_catalog(context)
 
-    assert logger.by_level("warn") == [
-        "The --platform option only applies to JP and was ignored."
-    ]
+    assert logger.by_level("warn") == []
 
 
 def test_cn_provider_builds_assets_without_downloading_apk(
     monkeypatch,
 ) -> None:
-    context = RuntimeContext(
+    context = build_execution_context(
+        Path.cwd(),
         region="cn",
-        threads=4,
         version="",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir="Temp",
-        resource_type=("media", "table", "bundle"),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=".",
     )
     client = RecordingHttpClient(
         {
@@ -440,7 +406,7 @@ def test_cn_provider_builds_assets_without_downloading_apk(
 
     result = provider.load_catalog(context)
 
-    assert result.context.version == "1.2.3"
+    assert result.context.resource_version == "1.2.3"
     assert [item.path for item in result.resources] == [
         "Table/Excel.zip",
         "Media/Audio/BGM/title_theme.mp4",
@@ -494,24 +460,15 @@ def test_cn_provider_builds_assets_without_downloading_apk(
     assert logger.by_level("info")[-1].startswith("Catalog: 8 items in the catalog")
 
 
-def test_cn_provider_warns_when_platform_is_explicitly_ignored(
+def test_cn_provider_leaves_non_jp_platform_warning_to_cli_boundary(
     monkeypatch,
 ) -> None:
-    context = RuntimeContext(
+    context = build_execution_context(
+        Path.cwd(),
         region="cn",
-        threads=4,
         version="",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir="Temp",
-        resource_type=("media", "table", "bundle"),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=".",
         platform="ios",
-        platform_explicit=True,
     )
     client = RecordingHttpClient(
         {
@@ -632,9 +589,7 @@ def test_cn_provider_warns_when_platform_is_explicitly_ignored(
 
     result = CNRegionProvider(http_client=client, logger=logger).load_catalog(context)
 
-    assert logger.by_level("warn") == [
-        "The --platform option only applies to JP and was ignored."
-    ]
+    assert logger.by_level("warn") == []
     assert len(result.resources) == 8
 
 
@@ -642,19 +597,11 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    context = RuntimeContext(
+    context = build_execution_context(
+        tmp_path,
         region="gl",
-        threads=4,
         version="1.2.3",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("media",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
     preparer = GLRuntimeAssetPreparer(http_client=object(), logger=NullLogger())
     calls: list[tuple[str, object]] = []
@@ -662,7 +609,7 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
     class FakeReleaseResolver:
         def resolve_version(
             self,
-            active_context: RuntimeContext,
+            active_context: ExecutionContext,
             version: str,
         ) -> ResolvedRelease:
             assert active_context is context
@@ -723,7 +670,7 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
         ),
         ("extract", str(tmp_path / "package.xapk")),
     ]
-    assert prepared.root_dir == Path(context.temp_dir) / "1.2.3" / "Runtime"
+    assert prepared.root_dir == context.workspace.runtime_state / "1.2.3" / "Runtime"
     assert prepared.binary_path.read_bytes() == b"binary"
     assert prepared.metadata_path.read_bytes() == b"metadata"
     assert prepared.globalgamemanagers_path is not None
@@ -734,19 +681,11 @@ def test_gl_runtime_asset_preparer_downloads_package_for_missing_runtime_assets(
 def test_gl_runtime_asset_preparer_reuses_matching_release(
     tmp_path: Path,
 ) -> None:
-    context = RuntimeContext(
+    context = build_execution_context(
+        tmp_path,
         region="gl",
-        threads=1,
         version="1.2.3",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
     snapshot_store = RuntimeSnapshotStore()
     with snapshot_store.staging_runtime(context, "1.2.3") as runtime_dir:
@@ -780,19 +719,11 @@ def test_gl_runtime_asset_preparer_does_not_publish_incomplete_new_release(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    old_context = RuntimeContext(
+    old_context = build_execution_context(
+        tmp_path,
         region="gl",
-        threads=1,
         version="1.2.2",
-        raw_dir="Raw",
-        extract_dir="Extracted",
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
     snapshot_store = RuntimeSnapshotStore()
     with snapshot_store.staging_runtime(old_context, "1.2.2") as runtime_dir:
@@ -808,7 +739,7 @@ def test_gl_runtime_asset_preparer_does_not_publish_incomplete_new_release(
             globalgamemanagers_name="globalgamemanagers",
         )
 
-    context = old_context.with_updates(version="1.2.3")
+    context = old_context.without_resource_version().resolve_resource_version("1.2.3")
     preparer = GLRuntimeAssetPreparer(
         http_client=object(),
         logger=NullLogger(),
@@ -818,7 +749,7 @@ def test_gl_runtime_asset_preparer_does_not_publish_incomplete_new_release(
     class FakeReleaseResolver:
         def resolve_version(
             self,
-            _context: RuntimeContext,
+            _context: ExecutionContext,
             version: str,
         ) -> ResolvedRelease:
             return ResolvedRelease(

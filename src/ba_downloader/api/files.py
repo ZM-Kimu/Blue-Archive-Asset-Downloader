@@ -10,7 +10,7 @@ from threading import RLock
 from typing import cast
 from uuid import uuid4
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.storage import StorageCleanupTarget, StorageScope
 
 PUBLIC_FILE_SCOPES = frozenset({"raw", "extracted", "indexes"})
@@ -76,12 +76,12 @@ class FileRegistry:
         self._file_ids: dict[tuple[str, str, str], str] = {}
         self._previews: dict[str, CleanupPreview] = {}
 
-    def roots(self, context: RuntimeContext) -> dict[str, Path]:
-        base = Path(context.work_dir).resolve()
+    def roots(self, context: ExecutionContext) -> dict[str, Path]:
+        base = Path(context.workspace.base).resolve()
         state = base / ".state"
         return {
-            "raw": Path(context.raw_dir).resolve(),
-            "extracted": Path(context.extract_dir).resolve(),
+            "raw": Path(context.workspace.raw).resolve(),
+            "extracted": Path(context.workspace.extracted).resolve(),
             "indexes": base / "indexes",
             "cache": state / "cache",
             "temp": state / "temp",
@@ -91,7 +91,7 @@ class FileRegistry:
         }
 
     def list_entries(
-        self, context: RuntimeContext, scope: str, relative_path: str = ""
+        self, context: ExecutionContext, scope: str, relative_path: str = ""
     ) -> list[FileEntry]:
         if scope not in PUBLIC_FILE_SCOPES:
             raise FileBoundaryError(f"Unknown public file scope '{scope}'.")
@@ -107,7 +107,7 @@ class FileRegistry:
         )
         return [self._register(scope, root, path) for path in paths]
 
-    def resolve(self, file_id: str, context: RuntimeContext) -> Path:
+    def resolve(self, file_id: str, context: ExecutionContext) -> Path:
         with self._lock:
             try:
                 scope, root, path = self._files[file_id]
@@ -120,13 +120,13 @@ class FileRegistry:
         self._ensure_within(root, resolved)
         return resolved
 
-    def metadata(self, file_id: str, context: RuntimeContext) -> FileEntry:
+    def metadata(self, file_id: str, context: ExecutionContext) -> FileEntry:
         path = self.resolve(file_id, context)
         with self._lock:
             scope, root, _ = self._files[file_id]
         return self._entry(file_id, scope, root, path)
 
-    def usage(self, context: RuntimeContext) -> dict[str, object]:
+    def usage(self, context: ExecutionContext) -> dict[str, object]:
         result: dict[str, object] = {}
         for scope in sorted(PUBLIC_FILE_SCOPES):
             root = self.roots(context)[scope]
@@ -139,7 +139,7 @@ class FileRegistry:
         return result
 
     def preview_cleanup(
-        self, context: RuntimeContext, context_id: str, scopes: Sequence[str]
+        self, context: ExecutionContext, context_id: str, scopes: Sequence[str]
     ) -> CleanupPreview:
         targets: list[StorageCleanupTarget] = []
         total_bytes = 0
@@ -181,7 +181,7 @@ class FileRegistry:
         return preview
 
     def _cleanup_paths(
-        self, context: RuntimeContext, scope: str, root: Path
+        self, context: ExecutionContext, scope: str, root: Path
     ) -> list[Path]:
         if scope == "indexes":
             return self._descendants(root)
@@ -200,7 +200,7 @@ class FileRegistry:
                     path
                     for path in runtime_store.iterdir()
                     if path.is_dir()
-                    and path.name != context.version
+                    and path.name != context.resource_version
                     and (path / "version.json").is_file()
                 ]
                 if runtime_store.is_dir()

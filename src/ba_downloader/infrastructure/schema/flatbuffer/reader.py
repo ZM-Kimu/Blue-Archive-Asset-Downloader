@@ -455,10 +455,6 @@ class FlatBufferExporter:
             for key, value in type_registry.items()
         }
 
-    def resolve_schema(self, file_name: str) -> type[Any] | None:
-        stem = file_name.removesuffix(".bytes")
-        return self.lower_type_registry.get(stem.lower())
-
     def export_payload(
         self,
         schema_type: type[Any],

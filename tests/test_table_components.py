@@ -4,8 +4,8 @@ import sqlite3
 
 import pytest
 
-from ba_downloader.bootstrap.region_profiles import (
-    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+from ba_downloader.bootstrap.region_gateways import (
+    DEFAULT_REGION_GATEWAY_REGISTRY,
 )
 from ba_downloader.infrastructure.extraction.table.archive_classifier import (
     ROUTE_GROUND_GRID_PATCH,
@@ -37,7 +37,7 @@ from ba_downloader.infrastructure.regions.jp.table_archives import (
     classify_jp_table_archive,
 )
 from ba_downloader.infrastructure.storage.sqlite_reader import TableDatabase
-from support import build_runtime_context
+from support import build_execution_context
 
 
 def test_table_archive_classifier_preserves_shared_archive_routes() -> None:
@@ -206,18 +206,18 @@ def test_jp_table_archive_classifier_routes_mgs_logic_ground() -> None:
 
 
 def test_table_extraction_profile_splits_jp_cn_and_gl_routing(tmp_path) -> None:
-    jp_context = build_runtime_context(tmp_path, region="jp")
-    cn_context = build_runtime_context(tmp_path, region="cn")
-    gl_context = build_runtime_context(tmp_path, region="gl")
-    jp_profile = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
+    jp_context = build_execution_context(tmp_path, region="jp")
+    cn_context = build_execution_context(tmp_path, region="cn")
+    gl_context = build_execution_context(tmp_path, region="gl")
+    jp_profile = DEFAULT_REGION_GATEWAY_REGISTRY.resolve(
         "jp"
-    ).table_profile_factory(jp_context)
-    cn_profile = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
+    ).tables.extraction_profile(jp_context)
+    cn_profile = DEFAULT_REGION_GATEWAY_REGISTRY.resolve(
         "cn"
-    ).table_profile_factory(cn_context)
-    gl_profile = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(
+    ).tables.extraction_profile(cn_context)
+    gl_profile = DEFAULT_REGION_GATEWAY_REGISTRY.resolve(
         "gl"
-    ).table_profile_factory(gl_context)
+    ).tables.extraction_profile(gl_context)
 
     jp_route = jp_profile.payload_router.resolve_database_blob(
         "LogicEffectDataDBSchema.db",

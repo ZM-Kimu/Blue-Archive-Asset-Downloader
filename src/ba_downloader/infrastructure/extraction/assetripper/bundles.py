@@ -14,8 +14,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from ba_downloader.domain.exceptions import OperationCancelledError
-from ba_downloader.domain.models.asset import AssetType
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import (
@@ -70,11 +69,12 @@ from ba_downloader.infrastructure.extraction.threaded_runner import (
     ExtractionFailure,
     ExtractionFailureError,
 )
-from ba_downloader.infrastructure.progress import NullProgressReporterFactory
-from ba_downloader.infrastructure.storage.workspace_paths import (
-    extracted_type_root,
-    raw_type_root,
+from ba_downloader.infrastructure.files.atomic import (
+    publish_staged_directory,
+    write_json_atomic,
 )
+from ba_downloader.infrastructure.files.checksum import calculate_sha256
+from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 
 DEFAULT_MAX_BATCH_BYTES = 500 * 1024 * 1024
 _BUNDLE_MANIFEST_SCHEMA_VERSION = 7
@@ -157,11 +157,11 @@ class _UnsafeBundleOutputError(AssetRipperToolError):
 
 
 class _BundleExporter(Protocol):
-    def prepare(self, context: RuntimeContext) -> None: ...
+    def prepare(self, context: ExecutionContext) -> None: ...
 
     def export(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         inputs: list[AssetRipperExportInput],
         output_directory: Path,
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
@@ -219,7 +219,7 @@ class AssetRipperBundleWorkflow:
 
     def run(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         inputs: list[Path],
     ) -> BundleExtractionReport:
         run_started = time.perf_counter()
@@ -228,7 +228,7 @@ class AssetRipperBundleWorkflow:
             raise ValueError("AssetRipper requires at least one input archive.")
         fingerprint = self._extraction_fingerprint(archives)
         cached = self._load_complete_report(
-            extracted_type_root(context, AssetType.bundle),
+            context.workspace.extracted_bundles,
             fingerprint,
         )
         if cached is not None:
@@ -321,7 +321,7 @@ class AssetRipperBundleWorkflow:
 
     def _export_all(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         archives: tuple[BundleArchiveInput, ...],
         plan: BundleDependencyPlan,
         prepared: _PreparedDependencyPlan,
@@ -332,7 +332,7 @@ class AssetRipperBundleWorkflow:
         phase_timings: dict[str, float],
         run_started: float,
     ) -> BundleExtractionReport:
-        output_root = extracted_type_root(context, AssetType.bundle)
+        output_root = context.workspace.extracted_bundles
         staging_root = output_root.parent / f".{output_root.name}.staging-{uuid4().hex}"
         content_root = staging_root / "content"
         resume = self._load_partial_resume(output_root, fingerprint, batches)
@@ -714,12 +714,13 @@ class AssetRipperBundleWorkflow:
                 },
                 "files": exported_files,
             }
-            content_root.mkdir(parents=True, exist_ok=True)
-            (content_root / "manifest.json").write_text(
-                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                encoding="utf8",
+            write_json_atomic(
+                content_root / "manifest.json",
+                manifest,
+                indent=2,
+                sort_keys=True,
             )
-            self._publish(staging_root, output_root)
+            publish_staged_directory(staging_root, output_root)
             return BundleExtractionReport(
                 warnings=tuple(warnings),
                 complete=complete,
@@ -738,7 +739,7 @@ class AssetRipperBundleWorkflow:
     @staticmethod
     def _export_timed(
         exporter: _BundleExporter,
-        context: RuntimeContext,
+        context: ExecutionContext,
         inputs: list[AssetRipperExportInput],
         output_directory: Path,
         event_callback: Callable[[AssetRipperProcessEvent], None],
@@ -872,10 +873,10 @@ class AssetRipperBundleWorkflow:
 
     def _normalize_inputs(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         inputs: list[Path],
     ) -> tuple[BundleArchiveInput, ...]:
-        raw_root = raw_type_root(context, AssetType.bundle).resolve(strict=False)
+        raw_root = context.workspace.raw_bundles.resolve(strict=False)
         archives: list[BundleArchiveInput] = []
         identifiers: set[str] = set()
         for path in inputs:
@@ -1394,9 +1395,15 @@ class AssetRipperBundleWorkflow:
             )
             canonical_hash = record.canonical.sha256
             if canonical_hash is None:
-                canonical_hash = self._sha256_file(canonical_path)
+                canonical_hash = calculate_sha256(
+                    canonical_path,
+                    on_chunk=self._cancellation.raise_if_cancelled,
+                )
                 record.canonical.sha256 = canonical_hash
-            item_hash = self._sha256_file(item.source)
+            item_hash = calculate_sha256(
+                item.source,
+                on_chunk=self._cancellation.raise_if_cancelled,
+            )
             if item_hash == canonical_hash:
                 self._append_source_batch(record.canonical, batch_id)
                 item.source.unlink()
@@ -1516,14 +1523,6 @@ class AssetRipperBundleWorkflow:
                 f"AssetRipper returned a reserved output path: {raw_relative}"
             )
         return relative
-
-    def _sha256_file(self, path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                self._cancellation.raise_if_cancelled()
-                digest.update(chunk)
-        return digest.hexdigest()
 
     @staticmethod
     def _append_source_batch(variant: _OutputVariant, batch_id: str) -> None:
@@ -1648,21 +1647,3 @@ class AssetRipperBundleWorkflow:
         if hours:
             return f"{hours}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:02d}:{seconds:02d}"
-
-    @staticmethod
-    def _publish(staging: Path, destination: Path) -> None:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        backup = destination.with_name(f".{destination.name}.backup-{uuid4().hex}")
-        published = False
-        try:
-            if destination.exists() or destination.is_symlink():
-                destination.rename(backup)
-            staging.rename(destination)
-            published = True
-        except BaseException:
-            if backup.exists() and not destination.exists():
-                backup.rename(destination)
-            raise
-        finally:
-            if published:
-                shutil.rmtree(backup, ignore_errors=True)

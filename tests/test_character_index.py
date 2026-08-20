@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from ba_downloader.bootstrap.region_profiles import (
-    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+from ba_downloader.bootstrap.region_gateways import (
+    DEFAULT_REGION_GATEWAY_REGISTRY,
 )
 from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
 from ba_downloader.domain.models.database import DBColumn, DBTable
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.character.character_index import (
     CharacterIndexBuilder,
 )
@@ -38,6 +38,7 @@ from ba_downloader.infrastructure.regions.jp.character_index import (
     JpDbCharacterIndexSourceProfile,
 )
 from support import RecordingLogger
+from support.fixtures import build_execution_context
 
 
 class FakeTableSource:
@@ -123,25 +124,17 @@ def test_scenario_match_index_does_not_enumerate_prefix_after_exact_match(
     assert index.match(set(), {"Hihumi"}) is character
 
 
-def _build_context(tmp_path: Path, region: str = "jp") -> RuntimeContext:
-    return RuntimeContext(
+def _build_context(tmp_path: Path, region: str = "jp") -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region=region,
-        threads=4,
         version="1.0.0",
-        raw_dir=str(tmp_path / "Raw"),
-        extract_dir=str(tmp_path / "Extracted"),
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("table",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
 def _service_profile(region: str):
-    return DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(region)  # type: ignore[arg-type]
+    return DEFAULT_REGION_GATEWAY_REGISTRY.resolve(region)  # type: ignore[arg-type]
 
 
 def _db_table(name: str, rows: list[dict]) -> DBTable:
@@ -189,7 +182,7 @@ def _compose_index_entries(
             shop_recruit=shop_recruit,
             localize_gacha=localize_gacha,
         ),
-        _service_profile(region).character_index_composition_profile_factory(context),
+        _service_profile(region).character_index.composition_profile(context),
     )
 
 
@@ -242,7 +235,7 @@ def test_cn_index_sources_read_excel_db_schemas_without_archive_zip(
     )
     loader = CharacterIndexSourceLoader(table_source, logger)
     sources = loader.load(
-        _service_profile(context.region).character_index_source_profile_factory(context)
+        _service_profile(context.region).character_index.source_profile(context)
     )
 
     assert table_source.table_names == [
@@ -302,15 +295,15 @@ def test_index_source_profile_selects_region_owned_sources(
     cn_context = _build_context(tmp_path, region="cn")
     gl_context = _build_context(tmp_path, region="gl")
     assert isinstance(
-        _service_profile("jp").character_index_source_profile_factory(jp_context),
+        _service_profile("jp").character_index.source_profile(jp_context),
         JpDbCharacterIndexSourceProfile,
     )
     assert isinstance(
-        _service_profile("cn").character_index_source_profile_factory(cn_context),
+        _service_profile("cn").character_index.source_profile(cn_context),
         CnDbCharacterIndexSourceProfile,
     )
     assert isinstance(
-        _service_profile("gl").character_index_source_profile_factory(gl_context),
+        _service_profile("gl").character_index.source_profile(gl_context),
         GlDbCharacterIndexSourceProfile,
     )
 
@@ -338,7 +331,7 @@ def test_gl_index_sources_read_excel_db_schemas_without_excel_zip(
     context = _build_context(tmp_path, region="gl")
     loader = CharacterIndexSourceLoader(table_source, logger)
     sources = loader.load(
-        _service_profile(context.region).character_index_source_profile_factory(context)
+        _service_profile(context.region).character_index.source_profile(context)
     )
 
     assert table_source.table_names == [
@@ -390,7 +383,7 @@ def test_jp_index_sources_read_excel_db_schemas_without_excel_zip(
     context = _build_context(tmp_path, region="jp")
     loader = CharacterIndexSourceLoader(table_source, logger)
     sources = loader.load(
-        _service_profile(context.region).character_index_source_profile_factory(context)
+        _service_profile(context.region).character_index.source_profile(context)
     )
 
     assert table_source.table_names == [
@@ -452,7 +445,7 @@ def test_jp_index_sources_warn_with_schema_name_when_source_is_missing(
     )
 
     sources = loader.load(
-        _service_profile(context.region).character_index_source_profile_factory(context)
+        _service_profile(context.region).character_index.source_profile(context)
     )
 
     assert sources.scenario_db
@@ -476,9 +469,7 @@ def test_jp_index_extract_excel_fails_when_all_db_sources_are_missing(
         match="all core index sources are missing",
     ):
         loader.load(
-            _service_profile(context.region).character_index_source_profile_factory(
-                context
-            )
+            _service_profile(context.region).character_index.source_profile(context)
         )
 
 
@@ -505,7 +496,7 @@ def test_cn_index_sources_warn_with_schema_name_when_source_is_missing(
     )
 
     sources = loader.load(
-        _service_profile(context.region).character_index_source_profile_factory(context)
+        _service_profile(context.region).character_index.source_profile(context)
     )
 
     assert sources.scenario_db
@@ -529,9 +520,7 @@ def test_cn_index_sources_fail_when_all_core_db_sources_are_missing(
         match="all core index sources are missing",
     ):
         loader.load(
-            _service_profile(context.region).character_index_source_profile_factory(
-                context
-            )
+            _service_profile(context.region).character_index.source_profile(context)
         )
 
 
@@ -586,7 +575,7 @@ def test_jp_index_romanization_is_controlled_by_profile_policy() -> None:
 
     jp_entries = composer.compose(
         sources,
-        _service_profile("jp").character_index_composition_profile_factory(
+        _service_profile("jp").character_index.composition_profile(
             _build_context(Path("."), "jp")
         ),
     )
@@ -992,19 +981,18 @@ def test_index_build_logs_saved_file_path(
         _sources(char_excel=[{"Id": 10003, "DevName": "Hihumi_default"}])
     )
     index_builder = CharacterIndexBuilder(
-        context,
         logger,
         table_source=FakeTableSource(tmp_path),
         source_loader=source_loader,
         character_index_source_profile_factory=(
-            _service_profile("jp").character_index_source_profile_factory
+            _service_profile("jp").character_index.source_profile
         ),
     )
     monkeypatch.chdir(tmp_path)
 
-    index_builder.build()
+    index_builder.build(context)
 
-    index_path = tmp_path / "indexes" / "characters.json"
+    index_path = context.workspace.character_index
     assert index_path.exists()
     assert logger.by_level("info")[-1] == (
         f"Character index file saved to {index_path.resolve()}."

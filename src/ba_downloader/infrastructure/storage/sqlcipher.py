@@ -13,7 +13,9 @@ from typing import Protocol
 from Crypto.Cipher import AES
 
 from ba_downloader.domain.models.database import DatabaseSourceIdentity
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
+from ba_downloader.infrastructure.files.checksum import calculate_sha256
 
 SQLITE_HEADER = b"SQLite format 3\x00"
 
@@ -187,12 +189,14 @@ class SqlCipherDatabaseResolver:
 
     def __init__(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         *,
+        source_identity: DatabaseSourceIdentity | None = None,
         exporter: SqlCipherExporter | None = None,
         key_provider: SqlCipherKeyProvider | None = None,
     ) -> None:
         self.context = context
+        self.source_identity = source_identity
         self.exporter = exporter or SqlCipherRawExporter()
         self.key_provider = key_provider
         self._cache: dict[Path, Path] = {}
@@ -211,7 +215,7 @@ class SqlCipherDatabaseResolver:
         identity = self._build_source_identity(database_path, key_hex)
         cache_key = self._identity_digest(identity)
         cache_scope = (
-            Path(self.context.temp_dir)
+            Path(self.context.workspace.temp_state)
             / "SQLCipher"
             / "cache"
             / self.context.region
@@ -235,7 +239,7 @@ class SqlCipherDatabaseResolver:
                 raise SqlCipherRawExportError(
                     "SQLCipher exporter produced a file without a SQLite header."
                 )
-            output_hash = self._sha256_file(staged_output)
+            output_hash = calculate_sha256(staged_output)
             output_size = staged_output.stat().st_size
             entry_root.mkdir(parents=True, exist_ok=True)
             os.replace(staged_output, output_path)
@@ -271,7 +275,7 @@ class SqlCipherDatabaseResolver:
         if resolved_path is None or resolved_path == source_path:
             return
         cache_scope = (
-            Path(self.context.temp_dir)
+            Path(self.context.workspace.temp_state)
             / "SQLCipher"
             / "cache"
             / self.context.region
@@ -289,7 +293,7 @@ class SqlCipherDatabaseResolver:
         database_path: Path,
         key_hex: str,
     ) -> DatabaseSourceIdentity:
-        source = self.context.database_source_identity
+        source = self.source_identity
         exporter_version = str(
             getattr(
                 self.exporter,
@@ -302,7 +306,7 @@ class SqlCipherDatabaseResolver:
             source = DatabaseSourceIdentity(
                 region=self.context.region,
                 platform=self.context.platform,
-                release=self.context.version,
+                release=self.context.require_resource_version(),
                 size=database_path.stat().st_size,
                 checksum="unavailable",
             )
@@ -347,7 +351,7 @@ class SqlCipherDatabaseResolver:
                 return False
             if output.get("mtime_ns") == stat.st_mtime_ns:
                 return True
-            if self._sha256_file(output_path) != output["sha256"]:
+            if calculate_sha256(output_path) != output["sha256"]:
                 return False
             output["mtime_ns"] = stat.st_mtime_ns
             self._write_manifest(manifest_path, payload)
@@ -357,29 +361,7 @@ class SqlCipherDatabaseResolver:
 
     @staticmethod
     def _write_manifest(path: Path, payload: dict[str, object]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temp_name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-        )
-        temp_path = Path(temp_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-                json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, path)
-        except BaseException:
-            temp_path.unlink(missing_ok=True)
-            raise
-
-    @staticmethod
-    def _sha256_file(path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            while chunk := handle.read(1024 * 1024):
-                digest.update(chunk)
-        return digest.hexdigest()
+        write_json_atomic(path, payload, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
     def _prune_old_entries(cache_scope: Path, *, keep: set[str]) -> None:
@@ -404,7 +386,7 @@ class SqlCipherDatabaseResolver:
                 shutil.rmtree(path, ignore_errors=True)
 
     def _resolve_key_hex(self) -> str:
-        manual_key_hex = self.context.sqlcipher_key_hex.strip()
+        manual_key_hex = self.context.sqlcipher_key.strip()
         if manual_key_hex:
             return manual_key_hex
         if self._resolved_key_hex is not None:

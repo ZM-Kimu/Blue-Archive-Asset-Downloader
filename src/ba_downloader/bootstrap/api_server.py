@@ -5,14 +5,11 @@ def serve_http_api(host: str, port: int | None) -> int:
     from ba_downloader.api.server import ApiBindError, ApiDependencyError, serve
 
     try:
-        from ba_downloader.application.operations import (
-            ApplicationOperation,
-            ApplicationOperationCommand,
-        )
-        from ba_downloader.bootstrap.container import application_operation_executor
+        from ba_downloader.application.contracts import CatalogRefreshCommand
+        from ba_downloader.bootstrap.container import ExecutionScope
         from ba_downloader.domain.models.asset import AssetCollection
         from ba_downloader.domain.models.character import CharacterIndex
-        from ba_downloader.domain.models.runtime import RuntimeContext
+        from ba_downloader.domain.models.execution import ExecutionContext
         from ba_downloader.infrastructure.extraction.character.index_store import (
             CharacterIndexFileStore,
             CharacterIndexSearcher,
@@ -35,17 +32,15 @@ def serve_http_api(host: str, port: int | None) -> int:
         index_searcher = CharacterIndexSearcher()
 
         def load_catalog(
-            context: RuntimeContext,
-        ) -> tuple[RuntimeContext, AssetCollection]:
-            with application_operation_executor(context) as executor:
-                result = executor.execute(
-                    ApplicationOperationCommand(ApplicationOperation.catalog_refresh)
-                )
+            context: ExecutionContext,
+        ) -> tuple[ExecutionContext, AssetCollection]:
+            with ExecutionScope(context) as executor:
+                result = executor.execute(CatalogRefreshCommand())
             if result.catalog is None:
                 raise RuntimeError("Catalog query returned no catalog.")
             return result.context, result.catalog
 
-        def load_character_index(context: RuntimeContext) -> CharacterIndex:
+        def load_character_index(context: ExecutionContext) -> CharacterIndex:
             return index_store.load(context)
 
         return serve(

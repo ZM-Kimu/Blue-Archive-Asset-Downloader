@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-from ba_downloader.domain.models.asset import AssetCollection, AssetType
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.asset import AssetCollection
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.extract import (
     ExtractionPrerequisitePort,
     SchemaPreparationPort,
 )
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.storage.workspace_paths import (
-    extracted_dumps_root,
-    extracted_schema_root,
-    raw_type_root,
-)
 
 
 class TableExtractionPrerequisite(ExtractionPrerequisitePort):
@@ -30,11 +25,9 @@ class TableExtractionPrerequisite(ExtractionPrerequisitePort):
 
     def ensure(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None = None,
     ) -> None:
-        if "table" not in context.resource_type:
-            return
         if not self._has_table_input(context, resources):
             return
         if self._are_schema_directories_ready(context):
@@ -68,27 +61,30 @@ class TableExtractionPrerequisite(ExtractionPrerequisitePort):
 
     @staticmethod
     def _has_table_input(
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None,
     ) -> bool:
         if resources is not None:
             return bool(resources)
-        return raw_type_root(context, AssetType.table).exists()
+        return context.workspace.raw_tables.exists()
 
-    def _are_schema_directories_ready(self, context: RuntimeContext) -> bool:
+    def _are_schema_directories_ready(self, context: ExecutionContext) -> bool:
         return all(
-            (extracted_schema_root(context, schema) / "__init__.py").is_file()
-            and (extracted_schema_root(context, schema) / "_registry.py").is_file()
-            for schema in ("flatbuffer", "memorypack")
+            (schema_root / "__init__.py").is_file()
+            and (schema_root / "_registry.py").is_file()
+            for schema_root in (
+                context.workspace.flatbuffer_schemas,
+                context.workspace.memorypack_schemas,
+            )
         )
 
     @staticmethod
-    def _is_dump_cs_ready(context: RuntimeContext) -> bool:
-        return (extracted_dumps_root(context) / "dump.cs").is_file()
+    def _is_dump_cs_ready(context: ExecutionContext) -> bool:
+        return (context.workspace.dumps / "dump.cs").is_file()
 
     def _format_error(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         error: Exception,
         *,
         attempted_dump: bool,
@@ -98,12 +94,12 @@ class TableExtractionPrerequisite(ExtractionPrerequisitePort):
             return (
                 f"{self.region} table extraction prerequisites were missing and "
                 "auto-generation was attempted. Runtime files under "
-                f"'{context.temp_dir}' must include 'global-metadata.dat', "
+                f"'{context.workspace.temp_state}' must include 'global-metadata.dat', "
                 "'globalgamemanagers', and either 'GameAssembly.dll' or "
                 f"'libil2cpp.so'. Details: {details}"
             )
         return (
             f"{self.region} table extraction prerequisites were missing and "
             "recompiling schemas from the existing dump.cs failed under "
-            f"'{context.extract_dir}'. Details: {details}"
+            f"'{context.workspace.extracted}'. Details: {details}"
         )

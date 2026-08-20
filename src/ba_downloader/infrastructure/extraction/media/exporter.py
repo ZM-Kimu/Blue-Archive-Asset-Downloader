@@ -5,19 +5,18 @@ from uuid import uuid4
 from zipfile import ZipFile
 
 from ba_downloader.domain.exceptions import OperationCancelledError
-from ba_downloader.domain.models.asset import AssetType
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.infrastructure.files.atomic import publish_staged_directory
 from ba_downloader.infrastructure.schema.crypto import zip_password
-from ba_downloader.infrastructure.storage.workspace_paths import extracted_type_root
 
 
 class MediaExtractor:
-    def __init__(self, context: RuntimeContext) -> None:
+    def __init__(self, context: ExecutionContext) -> None:
         self.context = context
 
     @property
     def media_extract_folder(self) -> str:
-        return str(extracted_type_root(self.context, AssetType.media))
+        return str(self.context.workspace.extracted_media)
 
     def extract_zip(
         self,
@@ -48,22 +47,6 @@ class MediaExtractor:
                     media_zip.extract(member, staging_dest, pwd=password)
                     if progress_callback is not None:
                         progress_callback(f"{index}/{total_members} members")
-            self._publish(staging_dest, extract_dest)
+            publish_staged_directory(staging_dest, extract_dest)
         finally:
             shutil.rmtree(staging_dest, ignore_errors=True)
-
-    @staticmethod
-    def _publish(staging_dest: Path, extract_dest: Path) -> None:
-        backup_dest = extract_dest.with_name(
-            f".{extract_dest.name}.backup-{uuid4().hex}"
-        )
-        if extract_dest.exists():
-            extract_dest.replace(backup_dest)
-        try:
-            staging_dest.replace(extract_dest)
-        except BaseException:
-            if backup_dest.exists() and not extract_dest.exists():
-                backup_dest.replace(extract_dest)
-            raise
-        finally:
-            shutil.rmtree(backup_dest, ignore_errors=True)

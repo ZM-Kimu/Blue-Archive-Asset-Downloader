@@ -6,11 +6,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from ba_downloader.api.worker import run_application_job
-from ba_downloader.application.operations import (
-    ApplicationOperation,
-    ApplicationOperationCommand,
-)
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.application.contracts import AssetsExtractCommand
+from support.fixtures import build_execution_context
 
 
 class _TerminalSender:
@@ -30,20 +27,13 @@ def test_worker_redacts_secrets_from_success_warnings(
 ) -> None:
     secret_key = "a" * 64
     proxy_password = "secret-password"
-    context = RuntimeContext(
+    context = build_execution_context(
+        tmp_path,
         region="jp",
-        threads=1,
         version="1",
-        raw_dir=str(tmp_path / "raw"),
-        extract_dir=str(tmp_path / "extracted"),
-        temp_dir=str(tmp_path / "temp"),
-        resource_type=("bundle",),
         proxy_url=f"http://user:{proxy_password}@example.test",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
-        sqlcipher_key_hex=secret_key,
+        sqlcipher_key=secret_key,
     )
 
     @contextmanager
@@ -59,13 +49,13 @@ def test_worker_redacts_secrets_from_success_warnings(
         )
 
     monkeypatch.setattr(
-        "ba_downloader.api.worker.application_operation_executor",
+        "ba_downloader.api.worker.ExecutionScope",
         executor_scope,
     )
     terminal = _TerminalSender()
 
     run_application_job(
-        ApplicationOperationCommand(ApplicationOperation.extract),
+        AssetsExtractCommand(),
         context,
         SimpleNamespace(put=lambda _event: None),
         terminal,

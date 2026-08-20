@@ -9,7 +9,7 @@ from typing import ClassVar
 import pytest
 from Crypto.Cipher import AES
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.http import HttpResponse
 from ba_downloader.infrastructure.extraction.table.database import TableDatabaseReader
 from ba_downloader.infrastructure.extraction.table.payload_router import (
@@ -28,6 +28,7 @@ from ba_downloader.infrastructure.storage.sqlcipher import (
     SqlCipherRawExportError,
     is_sqlite_database,
 )
+from support.fixtures import build_execution_context
 
 RAW_KEY_HEX = "00" * 32
 
@@ -52,21 +53,16 @@ def _build_context(
     *,
     key_hex: str = RAW_KEY_HEX,
     region: str = "jp",
-) -> RuntimeContext:
-    return RuntimeContext(
+    proxy_url: str = "",
+    max_retries: int = 1,
+) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region=region,  # type: ignore[arg-type]
-        threads=1,
-        version="",
-        raw_dir=str(tmp_path / "Raw"),
-        extract_dir=str(tmp_path / "Extracted"),
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("table",),
-        proxy_url="",
-        max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
-        sqlcipher_key_hex=key_hex,
+        version="1.0.0",
+        proxy_url=proxy_url,
+        max_retries=max_retries,
+        sqlcipher_key=key_hex,
     )
 
 
@@ -289,7 +285,8 @@ def test_sqlcipher_database_resolver_exports_encrypted_db_before_reading(
     _write_sqlite_db(plaintext_db)
     exporter = CopyingExporter(plaintext_db)
 
-    resolver = SqlCipherDatabaseResolver(_build_context(tmp_path), exporter=exporter)
+    context = _build_context(tmp_path)
+    resolver = SqlCipherDatabaseResolver(context, exporter=exporter)
     reader = TableDatabaseReader(
         codec_adapter=object(),  # type: ignore[arg-type]
         payload_router=object(),  # type: ignore[arg-type]
@@ -306,7 +303,7 @@ def test_sqlcipher_database_resolver_exports_encrypted_db_before_reading(
     assert exporter.calls[0][0] == encrypted_db
     assert exporter.calls[0][2] == RAW_KEY_HEX
     assert exporter.calls[0][1].parent.is_relative_to(
-        tmp_path / "Temp" / "SQLCipher" / "cache" / "jp" / "android"
+        context.workspace.temp_state / "SQLCipher" / "cache" / "jp" / "android"
     )
 
 
@@ -474,7 +471,9 @@ def test_jp_sqlcipher_key_provider_uses_runtime_http_options(
         "ba_downloader.infrastructure.storage.remote_sqlcipher_key.ResilientHttpClient",
         FakeHttpClient,
     )
-    context = _build_context(tmp_path, key_hex="").with_updates(
+    context = _build_context(
+        tmp_path,
+        key_hex="",
         proxy_url="http://127.0.0.1:8080",
         max_retries=7,
     )

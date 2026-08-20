@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from ba_downloader.domain.exceptions import ProcessExecutionError
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort
@@ -57,7 +57,7 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
 
     def dump(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         output_dir: str,
         runtime_assets: PreparedRuntimeAssets,
     ) -> None:

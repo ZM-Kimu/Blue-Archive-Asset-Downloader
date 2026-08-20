@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.process_table_runner import (
     ProcessTableExtractionRunner,
 )
@@ -14,10 +14,13 @@ from ba_downloader.infrastructure.extraction.table.profiles import (
 from ba_downloader.infrastructure.extraction.threaded_runner import (
     ExtractionFailureError,
 )
-from support import RecordingLogger, build_runtime_context
+from support import RecordingLogger, build_execution_context
 
 
-def _failing_table_profile(_context: RuntimeContext) -> TableExtractionProfile:
+def _failing_table_profile(
+    _context: ExecutionContext,
+    _database_source_identity: object | None = None,
+) -> TableExtractionProfile:
     raise RuntimeError("profile construction failed")
 
 
@@ -37,8 +40,8 @@ def test_process_table_runner_flushes_events_before_closing_workers(
     tmp_path: Path,
 ) -> None:
     logger = RecordingLogger()
-    context = build_runtime_context(tmp_path, region="jp").with_updates(threads=2)
-    _create_empty_flatbuffer_package(Path(context.extract_dir) / "FlatBufferData")
+    context = build_execution_context(tmp_path, region="jp")
+    _create_empty_flatbuffer_package(context.workspace.flatbuffer_schemas)
     files = [f"unsupported-{index}.bytes" for index in range(200)]
     runner = ProcessTableExtractionRunner(
         logger,
@@ -46,7 +49,7 @@ def test_process_table_runner_flushes_events_before_closing_workers(
         interrupt_grace_seconds=2.0,
     )
 
-    runner.run(files, context)
+    runner.run(files, context, concurrency=2)
 
     assert len(logger.by_level("warn")) == len(files)
     assert logger.by_level("error") == []
@@ -56,7 +59,7 @@ def test_process_table_runner_preserves_business_failure_after_worker_cleanup(
     tmp_path: Path,
 ) -> None:
     logger = RecordingLogger()
-    context = build_runtime_context(tmp_path, region="jp")
+    context = build_execution_context(tmp_path, region="jp")
     runner = ProcessTableExtractionRunner(
         logger,
         poll_interval_seconds=0.001,
@@ -65,7 +68,7 @@ def test_process_table_runner_preserves_business_failure_after_worker_cleanup(
     )
 
     with pytest.raises(ExtractionFailureError):
-        runner.run(["broken.zip"], context)
+        runner.run(["broken.zip"], context, concurrency=2)
 
     assert any(
         "profile construction failed" in message for message in logger.by_level("error")

@@ -4,7 +4,6 @@ import struct
 from pathlib import Path
 from typing import Any
 
-from .attribute_blob import BlobReader
 from .standard_metadata import (
     HEADER_V27_2 as STANDARD_HEADER_ORDER_V27_2,
 )
@@ -306,22 +305,6 @@ def parse_type_byval_indices(metadata: bytes) -> list[int]:
     for index in range(type_size // 0x58):
         byval.append(struct.unpack_from("<I", metadata, type_off + index * 0x58 + 8)[0])
     return byval
-
-
-def parse_blob_constructors(
-    data: bytes, offset: int, method_count: int
-) -> tuple[int, list[int]]:
-    reader = BlobReader(data, offset)
-    attribute_count = reader.compressed_uint()
-    if attribute_count <= 0 or attribute_count > 4096:
-        raise ValueError(
-            f"attribute count out of range at 0x{offset:X}: {attribute_count}"
-        )
-    constructors = [reader.u32_unaligned() for _ in range(attribute_count)]
-    bad = [value for value in constructors if value >= method_count]
-    if bad:
-        raise ValueError(f"constructor index out of range at 0x{offset:X}: {bad[:4]}")
-    return attribute_count, constructors
 
 
 def restore_pre29_attribute_sections(

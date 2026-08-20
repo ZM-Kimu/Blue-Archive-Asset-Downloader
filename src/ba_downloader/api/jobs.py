@@ -14,9 +14,17 @@ from uuid import uuid4
 
 from ba_downloader.api.events import build_secret_redactions, redact_text
 from ba_downloader.api.worker import run_application_job
-from ba_downloader.application.operations import ApplicationOperationCommand
+from ba_downloader.application.contracts import (
+    ApplicationCommand,
+    AssetsDownloadCommand,
+    AssetsExtractCommand,
+    AssetsSyncCommand,
+    BuildCharacterIndexCommand,
+    CatalogRefreshCommand,
+    StorageCleanupCommand,
+)
 from ba_downloader.domain.models.asset import AssetCollection
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 
 JobStatus = Literal[
     "queued",
@@ -56,9 +64,9 @@ class JobEvent:
 @dataclass(slots=True)
 class JobRecord:
     id: str
-    command: ApplicationOperationCommand
+    command: ApplicationCommand
     context_id: str
-    context: RuntimeContext
+    context: ExecutionContext
     status: JobStatus = "queued"
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     started_at: str | None = None
@@ -67,13 +75,21 @@ class JobRecord:
     artifacts: tuple[tuple[str, str], ...] = ()
     statistics: tuple[tuple[str, int], ...] = ()
     warnings: tuple[str, ...] = ()
-    effective_context: RuntimeContext | None = None
+    effective_context: ExecutionContext | None = None
     events: deque[JobEvent] = field(default_factory=lambda: deque(maxlen=2000))
     next_event_id: int = 1
 
     @property
     def operation(self) -> str:
-        return self.command.operation.value
+        names = {
+            AssetsSyncCommand: "sync",
+            AssetsDownloadCommand: "download",
+            AssetsExtractCommand: "extract",
+            BuildCharacterIndexCommand: "character-index",
+            CatalogRefreshCommand: "catalog-refresh",
+            StorageCleanupCommand: "storage-cleanup",
+        }
+        return names[type(self.command)]
 
     def append_event(
         self,
@@ -124,7 +140,7 @@ class JobManager:
         history_limit: int = 50,
         process_target: Callable[..., None] = run_application_job,
         result_callback: Callable[
-            [JobRecord, RuntimeContext, AssetCollection | None], None
+            [JobRecord, ExecutionContext, AssetCollection | None], None
         ]
         | None = None,
     ) -> None:
@@ -182,8 +198,8 @@ class JobManager:
 
     def submit(
         self,
-        command: ApplicationOperationCommand,
-        context: RuntimeContext,
+        command: ApplicationCommand,
+        context: ExecutionContext,
         context_id: str,
     ) -> JobRecord:
         with self._lock:
@@ -299,7 +315,7 @@ class JobManager:
         except BaseException as exc:
             with self._lock:
                 redactions = build_secret_redactions(
-                    sqlcipher_key_hex=job.context.sqlcipher_key_hex,
+                    sqlcipher_key_hex=job.context.sqlcipher_key,
                     proxy_url=job.context.proxy_url,
                 )
                 job.error = {
@@ -410,7 +426,7 @@ class JobManager:
                 job.statistics = tuple(payload.get("statistics", ()))
                 job.warnings = tuple(payload.get("warnings", ()))
                 effective_context = payload.get("context")
-                if isinstance(effective_context, RuntimeContext):
+                if isinstance(effective_context, ExecutionContext):
                     job.effective_context = effective_context
                 catalog = payload.get("catalog")
                 if isinstance(catalog, AssetCollection):

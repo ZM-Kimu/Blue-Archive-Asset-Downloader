@@ -131,30 +131,6 @@ class MetadataNames:
         return read_string(self.metadata, self.strings, name_index)
 
 
-def default_payload_is_valid(
-    metadata: bytes | bytearray,
-    data_offset: int,
-    data_size: int,
-    type_enum: int | None,
-    data_index: int,
-) -> bool:
-    if data_index == NULL_INDEX:
-        return True
-    if type_enum is None or data_index < 0 or data_index >= data_size:
-        return False
-
-    if type_enum in FIXED_DEFAULT_SIZES:
-        return data_index + FIXED_DEFAULT_SIZES[type_enum] <= data_size
-
-    if type_enum == IL2CPP_TYPE_STRING:
-        if data_index + 4 > data_size:
-            return False
-        length = struct.unpack_from("<i", metadata, data_offset + data_index)[0]
-        return 0 <= length <= 64 * 1024 and data_index + 4 + length <= data_size
-
-    return False
-
-
 def read_unity_compressed_uint(
     data: bytes | bytearray, offset: int, limit: int
 ) -> tuple[int, int] | None:

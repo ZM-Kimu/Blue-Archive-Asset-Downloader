@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
 from ba_downloader.domain.models.execution import ExecutionContext
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
 
 INDEX_SCHEMA_VERSION = 1
 INDEX_RELATIVE_PATH = Path("indexes", "characters.json")
@@ -21,7 +19,7 @@ class CharacterIndexFileStore:
 
     def save(
         self,
-        context: ExecutionContext | RuntimeContext,
+        context: ExecutionContext,
         data: list[CharacterIndexEntry],
         *,
         expected_character_ids: set[int] | None = None,
@@ -30,13 +28,6 @@ class CharacterIndexFileStore:
         if not version:
             raise ValueError("Character index requires a resolved resource version.")
         index_path = self._index_file_name(context)
-        index_path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, staging_name = tempfile.mkstemp(
-            prefix=f".{index_path.name}.",
-            suffix=".tmp",
-            dir=index_path.parent,
-        )
-        staging_path = Path(staging_name)
         payload = {
             "schema_version": INDEX_SCHEMA_VERSION,
             "metadata": {
@@ -46,12 +37,8 @@ class CharacterIndexFileStore:
             },
             "entries": [self._serialize_entry(entry) for entry in data],
         }
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf8", newline="\n") as handle:
-                json.dump(payload, handle, indent=2, ensure_ascii=False)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+
+        def validate(staging_path: Path) -> None:
             staged_index = self.load_path(staging_path, context)
             if expected_character_ids is not None:
                 actual_ids = {entry.character_id for entry in staged_index.entries}
@@ -62,13 +49,17 @@ class CharacterIndexFileStore:
                         "Character index is missing successfully decoded profile "
                         f"characters: {preview}."
                     )
-            os.replace(staging_path, index_path)
-        except BaseException:
-            staging_path.unlink(missing_ok=True)
-            raise
+
+        write_json_atomic(
+            index_path,
+            payload,
+            indent=2,
+            ensure_ascii=False,
+            validate=validate,
+        )
         return index_path.resolve()
 
-    def verify(self, context: ExecutionContext | RuntimeContext) -> bool:
+    def verify(self, context: ExecutionContext) -> bool:
         try:
             self.load_path(self._index_file_name(context), context)
         except (
@@ -81,13 +72,13 @@ class CharacterIndexFileStore:
             return False
         return True
 
-    def load(self, context: ExecutionContext | RuntimeContext) -> CharacterIndex:
+    def load(self, context: ExecutionContext) -> CharacterIndex:
         return self.load_path(self._index_file_name(context), context)
 
     def load_path(
         self,
         index_file: str | Path,
-        context: ExecutionContext | RuntimeContext,
+        context: ExecutionContext,
     ) -> CharacterIndex:
         payload = self._read_payload(Path(index_file), context)
         metadata = payload["metadata"]
@@ -104,7 +95,7 @@ class CharacterIndexFileStore:
     def _read_payload(
         self,
         index_path: Path,
-        context: ExecutionContext | RuntimeContext,
+        context: ExecutionContext,
     ) -> dict[str, Any]:
         if not index_path.is_file():
             raise FileNotFoundError("Character index file does not exist.")
@@ -224,7 +215,7 @@ class CharacterIndexFileStore:
 
     @staticmethod
     def _metadata(
-        context: ExecutionContext | RuntimeContext,
+        context: ExecutionContext,
     ) -> tuple[str, str, str]:
         if isinstance(context, ExecutionContext):
             return (
@@ -232,13 +223,13 @@ class CharacterIndexFileStore:
                 context.platform,
                 context.resource_version or "",
             )
-        return context.region, context.platform, context.version
+        return context.region, context.platform, context.resource_version
 
     @staticmethod
-    def _index_file_name(context: ExecutionContext | RuntimeContext) -> Path:
+    def _index_file_name(context: ExecutionContext) -> Path:
         if isinstance(context, ExecutionContext):
             return context.workspace.character_index
-        return Path(context.work_dir) / INDEX_RELATIVE_PATH
+        return Path(context.workspace.base) / INDEX_RELATIVE_PATH
 
 
 class CharacterIndexSearcher:

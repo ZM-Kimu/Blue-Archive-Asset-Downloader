@@ -5,12 +5,9 @@ from typing import ClassVar
 class ErrorCode(StrEnum):
     internal = "INTERNAL_ERROR"
     config_invalid = "CONFIG_INVALID"
-    dispatch_duplicate = "DISPATCH_DUPLICATE"
-    dispatch_unhandled = "DISPATCH_UNHANDLED"
     network_failed = "NETWORK_FAILED"
     catalog_failed = "CATALOG_FAILED"
     download_failed = "DOWNLOAD_FAILED"
-    extraction_decode_failed = "EXTRACTION_DECODE_FAILED"
     extraction_failed = "EXTRACTION_FAILED"
     schema_failed = "SCHEMA_FAILED"
     recovery_failed = "RECOVERY_FAILED"
@@ -31,22 +28,6 @@ class ConfigError(BAError):
     code = ErrorCode.config_invalid
 
 
-class DispatchError(BAError):
-    """Application message registration or dispatch failure."""
-
-
-class DuplicateMessageRegistrationError(DispatchError):
-    """The same message type was registered more than once."""
-
-    code = ErrorCode.dispatch_duplicate
-
-
-class UnhandledMessageError(DispatchError):
-    """No handler was registered for an application message."""
-
-    code = ErrorCode.dispatch_unhandled
-
-
 class NetworkError(BAError):
     """Network failure while fetching remote content."""
 
@@ -57,12 +38,6 @@ class DownloadError(BAError):
     """Download workflow failed to complete all requested resources."""
 
     code = ErrorCode.download_failed
-
-
-class DecodeError(BAError):
-    """Resource decoding failure."""
-
-    code = ErrorCode.extraction_decode_failed
 
 
 class ExtractError(BAError):

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from ba_downloader.domain.models.database import DatabaseSourceIdentity
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_profile import (
     RegionSettingsPolicy,
     RegionWorkflowPolicy,
     SyncExtractionMode,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.catalog_metadata import (
     CatalogMetadataPolicy,
     TableMetadataManifestPort,
@@ -134,7 +135,8 @@ def build_dumper_backend(
 
 
 def build_table_extraction_profile(
-    context: RuntimeContext,
+    context: ExecutionContext,
+    database_source_identity: DatabaseSourceIdentity | None = None,
 ) -> TableExtractionProfile:
     return TableExtractionProfile(
         archive_registry=TableArchiveRegistry(
@@ -149,20 +151,21 @@ def build_table_extraction_profile(
         ),
         database_path_resolver=SqlCipherDatabaseResolver(
             context,
+            source_identity=database_source_identity,
             key_provider=JpSqlCipherKeyProvider(context),
         ),
     )
 
 
 def build_character_index_source_profile(
-    context: RuntimeContext,
+    context: ExecutionContext,
 ) -> CharacterIndexSourceProfile:
     _ = context
     return JpDbCharacterIndexSourceProfile()
 
 
 def build_character_index_composition_profile(
-    context: RuntimeContext,
+    context: ExecutionContext,
 ) -> CharacterIndexCompositionProfile:
     _ = context
     return CharacterIndexCompositionProfile(romanize_japanese_names=True)

@@ -8,13 +8,16 @@ from zipfile import ZipFile
 
 import pytest
 
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.http import DownloadResult
 from ba_downloader.domain.ports.process import (
     ProcessCommand,
     ProcessOutputLine,
     ProcessOutputObserverPort,
     ProcessResult,
+)
+from ba_downloader.infrastructure.extraction.assetripper import (
+    exporter as exporter_module,
 )
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
@@ -41,24 +44,16 @@ from ba_downloader.infrastructure.extraction.assetripper.source import (
     AssetRipperSourceResolver,
 )
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
+from support.fixtures import build_execution_context
 
 
-def _context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
-        region="jp",
+def _context(tmp_path: Path, *, region: str = "jp") -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
+        region=region,
         platform="android",
-        threads=1,
         version="1",
-        raw_dir=str(tmp_path / "jp" / "android" / "raw"),
-        extract_dir=str(tmp_path / "jp" / "android" / "extracted"),
-        temp_dir=str(tmp_path / "jp" / "android" / ".state" / "temp"),
-        resource_type=("bundle",),
-        proxy_url="",
         max_retries=0,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
-        workspace_mode="v3",
     )
 
 
@@ -292,10 +287,13 @@ def test_source_resolver_applies_versioned_overlay(tmp_path: Path) -> None:
         repository_root=repository,
     )
 
-    patched = resolver.resolve_patched(_context(tmp_path))
-    reused = resolver.resolve_patched(_context(tmp_path))
+    jp_context = _context(tmp_path)
+    cn_context = _context(tmp_path, region="cn")
+    patched = resolver.resolve_patched(jp_context)
+    reused = resolver.resolve_patched(cn_context)
 
     assert patched == reused
+    assert jp_context.workspace.tools_cache == cn_context.workspace.tools_cache
     assert patched != repository / "third_party" / "AssetRipper"
     assert (
         patched / "Source" / "AssetRipper.Assets" / "Bundles" / "GameLoadProgress.cs"
@@ -383,9 +381,6 @@ def test_batch_exporter_builds_once_and_reads_typed_result(tmp_path: Path) -> No
         runner,
         repository_root=tmp_path,
     )
-    project = tmp_path / "tools" / "assetripper_exporter"
-    project.mkdir(parents=True)
-    (project / "AssetRipperExporter.csproj").write_text("<Project />")
     input_b = tmp_path / "b.bundle"
     input_a = tmp_path / "a.bundle"
     input_b.write_bytes(b"b")
@@ -397,15 +392,24 @@ def test_batch_exporter_builds_once_and_reads_typed_result(tmp_path: Path) -> No
         [_export_input(input_b), _export_input(input_a)],
         tmp_path / "out",
     )
-    exporter.export(context, [_export_input(input_a)], tmp_path / "out-again")
+    other_context = _context(tmp_path, region="cn")
+    exporter.export(
+        other_context,
+        [_export_input(input_a)],
+        tmp_path / "out-again",
+    )
 
     assert result.files[0].path == "asset.bin"
+    assert context.workspace.tools_cache == other_context.workspace.tools_cache
     assert [command.argv[1] for command in runner.commands] == [
         "build",
         str(runner.commands[1].argv[1]),
         str(runner.commands[2].argv[1]),
     ]
     assert "--disable-build-servers" in runner.commands[0].argv
+    assert Path(runner.commands[0].argv[3]) == (
+        Path(exporter_module.__file__).with_name("tool") / "AssetRipperExporter.csproj"
+    )
 
 
 def test_batch_exporter_sends_targeted_inputs_and_reads_coverage(
@@ -418,9 +422,6 @@ def test_batch_exporter_sends_targeted_inputs_and_reads_coverage(
         runner,
         repository_root=tmp_path,
     )
-    project = tmp_path / "tools" / "assetripper_exporter"
-    project.mkdir(parents=True)
-    (project / "AssetRipperExporter.csproj").write_text("<Project />")
     dependency = tmp_path / "dependency.bundle"
     target = tmp_path / "target.bundle"
     dependency.write_bytes(b"dependency")
@@ -461,9 +462,6 @@ def test_batch_exporter_forwards_structured_process_events(tmp_path: Path) -> No
         runner,
         repository_root=tmp_path,
     )
-    project = tmp_path / "tools" / "assetripper_exporter"
-    project.mkdir(parents=True)
-    (project / "AssetRipperExporter.csproj").write_text("<Project />")
     bundle = tmp_path / "bundle"
     bundle.write_bytes(b"bundle")
     events: list[
@@ -647,17 +645,12 @@ def test_legacy_exporter_cache_marker_forces_wrapper_rebuild(tmp_path: Path) -> 
         runner,
         repository_root=tmp_path,
     )
-    project = tmp_path / "tools" / "assetripper_exporter"
-    project.mkdir(parents=True)
-    (project / "AssetRipperExporter.csproj").write_text("<Project />")
     bundle = tmp_path / "bundle"
     bundle.write_bytes(b"bundle")
     context = _context(tmp_path)
 
     exporter.export(context, [_export_input(bundle)], tmp_path / "first")
-    cache_root = (
-        Path(context.temp_dir).parent / "cache" / "tools" / "assetripper" / "exporter"
-    )
+    cache_root = context.workspace.tools_cache / "assetripper" / "exporter"
     marker = cache_root / "source-commit.txt"
     marker.write_text(f"{ASSETRIPPER_COMMIT}\n", encoding="ascii")
     exporter.export(context, [_export_input(bundle)], tmp_path / "second")
@@ -674,9 +667,6 @@ def test_batch_exporter_reports_structured_failure(tmp_path: Path) -> None:
         runner,
         repository_root=tmp_path,
     )
-    project = tmp_path / "tools" / "assetripper_exporter"
-    project.mkdir(parents=True)
-    (project / "AssetRipperExporter.csproj").write_text("<Project />")
     bundle = tmp_path / "bad.bundle"
     bundle.write_bytes(b"bad")
 
@@ -692,9 +682,6 @@ def test_batch_exporter_rejects_success_without_output(tmp_path: Path) -> None:
         runner,
         repository_root=tmp_path,
     )
-    project = tmp_path / "tools" / "assetripper_exporter"
-    project.mkdir(parents=True)
-    (project / "AssetRipperExporter.csproj").write_text("<Project />")
     bundle = tmp_path / "empty.bundle"
     bundle.write_bytes(b"empty")
 
@@ -710,9 +697,6 @@ def test_runtime_metadata_inspector_reads_typed_result(tmp_path: Path) -> None:
         runner,
         repository_root=tmp_path,
     )
-    project = tmp_path / "tools" / "assetripper_exporter"
-    project.mkdir(parents=True)
-    (project / "AssetRipperExporter.csproj").write_text("<Project />")
     data_root = tmp_path / "Data"
     data_root.mkdir()
 
@@ -734,9 +718,6 @@ def test_dependency_scanner_reads_strict_archive_results(tmp_path: Path) -> None
         runner,
         repository_root=tmp_path,
     )
-    project = tmp_path / "tools" / "assetripper_exporter"
-    project.mkdir(parents=True)
-    (project / "AssetRipperExporter.csproj").write_text("<Project />")
     path = tmp_path / "archive.zip"
     path.write_bytes(b"archive")
     archive = BundleArchiveInput.from_path(path, archive_id="archive.zip")

@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ba_downloader.application.contracts import AssetOperationOptions
 from ba_downloader.application.use_cases.download_assets import DownloadAssetsUseCase
-from ba_downloader.bootstrap.region_profiles import (
-    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+from ba_downloader.bootstrap.region_gateways import (
+    DEFAULT_REGION_GATEWAY_REGISTRY,
     build_application_region_profile,
 )
 from ba_downloader.domain.models.asset import AssetCollection, AssetType
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
-from ba_downloader.domain.models.runtime import RuntimeContext
-from support import RecordingLogger, StaticProvider, build_runtime_context
+from support import RecordingLogger, StaticProvider, build_execution_context
 
 
 class RecordingDownloader:
@@ -20,25 +21,27 @@ class RecordingDownloader:
     def verify_and_download(
         self,
         resources: AssetCollection,
-        context: RuntimeContext,
+        context: ExecutionContext,
+        *,
+        concurrency: int,
     ) -> None:
-        _ = context
+        _ = (context, concurrency)
         self.calls.append([item.path for item in resources])
 
 
 class RecordingTableMetadataStore:
     def __init__(self) -> None:
-        self.write_calls: list[tuple[RuntimeContext, AssetCollection]] = []
+        self.write_calls: list[tuple[ExecutionContext, AssetCollection]] = []
 
-    def load(self, context: RuntimeContext) -> AssetCollection | None:
+    def load(self, context: ExecutionContext) -> AssetCollection | None:
         _ = context
         return None
 
-    def write(self, context: RuntimeContext, resources: AssetCollection) -> None:
+    def write(self, context: ExecutionContext, resources: AssetCollection) -> None:
         self.write_calls.append((context, resources))
 
 
-def _build_table_catalog(context: RuntimeContext) -> RegionCatalogResult:
+def _build_table_catalog(context: ExecutionContext) -> RegionCatalogResult:
     resources = AssetCollection()
     resources.add(
         "https://example.invalid/Table/TablePatchPack_GroundStage_1.zip",
@@ -53,10 +56,9 @@ def _build_table_catalog(context: RuntimeContext) -> RegionCatalogResult:
 
 
 def test_download_writes_catalog_table_metadata_manifest(tmp_path: Path) -> None:
-    context = build_runtime_context(
+    context = build_execution_context(
         tmp_path,
         region="jp",
-        resource_type=("table",),
     )
     provider = StaticProvider(_build_table_catalog(context))
     downloader = RecordingDownloader()
@@ -65,16 +67,14 @@ def test_download_writes_catalog_table_metadata_manifest(tmp_path: Path) -> None
         provider,
         downloader,
         workflow_profile=build_application_region_profile(
-            DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve("jp"),
-            context,
-            http_client=object(),
+            DEFAULT_REGION_GATEWAY_REGISTRY.resolve("jp"),
             logger=RecordingLogger(),
             table_metadata_store=metadata_store,
             provider=provider,
         ),
     )
 
-    service.run(context)
+    service.run(context, AssetOperationOptions())
 
     assert metadata_store.write_calls == [(context, provider.result.resources)]
     assert downloader.calls == [["Table/TablePatchPack_GroundStage_1.zip"]]

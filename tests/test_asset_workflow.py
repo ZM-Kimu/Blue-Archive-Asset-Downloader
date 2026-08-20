@@ -8,12 +8,13 @@ import pytest
 
 from ba_downloader.domain.exceptions import ExtractError, OperationCancelledError
 from ba_downloader.domain.models.asset import AssetCollection, AssetType
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import EventCancellation
 from ba_downloader.infrastructure.extraction.assetripper.bundles import (
     BundleExtractionReport,
 )
 from ba_downloader.infrastructure.extraction.workflow import AssetExtractionWorkflow
+from support.fixtures import build_execution_context
 
 
 class RecordingLogger:
@@ -110,20 +111,13 @@ class FakeStopEvent:
         return False
 
 
-def _build_context(tmp_path: Path, resource_type: tuple[str, ...]) -> RuntimeContext:
-    return RuntimeContext(
+def _build_context(tmp_path: Path, resource_type: tuple[str, ...]) -> ExecutionContext:
+    _ = resource_type
+    return build_execution_context(
+        tmp_path,
         region="jp",
-        threads=1,
         version="1.0.0",
-        raw_dir=str(tmp_path / "Raw"),
-        extract_dir=str(tmp_path / "Extracted"),
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=resource_type,
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
@@ -150,7 +144,7 @@ def _patch_progress_reporter(monkeypatch: Any) -> None:
 
 def test_bundle_extraction_returns_workflow_warnings(tmp_path: Path) -> None:
     context = _build_context(tmp_path, ("bundle",))
-    bundle_dir = Path(context.raw_dir) / "Bundle"
+    bundle_dir = context.workspace.raw_bundles
     bundle_dir.mkdir(parents=True)
     (bundle_dir / "a.zip").write_bytes(b"bundle")
     expected_warning = "[BUNDLE_EXTRACTION_PARTIAL] partial output"
@@ -158,7 +152,7 @@ def test_bundle_extraction_returns_workflow_warnings(tmp_path: Path) -> None:
     class ReportingBundleWorkflow:
         def run(
             self,
-            received_context: RuntimeContext,
+            received_context: ExecutionContext,
             inputs: list[Path],
         ) -> BundleExtractionReport:
             assert received_context == context
@@ -173,7 +167,7 @@ def test_bundle_extraction_returns_workflow_warnings(tmp_path: Path) -> None:
     report = AssetExtractionWorkflow(
         RecordingLogger(),
         bundle_workflow=ReportingBundleWorkflow(),  # type: ignore[arg-type]
-    ).extract_bundles(context)
+    ).extract_bundles(context, concurrency=1)
 
     assert report.warnings == (expected_warning,)
 
@@ -183,12 +177,12 @@ def test_media_extraction_uses_extract_progress_mode(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("media",))
-    media_dir = Path(context.raw_dir) / "Media"
+    media_dir = context.workspace.raw_media
     media_dir.mkdir(parents=True)
     (media_dir / "voice.zip").write_bytes(b"zip")
 
     class FakeMediaExtractor:
-        def __init__(self, received_context: RuntimeContext) -> None:
+        def __init__(self, received_context: ExecutionContext) -> None:
             assert received_context == context
 
         def extract_zip(self, file_path: str, **kwargs: Any) -> None:
@@ -204,7 +198,7 @@ def test_media_extraction_uses_extract_progress_mode(
         FakeMediaExtractor,
     )
 
-    AssetExtractionWorkflow(RecordingLogger()).extract_media(context)
+    AssetExtractionWorkflow(RecordingLogger()).extract_media(context, concurrency=1)
 
     progress = RecordingProgressReporter.instances[0]
     assert progress.extract_mode is True
@@ -218,13 +212,13 @@ def test_media_extraction_observes_operation_cancellation(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("media",))
-    media_dir = Path(context.raw_dir) / "Media"
+    media_dir = context.workspace.raw_media
     media_dir.mkdir(parents=True)
     (media_dir / "voice.zip").write_bytes(b"zip")
     cancellation_event = Event()
 
     class CancellingMediaExtractor:
-        def __init__(self, _context: RuntimeContext) -> None:
+        def __init__(self, _context: ExecutionContext) -> None:
             pass
 
         def extract_zip(self, _file_path: str, **kwargs: Any) -> None:
@@ -242,7 +236,7 @@ def test_media_extraction_observes_operation_cancellation(
     )
 
     with pytest.raises(OperationCancelledError):
-        workflow.extract_media(context)
+        workflow.extract_media(context, concurrency=1)
 
 
 def test_media_extraction_uses_filtered_existing_resources(
@@ -250,14 +244,14 @@ def test_media_extraction_uses_filtered_existing_resources(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("media",))
-    media_dir = Path(context.raw_dir) / "Media"
+    media_dir = context.workspace.raw_media
     media_dir.mkdir(parents=True)
     (media_dir / "voice.zip").write_bytes(b"zip")
     (media_dir / "other.zip").write_bytes(b"zip")
     calls: list[str] = []
 
     class FakeMediaExtractor:
-        def __init__(self, received_context: RuntimeContext) -> None:
+        def __init__(self, received_context: ExecutionContext) -> None:
             assert received_context == context
 
         def extract_zip(self, file_path: str, **kwargs: Any) -> None:
@@ -281,6 +275,7 @@ def test_media_extraction_uses_filtered_existing_resources(
                 ("Bundle/not-media.bundle", AssetType.bundle),
             ]
         ),
+        concurrency=1,
     )
 
     assert calls == ["voice.zip"]
@@ -291,7 +286,7 @@ def test_media_extraction_aggregates_failures_after_processing_other_files(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("media",))
-    media_dir = Path(context.raw_dir) / "Media"
+    media_dir = context.workspace.raw_media
     media_dir.mkdir(parents=True)
     (media_dir / "bad.zip").write_bytes(b"zip")
     (media_dir / "good.zip").write_bytes(b"zip")
@@ -299,7 +294,7 @@ def test_media_extraction_aggregates_failures_after_processing_other_files(
     logger = RecordingLogger()
 
     class FakeMediaExtractor:
-        def __init__(self, received_context: RuntimeContext) -> None:
+        def __init__(self, received_context: ExecutionContext) -> None:
             assert received_context == context
 
         def extract_zip(self, file_path: str, **kwargs: Any) -> None:
@@ -316,7 +311,7 @@ def test_media_extraction_aggregates_failures_after_processing_other_files(
     )
 
     with pytest.raises(ExtractError, match="media extraction failed for 1 file"):
-        AssetExtractionWorkflow(logger).extract_media(context)
+        AssetExtractionWorkflow(logger).extract_media(context, concurrency=1)
 
     assert sorted(calls) == ["bad.zip", "good.zip"]
     assert any("bad.zip" in message for message in logger.error_messages)
@@ -327,7 +322,7 @@ def test_table_extraction_uses_process_runner_for_real_extractor(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("table",))
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True)
     (table_dir / "A.db").write_bytes(b"db")
     (table_dir / "B.db").write_bytes(b"db")
@@ -340,9 +335,14 @@ def test_table_extraction_uses_process_runner_for_real_extractor(
         def run(
             self,
             files: list[str],
-            received_context: RuntimeContext,
+            received_context: ExecutionContext,
+            *,
+            concurrency: int,
+            metadata_by_file: dict[str, dict[str, object]] | None = None,
         ) -> None:
+            _ = metadata_by_file
             assert received_context == context
+            assert concurrency == 1
             captured_files.append(files)
 
     monkeypatch.setattr(
@@ -350,7 +350,7 @@ def test_table_extraction_uses_process_runner_for_real_extractor(
         FakeProcessTableExtractionRunner,
     )
 
-    AssetExtractionWorkflow(RecordingLogger()).extract_tables(context)
+    AssetExtractionWorkflow(RecordingLogger()).extract_tables(context, concurrency=1)
 
     assert len(captured_files) == 1
     assert sorted(captured_files[0]) == ["A.db", "B.db"]
@@ -361,7 +361,7 @@ def test_table_extraction_passes_resource_metadata_to_process_runner(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("table",))
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True)
     (table_dir / "TablePatchPack_GroundStage_1.zip").write_bytes(b"zip")
     resources = AssetCollection()
@@ -384,12 +384,14 @@ def test_table_extraction_passes_resource_metadata_to_process_runner(
         def run(
             self,
             files: list[str],
-            received_context: RuntimeContext,
+            received_context: ExecutionContext,
             *,
+            concurrency: int,
             metadata_by_file: dict[str, dict[str, object]],
         ) -> None:
             assert files == ["TablePatchPack_GroundStage_1.zip"]
             assert received_context == context
+            assert concurrency == 1
             captured_metadata.append(metadata_by_file)
 
     monkeypatch.setattr(
@@ -397,7 +399,9 @@ def test_table_extraction_passes_resource_metadata_to_process_runner(
         FakeProcessTableExtractionRunner,
     )
 
-    AssetExtractionWorkflow(RecordingLogger()).extract_tables(context, resources)
+    AssetExtractionWorkflow(RecordingLogger()).extract_tables(
+        context, resources, concurrency=1
+    )
 
     assert captured_metadata == [
         {"TablePatchPack_GroundStage_1.zip": {"includes": ["EN0010_VeryHard.zip"]}}
@@ -409,7 +413,7 @@ def test_table_extraction_uses_filtered_existing_resources(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("table",))
-    table_dir = Path(context.raw_dir) / "Table"
+    table_dir = context.workspace.raw_tables
     table_dir.mkdir(parents=True)
     (table_dir / "ExcelDB.db").write_bytes(b"db")
     (table_dir / "Other.db").write_bytes(b"db")
@@ -422,9 +426,14 @@ def test_table_extraction_uses_filtered_existing_resources(
         def run(
             self,
             files: list[str],
-            received_context: RuntimeContext,
+            received_context: ExecutionContext,
+            *,
+            concurrency: int,
+            metadata_by_file: dict[str, dict[str, object]] | None = None,
         ) -> None:
+            _ = metadata_by_file
             assert received_context == context
+            assert concurrency == 1
             captured_files.append(files)
 
     monkeypatch.setattr(
@@ -441,6 +450,7 @@ def test_table_extraction_uses_filtered_existing_resources(
                 ("Bundle/not-table.bundle", AssetType.bundle),
             ]
         ),
+        concurrency=1,
     )
 
     assert captured_files == [["ExcelDB.db"]]
@@ -450,7 +460,7 @@ def test_bundle_extraction_uses_filtered_existing_resources(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("bundle",))
-    bundle_dir = Path(context.raw_dir) / "Bundle"
+    bundle_dir = context.workspace.raw_bundles
     bundle_dir.mkdir(parents=True)
     (bundle_dir / "target.bundle").write_bytes(b"bundle")
     (bundle_dir / "other.bundle").write_bytes(b"bundle")
@@ -459,7 +469,7 @@ def test_bundle_extraction_uses_filtered_existing_resources(
     class RecordingBundleWorkflow:
         def run(
             self,
-            _context: RuntimeContext,
+            _context: ExecutionContext,
             inputs: list[Path],
         ) -> BundleExtractionReport:
             captured_bundles.extend(inputs)
@@ -479,6 +489,7 @@ def test_bundle_extraction_uses_filtered_existing_resources(
                 ("Media/not-bundle.zip", AssetType.media),
             ]
         ),
+        concurrency=1,
     )
 
     assert captured_bundles == [bundle_dir / "target.bundle"]

@@ -5,8 +5,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ba_downloader.domain.models.asset import AssetCollection, AssetType
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.extraction import ExtractionReport
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.extract import AssetExtractionPort
 from ba_downloader.domain.ports.logging import LoggerPort
@@ -26,11 +26,6 @@ from ba_downloader.infrastructure.extraction.threaded_runner import (
     ThreadedExtractionRunner,
 )
 from ba_downloader.infrastructure.progress import NullProgressReporterFactory
-from ba_downloader.infrastructure.storage.workspace_paths import (
-    extracted_type_root,
-    raw_resource_path,
-    raw_type_root,
-)
 
 
 class AssetExtractionWorkflow(AssetExtractionPort):
@@ -73,8 +68,10 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
     def extract_bundles(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None = None,
+        *,
+        concurrency: int,
     ) -> ExtractionReport:
         self._cancellation.raise_if_cancelled()
         bundles = [
@@ -93,8 +90,10 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
     def extract_media(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None = None,
+        *,
+        concurrency: int,
     ) -> ExtractionReport:
         self._cancellation.raise_if_cancelled()
         files = [
@@ -108,6 +107,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         self._threaded_runner.run(
             files,
             context,
+            concurrency=concurrency,
             progress_title="Extracting media...",
             operation_name="media extraction",
             task=lambda zip_path, should_stop, progress_callback: extractor.extract_zip(
@@ -120,8 +120,10 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
     def extract_tables(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None = None,
+        *,
+        concurrency: int,
     ) -> ExtractionReport:
         self._cancellation.raise_if_cancelled()
         table_files = [
@@ -132,7 +134,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             return ExtractionReport()
 
         table_file_metadata = self._resolve_table_file_metadata(context, resources)
-        extracted_type_root(context, AssetType.table).mkdir(
+        context.workspace.extracted_table_semantic.mkdir(
             parents=True,
             exist_ok=True,
         )
@@ -140,16 +142,17 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             self._process_table_runner.run(
                 table_files,
                 context,
+                concurrency=concurrency,
                 metadata_by_file=table_file_metadata,
             )
             return ExtractionReport()
 
-        self._process_table_runner.run(table_files, context)
+        self._process_table_runner.run(table_files, context, concurrency=concurrency)
         return ExtractionReport()
 
     def _resolve_bundle_files(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None,
     ) -> list[Path]:
         if resources is not None:
@@ -159,7 +162,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 AssetType.bundle,
             )
 
-        bundle_folder = raw_type_root(context, AssetType.bundle)
+        bundle_folder = context.workspace.raw_bundles
         if not bundle_folder.exists():
             return []
         return [
@@ -170,7 +173,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
     def _resolve_media_files(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None,
     ) -> list[Path]:
         if resources is not None:
@@ -184,14 +187,14 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 if file_path.suffix.lower() == ".zip"
             ]
 
-        media_folder = raw_type_root(context, AssetType.media)
+        media_folder = context.workspace.raw_media
         if not media_folder.exists():
             return []
         return list(media_folder.rglob("*.zip"))
 
     def _resolve_table_files(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None,
     ) -> list[Path]:
         if resources is not None:
@@ -201,7 +204,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 AssetType.table,
             )
 
-        table_folder = raw_type_root(context, AssetType.table)
+        table_folder = context.workspace.raw_tables
         if not table_folder.exists():
             return []
         return [
@@ -210,7 +213,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
     @staticmethod
     def _resolve_existing_resource_files(
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection,
         asset_type: AssetType,
     ) -> list[Path]:
@@ -219,7 +222,10 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         for resource in resources:
             if resource.asset_type is not asset_type:
                 continue
-            file_path = raw_resource_path(context, resource)
+            file_path = context.workspace.raw_resource_path(
+                resource.asset_type.value,
+                resource.path,
+            )
             if file_path in seen_paths or not file_path.is_file():
                 continue
             files.append(file_path)
@@ -228,7 +234,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
     @staticmethod
     def _resolve_table_file_metadata(
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None,
     ) -> dict[str, dict[str, object]]:
         if resources is None:
@@ -237,7 +243,10 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         for resource in resources:
             if resource.asset_type is not AssetType.table:
                 continue
-            file_path = raw_resource_path(context, resource)
+            file_path = context.workspace.raw_resource_path(
+                resource.asset_type.value,
+                resource.path,
+            )
             if not file_path.is_file():
                 continue
             if resource.metadata:

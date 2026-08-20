@@ -4,10 +4,11 @@ from pathlib import Path
 
 import pytest
 
+from ba_downloader.application.contracts.commands import AssetOperationOptions
 from ba_downloader.application.profiles import RegionProfile
 from ba_downloader.application.use_cases.sync_assets import SyncAssetsUseCase
-from ba_downloader.bootstrap.region_profiles import (
-    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
+from ba_downloader.bootstrap.region_gateways import (
+    DEFAULT_REGION_GATEWAY_REGISTRY,
     build_application_region_profile,
 )
 from ba_downloader.domain.exceptions import DownloadError
@@ -16,10 +17,12 @@ from ba_downloader.domain.models.asset import (
     AssetType,
 )
 from ba_downloader.domain.models.asset_filter import AssetFilter
+from ba_downloader.domain.models.asset_type_selection import ResourceTypeSelection
 from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.extraction import ExtractionReport
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.workspace import WorkspaceLayout
 from support import DummyCharacterIndexBuilder, RecordingLogger, StaticProvider
 
 
@@ -30,9 +33,11 @@ class FailingDownloader:
     def verify_and_download(
         self,
         resources: AssetCollection,
-        context: RuntimeContext,
+        context: ExecutionContext,
+        *,
+        concurrency: int,
     ) -> None:
-        _ = (resources, context)
+        _ = (resources, context, concurrency)
         self.calls.append("verify_and_download")
         raise DownloadError("download incomplete")
 
@@ -44,9 +49,11 @@ class RecordingDownloader:
     def verify_and_download(
         self,
         resources: AssetCollection,
-        context: RuntimeContext,
+        context: ExecutionContext,
+        *,
+        concurrency: int,
     ) -> None:
-        _ = context
+        _ = (context, concurrency)
         self.calls.append([item.path for item in resources])
 
 
@@ -64,20 +71,22 @@ class RecordingExtractAssetsUseCase:
 
     def run(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
+        options: AssetOperationOptions,
         resources: AssetCollection | None = None,
     ) -> ExtractionReport:
-        _ = context
+        _ = (context, options)
         self.calls.append("run")
         self.resource_calls.append(self._resource_paths(resources))
         return ExtractionReport(self.warnings)
 
     def run_post_download(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
+        options: AssetOperationOptions,
         resources: AssetCollection | None = None,
     ) -> ExtractionReport:
-        _ = context
+        _ = (context, options)
         self.calls.append("run_post_download")
         self.resource_calls.append(self._resource_paths(resources))
         return ExtractionReport(self.warnings)
@@ -85,13 +94,13 @@ class RecordingExtractAssetsUseCase:
 
 class RecordingTableMetadataStore:
     def __init__(self) -> None:
-        self.write_calls: list[tuple[RuntimeContext, AssetCollection]] = []
+        self.write_calls: list[tuple[ExecutionContext, AssetCollection]] = []
 
-    def load(self, context: RuntimeContext) -> AssetCollection | None:
+    def load(self, context: ExecutionContext) -> AssetCollection | None:
         _ = context
         return None
 
-    def write(self, context: RuntimeContext, resources: AssetCollection) -> None:
+    def write(self, context: ExecutionContext, resources: AssetCollection) -> None:
         self.write_calls.append((context, resources))
 
 
@@ -99,33 +108,43 @@ class RecordingSchemaPreparation:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def prepare(self, context: RuntimeContext) -> None:
+    def prepare(self, context: ExecutionContext) -> None:
         _ = context
         self.calls.append("prepare")
 
-    def compile(self, context: RuntimeContext) -> None:
+    def compile(self, context: ExecutionContext) -> None:
         _ = context
         self.calls.append("compile")
 
 
-def _build_context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
-        region="gl",
-        threads=1,
-        version="1.0.0",
-        raw_dir=str(tmp_path / "RawData"),
-        extract_dir=str(tmp_path / "Extracted"),
-        temp_dir=str(tmp_path / "Temp"),
-        resource_type=("bundle",),
-        proxy_url="",
+def _build_context(
+    tmp_path: Path,
+    *,
+    region: str = "gl",
+    version: str = "1.0.0",
+) -> ExecutionContext:
+    return ExecutionContext(
+        region=region,  # type: ignore[arg-type]
+        platform="android",
+        workspace=WorkspaceLayout.create(tmp_path, region, "android"),  # type: ignore[arg-type]
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
+        resource_version=version,
     )
 
 
-def _build_catalog(context: RuntimeContext) -> RegionCatalogResult:
+def _options(
+    *,
+    resources: tuple[str, ...] = ("bundle",),
+    filters: tuple[str, ...] = (),
+) -> AssetOperationOptions:
+    return AssetOperationOptions(
+        concurrency=1,
+        resources=ResourceTypeSelection.from_values(resources),
+        asset_filter=AssetFilter.parse(filters),
+    )
+
+
+def _build_catalog(context: ExecutionContext) -> RegionCatalogResult:
     resources = AssetCollection()
     resources.add(
         "https://example.invalid/Bundle/a.bundle",
@@ -141,7 +160,7 @@ def _build_catalog(context: RuntimeContext) -> RegionCatalogResult:
     )
 
 
-def _build_search_catalog(context: RuntimeContext) -> RegionCatalogResult:
+def _build_search_catalog(context: ExecutionContext) -> RegionCatalogResult:
     resources = AssetCollection()
     resources.add(
         "https://example.invalid/Bundle/shiroko.bundle",
@@ -165,7 +184,7 @@ def _build_search_catalog(context: RuntimeContext) -> RegionCatalogResult:
     )
 
 
-def _build_table_catalog(context: RuntimeContext) -> RegionCatalogResult:
+def _build_table_catalog(context: ExecutionContext) -> RegionCatalogResult:
     resources = AssetCollection()
     resources.add(
         "https://example.invalid/Table/TablePatchPack_GroundStage_1.zip",
@@ -180,15 +199,13 @@ def _build_table_catalog(context: RuntimeContext) -> RegionCatalogResult:
 
 
 def _build_profile(
-    context: RuntimeContext,
+    context: ExecutionContext,
     provider: StaticProvider,
     logger: RecordingLogger,
     metadata_store: RecordingTableMetadataStore | None = None,
 ) -> RegionProfile:
     return build_application_region_profile(
-        DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(context.region),
-        context,
-        http_client=object(),
+        DEFAULT_REGION_GATEWAY_REGISTRY.resolve(context.region),
         logger=logger,
         table_metadata_store=metadata_store or RecordingTableMetadataStore(),
         provider=provider,
@@ -213,7 +230,7 @@ def test_sync_does_not_extract_after_download_failure(tmp_path: Path) -> None:
     )
 
     with pytest.raises(DownloadError, match="download incomplete"):
-        service.run(context)
+        service.run(context, _options())
 
     assert downloader.calls == ["verify_and_download"]
     assert schema_preparation.calls == ["prepare"]
@@ -223,10 +240,7 @@ def test_sync_does_not_extract_after_download_failure(tmp_path: Path) -> None:
 def test_jp_sync_passes_catalog_resources_to_post_download_extract(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(
-        region="jp",
-        resource_type=("table",),
-    )
+    context = _build_context(tmp_path, region="jp")
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
@@ -243,7 +257,7 @@ def test_jp_sync_passes_catalog_resources_to_post_download_extract(
         workflow_profile=_build_profile(context, provider, logger, metadata_store),
     )
 
-    service.run(context)
+    service.run(context, _options(resources=("table",)))
 
     assert metadata_store.write_calls == [(context, provider.result.resources)]
     assert downloader.calls == [["Table/TablePatchPack_GroundStage_1.zip"]]
@@ -255,7 +269,7 @@ def test_jp_sync_passes_catalog_resources_to_post_download_extract(
 
 def test_sync_returns_active_context_and_extraction_warnings(tmp_path: Path) -> None:
     context = _build_context(tmp_path)
-    active_context = context.with_updates(version="2.0.0")
+    active_context = _build_context(tmp_path, version="2.0.0")
     warning = "[BUNDLE_EXTRACTION_PARTIAL] partial output"
     extract_service = RecordingExtractAssetsUseCase((warning,))
     provider = StaticProvider(_build_catalog(active_context))
@@ -270,21 +284,30 @@ def test_sync_returns_active_context_and_extraction_warnings(tmp_path: Path) -> 
         workflow_profile=_build_profile(active_context, provider, logger),
     )
 
-    result = service.run(context)
+    result = service.run(context, _options())
 
     assert result.context == active_context
     assert result.extraction.warnings == (warning,)
 
 
 def test_jp_sync_advanced_search_uses_character_index_keywords(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(
-        region="jp",
-        advanced_search=("シロコ",),
+    context = _build_context(tmp_path, region="jp")
+    character_index_builder = DummyCharacterIndexBuilder(
+        index=CharacterIndex(
+            "JP1.0.0",
+            [
+                CharacterIndexEntry(
+                    10000,
+                    dev_name="Shiroko",
+                    names=["シロコ"],
+                    file_aliases={"Shiroko"},
+                )
+            ],
+        )
     )
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
-    character_index_builder = DummyCharacterIndexBuilder()
     provider = StaticProvider(_build_search_catalog(context))
     logger = RecordingLogger()
     service = SyncAssetsUseCase(
@@ -297,10 +320,9 @@ def test_jp_sync_advanced_search_uses_character_index_keywords(tmp_path: Path) -
         workflow_profile=_build_profile(context, provider, logger),
     )
 
-    service.run(context)
+    service.run(context, _options(filters=("name~シロコ",)))
 
     assert schema_preparation.calls == ["prepare"]
-    assert character_index_builder.search_calls == [["シロコ"]]
     assert downloader.calls == [["Bundle/Shiroko.bundle"]]
     assert extract_service.calls == ["run_post_download"]
     assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
@@ -309,14 +331,23 @@ def test_jp_sync_advanced_search_uses_character_index_keywords(tmp_path: Path) -
 def test_cn_sync_advanced_search_uses_character_index_keywords(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(
-        region="cn",
-        advanced_search=("伊吹",),
+    context = _build_context(tmp_path, region="cn")
+    character_index_builder = DummyCharacterIndexBuilder(
+        index=CharacterIndex(
+            "CN1.0.0",
+            [
+                CharacterIndexEntry(
+                    10000,
+                    dev_name="Shiroko",
+                    names=["伊吹"],
+                    file_aliases={"Shiroko"},
+                )
+            ],
+        )
     )
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
-    character_index_builder = DummyCharacterIndexBuilder()
     provider = StaticProvider(_build_search_catalog(context))
     logger = RecordingLogger()
     service = SyncAssetsUseCase(
@@ -329,20 +360,16 @@ def test_cn_sync_advanced_search_uses_character_index_keywords(
         workflow_profile=_build_profile(context, provider, logger),
     )
 
-    service.run(context)
+    service.run(context, _options(filters=("name~伊吹",)))
 
     assert schema_preparation.calls == ["prepare"]
-    assert character_index_builder.search_calls == [["伊吹"]]
     assert downloader.calls == [["Bundle/Shiroko.bundle"]]
     assert extract_service.calls == ["run_post_download"]
     assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
 
 
 def test_jp_sync_advanced_search_builds_missing_character_index(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(
-        region="jp",
-        advanced_search=("シロコ",),
-    )
+    context = _build_context(tmp_path, region="jp")
     excel_resources = AssetCollection()
     excel_resources.add(
         "https://example.invalid/Table/Excel.zip",
@@ -358,6 +385,17 @@ def test_jp_sync_advanced_search_builds_missing_character_index(tmp_path: Path) 
     character_index_builder = DummyCharacterIndexBuilder(
         index_file_valid=False,
         excel_resources=excel_resources,
+        index=CharacterIndex(
+            "JP1.0.0",
+            [
+                CharacterIndexEntry(
+                    10000,
+                    dev_name="Shiroko",
+                    names=["シロコ"],
+                    file_aliases={"Shiroko"},
+                )
+            ],
+        ),
     )
     provider = StaticProvider(_build_search_catalog(context))
     logger = RecordingLogger()
@@ -371,20 +409,16 @@ def test_jp_sync_advanced_search_builds_missing_character_index(tmp_path: Path) 
         workflow_profile=_build_profile(context, provider, logger),
     )
 
-    service.run(context)
+    service.run(context, _options(filters=("name~シロコ",)))
 
     assert schema_preparation.calls == ["prepare"]
     assert character_index_builder.build_calls == [context]
-    assert character_index_builder.search_calls == [["シロコ"]]
     assert downloader.calls == [["Table/Excel.zip"], ["Bundle/Shiroko.bundle"]]
     assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
 
 
-def test_jp_sync_search_extracts_only_filtered_resources(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(
-        region="jp",
-        search=("Shiroko",),
-    )
+def test_jp_sync_path_filter_extracts_only_matching_resources(tmp_path: Path) -> None:
+    context = _build_context(tmp_path, region="jp")
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
@@ -400,7 +434,7 @@ def test_jp_sync_search_extracts_only_filtered_resources(tmp_path: Path) -> None
         workflow_profile=_build_profile(context, provider, logger),
     )
 
-    service.run(context)
+    service.run(context, _options(filters=("path~Shiroko",)))
 
     assert downloader.calls == [["Bundle/Shiroko.bundle"]]
     assert extract_service.calls == ["run_post_download"]
@@ -408,10 +442,7 @@ def test_jp_sync_search_extracts_only_filtered_resources(tmp_path: Path) -> None
 
 
 def test_sync_applies_typed_character_filters(tmp_path: Path) -> None:
-    context = _build_context(tmp_path).with_updates(
-        region="jp",
-        asset_filter=AssetFilter.parse(["name~Shiroko", "school=Abydos"]),
-    )
+    context = _build_context(tmp_path, region="jp")
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
@@ -441,24 +472,23 @@ def test_sync_applies_typed_character_filters(tmp_path: Path) -> None:
         workflow_profile=_build_profile(context, provider, logger),
     )
 
-    service.run(context)
+    service.run(
+        context,
+        _options(filters=("name~Shiroko", "school=Abydos")),
+    )
 
     assert downloader.calls == [["Bundle/Shiroko.bundle"]]
     assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
 
 
-def test_jp_sync_advanced_search_with_no_character_index_matches_downloads_nothing(
+def test_jp_sync_character_filter_with_no_matches_downloads_nothing(
     tmp_path: Path,
 ) -> None:
-    context = _build_context(tmp_path).with_updates(
-        region="jp",
-        advanced_search=("thisnotavailidcharname",),
-    )
+    context = _build_context(tmp_path, region="jp")
     downloader = RecordingDownloader()
     extract_service = RecordingExtractAssetsUseCase()
     schema_preparation = RecordingSchemaPreparation()
     character_index_builder = DummyCharacterIndexBuilder()
-    character_index_builder.search_results = []
     logger = RecordingLogger()
     provider = StaticProvider(_build_search_catalog(context))
     service = SyncAssetsUseCase(
@@ -471,12 +501,12 @@ def test_jp_sync_advanced_search_with_no_character_index_matches_downloads_nothi
         workflow_profile=_build_profile(context, provider, logger),
     )
 
-    service.run(context)
+    service.run(
+        context,
+        _options(filters=("name~thisnotavailidcharname",)),
+    )
 
-    assert character_index_builder.search_calls == [["thisnotavailidcharname"]]
     assert downloader.calls == [[]]
     assert extract_service.calls == ["run_post_download"]
     assert extract_service.resource_calls == [[]]
-    assert logger.by_level("warn") == [
-        "Advanced search found no matching character index entries."
-    ]
+    assert logger.by_level("warn") == []

@@ -15,7 +15,7 @@ from ba_downloader.api.state import ApiContext, ContextRegistry
 from ba_downloader.bootstrap.region_gateways import DEFAULT_REGION_GATEWAY_REGISTRY
 from ba_downloader.domain.models.asset import AssetCollection
 from ba_downloader.domain.models.character import CharacterIndex
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.workspace import WorkspaceLayout
 
 
@@ -28,15 +28,15 @@ class ApiServices:
     port: int
     shutdown_callback: Callable[[], None] | None = None
     catalog_loader: (
-        Callable[[RuntimeContext], tuple[RuntimeContext, AssetCollection]] | None
+        Callable[[ExecutionContext], tuple[ExecutionContext, AssetCollection]] | None
     ) = None
-    character_index_loader: Callable[[RuntimeContext], CharacterIndex] | None = None
+    character_index_loader: Callable[[ExecutionContext], CharacterIndex] | None = None
     character_index_searcher: (
         Callable[[CharacterIndex, list[str]], list[str]] | None
     ) = None
     shutdown_event: Event = field(default_factory=Event)
 
-    def context_from_request(self, request: ContextCreateRequest) -> RuntimeContext:
+    def context_from_request(self, request: ContextCreateRequest) -> ExecutionContext:
         definition = DEFAULT_REGION_GATEWAY_REGISTRY.resolve(request.region)
         workspace = WorkspaceLayout.create(
             request.workspace, request.region, request.platform
@@ -44,23 +44,13 @@ class ApiServices:
         key = request.sqlcipher_key.get_secret_value().strip()
         if not definition.descriptor.settings_policy.retain_sqlcipher_key_hex:
             key = ""
-        return RuntimeContext(
+        return ExecutionContext(
             region=request.region,
             platform=request.platform,
-            threads=30,
-            version="",
-            raw_dir=str(workspace.raw),
-            extract_dir=str(workspace.extracted),
-            temp_dir=str(workspace.temp_state),
-            resource_type=("table", "media", "bundle"),
+            workspace=workspace,
             proxy_url=request.proxy.get_secret_value(),
             max_retries=request.retries,
-            search=(),
-            advanced_search=(),
-            work_dir=str(workspace.base),
-            platform_explicit=True,
-            sqlcipher_key_hex=key,
-            workspace_mode="v3",
+            sqlcipher_key=key,
         )
 
     def job_view(self, job: JobRecord) -> dict[str, object]:

@@ -11,12 +11,13 @@ import pytest
 
 from ba_downloader.domain.exceptions import DownloadError, NetworkError
 from ba_downloader.domain.models.asset import AssetCollection, AssetType
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.http import DownloadResult
 from ba_downloader.infrastructure.download.resource_downloader import ResourceDownloader
 from ba_downloader.infrastructure.files.checksum import calculate_crc, calculate_md5
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.packages import ZipEntry
+from support.fixtures import build_execution_context
 
 
 class RecordingHttpClient:
@@ -176,20 +177,12 @@ def test_download_module_does_not_import_extractors_directly() -> None:
     assert not violations
 
 
-def _build_context(tmp_path: Path) -> RuntimeContext:
-    return RuntimeContext(
+def _build_context(tmp_path: Path) -> ExecutionContext:
+    return build_execution_context(
+        tmp_path,
         region="jp",
-        threads=2,
         version="1.0.0",
-        raw_dir=str(tmp_path / "raw"),
-        extract_dir=str(tmp_path / "extract"),
-        temp_dir=str(tmp_path / "temp"),
-        resource_type=("bundle",),
-        proxy_url="",
         max_retries=1,
-        search=(),
-        advanced_search=(),
-        work_dir=str(tmp_path),
     )
 
 
@@ -234,8 +227,9 @@ def _build_checked_resources(
     return resources
 
 
-def _write_asset_file(context: RuntimeContext, path: str, content: bytes) -> Path:
-    asset_path = Path(context.raw_dir) / path
+def _write_asset_file(context: ExecutionContext, path: str, content: bytes) -> Path:
+    asset_type = path.split("/", 1)[0].casefold()
+    asset_path = context.workspace.raw_resource_path(asset_type, path)
     asset_path.parent.mkdir(parents=True, exist_ok=True)
     asset_path.write_bytes(content)
     return asset_path
@@ -260,7 +254,7 @@ def test_download_resources_tracks_aggregate_bytes(monkeypatch, tmp_path: Path) 
         downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
     )
 
-    failed = downloader._download_resources(list(resources), context)
+    failed = downloader._download_resources(list(resources), context, concurrency=2)
 
     progress = RecordingProgressReporter.instances[-1]
     assert failed == []
@@ -317,10 +311,9 @@ def test_adaptive_concurrency_decreases_and_resets_success_counter(
     tmp_path: Path,
 ) -> None:
     downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
-    context = _build_context(tmp_path).with_updates(threads=5)
     state = downloader._create_adaptive_download_state(
         list(_build_resources("Bundle/a.bundle", "Bundle/b.bundle", "Bundle/c.bundle")),
-        context,
+        5,
     )
     state.success_since_adjustment = 1
 
@@ -336,7 +329,7 @@ def test_adaptive_concurrency_increases_every_two_successes(tmp_path: Path) -> N
     downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
     state = downloader._create_adaptive_download_state(
         list(_build_resources("Bundle/a.bundle", "Bundle/b.bundle", "Bundle/c.bundle")),
-        _build_context(tmp_path).with_updates(threads=3),
+        3,
     )
     state.target_concurrency = 1
 
@@ -366,7 +359,7 @@ def test_download_resources_keeps_concurrency_on_non_network_failure(
     downloader = ResourceDownloader(RecordingHttpClient(), logger)
     context = _build_context(tmp_path)
     resources = list(_build_resources("Bundle/a.bundle", "Bundle/b.bundle"))
-    state = downloader._create_adaptive_download_state(resources, context)
+    state = downloader._create_adaptive_download_state(resources, 2)
     RecordingProgressReporter.instances.clear()
 
     def fake_download_resource(resource, *_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -383,7 +376,9 @@ def test_download_resources_keeps_concurrency_on_non_network_failure(
         downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
     )
 
-    failed = downloader._download_resources(resources, context, adaptive_state=state)
+    failed = downloader._download_resources(
+        resources, context, adaptive_state=state, concurrency=2
+    )
 
     assert [resource.path for resource in failed] == ["Bundle/a.bundle"]
     assert state.target_concurrency == 2
@@ -412,7 +407,7 @@ def test_download_resources_reduces_concurrency_for_timeout_failures(
     downloader = ResourceDownloader(RecordingHttpClient(), logger)
     context = _build_context(tmp_path)
     resources = list(_build_resources("Bundle/a.bundle", "Bundle/b.bundle"))
-    state = downloader._create_adaptive_download_state(resources, context)
+    state = downloader._create_adaptive_download_state(resources, 2)
     RecordingProgressReporter.instances.clear()
 
     def fake_download_resource(resource, *_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -429,7 +424,9 @@ def test_download_resources_reduces_concurrency_for_timeout_failures(
         downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
     )
 
-    failed = downloader._download_resources(resources, context, adaptive_state=state)
+    failed = downloader._download_resources(
+        resources, context, adaptive_state=state, concurrency=2
+    )
 
     assert [resource.path for resource in failed] == ["Bundle/a.bundle"]
     assert state.target_concurrency == 1
@@ -449,7 +446,7 @@ def test_download_resources_treats_network_timeout_as_retryable_failure(
     downloader = ResourceDownloader(RecordingHttpClient(), logger)
     context = _build_context(tmp_path)
     resources = list(_build_resources("Bundle/a.bundle", "Bundle/b.bundle"))
-    state = downloader._create_adaptive_download_state(resources, context)
+    state = downloader._create_adaptive_download_state(resources, 2)
     RecordingProgressReporter.instances.clear()
 
     def fake_download_resource(resource, *_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -469,7 +466,9 @@ def test_download_resources_treats_network_timeout_as_retryable_failure(
         downloader, "_install_interrupt_handler", lambda stop_event: nullcontext()
     )
 
-    failed = downloader._download_resources(resources, context, adaptive_state=state)
+    failed = downloader._download_resources(
+        resources, context, adaptive_state=state, concurrency=2
+    )
 
     assert [resource.path for resource in failed] == ["Bundle/a.bundle"]
     assert state.target_concurrency == 1
@@ -488,7 +487,7 @@ def test_retry_rounds_reuse_adaptive_state(monkeypatch, tmp_path: Path) -> None:
     context = _build_context(tmp_path)
     initial_resources = list(_build_resources("Bundle/a.bundle", "Bundle/b.bundle"))
     retry_resources = list(_build_checked_resources(tmp_path, "Bundle/retry.bundle"))
-    state = downloader._create_adaptive_download_state(initial_resources, context)
+    state = downloader._create_adaptive_download_state(initial_resources, 2)
     RecordingProgressReporter.instances.clear()
 
     assert downloader._decrease_target_concurrency(state) is True
@@ -505,6 +504,7 @@ def test_retry_rounds_reuse_adaptive_state(monkeypatch, tmp_path: Path) -> None:
         retry_resources,
         context,
         adaptive_state=state,
+        concurrency=2,
     )
 
     assert failed == []
@@ -520,7 +520,9 @@ def test_download_resource_rejects_http_error_status(tmp_path: Path) -> None:
     downloader = ResourceDownloader(client, NullLogger())
     context = _build_context(tmp_path)
     resource = next(iter(_build_resources("Bundle/a.bundle")))
-    asset_path = Path(context.raw_dir) / resource.path
+    asset_path = context.workspace.raw_resource_path(
+        resource.asset_type.value, resource.path
+    )
 
     with pytest.raises(RuntimeError, match="403"):
         downloader._download_resource(resource, context)
@@ -533,7 +535,9 @@ def test_download_resource_rejects_post_download_size_mismatch(tmp_path: Path) -
     downloader = ResourceDownloader(client, NullLogger())
     context = _build_context(tmp_path)
     resource = next(iter(_build_resources("Bundle/a.bundle")))
-    asset_path = Path(context.raw_dir) / resource.path
+    asset_path = context.workspace.raw_resource_path(
+        resource.asset_type.value, resource.path
+    )
 
     with pytest.raises(RuntimeError, match="size mismatch"):
         downloader._download_resource(resource, context)
@@ -548,7 +552,9 @@ def test_download_resource_rejects_post_download_checksum_mismatch(
     downloader = ResourceDownloader(client, NullLogger())
     context = _build_context(tmp_path)
     resource = next(iter(_build_resources("Bundle/a.bundle")))
-    asset_path = Path(context.raw_dir) / resource.path
+    asset_path = context.workspace.raw_resource_path(
+        resource.asset_type.value, resource.path
+    )
 
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         downloader._download_resource(resource, context)
@@ -568,7 +574,12 @@ def test_download_resource_accepts_valid_downloaded_file(tmp_path: Path) -> None
     returned_resource = downloader._download_resource(resource, context)
 
     assert returned_resource == resource
-    assert (Path(context.raw_dir) / resource.path).read_bytes() == payload
+    assert (
+        context.workspace.raw_resource_path(
+            resource.asset_type.value, resource.path
+        ).read_bytes()
+        == payload
+    )
 
 
 def test_download_resource_extracts_apk_entry_media_without_download_to_file(
@@ -577,7 +588,7 @@ def test_download_resource_extracts_apk_entry_media_without_download_to_file(
 ) -> None:
     client = RecordingHttpClient()
     downloader = ResourceDownloader(client, NullLogger())
-    context = _build_context(tmp_path).with_updates(resource_type=("media",))
+    context = _build_context(tmp_path)
     resources = AssetCollection()
     resources.add(
         "https://example.invalid/BlueArchive.apk",
@@ -631,7 +642,7 @@ def test_download_resource_extracts_apk_entry_media_without_download_to_file(
     assert extracted == [
         (
             "https://example.invalid/BlueArchive.apk",
-            str(Path(context.raw_dir) / "Media/video/title.mp4"),
+            str(context.workspace.raw_media / "video/title.mp4"),
         )
     ]
 
@@ -641,7 +652,7 @@ def test_verify_resource_accepts_existing_apk_entry_media(
     tmp_path: Path,
 ) -> None:
     downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
-    context = _build_context(tmp_path).with_updates(resource_type=("media",))
+    context = _build_context(tmp_path)
     asset_path = _write_asset_file(context, "Media/video/title.mp4", b"title.mp4")
     resources = AssetCollection()
     resources.add(
@@ -691,7 +702,7 @@ def test_verify_and_download_logs_when_everything_is_already_present(
 
     monkeypatch.setattr(downloader, "_verify_resources", lambda *_args, **_kwargs: [])
 
-    downloader.verify_and_download(resources, context)
+    downloader.verify_and_download(resources, context, concurrency=2)
 
     assert logger.info_messages[-1] == "All files have already been downloaded."
 
@@ -710,7 +721,9 @@ def test_verify_and_download_logs_successful_completion(
     )
     monkeypatch.setattr(downloader, "_download_resources", lambda *_args, **_kwargs: [])
 
-    downloader.verify_and_download(_build_resources("Bundle/a.bundle"), context)
+    downloader.verify_and_download(
+        _build_resources("Bundle/a.bundle"), context, concurrency=2
+    )
 
     assert (
         logger.info_messages[-1] == "All files have been downloaded to your computer."
@@ -738,7 +751,9 @@ def test_verify_and_download_retries_failed_downloads_before_logging_success(
         lambda *_args, **_kwargs: results.pop(0),
     )
 
-    downloader.verify_and_download(_build_resources("Bundle/a.bundle"), context)
+    downloader.verify_and_download(
+        _build_resources("Bundle/a.bundle"), context, concurrency=2
+    )
 
     assert logger.warn_messages[-1] == "Retrying 1 failed files. Attempt 1/1."
     assert (
@@ -769,7 +784,7 @@ def test_verify_and_download_raises_when_retries_are_exhausted(
     )
 
     with pytest.raises(DownloadError) as exc_info:
-        downloader.verify_and_download(resources, context)
+        downloader.verify_and_download(resources, context, concurrency=2)
 
     assert (
         "All files have been downloaded to your computer." not in logger.info_messages
@@ -827,7 +842,7 @@ def test_verify_resource_canonicalizes_existing_case_only_path(
 
     _, verified = downloader._verify_resource(resource, context)
 
-    table_names = {item.name for item in (Path(context.raw_dir) / "Table").iterdir()}
+    table_names = {item.name for item in (context.workspace.raw_tables).iterdir()}
     assert verified is True
     assert table_names == {"TablePatchPack_GroundStage_1.zip"}
 

@@ -1,4 +1,4 @@
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.storage import StorageCleanupTarget
 from ba_downloader.domain.ports.execution import CancellationPort
 from ba_downloader.domain.ports.storage import StorageCleanupPort
@@ -15,7 +15,7 @@ class CleanupStorageUseCase:
 
     def run(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         targets: tuple[StorageCleanupTarget, ...],
     ) -> int:
         deleted = 0

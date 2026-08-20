@@ -1,4 +1,4 @@
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.schema import PreparedSchemaSnapshot, SchemaPurpose
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.extract import SchemaWorkflowPort
@@ -18,7 +18,7 @@ class SchemaPreparationService:
 
     def prepare(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         purpose: SchemaPurpose = SchemaPurpose.FULL,
     ) -> PreparedSchemaSnapshot | None:
         self.cancellation.raise_if_cancelled()
@@ -37,7 +37,7 @@ class SchemaPreparationService:
         self.cancellation.raise_if_cancelled()
         return snapshot
 
-    def compile(self, context: RuntimeContext) -> None:
+    def compile(self, context: ExecutionContext) -> None:
         self.cancellation.raise_if_cancelled()
         self.schema_workflow.compile(context)
         self.cancellation.raise_if_cancelled()

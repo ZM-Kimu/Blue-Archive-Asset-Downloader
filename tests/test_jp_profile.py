@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ba_downloader.infrastructure.regions.jp.platform import build_jp_platform_profile
-from support import build_runtime_context
+from support import build_execution_context
 
 
 @pytest.mark.parametrize(
@@ -20,7 +20,7 @@ def test_jp_platform_profile_resolves_bundle_patch_dir(
     patch_dir: str,
 ) -> None:
     profile = build_jp_platform_profile(
-        build_runtime_context(
+        build_execution_context(
             tmp_path,
             region="jp",
             platform=platform,  # type: ignore[arg-type]

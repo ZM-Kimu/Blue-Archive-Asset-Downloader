@@ -20,6 +20,7 @@ from ba_downloader.infrastructure.extraction.table.payload_router import (
     FlatBufferTablePayloadRouter,
     TablePayloadRouter,
 )
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
 from ba_downloader.infrastructure.schema.common.generated_registry import (
     GeneratedSchemaRegistry,
 )
@@ -480,14 +481,12 @@ class TablePayloadCodecAdapter:
             "exception_type": error.__class__.__name__,
             "message": str(error),
         }
-        temporary_diagnostic = diagnostic_path.with_name(
-            f".{diagnostic_path.name}.{uuid4().hex}.tmp"
+        write_json_atomic(
+            diagnostic_path,
+            evidence,
+            indent=2,
+            sort_keys=True,
         )
-        temporary_diagnostic.write_text(
-            json.dumps(evidence, indent=2, sort_keys=True) + "\n",
-            encoding="utf8",
-        )
-        temporary_diagnostic.replace(diagnostic_path)
 
     def warn_memorypack_database_value_once(
         self,

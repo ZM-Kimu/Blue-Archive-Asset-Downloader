@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -12,17 +13,12 @@ from ba_downloader.application.contracts.commands import (
     AssetsSyncCommand,
     BuildCharacterIndexCommand,
 )
-from ba_downloader.application.operations import (
-    ApplicationOperation,
-    ApplicationOperationCommand,
-)
-from ba_downloader.bootstrap.container import application_operation_executor
+from ba_downloader.bootstrap.container import ExecutionScope
 from ba_downloader.domain.exceptions import BAError, ConfigError
 from ba_downloader.domain.models.asset_filter import AssetFilter
 from ba_downloader.domain.models.asset_type_selection import ResourceTypeSelection
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region import Platform, Region
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.models.workspace import WorkspaceLayout
 
 
@@ -158,52 +154,6 @@ def execution_context_from_namespace(args: argparse.Namespace) -> ExecutionConte
     )
 
 
-def _runtime_context_adapter(
-    context: ExecutionContext,
-    command: ApplicationCommand,
-) -> RuntimeContext:
-    concurrency = getattr(command, "concurrency", None)
-    options = getattr(command, "options", None)
-    if options is not None:
-        concurrency = options.concurrency
-        resources = options.resources.as_strings()
-        asset_filter = options.asset_filter
-    else:
-        resources = ("table",)
-        asset_filter = AssetFilter()
-    return RuntimeContext(
-        region=context.region,
-        platform=context.platform,
-        threads=concurrency or 30,
-        version=context.resource_version or "",
-        raw_dir=str(context.workspace.raw),
-        extract_dir=str(context.workspace.extracted),
-        temp_dir=str(context.workspace.temp_state),
-        resource_type=resources,
-        proxy_url=context.proxy_url,
-        max_retries=context.max_retries,
-        search=(),
-        advanced_search=(),
-        work_dir=str(context.workspace.base),
-        platform_explicit=True,
-        sqlcipher_key_hex=context.sqlcipher_key,
-        workspace_mode="v3",
-        asset_filter=asset_filter,
-    )
-
-
-def _legacy_operation(command: ApplicationCommand) -> ApplicationOperation:
-    if isinstance(command, AssetsSyncCommand):
-        return ApplicationOperation.sync
-    if isinstance(command, AssetsDownloadCommand):
-        return ApplicationOperation.download
-    if isinstance(command, AssetsExtractCommand):
-        return ApplicationOperation.extract
-    if isinstance(command, BuildCharacterIndexCommand):
-        return ApplicationOperation.character_index
-    raise ConfigError(f"Unsupported command type '{type(command).__name__}'.")
-
-
 def main(argv: list[str] | None = None) -> int:
     from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
     from ba_downloader.infrastructure.logging.runtime import configure_logging
@@ -217,15 +167,20 @@ def main(argv: list[str] | None = None) -> int:
 
     logger = ConsoleLogger()
     try:
+        raw_args = argv if argv is not None else sys.argv[1:]
+        if args.region != "jp" and any(
+            value == "--platform" or value.startswith("--platform=")
+            for value in raw_args
+        ):
+            logger.warn("The --platform option only applies to JP and was ignored.")
         command = command_from_namespace(args)
         execution_context = execution_context_from_namespace(args)
-        runtime_context = _runtime_context_adapter(execution_context, command)
-        with application_operation_executor(
-            runtime_context,
+        with ExecutionScope(
+            execution_context,
             logger=logger,
             progress_factory=RichProgressReporterFactory(),
         ) as executor:
-            executor.execute(ApplicationOperationCommand(_legacy_operation(command)))
+            executor.execute(command)
         return 0
     except KeyboardInterrupt:
         logger.warn("Operation cancelled by user.")

@@ -8,13 +8,12 @@ from ba_downloader.domain.models.asset import (
     AssetCollection,
     BootstrapSession,
     RegionCapabilities,
-    ResolvedRelease,
 )
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_catalog import (
     DecodedJPCatalog,
     RegionCatalogResult,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.domain.ports.execution import CancellationPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
@@ -82,18 +81,20 @@ class JPRegionProvider:
     def get_capabilities(self) -> RegionCapabilities:
         return self.CAPABILITIES
 
-    def apk_extract_folder(self, context: RuntimeContext) -> str:
+    def apk_extract_folder(self, context: ExecutionContext) -> str:
         return self.bootstrapper.apk_extract_folder(context)
 
-    def load_catalog(self, context: RuntimeContext) -> RegionCatalogResult:
-        if context.version:
+    def load_catalog(self, context: ExecutionContext) -> RegionCatalogResult:
+        if context.resource_version:
             self.logger.warn(
                 "Specifying a version is not allowed with JPRegionProvider."
             )
 
         self.logger.info("Automatically fetching latest package info...")
         assets, resolved_context = self.pipeline.load(context)
-        self.logger.info(f"Current resource version: {resolved_context.version}")
+        self.logger.info(
+            f"Current resource version: {resolved_context.resource_version}"
+        )
         self.logger.info(f"Catalog: {assets}.")
         return RegionCatalogResult(
             resources=assets,
@@ -102,22 +103,24 @@ class JPRegionProvider:
 
     def load_character_index_catalog(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> RegionCatalogResult:
-        if context.version:
+        if context.resource_version:
             self.logger.warn(
                 "Specifying a version is not allowed with JPRegionProvider."
             )
         self.logger.info("Automatically fetching latest package info...")
         release = self.release_resolver.resolve(context)
-        resolved_context = context.with_updates(version=release.version)
+        resolved_context = context.resolve_resource_version(release.version)
         session = self.bootstrapper.bootstrap(release, resolved_context)
         assets = self._load_selected_catalog(
             session,
             resolved_context,
             CatalogSelection.TABLE_ONLY,
         )
-        self.logger.info(f"Current resource version: {resolved_context.version}")
+        self.logger.info(
+            f"Current resource version: {resolved_context.resource_version}"
+        )
         self.logger.info(f"Catalog: {assets}.")
         return RegionCatalogResult(resources=assets, context=resolved_context)
 
@@ -131,59 +134,13 @@ class JPRegionProvider:
     def get_latest_version(self) -> str:
         return self.get_latest_package_info().version
 
-    def get_resource_manifest(self, server_url: str) -> AssetCollection:
-        parsed_server_url = urlparse(server_url)
-        if (
-            parsed_server_url.scheme not in {"http", "https"}
-            or not parsed_server_url.netloc
-        ):
-            raise LookupError("JP server URL must be an absolute HTTP(S) URL.")
-        response = self.http_client.request("GET", server_url)
-        if not 200 <= response.status_code < 300:
-            raise LookupError(
-                f"JP addressables request returned HTTP {response.status_code}."
-            )
-        if not response.content:
-            raise LookupError("JP addressables response was empty.")
-        try:
-            addressables_payload = response.json()
-        except (TypeError, ValueError) as exc:
-            raise LookupError("JP addressables response is not valid JSON.") from exc
-        if not isinstance(addressables_payload, dict):
-            raise LookupError("JP addressables response must be a JSON object.")
-        catalog_roots = self.bootstrapper._resolve_catalog_roots(addressables_payload)
-        session = BootstrapSession(
-            release=ResolvedRelease(region="jp", version=""),
-            server_url=server_url,
-            catalog_root=catalog_roots[0],
-            metadata={"catalog_root_candidates": catalog_roots},
-        )
-        return self._load_selected_catalog(
-            session,
-            RuntimeContext(
-                region="jp",
-                threads=1,
-                version="",
-                raw_dir="",
-                extract_dir="",
-                temp_dir="",
-                resource_type=("table", "media", "bundle"),
-                proxy_url="",
-                max_retries=0,
-                search=(),
-                advanced_search=(),
-                work_dir="",
-            ),
-            CatalogSelection.FULL,
-        )
-
-    def get_server_url(self, context: RuntimeContext) -> str:
+    def get_server_url(self, context: ExecutionContext) -> str:
         return self.bootstrapper.get_server_url(context)
 
     def _load_asset_collection(
         self,
         session: BootstrapSession,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> AssetCollection:
         try:
             sources = self.catalog_source_provider.fetch(session, context)
@@ -200,7 +157,7 @@ class JPRegionProvider:
     def _load_selected_catalog(
         self,
         session: BootstrapSession,
-        context: RuntimeContext,
+        context: ExecutionContext,
         selection: CatalogSelection,
     ) -> AssetCollection:
         raw_candidates = session.metadata.get("catalog_root_candidates", ())
