@@ -4,3 +4,6 @@
 [submodule "third_party/AssetRipper"]
 	path = third_party/AssetRipper
 	url = https://github.com/AssetRipper/AssetRipper.git
+[submodule "third_party/SharpZipLib"]
+	path = third_party/SharpZipLib
+	url = https://github.com/icsharpcode/SharpZipLib.git

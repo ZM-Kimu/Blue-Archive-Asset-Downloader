@@ -298,13 +298,18 @@ class ExecutionScope:
                 AssetRipperBundleWorkflow,
                 AssetRipperDependencyScanner,
                 AssetRipperSourceResolver,
-                BundleBatchScheduler,
                 BundleDependencyScanCache,
                 CachedBundleDependencyScanner,
                 dependency_scan_cache_root,
             )
             from ba_downloader.infrastructure.extraction.assetripper.exporter import (
                 assetripper_dependency_scan_cache_key,
+            )
+            from ba_downloader.infrastructure.extraction.media.exporter import (
+                MediaArchiveExtractor,
+            )
+            from ba_downloader.infrastructure.extraction.media.source import (
+                SharpZipLibSourceResolver,
             )
             from ba_downloader.infrastructure.runtime.process import (
                 CancellableProcessRunner,
@@ -321,7 +326,11 @@ class ExecutionScope:
                 cancellation=self.cancellation,
             )
             dependency_scanner = CachedBundleDependencyScanner(
-                AssetRipperDependencyScanner(source_resolver, process_runner),
+                AssetRipperDependencyScanner(
+                    source_resolver,
+                    process_runner,
+                    logger=self.logger,
+                ),
                 BundleDependencyScanCache(dependency_scan_cache_root(self.context)),
                 tool_key=assetripper_dependency_scan_cache_key(),
             )
@@ -331,16 +340,27 @@ class ExecutionScope:
                     table_profile_factory=(self.definition().tables.extraction_profile),
                     progress_factory=self._progress_factory,
                     cancellation=self.cancellation,
+                    media_extractor=MediaArchiveExtractor(
+                        process_runner,
+                        self.logger,
+                        source_resolver=SharpZipLibSourceResolver(
+                            self.http_client(),
+                            self.logger,
+                            cancellation=self.cancellation,
+                        ),
+                        progress_factory=self._progress_factory,
+                    ),
                     bundle_workflow=AssetRipperBundleWorkflow(
                         AssetRipperBatchExporter(
                             source_resolver,
                             process_runner,
+                            logger=self.logger,
+                            cancellation=self.cancellation,
                         ),
                         dependency_scanner,
                         self.logger,
                         progress_factory=self._progress_factory,
                         cancellation=self.cancellation,
-                        batch_scheduler=BundleBatchScheduler(),
                     ),
                 ),
                 self.logger,

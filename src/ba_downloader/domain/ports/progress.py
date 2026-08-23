@@ -13,9 +13,16 @@ class ProgressReporterPort(Protocol):
 
     def set_secondary_status(self, status: str) -> None: ...
 
-    def set_loading_progress(self, completed: int, total: int, stage: str) -> None: ...
-
-    def set_processing_status(self, status: str) -> None: ...
+    def set_progress(
+        self,
+        completed: int,
+        total: int,
+        *,
+        stage: str,
+        unit: str,
+        status: str = "",
+        secondary_status: str = "",
+    ) -> None: ...
 
     def set_failed_status(self, status: str) -> None: ...
 

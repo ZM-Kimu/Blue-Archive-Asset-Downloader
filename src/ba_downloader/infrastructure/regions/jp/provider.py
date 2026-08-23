@@ -63,6 +63,7 @@ class JPRegionProvider:
                     cancellation=cancellation,
                 ),
                 CancellableProcessRunner(cancellation),
+                logger=logger,
             ),
             progress_factory=progress_factory,
             cancellation=cancellation,

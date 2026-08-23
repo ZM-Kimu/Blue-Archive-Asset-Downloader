@@ -123,3 +123,7 @@ class WorkspaceLayout:
     @property
     def tools_cache(self) -> Path:
         return self.root / ".ba-downloader" / "tools"
+
+    @property
+    def locks(self) -> Path:
+        return self.root / ".ba-downloader" / "locks"

@@ -14,6 +14,12 @@
   validated source overlays
 - publish versioned runtime and schema snapshots; incompatible internal caches
   are discarded instead of migrated
+- publish bundle content with human-readable AssetRipper paths under
+  `extracted/bundles/Assets` and a compact identity manifest; schema 9 output
+  is not migrated
+- replace API-specific AssetRipper loading and processing fields with the
+  unified `completed`, `total`, `stage`, `unit`, `status`, and
+  `secondary_status` progress contract
 
 ### Features
 - add typed resource and character filters with AND/OR composition
@@ -21,8 +27,8 @@
 - add the optional local HTTP API with immutable contexts, single-worker FIFO
   jobs, SSE events, catalog and CharacterIndex queries, bounded file access,
   and protected storage cleanup
-- add deterministic AssetRipper dependency planning, conflict preservation, and
-  atomic bundle output manifests
+- add deterministic AssetRipper dependency scanning, native numeric path
+  conflict suffixes, and transactional bundle directory publication
 
 ### Performance
 - discover JP encrypted IL2CPP containers by validated MFTL structure rather
@@ -33,6 +39,16 @@
   ExcelDB tables through one SQLite session
 - avoid retaining downloaded JP packages and encrypted parent containers after
   successful runtime publication
+- materialize bundle entry-cache misses through one parallel .NET operation,
+  stream stable dependency groups through one persistent AssetRipper process,
+  release each group before loading the next, and export collections in parallel
+- replace linear sibling scans with indexed collection and streamed-resource
+  resolution, and load independent cached bundle payloads concurrently
+- restrict bundle output to PNG textures and sprites, audio, fonts, text,
+  mesh GLB, scene GLB, and prefab GLB while avoiding generic JSON processing
+- reserve deterministic human-readable paths before parallel export and return
+  file hashes directly from .NET so Python does not enumerate and re-hash cold
+  output
 
 ### Fixes
 - merge scenario aliases into existing character records so names such as
@@ -45,6 +61,15 @@
 - validate HTTP status and response shapes while probing JP catalog roots
 - normalize AssetRipper C# overlays to LF so manifest hashes remain stable on
   Windows
+- remove bundle memory preflight and multi-worker scheduling, preserve catalog
+  checksum identities, and report real loading/processor/asset stage progress
+  on the single extraction task
+- publish bundle manifest schema 10 once per run with exact output inventory,
+  filtered accumulation, three-phase directory rollback, and no per-asset
+  revision or batch checkpoint data
+- serialize shared AssetRipper source/tool publication across processes and
+  translate expected lock, capacity, scanner, build, and protocol failures into
+  user-level extraction errors
 
 ### Internal Changes
 - require Python 3.11 or later and replace advisory pylint checks with Ruff

@@ -5,14 +5,14 @@ from pathlib import Path
 import pytest
 
 from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.infrastructure.extraction.errors import (
+    ExtractionFailureError,
+)
 from ba_downloader.infrastructure.extraction.process_table_runner import (
     ProcessTableExtractionRunner,
 )
 from ba_downloader.infrastructure.extraction.table.profiles import (
     TableExtractionProfile,
-)
-from ba_downloader.infrastructure.extraction.threaded_runner import (
-    ExtractionFailureError,
 )
 from support import RecordingLogger, build_execution_context
 

@@ -14,7 +14,7 @@ from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
 )
 from ba_downloader.infrastructure.files.atomic import write_json_atomic
 
-SCAN_CACHE_SCHEMA_VERSION = 2
+SCAN_CACHE_SCHEMA_VERSION = 3
 
 
 def dependency_scan_cache_root(context: ExecutionContext) -> Path:
@@ -97,7 +97,6 @@ class BundleDependencyScanCache:
     def _write_scan(scan: BundleArchiveScan) -> dict[str, object]:
         return {
             "archive_id": scan.archive_id,
-            "sha256": scan.sha256,
             "entries": [
                 BundleDependencyScanCache._write_entry(entry) for entry in scan.entries
             ],
@@ -110,6 +109,7 @@ class BundleDependencyScanCache:
             "entry_path": entry.entry_path,
             "sha256": entry.sha256,
             "size": entry.size,
+            "crc32": entry.crc32,
             "serialized_files": [
                 {
                     "logical_name": item.logical_name,
@@ -132,19 +132,16 @@ class BundleDependencyScanCache:
     @classmethod
     def _read_scan(cls, payload: dict[str, object]) -> BundleArchiveScan:
         archive_id = payload.get("archive_id")
-        sha256 = payload.get("sha256")
         entries = payload.get("entries")
         error = payload.get("error")
         if (
             not isinstance(archive_id, str)
-            or not isinstance(sha256, str)
             or not isinstance(entries, list)
             or (error is not None and not isinstance(error, str))
         ):
             raise ValueError("Dependency scan cache schema is invalid.")
         return BundleArchiveScan(
             archive_id=archive_id,
-            sha256=sha256,
             entries=tuple(cls._read_entry(item) for item in entries),
             error=error,
         )
@@ -156,6 +153,7 @@ class BundleDependencyScanCache:
         entry_path = payload.get("entry_path")
         sha256 = payload.get("sha256")
         size = payload.get("size")
+        crc32 = payload.get("crc32")
         serialized_files = payload.get("serialized_files")
         resource_files = payload.get("resource_files")
         streamed_resources = payload.get("streamed_resources")
@@ -166,6 +164,14 @@ class BundleDependencyScanCache:
             or not isinstance(size, int)
             or isinstance(size, bool)
             or size < 0
+            or (
+                crc32 is not None
+                and (
+                    not isinstance(crc32, int)
+                    or isinstance(crc32, bool)
+                    or not 0 <= crc32 <= 0xFFFFFFFF
+                )
+            )
             or not isinstance(serialized_files, list)
             or not isinstance(resource_files, list)
             or not all(isinstance(item, str) for item in resource_files)
@@ -211,6 +217,7 @@ class BundleDependencyScanCache:
             entry_path=entry_path,
             sha256=sha256,
             size=size,
+            crc32=crc32,
             serialized_files=tuple(parsed_serialized),
             resource_files=tuple(resource_files),
             streamed_resources=tuple(parsed_streamed),

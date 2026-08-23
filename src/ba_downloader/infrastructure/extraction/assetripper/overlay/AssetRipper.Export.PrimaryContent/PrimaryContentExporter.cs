@@ -1,194 +1,323 @@
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using AssetRipper.Assets;
 using AssetRipper.Assets.Bundles;
 using AssetRipper.Export.Configuration;
 using AssetRipper.Export.PrimaryContent.Audio;
-using AssetRipper.Export.PrimaryContent.DeletedAssets;
 using AssetRipper.Export.PrimaryContent.Models;
-using AssetRipper.Export.PrimaryContent.Scripts;
 using AssetRipper.Export.PrimaryContent.Textures;
 using AssetRipper.Import.Configuration;
 using AssetRipper.Import.Logging;
 using AssetRipper.Processing;
 using AssetRipper.Processing.Prefabs;
-using AssetRipper.Processing.Textures;
 using AssetRipper.SourceGenerated.Classes.ClassID_1;
-using AssetRipper.SourceGenerated.Classes.ClassID_1032;
-using AssetRipper.SourceGenerated.Classes.ClassID_1101;
-using AssetRipper.SourceGenerated.Classes.ClassID_1102;
-using AssetRipper.SourceGenerated.Classes.ClassID_1107;
-using AssetRipper.SourceGenerated.Classes.ClassID_1109;
-using AssetRipper.SourceGenerated.Classes.ClassID_111;
-using AssetRipper.SourceGenerated.Classes.ClassID_1111;
-using AssetRipper.SourceGenerated.Classes.ClassID_1120;
-using AssetRipper.SourceGenerated.Classes.ClassID_115;
-using AssetRipper.SourceGenerated.Classes.ClassID_128;
-using AssetRipper.SourceGenerated.Classes.ClassID_150;
-using AssetRipper.SourceGenerated.Classes.ClassID_152;
-using AssetRipper.SourceGenerated.Classes.ClassID_156;
-using AssetRipper.SourceGenerated.Classes.ClassID_189;
 using AssetRipper.SourceGenerated.Classes.ClassID_2;
-using AssetRipper.SourceGenerated.Classes.ClassID_206;
 using AssetRipper.SourceGenerated.Classes.ClassID_21;
-using AssetRipper.SourceGenerated.Classes.ClassID_221;
-using AssetRipper.SourceGenerated.Classes.ClassID_238;
+using AssetRipper.SourceGenerated.Classes.ClassID_28;
 using AssetRipper.SourceGenerated.Classes.ClassID_3;
-using AssetRipper.SourceGenerated.Classes.ClassID_329;
 using AssetRipper.SourceGenerated.Classes.ClassID_43;
 using AssetRipper.SourceGenerated.Classes.ClassID_49;
-using AssetRipper.SourceGenerated.Classes.ClassID_72;
-using AssetRipper.SourceGenerated.Classes.ClassID_74;
 using AssetRipper.SourceGenerated.Classes.ClassID_83;
-using AssetRipper.SourceGenerated.Classes.ClassID_90;
-using AssetRipper.SourceGenerated.Classes.ClassID_91;
-using AssetRipper.SourceGenerated.Classes.ClassID_93;
-using AssetRipper.SourceGenerated.Classes.ClassID_95;
+using AssetRipper.SourceGenerated.Classes.ClassID_128;
+using AssetRipper.SourceGenerated.Classes.ClassID_213;
 
 namespace AssetRipper.Export.PrimaryContent;
 
 public sealed record SelectiveExportResult(
 	IReadOnlyList<string> ResolvedTargetIds,
-	IReadOnlyList<string> ExportedTargetIds
+	IReadOnlyList<string> ExportedTargetIds,
+	IReadOnlyList<SelectiveExportAsset> Assets,
+	IReadOnlyList<SelectiveExportFailure> Failures
 );
+
+public sealed record SelectiveExportFile(string Path, long Size, long MtimeNs, string Sha256);
+
+public sealed record SelectiveExportAsset(
+	string StableId,
+	string AssetType,
+	string ReadableName,
+	string Collection,
+	string NormalizedCollection,
+	long PathId,
+	int ClassId,
+	IReadOnlyList<string> SourceTargetIds,
+	IReadOnlyList<SelectiveExportFile> Files
+);
+
+public sealed record SelectiveExportFailure(
+	string StableId,
+	IReadOnlyList<string> SourceTargetIds,
+	string Error
+);
+
+internal sealed record ExportDescriptor(
+	ExportCollectionBase Collection,
+	string StableId,
+	string AssetType,
+	string ReadableName,
+	string CollectionName,
+	string NormalizedCollection,
+	long PathId,
+	int ClassId,
+	string Identity,
+	string[] SourceTargetIds,
+	string SortKey
+);
+
+internal sealed record PlannedDescriptor(ExportDescriptor Descriptor, PlannedExport Plan);
 
 public sealed class PrimaryContentExporter
 {
 	private readonly ObjectHandlerStack<IContentExtractor> exporters = new();
-	private readonly GameData gameData;
 
-	private PrimaryContentExporter(GameData gameData)
+	private PrimaryContentExporter()
 	{
-		this.gameData = gameData;
 	}
 
-	public void RegisterHandler<T>(IContentExtractor handler, bool allowInheritance = true) where T : IUnityObjectBase
-	{
+	public void RegisterHandler<T>(IContentExtractor handler, bool allowInheritance = true) where T : IUnityObjectBase =>
 		exporters.OverrideHandler(typeof(T), handler, allowInheritance);
-	}
-
-	public void RegisterHandler(Type type, IContentExtractor handler, bool allowInheritance = true)
-	{
-		exporters.OverrideHandler(type, handler, allowInheritance);
-	}
 
 	public static PrimaryContentExporter CreateDefault(GameData gameData, FullConfiguration settings)
 	{
-		PrimaryContentExporter exporter = new(gameData);
-		exporter.RegisterDefaultHandlers(settings);
+		PrimaryContentExporter exporter = new();
+		exporter.RegisterDefaultHandlers();
 		return exporter;
 	}
 
-	private void RegisterDefaultHandlers(FullConfiguration settings)
+	private void RegisterDefaultHandlers()
 	{
-		RegisterHandler<IUnityObjectBase>(new JsonContentExtractor());
-		RegisterEmptyHandler<IAnimation>();
-		RegisterEmptyHandler<IAnimationClip>();
-		RegisterEmptyHandler<IAnimator>();
-		RegisterEmptyHandler<IAnimatorController>();
-		RegisterEmptyHandler<IAnimatorOverrideController>();
-		RegisterEmptyHandler<IAnimatorState>();
-		RegisterEmptyHandler<IAnimatorStateMachine>();
-		RegisterEmptyHandler<IAnimatorStateTransition>();
-		RegisterEmptyHandler<IAnimatorTransition>();
-		RegisterEmptyHandler<IAnimatorTransitionBase>();
-		RegisterEmptyHandler<IAvatar>();
-		RegisterEmptyHandler<IBlendTree>();
-		RegisterEmptyHandler<IComponent>();
-		RegisterEmptyHandler<IComputeShader>();
-		RegisterEmptyHandler<ILightingDataAsset>();
-		RegisterEmptyHandler<IMaterial>();
-		RegisterEmptyHandler<IPreloadData>();
-		RegisterEmptyHandler<IRuntimeAnimatorController>();
-		RegisterEmptyHandler<ISceneAsset>();
-		RegisterEmptyHandler<SpriteInformationObject>();
-
+		RegisterHandler<IUnityObjectBase>(EmptyContentExtractor.Instance);
 		GlbModelExporter modelExporter = new();
 		RegisterHandler<GameObjectHierarchyObject>(modelExporter);
 		RegisterHandler<IGameObject>(modelExporter);
 		RegisterHandler<IComponent>(modelExporter);
 		RegisterHandler<ILevelGameManager>(modelExporter);
 		RegisterHandler<IMesh>(new GlbMeshExporter());
-		RegisterHandler<INavMeshData>(new GlbNavMeshExporter());
-		RegisterHandler<ITerrainData>(new GlbTerrainExporter());
 		RegisterHandler<ITextAsset>(BinaryAssetContentExtractor.Instance);
 		RegisterHandler<IFont>(BinaryAssetContentExtractor.Instance);
-		RegisterHandler<IMovieTexture>(BinaryAssetContentExtractor.Instance);
-		RegisterHandler<IVideoClip>(BinaryAssetContentExtractor.Instance);
 		RegisterHandler<IAudioClip>(new AudioContentExtractor());
-		RegisterHandler<IImageTexture>(new TextureExporter(settings.ExportSettings.ImageExportFormat));
-		RegisterHandler<IMonoScript>(new ScriptContentExtractor(gameData.AssemblyManager, settings.ExportSettings.ScriptLanguageVersion.ToCSharpLanguageVersion(gameData.ProjectVersion)));
-		RegisterHandler<IUnityObjectBase>(DeletedAssetsExporter.Instance);
-	}
-
-	public void Export(GameBundle fileCollection, FullConfiguration settings, FileSystem fileSystem)
-	{
-		ExportCollections(CreateCollections(fileCollection, null), settings, fileSystem, null);
+		RegisterHandler<ITexture2D>(new TextureExporter(ImageExportFormat.Png));
+		RegisterHandler<ISprite>(new SpritePngExporter());
 	}
 
 	public SelectiveExportResult ExportSelective(
 		GameBundle fileCollection,
 		FullConfiguration settings,
 		FileSystem fileSystem,
-		IReadOnlySet<string> targetIds
-	)
+		IReadOnlySet<string> targetIds,
+		int concurrency)
 	{
+		if (concurrency <= 0)
+		{
+			throw new ArgumentOutOfRangeException(nameof(concurrency));
+		}
 		HashSet<string> handledEmptyTargetIds = new(StringComparer.Ordinal);
 		List<ExportCollectionBase> collections = CreateCollections(
 			fileCollection,
 			targetIds,
-			handledEmptyTargetIds
-		);
-		HashSet<string> exportedTargetIds = new(handledEmptyTargetIds, StringComparer.Ordinal);
-		ExportCollections(collections, settings, fileSystem, (collection, succeeded) =>
-		{
-			if (!succeeded)
-			{
-				return;
-			}
-			foreach (IUnityObjectBase asset in collection.Assets)
-			{
-				exportedTargetIds.UnionWith(
-					AssetProvenanceRegistry.ResolveProvenance(asset).Where(targetIds.Contains)
-				);
-			}
-		});
-		return new SelectiveExportResult(
-			AssetProvenanceRegistry.GetResolvedTargetIds(fileCollection),
-			exportedTargetIds.Order(StringComparer.Ordinal).ToArray()
-		);
+			handledEmptyTargetIds);
+		List<ExportDescriptor> descriptors = CreateDescriptors(
+			collections,
+			settings,
+			fileSystem,
+			targetIds,
+			handledEmptyTargetIds);
+		return ExportDescriptors(
+			descriptors,
+			settings,
+			fileSystem,
+			handledEmptyTargetIds,
+			concurrency,
+			AssetProvenanceRegistry.GetResolvedTargetIds(fileCollection));
 	}
 
-	private static void ExportCollections(
-		List<ExportCollectionBase> collections,
+	private static List<ExportDescriptor> CreateDescriptors(
+		IEnumerable<ExportCollectionBase> collections,
 		FullConfiguration settings,
 		FileSystem fileSystem,
-		Action<ExportCollectionBase, bool>? observer
-	)
+		IReadOnlySet<string> targetIds,
+		HashSet<string> handledEmptyTargetIds)
 	{
-		for (int i = 0; i < collections.Count; i++)
+		Dictionary<string, ExportDescriptor> descriptors = new(StringComparer.Ordinal);
+		foreach (ExportCollectionBase collection in collections)
 		{
-			ExportCollectionBase collection = collections[i];
 			if (!collection.Exportable)
 			{
 				continue;
 			}
-			Logger.Info(LogCategory.ExportProgress, $"({i + 1}/{collections.Count}) Exporting '{collection.Name}'");
-			bool succeeded = collection.Export(settings.ExportRootPath, fileSystem);
-			observer?.Invoke(collection, succeeded);
-			if (!succeeded)
+			IUnityObjectBase? primary = collection.ExportableAssets.FirstOrDefault()
+				?? collection.Assets.FirstOrDefault();
+			string[] sourceTargetIds = collection.Assets
+				.SelectMany(AssetProvenanceRegistry.ResolveProvenance)
+				.Where(targetIds.Contains)
+				.Distinct(StringComparer.Ordinal)
+				.Order(StringComparer.Ordinal)
+				.ToArray();
+			if (primary is null)
 			{
-				Logger.Warning(LogCategory.ExportProgress, $"Failed to export '{collection.Name}'");
+				handledEmptyTargetIds.UnionWith(sourceTargetIds);
+				continue;
 			}
+			string normalizedCollection = NormalizeCollection(primary.Collection.Name);
+			string identity = $"{normalizedCollection}\n{primary.ClassID}\n{primary.PathID}";
+			string stableId = Convert.ToHexString(
+				SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant()[..20];
+			string readableName = primary.GetBestName();
+			if (string.IsNullOrWhiteSpace(readableName))
+			{
+				readableName = string.IsNullOrWhiteSpace(collection.Name)
+					? primary.ClassName
+					: collection.Name;
+			}
+			ExportDescriptor descriptor = new(
+				collection,
+				stableId,
+				primary.ClassName,
+				readableName,
+				primary.Collection.Name,
+				normalizedCollection,
+				primary.PathID,
+				primary.ClassID,
+				identity,
+				sourceTargetIds,
+				collection.GetPathSortKey(settings.ExportRootPath, fileSystem));
+			if (descriptors.TryGetValue(stableId, out ExportDescriptor? existing))
+			{
+				if (existing.Identity != identity)
+				{
+					throw new InvalidDataException($"Stable asset ID collision: {stableId}");
+				}
+				descriptors[stableId] = existing with
+				{
+					SourceTargetIds = existing.SourceTargetIds
+						.Concat(sourceTargetIds)
+						.Distinct(StringComparer.Ordinal)
+						.Order(StringComparer.Ordinal)
+						.ToArray(),
+				};
+				continue;
+			}
+			descriptors.Add(stableId, descriptor);
 		}
+		return descriptors.Values
+			.OrderBy(item => item.SortKey, StringComparer.Ordinal)
+			.ThenBy(item => item.NormalizedCollection, StringComparer.Ordinal)
+			.ThenBy(item => item.ClassId)
+			.ThenBy(item => item.PathId)
+			.ToList();
+	}
+
+	private static SelectiveExportResult ExportDescriptors(
+		IReadOnlyList<ExportDescriptor> descriptors,
+		FullConfiguration settings,
+		FileSystem fileSystem,
+		HashSet<string> handledEmptyTargetIds,
+		int requestedConcurrency,
+		IReadOnlyList<string> resolvedTargetIds)
+	{
+		List<PlannedDescriptor> planned = new(descriptors.Count);
+		foreach (ExportDescriptor descriptor in descriptors)
+		{
+			planned.Add(new PlannedDescriptor(
+				descriptor,
+				descriptor.Collection.PlanExport(settings.ExportRootPath, fileSystem)));
+		}
+
+		ConcurrentBag<SelectiveExportAsset> assets = [];
+		ConcurrentBag<SelectiveExportFailure> failures = [];
+		int completed = 0;
+		Parallel.ForEach(
+			planned,
+			new ParallelOptions
+			{
+				MaxDegreeOfParallelism = Math.Min(requestedConcurrency, Environment.ProcessorCount),
+			},
+			item =>
+			{
+				try
+				{
+					if (!item.Descriptor.Collection.ExportPlanned(
+						item.Plan,
+						settings.ExportRootPath,
+						fileSystem))
+					{
+						throw new InvalidDataException("The content extractor returned failure.");
+					}
+					assets.Add(ToExportedAsset(item, settings.ExportRootPath));
+				}
+				catch (Exception exception) when (exception is not OutOfMemoryException)
+				{
+					TryDelete(item.Plan.FilePath);
+					failures.Add(new SelectiveExportFailure(
+						item.Descriptor.StableId,
+						item.Descriptor.SourceTargetIds,
+						$"{exception.GetType().Name}: {exception.Message}"));
+				}
+				finally
+				{
+					int current = Interlocked.Increment(ref completed);
+					Logger.Info(
+						LogCategory.ExportProgress,
+						$"({current}/{planned.Count}) Exporting '{item.Descriptor.ReadableName}'");
+				}
+			});
+
+		SelectiveExportAsset[] orderedAssets = assets
+			.OrderBy(item => item.Files[0].Path, StringComparer.Ordinal)
+			.ThenBy(item => item.StableId, StringComparer.Ordinal)
+			.ToArray();
+		SelectiveExportFailure[] orderedFailures = failures
+			.OrderBy(item => item.StableId, StringComparer.Ordinal)
+			.ToArray();
+		HashSet<string> exportedTargetIds = new(handledEmptyTargetIds, StringComparer.Ordinal);
+		foreach (SelectiveExportAsset asset in orderedAssets)
+		{
+			exportedTargetIds.UnionWith(asset.SourceTargetIds);
+		}
+		return new SelectiveExportResult(
+			resolvedTargetIds.Order(StringComparer.Ordinal).ToArray(),
+			exportedTargetIds.Order(StringComparer.Ordinal).ToArray(),
+			orderedAssets,
+			orderedFailures);
+	}
+
+	private static SelectiveExportAsset ToExportedAsset(PlannedDescriptor item, string outputRoot)
+	{
+		FileInfo info = new(item.Plan.FilePath);
+		if (!info.Exists || info.Length == 0)
+		{
+			throw new InvalidDataException("Asset export produced an empty file.");
+		}
+		string relativePath = Path.GetRelativePath(outputRoot, info.FullName).Replace('\\', '/');
+		if (Path.IsPathRooted(relativePath) || relativePath.StartsWith("../", StringComparison.Ordinal))
+		{
+			throw new InvalidDataException("Asset output escaped its export root.");
+		}
+		using FileStream stream = info.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
+		string sha256 = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+		long mtimeNs = (info.LastWriteTimeUtc.Ticks - DateTime.UnixEpoch.Ticks) * 100;
+		SelectiveExportFile file = new(relativePath, info.Length, mtimeNs, sha256);
+		ExportDescriptor descriptor = item.Descriptor;
+		return new SelectiveExportAsset(
+			descriptor.StableId,
+			descriptor.AssetType,
+			descriptor.ReadableName,
+			descriptor.CollectionName,
+			descriptor.NormalizedCollection,
+			descriptor.PathId,
+			descriptor.ClassId,
+			descriptor.SourceTargetIds,
+			[file]);
 	}
 
 	private List<ExportCollectionBase> CreateCollections(
 		GameBundle fileCollection,
-		IReadOnlySet<string>? targetIds,
-		HashSet<string>? handledEmptyTargetIds = null
-	)
+		IReadOnlySet<string> targetIds,
+		HashSet<string> handledEmptyTargetIds)
 	{
-		List<ExportCollectionBase> collections = new();
-		HashSet<IUnityObjectBase> queued = new();
+		List<ExportCollectionBase> collections = [];
+		HashSet<IUnityObjectBase> queued = [];
 		foreach (IUnityObjectBase asset in fileCollection.FetchAssets())
 		{
 			if (!queued.Add(asset))
@@ -196,14 +325,14 @@ public sealed class PrimaryContentExporter
 				continue;
 			}
 			HashSet<string> provenance = AssetProvenanceRegistry.ResolveProvenance(asset);
-			if (targetIds is not null && !provenance.Overlaps(targetIds))
+			if (!provenance.Overlaps(targetIds))
 			{
 				continue;
 			}
 			ExportCollectionBase collection = CreateCollection(asset);
 			if (collection is EmptyExportCollection)
 			{
-				handledEmptyTargetIds?.UnionWith(provenance.Where(targetIds!.Contains));
+				handledEmptyTargetIds.UnionWith(provenance.Where(targetIds.Contains));
 				continue;
 			}
 			foreach (IUnityObjectBase element in collection.Assets)
@@ -224,11 +353,23 @@ public sealed class PrimaryContentExporter
 				return collection;
 			}
 		}
-		throw new Exception($"There is no exporter that can handle '{asset}'");
+		throw new InvalidDataException($"There is no content handler for '{asset.ClassName}'.");
 	}
 
-	private void RegisterEmptyHandler<T>() where T : IUnityObjectBase
+	private static string NormalizeCollection(string value) =>
+		value.Replace('\\', '/').Trim().ToLowerInvariant();
+
+	private static void TryDelete(string path)
 	{
-		RegisterHandler<T>(EmptyContentExtractor.Instance);
+		try
+		{
+			File.Delete(path);
+		}
+		catch (IOException)
+		{
+		}
+		catch (UnauthorizedAccessException)
+		{
+		}
 	}
 }

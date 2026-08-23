@@ -6,13 +6,53 @@ from zipfile import ZipFile
 
 import pytest
 
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
     BundleEntryInput,
 )
 from ba_downloader.infrastructure.extraction.assetripper.entry_store import (
     BundleEntryStore,
+    bundle_entry_cache_identity,
 )
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
+from support.fixtures import build_execution_context
+
+
+class RecordingMaterializer:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def materialize_entries(
+        self,
+        context: ExecutionContext,
+        entries: list[BundleEntryInput],
+        destinations: dict[str, Path],
+        *,
+        concurrency: int,
+        event_callback=None,
+    ) -> dict[str, int]:
+        _ = (context, concurrency, event_callback)
+        self.calls += 1
+        result: dict[str, int] = {}
+        for entry in entries:
+            destination = destinations[entry.node_id]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with ZipFile(entry.archive.path) as archive:
+                payload = archive.read(entry.entry_path)
+            destination.write_bytes(payload)
+            stat = destination.stat()
+            write_json_atomic(
+                destination.with_suffix(f"{destination.suffix}.json"),
+                {
+                    "schema_version": 2,
+                    "identity": bundle_entry_cache_identity(entry),
+                    "mtime_ns": stat.st_mtime_ns,
+                },
+                sort_keys=True,
+            )
+            result[entry.node_id] = len(payload)
+        return result
 
 
 def _entry(tmp_path: Path, payload: bytes = b"bundle-data") -> BundleEntryInput:
@@ -28,72 +68,43 @@ def _entry(tmp_path: Path, payload: bytes = b"bundle-data") -> BundleEntryInput:
     )
 
 
-def test_entry_store_extracts_once_and_reuses_verified_content(
+def test_entry_store_materializes_all_misses_once_and_reuses_verified_content(
     tmp_path: Path,
 ) -> None:
-    store = BundleEntryStore(tmp_path / "cache", reserve_bytes=0)
+    materializer = RecordingMaterializer()
+    store = BundleEntryStore(
+        tmp_path / "cache",
+        materializer=materializer,
+    )
+    context = build_execution_context(tmp_path)
     entry = _entry(tmp_path)
 
-    first = store.resolve(entry)
-    second = store.resolve(entry)
+    first = store.resolve_many(context, (entry,), concurrency=4)[0]
+    second = store.resolve_many(context, (entry,), concurrency=4)[0]
 
     assert first.path == second.path
     assert first.path.read_bytes() == b"bundle-data"
     assert first.hit is False
-    assert first.bytes_written == len(b"bundle-data")
     assert second.hit is True
-    assert second.bytes_written == 0
+    assert materializer.calls == 1
 
 
 def test_entry_store_rebuilds_corrupted_cache_entry(tmp_path: Path) -> None:
-    store = BundleEntryStore(tmp_path / "cache", reserve_bytes=0)
+    materializer = RecordingMaterializer()
+    store = BundleEntryStore(
+        tmp_path / "cache",
+        materializer=materializer,
+    )
+    context = build_execution_context(tmp_path)
     entry = _entry(tmp_path)
-    cached = store.resolve(entry)
+    cached = store.resolve_many(context, (entry,), concurrency=1)[0]
     cached.path.write_bytes(b"corrupt")
 
-    rebuilt = store.resolve(entry)
+    rebuilt = store.resolve_many(context, (entry,), concurrency=1)[0]
 
     assert rebuilt.hit is False
     assert rebuilt.path.read_bytes() == b"bundle-data"
-
-
-def test_entry_store_resolves_archive_entries_with_one_zip_open(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    archive_path = tmp_path / "archive.zip"
-    payloads = {"a.bundle": b"a", "b.bundle": b"b"}
-    with ZipFile(archive_path, "w") as archive_file:
-        for name, payload in payloads.items():
-            archive_file.writestr(name, payload)
-    archive = BundleArchiveInput.from_path(archive_path, archive_id="archive.zip")
-    entries = tuple(
-        BundleEntryInput(
-            archive=archive,
-            entry_path=name,
-            sha256=hashlib.sha256(payload).hexdigest(),
-            size=len(payload),
-        )
-        for name, payload in payloads.items()
-    )
-    store = BundleEntryStore(tmp_path / "cache", reserve_bytes=0)
-    real_zip_file = ZipFile
-    opens = 0
-
-    def recording_zip_file(*args, **kwargs):
-        nonlocal opens
-        opens += 1
-        return real_zip_file(*args, **kwargs)
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.assetripper.entry_store.zipfile.ZipFile",
-        recording_zip_file,
-    )
-
-    result = store.resolve_many(entries)
-
-    assert [item.path.read_bytes() for item in result] == [b"a", b"b"]
-    assert opens == 1
+    assert materializer.calls == 2
 
 
 @pytest.mark.parametrize(
@@ -115,7 +126,14 @@ def test_entry_store_rejects_platform_unsafe_entry_names(
         sha256=hashlib.sha256(payload).hexdigest(),
         size=len(payload),
     )
-    store = BundleEntryStore(tmp_path / "cache", reserve_bytes=0)
+    store = BundleEntryStore(
+        tmp_path / "cache",
+        materializer=RecordingMaterializer(),
+    )
 
     with pytest.raises(ValueError):
-        store.resolve(entry)
+        store.resolve_many(
+            build_execution_context(tmp_path),
+            (entry,),
+            concurrency=1,
+        )

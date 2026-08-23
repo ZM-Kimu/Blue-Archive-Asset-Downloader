@@ -10,6 +10,9 @@
     <PackageReference Include="AssetRipper.SourceGenerated" Version="1.3.14.2" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Remove="runtime_inspector/**/*.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.Assets\AssetRipper.Assets.csproj" />
     <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.Export\AssetRipper.Export.csproj" />
     <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.Export.PrimaryContent\AssetRipper.Export.PrimaryContent.csproj" />

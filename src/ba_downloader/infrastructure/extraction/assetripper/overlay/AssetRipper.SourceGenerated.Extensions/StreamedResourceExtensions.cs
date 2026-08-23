@@ -1,0 +1,52 @@
+using AssetRipper.Assets.Bundles;
+using AssetRipper.Assets.Collections;
+using AssetRipper.IO.Files.ResourceFiles;
+using AssetRipper.SourceGenerated.Subclasses.StreamedResource;
+
+namespace AssetRipper.SourceGenerated.Extensions;
+
+public static class StreamedResourceExtensions
+{
+	private static ResourceFile? ResolveResource(AssetCollection collection, string path)
+	{
+		if (BundleLookupIndex.TryResolveResource(collection.Bundle, path, out ResourceFile? resource) && resource is not null)
+		{
+			return resource;
+		}
+		return collection.Bundle.ResolveResource(path);
+	}
+
+	internal static bool CheckIntegrity(Utf8String? path, ulong offset, ulong size, AssetCollection collection)
+	{
+		if (Utf8String.IsNullOrEmpty(path)) return true;
+		if (offset > long.MaxValue || size > long.MaxValue || offset + size > long.MaxValue || size == 0) return false;
+		ResourceFile? file = ResolveResource(collection, path.String);
+		return file is not null && file.Stream.Length >= unchecked((long)(offset + size));
+	}
+
+	internal static byte[]? GetContent(Utf8String? path, ulong offset, ulong size, AssetCollection collection)
+	{
+		if (Utf8String.IsNullOrEmpty(path)) return null;
+		if (offset > long.MaxValue || size > long.MaxValue || offset + size > long.MaxValue || size == 0) return null;
+		ResourceFile? file = ResolveResource(collection, path.String);
+		if (file is null || file.Stream.Length < unchecked((long)(offset + size))) return null;
+		byte[] data = new byte[size];
+		file.Stream.Position = (long)offset;
+		file.Stream.ReadExactly(data);
+		return data;
+	}
+
+	public static bool CheckIntegrity(this IStreamedResource streamedResource, AssetCollection collection) =>
+		CheckIntegrity(streamedResource.Source, streamedResource.Offset, streamedResource.Size, collection);
+
+	public static byte[]? GetContent(this IStreamedResource streamedResource, AssetCollection file) =>
+		GetContent(streamedResource.Source, streamedResource.Offset, streamedResource.Size, file);
+
+	public static bool TryGetContent(this IStreamedResource streamedResource, AssetCollection file, [NotNullWhen(true)] out byte[]? data)
+	{
+		data = streamedResource.GetContent(file);
+		return !data.IsNullOrEmpty();
+	}
+
+	public static bool IsSet(this IStreamedResource streamedResource) => !Utf8String.IsNullOrEmpty(streamedResource.Source);
+}

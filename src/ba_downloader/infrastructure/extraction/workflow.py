@@ -14,16 +14,18 @@ from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
 from ba_downloader.infrastructure.extraction.assetripper.bundles import (
     AssetRipperBundleWorkflow,
 )
-from ba_downloader.infrastructure.extraction.media.exporter import MediaExtractor
+from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
+    BundleArchiveInput,
+)
+from ba_downloader.infrastructure.extraction.media.exporter import (
+    MediaArchiveExtractor,
+)
 from ba_downloader.infrastructure.extraction.process_table_runner import (
     ProcessTableExtractionRunner,
     TableProfileFactory,
 )
 from ba_downloader.infrastructure.extraction.table.profiles import (
     build_default_table_profile_for_context,
-)
-from ba_downloader.infrastructure.extraction.threaded_runner import (
-    ThreadedExtractionRunner,
 )
 from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 
@@ -41,6 +43,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         progress_factory: ProgressReporterFactoryPort | None = None,
         cancellation: CancellationPort | None = None,
         bundle_workflow: AssetRipperBundleWorkflow | None = None,
+        media_extractor: MediaArchiveExtractor | None = None,
     ) -> None:
         self.logger = logger
         self._force_exit = force_exit or os._exit
@@ -48,14 +51,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         self._progress_factory = progress_factory or NullProgressReporterFactory()
         self._cancellation = cancellation or NeverCancelled()
         self._bundle_workflow = bundle_workflow
-        self._threaded_runner = ThreadedExtractionRunner(
-            logger,
-            poll_interval_seconds=self.POLL_INTERVAL_SECONDS,
-            interrupt_grace_seconds=self.INTERRUPT_GRACE_SECONDS,
-            force_exit=self._force_exit,
-            progress_factory=self._progress_factory,
-            cancellation=self._cancellation,
-        )
+        self._media_extractor = media_extractor
         self._process_table_runner = ProcessTableExtractionRunner(
             logger,
             poll_interval_seconds=self.POLL_INTERVAL_SECONDS,
@@ -72,19 +68,20 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         resources: AssetCollection | None = None,
         *,
         concurrency: int,
+        filtered: bool = False,
     ) -> ExtractionReport:
         self._cancellation.raise_if_cancelled()
-        bundles = [
-            str(bundle_path)
-            for bundle_path in self._resolve_bundle_files(context, resources)
-        ]
+        bundles = self._resolve_bundle_inputs(context, resources)
         if not bundles:
             return ExtractionReport()
 
         if self._bundle_workflow is None:
             raise RuntimeError("AssetRipper bundle workflow is not configured.")
         report = self._bundle_workflow.run(
-            context, [Path(bundle) for bundle in bundles]
+            context,
+            bundles,
+            concurrency=concurrency,
+            filtered=filtered,
         )
         return ExtractionReport(report.warnings)
 
@@ -96,25 +93,16 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         concurrency: int,
     ) -> ExtractionReport:
         self._cancellation.raise_if_cancelled()
-        files = [
-            str(file_path)
-            for file_path in self._resolve_media_files(context, resources)
-        ]
+        files = self._resolve_media_files(context, resources)
         if not files:
             return ExtractionReport()
 
-        extractor = MediaExtractor(context)
-        self._threaded_runner.run(
-            files,
+        if self._media_extractor is None:
+            raise RuntimeError("Media archive extractor is not configured.")
+        self._media_extractor.extract(
             context,
+            files,
             concurrency=concurrency,
-            progress_title="Extracting media...",
-            operation_name="media extraction",
-            task=lambda zip_path, should_stop, progress_callback: extractor.extract_zip(
-                zip_path,
-                should_stop=should_stop,
-                progress_callback=progress_callback,
-            ),
         )
         return ExtractionReport()
 
@@ -170,6 +158,37 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             for bundle in bundle_folder.iterdir()
             if bundle.is_file()
         ]
+
+    def _resolve_bundle_inputs(
+        self,
+        context: ExecutionContext,
+        resources: AssetCollection | None,
+    ) -> list[BundleArchiveInput]:
+        if resources is None:
+            return [
+                BundleArchiveInput.from_path(path)
+                for path in self._resolve_bundle_files(context, None)
+            ]
+        result: list[BundleArchiveInput] = []
+        seen_paths: set[Path] = set()
+        for resource in resources:
+            if resource.asset_type is not AssetType.bundle:
+                continue
+            path = context.workspace.raw_resource_path(
+                resource.asset_type.value,
+                resource.path,
+            )
+            if path in seen_paths or not path.is_file():
+                continue
+            result.append(
+                BundleArchiveInput.from_path(
+                    path,
+                    archive_id=resource.path.replace("\\", "/"),
+                    checksum=resource.checksum,
+                )
+            )
+            seen_paths.add(path)
+        return result
 
     def _resolve_media_files(
         self,

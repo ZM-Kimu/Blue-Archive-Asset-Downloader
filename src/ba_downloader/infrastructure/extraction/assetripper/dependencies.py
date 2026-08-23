@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
-from heapq import heappop, heappush, nlargest
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -70,6 +69,7 @@ class BundleEntryScan:
     resource_files: tuple[str, ...] = ()
     streamed_resources: tuple[StreamedResourceScan, ...] = ()
     error: str | None = None
+    crc32: int | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -79,7 +79,6 @@ class BundleEntryScan:
 @dataclass(frozen=True, slots=True)
 class BundleArchiveScan:
     archive_id: str
-    sha256: str
     entries: tuple[BundleEntryScan, ...] = ()
     error: str | None = None
 
@@ -95,6 +94,7 @@ class BundleEntryInput:
     sha256: str
     size: int
     aliases: tuple[tuple[str, str], ...] = ()
+    crc32: int | None = None
 
     @property
     def node_id(self) -> str:
@@ -167,7 +167,6 @@ class BundleExportBatch:
     batch_id: str
     target_components: tuple[BundleComponent, ...]
     loaded_components: tuple[BundleComponent, ...]
-    max_batch_bytes: int
 
     @property
     def entries(self) -> tuple[BundleEntryInput, ...]:
@@ -202,10 +201,6 @@ class BundleExportBatch:
     def total_bytes(self) -> int:
         return sum(entry.size for entry in self.entries)
 
-    @property
-    def oversized(self) -> bool:
-        return self.total_bytes > self.max_batch_bytes
-
 
 def normalize_unity_file_identifier(value: str) -> str:
     normalized = value.replace("\\", "/").lower()
@@ -219,6 +214,12 @@ def normalize_unity_file_identifier(value: str) -> str:
 
 
 class BundleDependencyPlanner:
+    def __init__(
+        self,
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> None:
+        self._cancellation_check = cancellation_check or (lambda: None)
+
     def build(
         self,
         archives: tuple[BundleArchiveInput, ...],
@@ -238,6 +239,7 @@ class BundleDependencyPlanner:
         ] = defaultdict(list)
         archive_failures: list[BundleScanFailure] = []
         for scan in scans:
+            self._cancellation_check()
             if not scan.succeeded:
                 archive_failures.append(
                     BundleScanFailure(
@@ -263,6 +265,7 @@ class BundleDependencyPlanner:
         scan_by_node: dict[str, BundleEntryScan] = {}
         entry_failures: list[BundleScanFailure] = []
         for candidates in entry_candidates.values():
+            self._cancellation_check()
             candidates.sort(
                 key=lambda item: (
                     item[0].archive_id.casefold(),
@@ -279,6 +282,7 @@ class BundleDependencyPlanner:
                 entry_path=entry_scan.entry_path,
                 sha256=entry_scan.sha256,
                 size=entry_scan.size,
+                crc32=entry_scan.crc32,
                 aliases=aliases,
             )
             entry_by_node[entry_input.node_id] = entry_input
@@ -299,6 +303,7 @@ class BundleDependencyPlanner:
         }
         owner_index: dict[str, set[str]] = defaultdict(set)
         for node_id, entry_scan in scan_by_node.items():
+            self._cancellation_check()
             if not entry_scan.succeeded:
                 continue
             for serialized_file in entry_scan.serialized_files:
@@ -312,6 +317,7 @@ class BundleDependencyPlanner:
         unresolved: list[BundleDependencyIssue] = []
         ambiguities: list[BundleDependencyAmbiguity] = []
         for node_id, entry_scan in scan_by_node.items():
+            self._cancellation_check()
             if not entry_scan.succeeded:
                 continue
             source_entry = entry_by_node[node_id]
@@ -358,16 +364,29 @@ class BundleDependencyPlanner:
 
         unresolved.sort(key=self._issue_key)
         ambiguities.sort(key=self._issue_key)
+        unresolved_by_node: dict[str, list[BundleDependencyIssue]] = defaultdict(list)
+        ambiguities_by_node: dict[str, list[BundleDependencyAmbiguity]] = defaultdict(
+            list
+        )
+        for issue in unresolved:
+            unresolved_by_node[
+                f"{issue.source_archive_id}::{issue.source_entry_path}"
+            ].append(issue)
+        for issue in ambiguities:
+            ambiguities_by_node[
+                f"{issue.source_archive_id}::{issue.source_entry_path}"
+            ].append(issue)
         member_groups = self._strongly_connected_components(adjacency)
         component_id_by_node: dict[str, str] = {}
         for member_ids in member_groups:
+            self._cancellation_check()
             component_id = self._component_id(member_ids)
             for member_id in member_ids:
                 component_id_by_node[member_id] = component_id
 
         components: list[BundleComponent] = []
         for member_ids in member_groups:
-            member_set = set(member_ids)
+            self._cancellation_check()
             component_id = component_id_by_node[member_ids[0]]
             dependency_component_ids = tuple(
                 sorted(
@@ -382,13 +401,13 @@ class BundleDependencyPlanner:
             )
             component_unresolved = tuple(
                 issue
-                for issue in unresolved
-                if f"{issue.source_archive_id}::{issue.source_entry_path}" in member_set
+                for member_id in member_ids
+                for issue in unresolved_by_node.get(member_id, ())
             )
             component_ambiguities = tuple(
                 issue
-                for issue in ambiguities
-                if f"{issue.source_archive_id}::{issue.source_entry_path}" in member_set
+                for member_id in member_ids
+                for issue in ambiguities_by_node.get(member_id, ())
             )
             components.append(
                 BundleComponent(
@@ -483,196 +502,3 @@ class BundleDependencyPlanner:
             issue.kind,
             issue.logical_name,
         )
-
-
-class BundleDependencyBatchPlanner:
-    def __init__(self, *, max_batch_bytes: int) -> None:
-        if max_batch_bytes <= 0:
-            raise ValueError("AssetRipper batch size must be positive.")
-        self._max_batch_bytes = max_batch_bytes
-
-    def build(
-        self,
-        plan: BundleDependencyPlan,
-    ) -> tuple[BundleExportBatch, ...]:
-        if not plan.components:
-            return ()
-        component_index = {
-            component.component_id: index
-            for index, component in enumerate(plan.components)
-        }
-        dependency_indexes = tuple(
-            tuple(
-                component_index[dependency_id]
-                for dependency_id in component.dependency_component_ids
-            )
-            for component in plan.components
-        )
-        closure_bits, closure_members = self._dependency_closures(dependency_indexes)
-        component_bytes = tuple(
-            sum(entry.size for entry in component.entries)
-            for component in plan.components
-        )
-        closure_bytes = tuple(
-            sum(component_bytes[member] for member in members)
-            for members in closure_members
-        )
-        candidate_order = tuple(
-            sorted(
-                range(len(plan.components)),
-                key=lambda index: (-closure_bytes[index], index),
-            )
-        )
-
-        target_groups: list[list[int]] = []
-        loaded_groups: list[int] = []
-        loaded_member_groups: list[set[int]] = []
-        loaded_group_bytes: list[int] = []
-        groups_by_component: list[list[int]] = [[] for _ in plan.components]
-        for target_index in candidate_order:
-            closure = closure_bits[target_index]
-            members = closure_members[target_index]
-            already_loaded_groups = groups_by_component[target_index]
-            if already_loaded_groups:
-                candidate_groups = already_loaded_groups[:1]
-            else:
-                target_bytes = component_bytes[target_index]
-                candidate_groups = nlargest(
-                    2,
-                    (
-                        group_index
-                        for group_index, used_bytes in enumerate(loaded_group_bytes)
-                        if self._max_batch_bytes - used_bytes >= target_bytes
-                    ),
-                    key=lambda group_index: (
-                        (closure & loaded_groups[group_index]).bit_count(),
-                        self._max_batch_bytes - loaded_group_bytes[group_index],
-                        -group_index,
-                    ),
-                )
-
-            selected: int | None = None
-            selected_score: tuple[int, int, int] | None = None
-            for group_index in candidate_groups:
-                loaded_members = loaded_member_groups[group_index]
-                shared_bytes = sum(
-                    component_bytes[member]
-                    for member in members
-                    if member in loaded_members
-                )
-                added_bytes = closure_bytes[target_index] - shared_bytes
-                if (
-                    added_bytes > 0
-                    and loaded_group_bytes[group_index] + added_bytes
-                    > self._max_batch_bytes
-                ):
-                    continue
-                score = (shared_bytes, -added_bytes, -group_index)
-                if selected_score is None or score > selected_score:
-                    selected = group_index
-                    selected_score = score
-
-            if (
-                selected is None
-                and closure_bytes[target_index] <= self._max_batch_bytes
-            ):
-                best_fit: tuple[int, int] | None = None
-                for group_index, used_bytes in enumerate(loaded_group_bytes):
-                    remaining = self._max_batch_bytes - used_bytes
-                    if closure_bytes[target_index] <= remaining:
-                        fit_score = (
-                            remaining - closure_bytes[target_index],
-                            group_index,
-                        )
-                        if best_fit is None or fit_score < best_fit:
-                            best_fit = fit_score
-                            selected = group_index
-
-            if selected is None:
-                selected = len(target_groups)
-                target_groups.append([])
-                loaded_groups.append(0)
-                loaded_member_groups.append(set())
-                loaded_group_bytes.append(0)
-
-            loaded_members = loaded_member_groups[selected]
-            added_members = tuple(
-                member for member in members if member not in loaded_members
-            )
-            added_bytes = sum(component_bytes[member] for member in added_members)
-            target_groups[selected].append(target_index)
-            loaded_groups[selected] |= closure
-            loaded_members.update(added_members)
-            loaded_group_bytes[selected] += added_bytes
-            for member in added_members:
-                groups_by_component[member].append(selected)
-
-        grouped = [
-            (tuple(targets), tuple(self._iter_bits(loaded_groups[index])))
-            for index, targets in enumerate(target_groups)
-        ]
-
-        width = max(1, len(str(len(grouped))))
-        return tuple(
-            BundleExportBatch(
-                batch_id=f"batch-{index:0{width}d}",
-                target_components=tuple(
-                    plan.components[item] for item in target_indexes
-                ),
-                loaded_components=tuple(
-                    plan.components[item] for item in loaded_indexes
-                ),
-                max_batch_bytes=self._max_batch_bytes,
-            )
-            for index, (target_indexes, loaded_indexes) in enumerate(grouped, start=1)
-        )
-
-    @staticmethod
-    def _dependency_closures(
-        dependency_indexes: tuple[tuple[int, ...], ...],
-    ) -> tuple[tuple[int, ...], tuple[tuple[int, ...], ...]]:
-        remaining = [len(items) for items in dependency_indexes]
-        dependents: list[list[int]] = [[] for _ in dependency_indexes]
-        for source, dependencies in enumerate(dependency_indexes):
-            for dependency in dependencies:
-                dependents[dependency].append(source)
-        ready: list[int] = []
-        for index, count in enumerate(remaining):
-            if count == 0:
-                heappush(ready, index)
-
-        closures = [0] * len(dependency_indexes)
-        closure_members: list[frozenset[int]] = [
-            frozenset() for _ in dependency_indexes
-        ]
-        completed = 0
-        while ready:
-            current = heappop(ready)
-            closure = 1 << current
-            members = {current}
-            for dependency in dependency_indexes[current]:
-                closure |= closures[dependency]
-                members.update(closure_members[dependency])
-            closures[current] = closure
-            closure_members[current] = frozenset(members)
-            completed += 1
-            for dependent in dependents[current]:
-                remaining[dependent] -= 1
-                if remaining[dependent] == 0:
-                    heappush(ready, dependent)
-        if completed != len(dependency_indexes):
-            raise ValueError("AssetRipper component dependency graph contains a cycle.")
-        return tuple(closures), tuple(
-            tuple(sorted(members)) for members in closure_members
-        )
-
-    @staticmethod
-    def _iter_bits(value: int) -> Iterator[int]:
-        while value:
-            lowest = value & -value
-            yield lowest.bit_length() - 1
-            value ^= lowest
-
-    @classmethod
-    def _bits_size(cls, value: int, sizes: tuple[int, ...]) -> int:
-        return sum(sizes[index] for index in cls._iter_bits(value))

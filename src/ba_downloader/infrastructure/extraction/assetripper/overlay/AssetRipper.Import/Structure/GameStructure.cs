@@ -60,6 +60,48 @@ public sealed class GameStructure : IDisposable
 		return new GameStructure(toProcess, fileSystem, configuration, progress);
 	}
 
+	public static GameStructure LoadPrimaryContent(
+		IReadOnlyList<string> paths,
+		FileSystem fileSystem,
+		CoreConfiguration configuration,
+		IGameLoadProgress? progress,
+		int concurrency)
+	{
+		if (paths.Count == 0)
+		{
+			throw new ArgumentException("Game files not found", nameof(paths));
+		}
+		return new GameStructure(paths, fileSystem, configuration, progress, concurrency);
+	}
+
+	private GameStructure(
+		IReadOnlyList<string> paths,
+		FileSystem fileSystem,
+		CoreConfiguration configuration,
+		IGameLoadProgress? progress,
+		int concurrency)
+	{
+		FileSystem = fileSystem;
+		PlatformStructure = null;
+		MixedStructure = null;
+		AssemblyManager = new BaseManager(OnRequestAssembly);
+		GameAssetFactory assetFactory = new(AssemblyManager);
+		GameInitializer initializer = new(
+			null,
+			null,
+			fileSystem,
+			configuration.ImportSettings.DefaultVersion,
+			configuration.ImportSettings.TargetVersion,
+			progress);
+		FileCollection = GameBundle.FromPathsParallel(
+			paths,
+			assetFactory,
+			fileSystem,
+			initializer,
+			progress,
+			concurrency);
+	}
+
 	[MemberNotNull(nameof(FileCollection))]
 	private void InitializeGameCollection(UnityVersion defaultVersion, UnityVersion targetVersion, IGameLoadProgress? progress)
 	{

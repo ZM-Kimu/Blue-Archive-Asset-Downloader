@@ -68,13 +68,17 @@ def test_bundle_extraction_returns_workflow_warnings(tmp_path: Path) -> None:
         def run(
             self,
             received_context: ExecutionContext,
-            inputs: list[Path],
+            inputs: list[object],
+            *,
+            concurrency: int,
+            filtered: bool = False,
         ) -> BundleExtractionReport:
             assert received_context == context
-            assert inputs == [bundle_dir / "a.zip"]
+            assert [item.path for item in inputs] == [bundle_dir / "a.zip"]
+            assert concurrency == 1
+            assert filtered is False
             return BundleExtractionReport(
                 warnings=(expected_warning,),
-                complete=False,
                 total_batches=1,
                 succeeded_batches=1,
             )
@@ -88,7 +92,6 @@ def test_bundle_extraction_returns_workflow_warnings(tmp_path: Path) -> None:
 
 
 def test_media_extraction_observes_operation_cancellation(
-    monkeypatch: Any,
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("media",))
@@ -98,21 +101,21 @@ def test_media_extraction_observes_operation_cancellation(
     cancellation_event = Event()
 
     class CancellingMediaExtractor:
-        def __init__(self, _context: ExecutionContext) -> None:
-            pass
-
-        def extract_zip(self, _file_path: str, **kwargs: Any) -> None:
+        def extract(
+            self,
+            _context: ExecutionContext,
+            _files: list[Path],
+            *,
+            concurrency: int,
+        ) -> None:
+            _ = concurrency
             cancellation_event.set()
-            assert kwargs["should_stop"]()
-            raise RuntimeError("Extraction cancelled by user.")
+            raise OperationCancelledError("Media extraction cancelled by user.")
 
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.MediaExtractor",
-        CancellingMediaExtractor,
-    )
     workflow = AssetExtractionWorkflow(
         RecordingLogger(),
         cancellation=EventCancellation(cancellation_event),
+        media_extractor=CancellingMediaExtractor(),  # type: ignore[arg-type]
     )
 
     with pytest.raises(OperationCancelledError):
@@ -120,7 +123,6 @@ def test_media_extraction_observes_operation_cancellation(
 
 
 def test_media_extraction_uses_filtered_existing_resources(
-    monkeypatch: Any,
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("media",))
@@ -131,19 +133,21 @@ def test_media_extraction_uses_filtered_existing_resources(
     calls: list[str] = []
 
     class FakeMediaExtractor:
-        def __init__(self, received_context: ExecutionContext) -> None:
+        def extract(
+            self,
+            received_context: ExecutionContext,
+            files: list[Path],
+            *,
+            concurrency: int,
+        ) -> None:
             assert received_context == context
+            assert concurrency == 1
+            calls.extend(path.name for path in files)
 
-        def extract_zip(self, file_path: str, **kwargs: Any) -> None:
-            _ = kwargs
-            calls.append(Path(file_path).name)
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.MediaExtractor",
-        FakeMediaExtractor,
-    )
-
-    AssetExtractionWorkflow(RecordingLogger()).extract_media(
+    AssetExtractionWorkflow(
+        RecordingLogger(),
+        media_extractor=FakeMediaExtractor(),  # type: ignore[arg-type]
+    ).extract_media(
         context,
         _resources(
             [
@@ -159,8 +163,7 @@ def test_media_extraction_uses_filtered_existing_resources(
     assert calls == ["voice.zip"]
 
 
-def test_media_extraction_aggregates_failures_after_processing_other_files(
-    monkeypatch: Any,
+def test_media_extraction_propagates_batch_failure_after_processing_files(
     tmp_path: Path,
 ) -> None:
     context = _build_context(tmp_path, ("media",))
@@ -169,28 +172,27 @@ def test_media_extraction_aggregates_failures_after_processing_other_files(
     (media_dir / "bad.zip").write_bytes(b"zip")
     (media_dir / "good.zip").write_bytes(b"zip")
     calls: list[str] = []
-    logger = RecordingLogger()
 
     class FakeMediaExtractor:
-        def __init__(self, received_context: ExecutionContext) -> None:
+        def extract(
+            self,
+            received_context: ExecutionContext,
+            files: list[Path],
+            *,
+            concurrency: int,
+        ) -> None:
             assert received_context == context
-
-        def extract_zip(self, file_path: str, **kwargs: Any) -> None:
-            _ = kwargs
-            calls.append(Path(file_path).name)
-            if Path(file_path).name == "bad.zip":
-                raise LookupError("bad archive")
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.workflow.MediaExtractor",
-        FakeMediaExtractor,
-    )
+            assert concurrency == 1
+            calls.extend(path.name for path in files)
+            raise ExtractError("bad archive")
 
     with pytest.raises(ExtractError):
-        AssetExtractionWorkflow(logger).extract_media(context, concurrency=1)
+        AssetExtractionWorkflow(
+            RecordingLogger(),
+            media_extractor=FakeMediaExtractor(),  # type: ignore[arg-type]
+        ).extract_media(context, concurrency=1)
 
     assert sorted(calls) == ["bad.zip", "good.zip"]
-    assert logger.error_messages
 
 
 def test_table_extraction_uses_process_runner_for_real_extractor(
@@ -340,14 +342,19 @@ def test_bundle_extraction_uses_filtered_existing_resources(
     bundle_dir.mkdir(parents=True)
     (bundle_dir / "target.bundle").write_bytes(b"bundle")
     (bundle_dir / "other.bundle").write_bytes(b"bundle")
-    captured_bundles: list[Path] = []
+    captured_bundles: list[object] = []
 
     class RecordingBundleWorkflow:
         def run(
             self,
             _context: ExecutionContext,
-            inputs: list[Path],
+            inputs: list[object],
+            *,
+            concurrency: int,
+            filtered: bool = False,
         ) -> BundleExtractionReport:
+            assert concurrency == 1
+            assert filtered is False
             captured_bundles.extend(inputs)
             return BundleExtractionReport()
 
@@ -368,4 +375,5 @@ def test_bundle_extraction_uses_filtered_existing_resources(
         concurrency=1,
     )
 
-    assert captured_bundles == [bundle_dir / "target.bundle"]
+    assert [item.path for item in captured_bundles] == [bundle_dir / "target.bundle"]
+    assert captured_bundles[0].checksum.value == "deadbeef"

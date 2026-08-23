@@ -8,6 +8,7 @@ import pytest
 
 from ba_downloader.api.events import (
     QueueLogger,
+    QueueProgressReporter,
     build_secret_redactions,
     redact_text,
 )
@@ -50,6 +51,33 @@ def test_proxy_redactions_cover_credentials_and_encoded_values() -> None:
         value not in redacted
         for value in ("secret-user", "p@ssword", "p%40ssword", "a" * 64)
     )
+
+
+def test_queue_progress_uses_the_unified_wire_contract() -> None:
+    queue: Queue[dict[str, object]] = Queue()
+    reporter = QueueProgressReporter(queue, 10, "Extracting bundles")
+    reporter.set_progress(
+        3,
+        10,
+        stage="processing",
+        unit="entries",
+        status="3/10 entries",
+        secondary_status="Processor 2/17: Prefab",
+    )
+    reporter.stop()
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    payload = events[-1]["payload"]
+    assert payload == {
+        "completed": 3,
+        "total": 10,
+        "stage": "processing",
+        "unit": "entries",
+        "status": "3/10 entries",
+        "secondary_status": "Processor 2/17: Prefab",
+    }
 
 
 def test_job_stream_starts_with_current_snapshot(tmp_path: Path) -> None:

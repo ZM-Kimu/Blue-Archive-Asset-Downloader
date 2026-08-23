@@ -19,14 +19,14 @@ from ba_downloader.domain.ports.progress import (
     ProgressReporterFactoryPort,
     ProgressReporterPort,
 )
+from ba_downloader.infrastructure.extraction.errors import (
+    ExtractionFailure,
+    ExtractionFailureError,
+)
 from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
 from ba_downloader.infrastructure.extraction.table.profiles import (
     TableExtractionProfile,
     build_default_table_profile_for_context,
-)
-from ba_downloader.infrastructure.extraction.threaded_runner import (
-    ExtractionFailure,
-    ExtractionFailureError,
 )
 from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 from ba_downloader.infrastructure.runtime.interrupts import (

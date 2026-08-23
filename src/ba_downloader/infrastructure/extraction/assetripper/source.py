@@ -17,6 +17,7 @@ from ba_downloader.infrastructure.files.atomic import (
     write_json_atomic,
 )
 from ba_downloader.infrastructure.files.checksum import calculate_sha256
+from ba_downloader.infrastructure.files.lock import wait_for_interprocess_lock
 
 ASSETRIPPER_VERSION = "1.3.14"
 ASSETRIPPER_COMMIT = "7534ed93857d1ef4464bab6e3c7a13777529f94d"
@@ -26,7 +27,7 @@ ASSETRIPPER_ARCHIVE_SHA256 = (
 ASSETRIPPER_ARCHIVE_URL = (
     f"https://github.com/AssetRipper/AssetRipper/archive/{ASSETRIPPER_COMMIT}.zip"
 )
-ASSETRIPPER_OVERLAY_VERSION = "5"
+ASSETRIPPER_OVERLAY_VERSION = "9"
 
 
 class AssetRipperSourceError(RuntimeError):
@@ -70,18 +71,30 @@ class AssetRipperSourceResolver:
         if self._is_valid_source(cache_root):
             return cache_root
 
-        self._logger.warn(
-            "AssetRipper source is missing. Downloading fallback source package..."
-        )
-        last_error: Exception | None = None
-        for _attempt in range(max(1, context.max_retries + 1)):
-            try:
-                self._download_to_cache(cache_root)
+        with wait_for_interprocess_lock(
+            context.workspace.locks / "assetripper-source.lock",
+            operation="AssetRipper source preparation",
+            cancellation_check=self._cancellation.raise_if_cancelled,
+        ):
+            if self._is_valid_source(cache_root):
                 return cache_root
-            except OperationCancelledError:
-                raise
-            except (AssetRipperSourceError, BadZipFile, OSError, ValueError) as exc:
-                last_error = exc
+            self._logger.warn(
+                "AssetRipper source is missing. Downloading fallback source package..."
+            )
+            last_error: Exception | None = None
+            for _attempt in range(max(1, context.max_retries + 1)):
+                try:
+                    self._download_to_cache(cache_root)
+                    return cache_root
+                except OperationCancelledError:
+                    raise
+                except (
+                    AssetRipperSourceError,
+                    BadZipFile,
+                    OSError,
+                    ValueError,
+                ) as exc:
+                    last_error = exc
 
         raise AssetRipperSourceError(
             "Unable to resolve AssetRipper source. Initialize the submodule or "
@@ -116,40 +129,61 @@ class AssetRipperSourceResolver:
                 "AssetRipper source overlay has no replacement files."
             )
 
-        cache_root = self._overlay_cache_root(context)
         cache_key = self._overlay_cache_key(manifest_path, files)
+        cache_root = self._overlay_cache_root(context, cache_key)
         marker = cache_root / "overlay.json"
-        if marker.is_file():
-            try:
-                cached = json.loads(marker.read_text(encoding="utf8"))
-            except (OSError, ValueError):
-                cached = None
-            if (
-                isinstance(cached, dict)
-                and cached.get("source_commit") == self._commit
-                and cached.get("overlay_key") == cache_key
-                and self._is_valid_source(cache_root)
-            ):
-                return cache_root
+        if self._is_valid_overlay_cache(cache_root, marker, cache_key):
+            return cache_root
 
-        staging = cache_root.with_name(f".{cache_root.name}.staging-{uuid4().hex}")
-        shutil.rmtree(staging, ignore_errors=True)
-        marker_payload = {
-            "source_commit": self._commit,
-            "overlay_key": cache_key,
-            "version": ASSETRIPPER_OVERLAY_VERSION,
-        }
-        try:
-            shutil.copytree(source_root, staging)
-            self._apply_overlay(staging, overlay_root, files)
-            publish_staged_directory(staging, cache_root)
-            write_json_atomic(marker, marker_payload, indent=2, sort_keys=True)
-        except (OSError, ValueError, AssetRipperSourceOverlayError):
+        lock_path = context.workspace.locks / "assetripper-patched-source.lock"
+        with wait_for_interprocess_lock(
+            lock_path,
+            operation="AssetRipper patched source preparation",
+            cancellation_check=self._cancellation.raise_if_cancelled,
+        ):
+            if self._is_valid_overlay_cache(cache_root, marker, cache_key):
+                return cache_root
+            staging = cache_root.with_name(f".{cache_root.name}.staging-{uuid4().hex}")
             shutil.rmtree(staging, ignore_errors=True)
-            if not marker.is_file():
-                shutil.rmtree(cache_root, ignore_errors=True)
-            raise
+            self._logger.info("Preparing patched AssetRipper source...")
+            marker_payload = {
+                "source_commit": self._commit,
+                "overlay_key": cache_key,
+                "version": ASSETRIPPER_OVERLAY_VERSION,
+            }
+            try:
+                shutil.copytree(source_root, staging)
+                self._apply_overlay(staging, overlay_root, files)
+                write_json_atomic(
+                    staging / "overlay.json",
+                    marker_payload,
+                    indent=2,
+                    sort_keys=True,
+                )
+                publish_staged_directory(staging, cache_root)
+            except (OSError, ValueError, AssetRipperSourceOverlayError):
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
         return cache_root
+
+    def _is_valid_overlay_cache(
+        self,
+        cache_root: Path,
+        marker: Path,
+        cache_key: str,
+    ) -> bool:
+        if not marker.is_file():
+            return False
+        try:
+            cached = json.loads(marker.read_text(encoding="utf8"))
+        except (OSError, ValueError):
+            return False
+        return (
+            isinstance(cached, dict)
+            and cached.get("source_commit") == self._commit
+            and cached.get("overlay_key") == cache_key
+            and self._is_valid_source(cache_root)
+        )
 
     def _apply_overlay(
         self,
@@ -214,9 +248,14 @@ class AssetRipperSourceResolver:
             shutil.copyfile(overlay_file, temporary)
             temporary.replace(target)
 
-    def _overlay_cache_root(self, context: ExecutionContext) -> Path:
+    def _overlay_cache_root(
+        self,
+        context: ExecutionContext,
+        cache_key: str,
+    ) -> Path:
         return context.workspace.tools_cache / (
-            f"AssetRipper-{self._commit[:12]}-overlay-{ASSETRIPPER_OVERLAY_VERSION}"
+            f"AssetRipper-{self._commit[:12]}-overlay-"
+            f"{ASSETRIPPER_OVERLAY_VERSION}-{cache_key[:12]}"
         )
 
     @staticmethod

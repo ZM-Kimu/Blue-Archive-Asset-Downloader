@@ -49,10 +49,13 @@ jobs:
       - name: Check architecture boundaries
         run: uv run lint-imports
 
-      - name: Build AssetRipper exporter
+      - name: Build .NET extraction tools
         env:
           BAAD_RUN_DOTNET_BUILD: "1"
-        run: uv run pytest -q tests/test_assetripper_dotnet.py
+        run: >-
+          uv run pytest -q
+          tests/test_assetripper_dotnet.py
+          tests/test_media_extractor_dotnet.py
 
   tests:
     runs-on: ubuntu-latest

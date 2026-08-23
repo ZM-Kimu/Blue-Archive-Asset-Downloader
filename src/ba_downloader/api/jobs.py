@@ -45,6 +45,10 @@ class JobStateError(RuntimeError):
     pass
 
 
+class BundleJobConflictError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class JobEvent:
     id: int
@@ -207,6 +211,18 @@ class JobManager:
                 raise JobStateError("The job manager is shutting down.")
             if len(self._pending) >= self._queue_limit:
                 raise JobQueueFullError("The in-memory job queue is full.")
+            if self._is_bundle_command(command):
+                key = (context.region, context.platform)
+                if any(
+                    job.status in {"queued", "running", "cancelling"}
+                    and (job.context.region, job.context.platform) == key
+                    and self._is_bundle_command(job.command)
+                    for job in self._jobs.values()
+                ):
+                    raise BundleJobConflictError(
+                        "Bundle extraction is already queued or running for this context."
+                    )
+                self._preflight_bundle_lock(context)
             job = JobRecord(
                 id=uuid4().hex,
                 command=command,
@@ -219,6 +235,31 @@ class JobManager:
             self._append_job_event(job, "state", {"status": "queued"})
         self._wake.set()
         return job
+
+    @staticmethod
+    def _is_bundle_command(command: ApplicationCommand) -> bool:
+        return isinstance(command, AssetsSyncCommand | AssetsExtractCommand) and (
+            command.options.resources.contains("bundle")
+        )
+
+    @staticmethod
+    def _preflight_bundle_lock(context: ExecutionContext) -> None:
+        from ba_downloader.infrastructure.extraction.assetripper.bundles import (
+            bundle_extraction_lock_path,
+        )
+        from ba_downloader.infrastructure.files.lock import (
+            InterprocessFileLock,
+            InterprocessLockBusyError,
+        )
+
+        try:
+            with InterprocessFileLock(
+                bundle_extraction_lock_path(context),
+                operation="bundle extraction preflight",
+            ):
+                pass
+        except InterprocessLockBusyError as exc:
+            raise BundleJobConflictError(str(exc)) from exc
 
     def list_jobs(self) -> list[JobRecord]:
         with self._lock:

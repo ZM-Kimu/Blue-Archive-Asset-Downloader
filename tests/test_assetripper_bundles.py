@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
-import threading
-import zipfile
 from collections.abc import Callable
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
+from ba_downloader.domain.exceptions import OperationCancelledError
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.assetripper.bundles import (
     AssetRipperBundleWorkflow,
@@ -17,159 +16,118 @@ from ba_downloader.infrastructure.extraction.assetripper.bundles import (
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
     BundleArchiveScan,
+    BundleComponent,
+    BundleDependencyPlan,
+    BundleEntryInput,
     BundleEntryScan,
     SerializedFileScan,
 )
+from ba_downloader.infrastructure.extraction.assetripper.entry_store import (
+    bundle_entry_cache_identity,
+)
 from ba_downloader.infrastructure.extraction.assetripper.events import (
-    SERIALIZE_REFERENCE_UNSUPPORTED_MESSAGE,
-    AssetRipperHeartbeatEvent,
-    AssetRipperLogEvent,
-    AssetRipperPhaseEvent,
+    AssetRipperEntryCacheProgressEvent,
     AssetRipperProcessEvent,
+    AssetRipperProcessorProgressEvent,
     AssetRipperProgressEvent,
     AssetRipperScanProgressEvent,
 )
 from ba_downloader.infrastructure.extraction.assetripper.exporter import (
+    AssetRipperCollectionFailure,
+    AssetRipperExportedAsset,
     AssetRipperExportedFile,
-    AssetRipperExportError,
-    AssetRipperExportInput,
+    AssetRipperExportGroup,
     AssetRipperExportResult,
+    AssetRipperOutOfMemoryError,
     AssetRipperToolError,
 )
-from ba_downloader.infrastructure.extraction.assetripper.scheduler import (
-    BundleBatchScheduler,
-    SystemResourceSnapshot,
-)
-from ba_downloader.infrastructure.extraction.assetripper.source import (
-    ASSETRIPPER_COMMIT,
-    ASSETRIPPER_OVERLAY_VERSION,
-    AssetRipperSourceResolver,
-)
-from ba_downloader.infrastructure.extraction.threaded_runner import (
-    ExtractionFailureError,
-)
-from support.fixtures import RecordingLogger, build_execution_context
+from ba_downloader.infrastructure.extraction.errors import BundleExtractionError
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
+from support.fixtures import build_execution_context
 
 
-def _context(tmp_path: Path) -> ExecutionContext:
-    return build_execution_context(
-        tmp_path,
-        region="jp",
-        platform="android",
-        version="1",
-        max_retries=0,
-    )
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def info(self, message: str) -> None:
+        _ = message
+
+    def warn(self, message: str) -> None:
+        self.warnings.append(message)
+
+    def error(self, message: str) -> None:
+        _ = message
 
 
-class FakeExporter:
-    def __init__(
+class RecordingProgress:
+    def __init__(self) -> None:
+        self.updates: list[dict[str, object]] = []
+        self.failures: list[str] = []
+
+    def __enter__(self) -> RecordingProgress:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def set_progress(
         self,
+        completed: int,
+        total: int,
         *,
-        fail: bool = False,
-        serialize_reference_count: int = 0,
+        stage: str,
+        unit: str,
+        status: str = "",
+        secondary_status: str = "",
     ) -> None:
-        self.fail = fail
-        self.serialize_reference_count = serialize_reference_count
-        self.calls: list[tuple[bytes, ...]] = []
-
-    def export(
-        self,
-        context: ExecutionContext,
-        inputs: list[AssetRipperExportInput],
-        output_directory: Path,
-        event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
-    ) -> AssetRipperExportResult:
-        _ = context
-        self.calls.append(tuple(item.path.read_bytes() for item in inputs))
-        if event_callback is not None:
-            event_callback(AssetRipperPhaseEvent("loading"))
-            for stage in (
-                "extracting_inputs",
-                "loading_files",
-                "creating_collections",
-                "resolving_dependencies",
-            ):
-                event_callback(AssetRipperProgressEvent("loading", 1, 1, stage))
-            event_callback(AssetRipperPhaseEvent("processing"))
-            event_callback(AssetRipperHeartbeatEvent("processing", 12.5))
-            for _ in range(self.serialize_reference_count):
-                event_callback(
-                    AssetRipperLogEvent(
-                        "error",
-                        "Import",
-                        SERIALIZE_REFERENCE_UNSUPPORTED_MESSAGE,
-                    )
-                )
-            event_callback(AssetRipperPhaseEvent("exporting"))
-            event_callback(AssetRipperProgressEvent("exporting", 3, 7))
-            event_callback(AssetRipperLogEvent("warning", "Export", "skipped item"))
-        if self.fail:
-            raise AssetRipperExportError("invalid bundle")
-        output_directory.mkdir(parents=True, exist_ok=True)
-        (output_directory / "asset.bin").write_bytes(b"asset")
-        targets = tuple(item.node_id for item in inputs if item.target)
-        return AssetRipperExportResult(
-            (AssetRipperExportedFile("asset.bin", 5),),
-            targets,
-            targets,
-            targets,
+        self.updates.append(
+            {
+                "completed": completed,
+                "total": total,
+                "stage": stage,
+                "unit": unit,
+                "status": status,
+                "secondary_status": secondary_status,
+            }
         )
 
+    def advance(self, amount: int = 1) -> None:
+        _ = amount
 
-class ScriptedExporter:
-    def __init__(
-        self,
-        responses: list[dict[str, bytes] | Exception],
-        *,
-        coverage_mismatch_calls: set[int] | None = None,
-    ) -> None:
-        self._responses = responses
-        self._coverage_mismatch_calls = coverage_mismatch_calls or set()
-        self.calls: list[tuple[bytes, ...]] = []
+    def set_total(self, total: int) -> None:
+        _ = total
 
-    def export(
-        self,
-        context: ExecutionContext,
-        inputs: list[AssetRipperExportInput],
-        output_directory: Path,
-        event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
-    ) -> AssetRipperExportResult:
-        _ = (context, event_callback)
-        self.calls.append(tuple(item.path.read_bytes() for item in inputs))
-        response = self._responses[len(self.calls) - 1]
-        if isinstance(response, Exception):
-            raise response
+    def set_description(self, description: str) -> None:
+        _ = description
 
-        exported: list[AssetRipperExportedFile] = []
-        for relative_path, payload in response.items():
-            destination = output_directory.joinpath(*PurePosixPath(relative_path).parts)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(payload)
-            exported.append(AssetRipperExportedFile(relative_path, len(payload)))
-        targets = tuple(item.node_id for item in inputs if item.target)
-        exported_targets = (
-            () if len(self.calls) in self._coverage_mismatch_calls else targets
-        )
-        return AssetRipperExportResult(
-            tuple(exported),
-            targets,
-            targets,
-            exported_targets,
-        )
+    def set_status(self, status: str) -> None:
+        _ = status
+
+    def set_secondary_status(self, status: str) -> None:
+        _ = status
+
+    def set_failed_status(self, status: str) -> None:
+        self.failures.append(status)
+
+    def set_completed(self, completed: int) -> None:
+        _ = completed
+
+    def stop(self) -> None:
+        return None
 
 
-class FakeDependencyScanner:
-    def __init__(
-        self,
-        dependencies: dict[str, tuple[str, ...]] | None = None,
-        *,
-        errors: dict[str, str] | None = None,
-        corrupt_hash: bool = False,
-    ) -> None:
-        self.dependencies = dependencies or {}
-        self.errors = errors or {}
-        self.corrupt_hash = corrupt_hash
-        self.calls: list[tuple[str, ...]] = []
+class RecordingProgressFactory:
+    def __init__(self) -> None:
+        self.reporter = RecordingProgress()
+
+    def create(self, *_args: object, **_kwargs: object) -> RecordingProgress:
+        return self.reporter
+
+
+class RecordingScanner:
+    def __init__(self) -> None:
+        self.calls = 0
 
     def scan(
         self,
@@ -178,1010 +136,535 @@ class FakeDependencyScanner:
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
     ) -> tuple[BundleArchiveScan, ...]:
         _ = context
-        self.calls.append(tuple(item.archive_id for item in archives))
-        scans = []
-        for current, archive in enumerate(archives, start=1):
+        self.calls += 1
+        result: list[BundleArchiveScan] = []
+        for index, archive in enumerate(archives, start=1):
+            with ZipFile(archive.path) as source:
+                info = next(item for item in source.infolist() if not item.is_dir())
+                payload = source.read(info)
+            result.append(
+                BundleArchiveScan(
+                    archive.archive_id,
+                    (
+                        BundleEntryScan(
+                            info.filename,
+                            hashlib.sha256(payload).hexdigest(),
+                            len(payload),
+                            serialized_files=(
+                                SerializedFileScan(f"cab-{archive.archive_id}"),
+                            ),
+                            crc32=info.CRC,
+                        ),
+                    ),
+                )
+            )
             if event_callback is not None:
                 event_callback(
                     AssetRipperScanProgressEvent(
-                        current,
+                        index,
                         len(archives),
                         archive.archive_id,
                     )
                 )
-            entries: list[BundleEntryScan] = []
-            with zipfile.ZipFile(archive.path) as bundle_archive:
-                for entry in bundle_archive.infolist():
-                    if entry.is_dir():
-                        continue
-                    payload = bundle_archive.read(entry)
-                    node_id = f"{archive.archive_id}::{entry.filename}"
-                    entries.append(
-                        BundleEntryScan(
-                            entry_path=entry.filename,
-                            sha256=(
-                                "f" * 64
-                                if self.corrupt_hash
-                                else hashlib.sha256(payload).hexdigest()
-                            ),
-                            size=len(payload),
-                            serialized_files=(
-                                SerializedFileScan(
-                                    PurePosixPath(entry.filename).name,
-                                    self.dependencies.get(
-                                        node_id,
-                                        self.dependencies.get(archive.archive_id, ()),
-                                    ),
-                                ),
-                            ),
-                        )
-                    )
-            scans.append(
-                BundleArchiveScan(
-                    archive_id=archive.archive_id,
-                    sha256=hashlib.sha256(archive.path.read_bytes()).hexdigest(),
-                    entries=tuple(entries),
-                    error=self.errors.get(archive.archive_id),
-                )
-            )
-        return tuple(scans)
+        return tuple(result)
 
 
-class _ParallelResourceProbe:
-    def snapshot(self) -> SystemResourceSnapshot:
-        return SystemResourceSnapshot(8, 32 * 1024**3)
+class RecordingExporter:
+    def __init__(self, *, readable_name: str | None = None) -> None:
+        self.readable_name = readable_name
+        self.materialize_calls = 0
+        self.export_calls = 0
+        self.prepare_calls = 0
+        self.export_concurrency: list[int] = []
+        self.export_groups: list[tuple[tuple[str, ...], ...]] = []
+        self.oom_calls: set[int] = set()
+        self.cancel_calls: set[int] = set()
+        self.fatal_calls: set[int] = set()
+        self.failed_targets: set[str] = set()
+        self.unsafe_path = False
 
+    def prepare(self, context: ExecutionContext) -> None:
+        _ = context
+        self.prepare_calls += 1
 
-class _SerialResourceProbe:
-    def snapshot(self) -> SystemResourceSnapshot:
-        return SystemResourceSnapshot(2, 32 * 1024**3)
-
-
-class _ConstrainedResourceProbe:
-    def snapshot(self) -> SystemResourceSnapshot:
-        return SystemResourceSnapshot(8, 10_171_887_616)
-
-
-class _ConcurrentExporter:
-    def __init__(self) -> None:
-        self._barrier = threading.Barrier(2, timeout=5)
-        self._lock = threading.Lock()
-        self.active = 0
-        self.max_active = 0
-
-    def export(
+    def materialize_entries(
         self,
         context: ExecutionContext,
-        inputs: list[AssetRipperExportInput],
+        entries: list[BundleEntryInput],
+        destinations: dict[str, Path],
+        *,
+        concurrency: int,
+        event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
+    ) -> dict[str, int]:
+        _ = (context, concurrency)
+        self.materialize_calls += 1
+        result: dict[str, int] = {}
+        for index, entry in enumerate(entries, start=1):
+            destination = destinations[entry.node_id]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with ZipFile(entry.archive.path) as archive:
+                payload = archive.read(entry.entry_path)
+            destination.write_bytes(payload)
+            stat = destination.stat()
+            write_json_atomic(
+                destination.with_suffix(f"{destination.suffix}.json"),
+                {
+                    "schema_version": 2,
+                    "identity": bundle_entry_cache_identity(entry),
+                    "mtime_ns": stat.st_mtime_ns,
+                },
+            )
+            result[entry.node_id] = len(payload)
+            if event_callback is not None:
+                event_callback(
+                    AssetRipperEntryCacheProgressEvent(
+                        index,
+                        len(entries),
+                        entry.node_id,
+                    )
+                )
+        return result
+
+    def export_grouped(
+        self,
+        context: ExecutionContext,
+        groups: list[AssetRipperExportGroup],
         output_directory: Path,
+        *,
+        concurrency: int,
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
     ) -> AssetRipperExportResult:
-        _ = (context, event_callback)
-        with self._lock:
-            self.active += 1
-            self.max_active = max(self.max_active, self.active)
-        self._barrier.wait()
-        target_ids = tuple(item.node_id for item in inputs if item.target)
-        output_directory.mkdir(parents=True, exist_ok=True)
-        output_name = hashlib.sha256("\n".join(target_ids).encode()).hexdigest()
-        output = output_directory / f"{output_name}.bin"
-        output.write_bytes(b"output")
-        with self._lock:
-            self.active -= 1
+        _ = context
+        self.export_calls += 1
+        self.export_concurrency.append(concurrency)
+        self.export_groups.append(
+            tuple(tuple(item.node_id for item in group.inputs) for group in groups)
+        )
+        if self.export_calls in self.cancel_calls:
+            raise OperationCancelledError("cancelled")
+        if self.export_calls in self.oom_calls:
+            raise AssetRipperOutOfMemoryError("out of memory", kind="out_of_memory")
+        if self.export_calls in self.fatal_calls:
+            raise AssetRipperToolError("protocol failure")
+        targets = tuple(
+            item.node_id for group in groups for item in group.inputs if item.target
+        )
+        exported: list[str] = []
+        assets: list[AssetRipperExportedAsset] = []
+        failures: list[AssetRipperCollectionFailure] = []
+        for index, target in enumerate(targets, start=1):
+            collection = f"collection-{target}".replace("\\", "/")
+            normalized = collection.strip().lower()
+            class_id = 49
+            path_id = int(hashlib.sha256(target.encode()).hexdigest()[:8], 16)
+            identity = f"{normalized}\n{class_id}\n{path_id}"
+            stable_id = hashlib.sha256(identity.encode()).hexdigest()[:20]
+            if target in self.failed_targets:
+                failures.append(
+                    AssetRipperCollectionFailure(
+                        stable_id,
+                        (target,),
+                        "simulated collection failure",
+                    )
+                )
+                continue
+            readable = self.readable_name or Path(target.split("::", 1)[1]).stem
+            relative = (
+                "../outside.bin" if self.unsafe_path else f"Assets/_MX/{readable}.bin"
+            )
+            output = output_directory.joinpath(*Path(relative).parts)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            payload = target.encode()
+            output.write_bytes(payload)
+            stat = output.stat()
+            file = AssetRipperExportedFile(
+                relative.replace("\\", "/"),
+                len(payload),
+                stat.st_mtime_ns,
+                hashlib.sha256(payload).hexdigest(),
+            )
+            assets.append(
+                AssetRipperExportedAsset(
+                    stable_id,
+                    "TextAsset",
+                    readable,
+                    collection,
+                    normalized,
+                    path_id,
+                    class_id,
+                    (target,),
+                    (file,),
+                )
+            )
+            exported.append(target)
+            if event_callback is not None:
+                event_callback(
+                    AssetRipperProcessorProgressEvent(1, 6, "SceneDefinitionProcessor")
+                )
+                event_callback(
+                    AssetRipperProgressEvent(
+                        "exporting", index, len(targets), "exporting_assets"
+                    )
+                )
         return AssetRipperExportResult(
-            (AssetRipperExportedFile(output.name, 6),),
-            target_ids,
-            target_ids,
-            target_ids,
+            (),
+            targets,
+            targets,
+            tuple(exported),
+            tuple(assets),
+            tuple(failures),
         )
 
 
-def _bundle(
-    tmp_path: Path,
-    name: str,
-    size: int = 4,
-    *,
-    entries: dict[str, bytes] | None = None,
-) -> Path:
+def _context(tmp_path: Path, version: str = "1") -> ExecutionContext:
+    return build_execution_context(tmp_path, region="jp", version=version)
+
+
+def _bundle(tmp_path: Path, name: str, payload: bytes | None = None) -> Path:
     path = tmp_path / name
-    payloads = entries or {f"{path.stem}.bundle": path.stem[:1].encode("ascii") * size}
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
-        for entry_path, payload in payloads.items():
-            archive.writestr(entry_path, payload)
+    with ZipFile(path, "w") as archive:
+        archive.writestr(
+            f"{Path(name).stem}.bundle",
+            payload if payload is not None else name.encode(),
+        )
     return path
 
 
-def test_workflow_sorts_inputs_and_calls_exporter_once(tmp_path: Path) -> None:
-    exporter = FakeExporter()
-    scanner = FakeDependencyScanner()
-    workflow = AssetRipperBundleWorkflow(exporter, scanner, RecordingLogger())
-
-    workflow.run(
-        _context(tmp_path),
-        [_bundle(tmp_path, "c.zip"), _bundle(tmp_path, "a.zip")],
-    )
-
-    assert exporter.calls == [(b"a" * 4, b"c" * 4)]
-    assert scanner.calls == [("a.zip", "c.zip")]
-    assert (
-        _context(tmp_path).workspace.extracted_bundles / "content" / "asset.bin"
-    ).is_file()
-
-
-def test_workflow_runs_memory_safe_batches_concurrently(tmp_path: Path) -> None:
-    exporter = _ConcurrentExporter()
-    workflow = AssetRipperBundleWorkflow(
+def _workflow(
+    exporter: RecordingExporter,
+    scanner: RecordingScanner,
+    *,
+    progress: RecordingProgressFactory | None = None,
+) -> AssetRipperBundleWorkflow:
+    return AssetRipperBundleWorkflow(
         exporter,
-        FakeDependencyScanner(),
+        scanner,
         RecordingLogger(),
-        max_batch_bytes=4,
-        batch_scheduler=BundleBatchScheduler(_ParallelResourceProbe()),
+        progress_factory=progress,
     )
 
-    report = workflow.run(
-        _context(tmp_path),
-        [_bundle(tmp_path, "a.zip"), _bundle(tmp_path, "b.zip")],
-    )
 
-    assert exporter.max_active == 2
-    assert report.succeeded_batches == 2
-
-
-def test_workflow_does_not_start_queued_batches_after_fatal_tool_error(
-    tmp_path: Path,
-) -> None:
-    exporter = ScriptedExporter(
-        [
-            AssetRipperToolError("protocol unavailable"),
-            {"Assets/b.bin": b"b"},
-            {"Assets/c.bin": b"c"},
-        ]
-    )
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        RecordingLogger(),
-        max_batch_bytes=4,
-        batch_scheduler=BundleBatchScheduler(_SerialResourceProbe()),
-    )
-
-    with pytest.raises(ExtractionFailureError):
-        workflow.run(
-            _context(tmp_path),
-            [
-                _bundle(tmp_path, "a.zip"),
-                _bundle(tmp_path, "b.zip"),
-                _bundle(tmp_path, "c.zip"),
-            ],
+def _manifest(context: ExecutionContext) -> dict[str, object]:
+    return json.loads(
+        (context.workspace.extracted_bundles / "manifest.json").read_text(
+            encoding="utf8"
         )
+    )
 
-    assert len(exporter.calls) == 1
 
-
-def test_workflow_continues_serially_when_parallel_memory_reserve_is_unavailable(
+def test_full_export_uses_one_process_and_readable_assets_layout(
     tmp_path: Path,
 ) -> None:
-    exporter = ScriptedExporter(
-        [
-            {"Assets/a.bin": b"a"},
-            {"Assets/b.bin": b"b"},
-            {"Assets/c.bin": b"c"},
-        ]
-    )
-    logger = RecordingLogger()
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        logger,
-        max_batch_bytes=4,
-        batch_scheduler=BundleBatchScheduler(
-            _ConstrainedResourceProbe(),
-            memory_reserve_bytes=10 * 1024**3,
-        ),
+    exporter = RecordingExporter()
+    scanner = RecordingScanner()
+    progress = RecordingProgressFactory()
+    context = _context(tmp_path)
+
+    report = _workflow(exporter, scanner, progress=progress).run(
+        context,
+        [_bundle(tmp_path, "b.zip"), _bundle(tmp_path, "a.zip")],
+        concurrency=7,
     )
 
-    report = workflow.run(
-        _context(tmp_path),
-        [
-            _bundle(tmp_path, "a.zip"),
-            _bundle(tmp_path, "b.zip"),
-            _bundle(tmp_path, "c.zip"),
-        ],
-    )
-
-    assert report.succeeded_batches == 3
-    assert len(exporter.calls) == 3
-    assert logger.by_level("warn")
-
-
-def test_workflow_aggregates_serialize_reference_errors(tmp_path: Path) -> None:
-    exporter = FakeExporter(serialize_reference_count=122)
-    logger = RecordingLogger()
-    workflow = AssetRipperBundleWorkflow(exporter, FakeDependencyScanner(), logger)
-
-    workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
-
-    assert logger.by_level("warn")
-
-
-def test_workflow_flushes_serialize_reference_warning_on_failure(
-    tmp_path: Path,
-) -> None:
-    exporter = FakeExporter(fail=True, serialize_reference_count=2)
-    logger = RecordingLogger()
-    workflow = AssetRipperBundleWorkflow(exporter, FakeDependencyScanner(), logger)
-
-    with pytest.raises(ExtractionFailureError):
-        workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
-
-    assert logger.by_level("warn")
-
-
-def test_workflow_surfaces_the_underlying_assetripper_failure(tmp_path: Path) -> None:
-    workflow = AssetRipperBundleWorkflow(
-        FakeExporter(fail=True),
-        FakeDependencyScanner(),
-        RecordingLogger(),
-    )
-
-    with pytest.raises(ExtractionFailureError):
-        workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
-
-
-def test_workflow_failure_does_not_publish_partial_output(tmp_path: Path) -> None:
-    exporter = FakeExporter(fail=True)
-    logger = RecordingLogger()
-    workflow = AssetRipperBundleWorkflow(exporter, FakeDependencyScanner(), logger)
-    output_root = _context(tmp_path).workspace.extracted_bundles
-    output_root.mkdir(parents=True)
-    (output_root / "old-batch").mkdir()
-    (output_root / "old-batch" / "asset.bin").write_bytes(b"old")
-
-    with pytest.raises(ExtractionFailureError):
-        workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
-
-    assert (output_root / "old-batch" / "asset.bin").read_bytes() == b"old"
-    assert not (output_root / "content").exists()
-    assert exporter.calls == [(b"a" * 4,)]
-
-
-def test_workflow_replaces_old_batch_layout_with_content_manifest(
-    tmp_path: Path,
-) -> None:
-    exporter = FakeExporter()
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        RecordingLogger(),
-    )
-    output_root = _context(tmp_path).workspace.extracted_bundles
-    old_batch = output_root / "batch-old"
-    old_batch.mkdir(parents=True)
-    (old_batch / "asset.bin").write_bytes(b"old")
-
-    workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
-
-    assert not old_batch.exists()
-    manifest = json.loads(
-        (output_root / "content" / "manifest.json").read_text(encoding="utf8")
-    )
-    assert manifest["schema_version"] == 7
-    assert manifest["layout"] == "content"
-    assert [item["name"] for item in manifest["inputs"]] == ["a.zip"]
-    assert manifest["entries"] == [
-        {
-            "aliases": [],
-            "entry_path": "a.bundle",
-            "node_id": "a.zip::a.bundle",
-            "sha256": hashlib.sha256(b"a" * 4).hexdigest(),
-            "size": 4,
-            "source_archive": "a.zip",
-        }
-    ]
-    assert manifest["assetripper"]["commit"] == ASSETRIPPER_COMMIT
-    assert manifest["assetripper"]["overlay_version"] == ASSETRIPPER_OVERLAY_VERSION
-    assert manifest["assetripper"]["overlay_hash"] == (
-        AssetRipperSourceResolver.overlay_hash()
-    )
-
-
-def test_workflow_skips_complete_output_with_same_fingerprint(
-    tmp_path: Path,
-) -> None:
-    exporter = FakeExporter()
-    scanner = FakeDependencyScanner()
-    workflow = AssetRipperBundleWorkflow(exporter, scanner, RecordingLogger())
-    bundle = _bundle(tmp_path, "a.zip")
-
-    first = workflow.run(_context(tmp_path), [bundle])
-    second = workflow.run(_context(tmp_path), [bundle])
-
-    assert first.complete is True
-    assert second.complete is True
-    assert len(exporter.calls) == 1
-    assert len(scanner.calls) == 1
-
-
-@pytest.mark.parametrize("damage", ["missing", "wrong_size"])
-def test_workflow_rebuilds_complete_output_when_inventory_is_damaged(
-    tmp_path: Path,
-    damage: str,
-) -> None:
-    exporter = FakeExporter()
-    scanner = FakeDependencyScanner()
-    workflow = AssetRipperBundleWorkflow(exporter, scanner, RecordingLogger())
-    bundle = _bundle(tmp_path, "a.zip")
-
-    workflow.run(_context(tmp_path), [bundle])
-    output = _context(tmp_path).workspace.extracted_bundles / "content" / "asset.bin"
-    if damage == "missing":
-        output.unlink()
-    else:
-        output.write_bytes(b"damaged")
-
-    report = workflow.run(_context(tmp_path), [bundle])
-
-    assert report.complete is True
-    assert output.read_bytes() == b"asset"
-    assert len(exporter.calls) == 2
-    assert len(scanner.calls) == 2
-
-
-def test_workflow_resumes_only_failed_batches_for_matching_partial_output(
-    tmp_path: Path,
-) -> None:
-    bundles = [_bundle(tmp_path, "a.zip"), _bundle(tmp_path, "b.zip")]
-    first_exporter = ScriptedExporter(
-        [
-            {"Assets/a.bin": b"a"},
-            AssetRipperExportError("temporary failure"),
-        ]
-    )
-    first = AssetRipperBundleWorkflow(
-        first_exporter,
-        FakeDependencyScanner(),
-        RecordingLogger(),
-        max_batch_bytes=4,
-    ).run(_context(tmp_path), bundles)
-    resumed_exporter = ScriptedExporter([{"Assets/b.bin": b"b"}])
-
-    resumed = AssetRipperBundleWorkflow(
-        resumed_exporter,
-        FakeDependencyScanner(),
-        RecordingLogger(),
-        max_batch_bytes=4,
-    ).run(_context(tmp_path), bundles)
-
-    content_root = _context(tmp_path).workspace.extracted_bundles / "content"
-    assert first.complete is False
-    assert resumed.complete is True
-    assert resumed_exporter.calls == [(b"b" * 4,)]
-    assert (content_root / "Assets" / "a.bin").read_bytes() == b"a"
-    assert (content_root / "Assets" / "b.bin").read_bytes() == b"b"
-    manifest = json.loads((content_root / "manifest.json").read_text(encoding="utf8"))
-    assert [batch["status"] for batch in manifest["batches"]] == [
-        "succeeded",
-        "succeeded",
-    ]
-
-
-def test_workflow_partial_resume_preserves_existing_conflict_variants(
-    tmp_path: Path,
-) -> None:
-    bundles = [
-        _bundle(tmp_path, "a.zip"),
-        _bundle(tmp_path, "b.zip"),
-        _bundle(tmp_path, "c.zip"),
-    ]
-    first = AssetRipperBundleWorkflow(
-        ScriptedExporter(
-            [
-                {"Assets/shared.bin": b"canonical"},
-                {"Assets/shared.bin": b"variant"},
-                AssetRipperExportError("temporary failure"),
-            ]
-        ),
-        FakeDependencyScanner(),
-        RecordingLogger(),
-        max_batch_bytes=4,
-    ).run(_context(tmp_path), bundles)
-
-    resumed = AssetRipperBundleWorkflow(
-        ScriptedExporter([{"Assets/c.bin": b"c"}]),
-        FakeDependencyScanner(),
-        RecordingLogger(),
-        max_batch_bytes=4,
-    ).run(_context(tmp_path), bundles)
-
-    content_root = _context(tmp_path).workspace.extracted_bundles / "content"
-    conflict_hash = hashlib.sha256(b"variant").hexdigest()
-    conflict = content_root / "_baad_conflicts" / conflict_hash / "Assets/shared.bin"
-    manifest = json.loads((content_root / "manifest.json").read_text(encoding="utf8"))
-    assert first.complete is False
-    assert resumed.complete is False
-    assert (content_root / "Assets" / "shared.bin").read_bytes() == b"canonical"
-    assert conflict.read_bytes() == b"variant"
-    assert (content_root / "Assets" / "c.bin").read_bytes() == b"c"
-    assert manifest["summary"]["conflict_paths"] == 1
-    assert manifest["summary"]["conflict_variants"] == 1
-
-
-def test_workflow_rebuilds_partial_output_with_damaged_conflict_variant(
-    tmp_path: Path,
-) -> None:
-    bundles = [
-        _bundle(tmp_path, "a.zip"),
-        _bundle(tmp_path, "b.zip"),
-        _bundle(tmp_path, "c.zip"),
-    ]
-    AssetRipperBundleWorkflow(
-        ScriptedExporter(
-            [
-                {"Assets/shared.bin": b"canonical"},
-                {"Assets/shared.bin": b"variant"},
-                AssetRipperExportError("temporary failure"),
-            ]
-        ),
-        FakeDependencyScanner(),
-        RecordingLogger(),
-        max_batch_bytes=4,
-    ).run(_context(tmp_path), bundles)
-    conflict_hash = hashlib.sha256(b"variant").hexdigest()
-    conflict = (
-        _context(tmp_path).workspace.extracted_bundles
-        / "content"
-        / "_baad_conflicts"
-        / conflict_hash
-        / "Assets/shared.bin"
-    )
-    conflict.write_bytes(b"changed")
-    exporter = ScriptedExporter(
-        [
-            {"Assets/shared.bin": b"canonical"},
-            {"Assets/shared.bin": b"variant"},
-            {"Assets/c.bin": b"c"},
-        ]
-    )
-
-    report = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        RecordingLogger(),
-        max_batch_bytes=4,
-    ).run(_context(tmp_path), bundles)
-
-    assert report.succeeded_batches == 3
-    assert len(exporter.calls) == 3
-    assert conflict.read_bytes() == b"variant"
-
-
-def test_workflow_does_not_hash_outputs_without_path_conflicts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workflow = AssetRipperBundleWorkflow(
-        ScriptedExporter([{"Assets/a.bin": b"a"}]),
-        FakeDependencyScanner(),
-        RecordingLogger(),
-    )
-
-    def unexpected_hash(_path: Path, **_kwargs: object) -> str:
-        raise AssertionError("uncontested output was hashed")
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.assetripper.bundles.calculate_sha256",
-        unexpected_hash,
-    )
-
-    report = workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
-
-    assert report.complete is True
-
-
-def test_workflow_batches_only_between_dependency_components(tmp_path: Path) -> None:
-    exporter = FakeExporter()
-    scanner = FakeDependencyScanner({"a.zip": ("b.bundle",)})
-    logger = RecordingLogger()
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        scanner,
-        logger,
-        max_batch_bytes=7,
-    )
-
-    workflow.run(
-        _context(tmp_path),
-        [
-            _bundle(tmp_path, "c.zip"),
-            _bundle(tmp_path, "b.zip"),
-            _bundle(tmp_path, "a.zip"),
-        ],
-    )
-
-    assert exporter.calls == [(b"a" * 4, b"b" * 4), (b"c" * 4,)]
-    assert logger.by_level("warn")
-    manifest = json.loads(
-        (
-            _context(tmp_path).workspace.extracted_bundles / "content" / "manifest.json"
-        ).read_text(encoding="utf8")
-    )
-    assert [item["entries"] for item in manifest["batches"]] == [
-        ["a.zip::a.bundle", "b.zip::b.bundle"],
-        ["c.zip::c.bundle"],
-    ]
-
-
-def test_workflow_rejects_incomplete_dependency_scan_before_export(
-    tmp_path: Path,
-) -> None:
-    exporter = FakeExporter()
-    scanner = FakeDependencyScanner({"a.zip": ("missing-cab",)})
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        scanner,
-        RecordingLogger(),
-    )
-
-    with pytest.raises(ExtractionFailureError) as captured:
-        workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
-
-    assert "missing-cab" in str(captured.value.failures[0].error)
-    assert exporter.calls == []
-    assert not (_context(tmp_path).workspace.extracted_bundles).exists()
-
-
-def test_workflow_extracts_only_entries_selected_for_each_batch(
-    tmp_path: Path,
-) -> None:
-    exporter = FakeExporter()
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        RecordingLogger(),
-        max_batch_bytes=4,
-    )
-
-    workflow.run(
-        _context(tmp_path),
-        [
-            _bundle(
-                tmp_path,
-                "a.zip",
-                entries={"first.bundle": b"1111", "second.bundle": b"2222"},
-            )
-        ],
-    )
-
-    assert exporter.calls == [(b"1111",), (b"2222",)]
-
-
-def test_workflow_reloads_shared_dependency_from_entry_cache(
-    tmp_path: Path,
-) -> None:
-    exporter = FakeExporter()
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(
-            {
-                "a.zip": ("shared.bundle",),
-                "b.zip": ("shared.bundle",),
-            }
-        ),
-        RecordingLogger(),
-        max_batch_bytes=8,
-    )
-
-    workflow.run(
-        _context(tmp_path),
-        [
-            _bundle(tmp_path, "a.zip"),
-            _bundle(tmp_path, "b.zip"),
-            _bundle(tmp_path, "shared.zip"),
-        ],
-    )
-
-    assert exporter.calls == [
-        (b"a" * 4, b"s" * 4),
-        (b"b" * 4, b"s" * 4),
-    ]
-    manifest = json.loads(
-        (
-            _context(tmp_path).workspace.extracted_bundles / "content" / "manifest.json"
-        ).read_text(encoding="utf8")
-    )
-    assert [item["targets"] for item in manifest["batches"]] == [
-        ["a.zip::a.bundle", "shared.zip::shared.bundle"],
-        ["b.zip::b.bundle"],
-    ]
-    assert manifest["entry_cache"] == {
-        "bytes_written": 12,
-        "hits": 1,
-        "misses": 3,
-    }
-    cached_payloads = [
-        path
-        for path in (
-            _context(tmp_path).workspace.cache_state / "assetripper" / "entries"
-        ).rglob("*")
-        if path.is_file() and path.suffix != ".json"
-    ]
-    assert len(cached_payloads) == 3
-
-
-def test_workflow_rejects_archive_entry_that_no_longer_matches_scan(
-    tmp_path: Path,
-) -> None:
-    exporter = FakeExporter()
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(corrupt_hash=True),
-        RecordingLogger(),
-    )
-
-    with pytest.raises(ExtractionFailureError) as captured:
-        workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
-
-    assert "changed after dependency scanning" in str(captured.value.failures[0].error)
-    assert exporter.calls == []
-
-
-def test_workflow_preserves_conflicting_variants_and_tracks_all_sources(
-    tmp_path: Path,
-) -> None:
-    first = b"first"
-    second = b"second"
-    exporter = ScriptedExporter(
-        [
-            {"Assets/shared.bin": first},
-            {"Assets/shared.bin": second},
-            {"Assets/shared.bin": second},
-        ]
-    )
-    logger = RecordingLogger()
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        logger,
-        max_batch_bytes=4,
-    )
-
-    report = workflow.run(
-        _context(tmp_path),
-        [
-            _bundle(tmp_path, "a.zip"),
-            _bundle(tmp_path, "b.zip"),
-            _bundle(tmp_path, "c.zip"),
-        ],
-    )
-
-    content_root = _context(tmp_path).workspace.extracted_bundles / "content"
-    second_sha256 = hashlib.sha256(second).hexdigest()
-    assert (content_root / "Assets" / "shared.bin").read_bytes() == first
-    assert (
-        content_root / "_baad_conflicts" / second_sha256 / "Assets" / "shared.bin"
-    ).read_bytes() == second
-    assert report.complete is False
-    assert report.conflict_paths == 1
-    assert report.conflict_variants == 1
-
-    manifest = json.loads((content_root / "manifest.json").read_text(encoding="utf8"))
-    assert manifest["schema_version"] == 7
-    assert manifest["complete"] is False
-    assert manifest["summary"]["conflict_paths"] == 1
-    assert manifest["summary"]["conflict_variants"] == 1
-    assert manifest["conflicts"] == [
-        {
-            "canonical": {
-                "sha256": hashlib.sha256(first).hexdigest(),
-                "size": len(first),
-                "source_batches": ["batch-1"],
-                "stored_path": "Assets/shared.bin",
-            },
-            "original_path": "Assets/shared.bin",
-            "variants": [
-                {
-                    "sha256": second_sha256,
-                    "size": len(second),
-                    "source_batches": ["batch-2", "batch-3"],
-                    "stored_path": (
-                        f"_baad_conflicts/{second_sha256}/Assets/shared.bin"
-                    ),
-                }
-            ],
-        }
-    ]
-
-
-def test_workflow_aggregates_multiple_conflicts_per_batch(tmp_path: Path) -> None:
-    exporter = ScriptedExporter(
-        [
-            {"Assets/a.bin": b"a1", "Assets/b.bin": b"b1"},
-            {"Assets/a.bin": b"a2", "Assets/b.bin": b"b2"},
-        ]
-    )
-    logger = RecordingLogger()
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        logger,
-        max_batch_bytes=4,
-    )
-
-    report = workflow.run(
-        _context(tmp_path),
-        [_bundle(tmp_path, "a.zip"), _bundle(tmp_path, "b.zip")],
-    )
-
-    assert report.complete is False
-    assert report.conflict_paths == 2
-    assert report.conflict_variants == 2
-
-
-def test_workflow_continues_after_batch_failure_and_publishes_partial_output(
-    tmp_path: Path,
-) -> None:
-    exporter = ScriptedExporter(
-        [
-            AssetRipperExportError("broken first batch"),
-            {"Assets/succeeded.bin": b"ok"},
-        ]
-    )
-    logger = RecordingLogger()
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        logger,
-        max_batch_bytes=4,
-    )
-
-    report = workflow.run(
-        _context(tmp_path),
-        [_bundle(tmp_path, "a.zip"), _bundle(tmp_path, "b.zip")],
-    )
-
-    content_root = _context(tmp_path).workspace.extracted_bundles / "content"
-    assert (content_root / "Assets" / "succeeded.bin").read_bytes() == b"ok"
-    assert report.complete is False
+    manifest = _manifest(context)
+    assert exporter.export_calls == 1
+    assert exporter.export_concurrency == [7]
+    assert exporter.materialize_calls == 1
+    assert report.total_batches == 1
     assert report.succeeded_batches == 1
-    assert report.failed_batches == 1
-    assert any("[BUNDLE_BATCH_FAILED]" in warning for warning in report.warnings)
-    manifest = json.loads((content_root / "manifest.json").read_text(encoding="utf8"))
-    assert [batch["status"] for batch in manifest["batches"]] == [
-        "failed",
-        "succeeded",
-    ]
-    assert manifest["batches"][0]["error"] == {
-        "type": "AssetRipperExportError",
-        "message": "broken first batch",
+    assert manifest["schema_version"] == 10
+    assert manifest["layout"] == "assetripper-readable-v1"
+    assert "runs" not in manifest
+    assert "current_revision" not in json.dumps(manifest)
+    assert (context.workspace.extracted_bundles / "Assets/_MX/a.bin").is_file()
+    assert (context.workspace.extracted_bundles / "Assets/_MX/b.bin").is_file()
+    assert not any(
+        path.name == "assets" for path in context.workspace.extracted_bundles.iterdir()
+    )
+    assert {item["stage"] for item in progress.reporter.updates} >= {
+        "scanning",
+        "cache_fill",
+        "processing",
+        "exporting",
     }
+    assert any(
+        item["stage"] == "processing" and item["unit"] == "processors"
+        for item in progress.reporter.updates
+    )
 
 
-def test_workflow_skips_batch_when_selective_export_coverage_is_incomplete(
+def test_stream_groups_keep_components_whole_at_measured_limit(
     tmp_path: Path,
 ) -> None:
-    exporter = ScriptedExporter(
-        [
-            {"Assets/incomplete.bin": b"incomplete"},
-            {"Assets/succeeded.bin": b"ok"},
-        ],
-        coverage_mismatch_calls={1},
+    archive = BundleArchiveInput.from_path(_bundle(tmp_path, "source.zip"))
+    components = tuple(
+        BundleComponent(
+            f"component-{index:03d}",
+            (
+                BundleEntryInput(
+                    archive,
+                    f"entry-{index:03d}.bundle",
+                    f"{index:064x}",
+                    1,
+                ),
+            ),
+            (),
+            (),
+            (),
+        )
+        for index in range(513)
     )
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        RecordingLogger(),
-        max_batch_bytes=4,
-    )
+    plan = BundleDependencyPlan(components, (), (), ())
 
-    report = workflow.run(
-        _context(tmp_path),
-        [_bundle(tmp_path, "a.zip"), _bundle(tmp_path, "b.zip")],
-    )
+    batches = _workflow(RecordingExporter(), RecordingScanner())._stream_batches(plan)
 
-    content_root = _context(tmp_path).workspace.extracted_bundles / "content"
-    assert not (content_root / "Assets" / "incomplete.bin").exists()
-    assert (content_root / "Assets" / "succeeded.bin").read_bytes() == b"ok"
-    assert report.succeeded_batches == 1
-    assert report.failed_batches == 1
-    assert any("target coverage" in warning for warning in report.warnings)
+    assert [len(batch.target_entries) for batch in batches] == [512, 1]
+    assert {
+        component.component_id
+        for batch in batches
+        for component in batch.target_components
+    } == {component.component_id for component in components}
 
 
-def test_workflow_all_failed_batches_preserve_existing_output(tmp_path: Path) -> None:
-    exporter = ScriptedExporter(
-        [
-            AssetRipperExportError("broken first batch"),
-            AssetRipperExportError("broken second batch"),
-        ]
-    )
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        RecordingLogger(),
-        max_batch_bytes=4,
-    )
-    output_root = _context(tmp_path).workspace.extracted_bundles
-    old_output = output_root / "content" / "old.bin"
+def test_warm_run_validates_output_and_skips_every_tool(tmp_path: Path) -> None:
+    exporter = RecordingExporter()
+    scanner = RecordingScanner()
+    context = _context(tmp_path)
+    archive = _bundle(tmp_path, "a.zip")
+    workflow = _workflow(exporter, scanner)
+
+    workflow.run(context, [archive], concurrency=2)
+    workflow.run(context, [archive], concurrency=8)
+
+    assert scanner.calls == 1
+    assert exporter.materialize_calls == 1
+    assert exporter.prepare_calls == 1
+    assert exporter.export_calls == 1
+
+
+def test_actual_oom_fails_once_and_preserves_old_output(tmp_path: Path) -> None:
+    exporter = RecordingExporter()
+    exporter.oom_calls.add(1)
+    context = _context(tmp_path)
+    old_output = context.workspace.extracted_bundles / "Assets/old.bin"
     old_output.parent.mkdir(parents=True)
     old_output.write_bytes(b"old")
 
-    with pytest.raises(ExtractionFailureError):
-        workflow.run(
-            _context(tmp_path),
+    with pytest.raises(BundleExtractionError):
+        _workflow(exporter, RecordingScanner()).run(
+            context,
             [_bundle(tmp_path, "a.zip"), _bundle(tmp_path, "b.zip")],
+            concurrency=12,
         )
 
+    assert exporter.export_calls == 1
+    assert exporter.export_concurrency == [12]
     assert old_output.read_bytes() == b"old"
-    assert not (output_root / "content" / "manifest.json").exists()
+    assert not (context.workspace.extracted_bundles / "manifest.json").exists()
 
 
-def test_workflow_treats_staging_permission_error_as_fatal(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    exporter = ScriptedExporter([{"Assets/a.bin": b"a"}])
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        RecordingLogger(),
-        max_batch_bytes=4,
+def test_fatal_export_failure_preserves_old_layout(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    output_root = context.workspace.extracted_bundles
+    legacy = output_root / "assets/legacy/file.bin"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"old")
+    exporter = RecordingExporter()
+    exporter.fatal_calls.add(1)
+
+    with pytest.raises(BundleExtractionError):
+        _workflow(exporter, RecordingScanner()).run(
+            context,
+            [_bundle(tmp_path, "a.zip")],
+            concurrency=1,
+        )
+
+    assert legacy.read_bytes() == b"old"
+    assert not any(path.name == "Assets" for path in output_root.iterdir())
+
+
+def test_success_removes_legacy_lowercase_layout(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    legacy = context.workspace.extracted_bundles / "assets/legacy/file.bin"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"old")
+
+    _workflow(RecordingExporter(), RecordingScanner()).run(
+        context,
+        [_bundle(tmp_path, "a.zip")],
+        concurrency=1,
     )
 
-    def deny_staging(*_args: object, **_kwargs: object) -> object:
-        raise PermissionError("staging denied")
+    assert not legacy.exists()
+    assert (context.workspace.extracted_bundles / "Assets/_MX/a.bin").is_file()
+
+
+def test_filtered_merge_preserves_existing_and_allocates_native_suffix(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    first = RecordingExporter(readable_name="shared")
+    _workflow(first, RecordingScanner()).run(
+        context,
+        [_bundle(tmp_path, "a.zip")],
+        concurrency=1,
+    )
+    second = RecordingExporter(readable_name="shared")
+
+    _workflow(second, RecordingScanner()).run(
+        context,
+        [_bundle(tmp_path, "b.zip")],
+        concurrency=3,
+        filtered=True,
+    )
+
+    assets_root = context.workspace.extracted_bundles / "Assets/_MX"
+    assert (assets_root / "shared.bin").is_file()
+    assert (assets_root / "shared_0.bin").is_file()
+    assert len(_manifest(context)["assets"]) == 2
+
+
+def test_collection_failure_publishes_partial_result(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    a = _bundle(tmp_path, "a.zip")
+    b = _bundle(tmp_path, "b.zip")
+    exporter = RecordingExporter()
+    exporter.failed_targets.add("a.zip::a.bundle")
+
+    report = _workflow(exporter, RecordingScanner()).run(
+        context,
+        [a, b],
+        concurrency=2,
+    )
+
+    manifest = _manifest(context)
+    assert manifest["status"] == "partial"
+    assert len(manifest["failures"]) == 1
+    assert len(manifest["assets"]) == 1
+    assert report.warnings
+    assert not (context.workspace.extracted_bundles / "Assets/_MX/a.bin").exists()
+    assert (context.workspace.extracted_bundles / "Assets/_MX/b.bin").is_file()
+
+
+def test_modified_output_invalidates_warm_run_and_is_replaced(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    archive = _bundle(tmp_path, "a.zip")
+    exporter = RecordingExporter()
+    workflow = _workflow(exporter, RecordingScanner())
+    workflow.run(context, [archive], concurrency=1)
+    output = context.workspace.extracted_bundles / "Assets/_MX/a.bin"
+    output.write_bytes(b"tampered")
+
+    workflow.run(context, [archive], concurrency=1)
+
+    assert exporter.export_calls == 2
+    assert output.read_bytes() == b"a.zip::a.bundle"
+
+
+def test_manifest_commit_failure_rolls_back_directory_swap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    archive = _bundle(tmp_path, "a.zip", b"one")
+    workflow = _workflow(RecordingExporter(), RecordingScanner())
+    workflow.run(context, [archive], concurrency=1)
+    output = context.workspace.extracted_bundles / "Assets/_MX/a.bin"
+    old_output = output.read_bytes()
+    old_manifest = (context.workspace.extracted_bundles / "manifest.json").read_bytes()
+    _bundle(tmp_path, "a.zip", b"two")
+
+    from ba_downloader.infrastructure.extraction.assetripper import bundles
+
+    real_write = bundles.write_json_atomic
+
+    def fail_manifest(path: Path, payload: object, **kwargs: object) -> None:
+        if path.name == "manifest.json":
+            raise OSError("simulated manifest failure")
+        real_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(bundles, "write_json_atomic", fail_manifest)
+    with pytest.raises(BundleExtractionError):
+        workflow.run(context, [archive], concurrency=1)
+
+    assert output.read_bytes() == old_output
+    assert (
+        context.workspace.extracted_bundles / "manifest.json"
+    ).read_bytes() == old_manifest
+
+
+def test_cancelled_export_cleans_staging_and_preserves_output(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    output = context.workspace.extracted_bundles / "Assets/old.bin"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"old")
+    exporter = RecordingExporter()
+    exporter.cancel_calls.add(1)
+
+    with pytest.raises(OperationCancelledError):
+        _workflow(exporter, RecordingScanner()).run(
+            context,
+            [_bundle(tmp_path, "a.zip")],
+            concurrency=1,
+        )
+
+    assert output.read_bytes() == b"old"
+    assert not list(context.workspace.extracted.parent.glob(".bundles-staging-*"))
+
+
+def test_unsafe_export_path_is_rejected_before_publish(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    exporter = RecordingExporter()
+    exporter.unsafe_path = True
+
+    with pytest.raises(BundleExtractionError):
+        _workflow(exporter, RecordingScanner()).run(
+            context,
+            [_bundle(tmp_path, "a.zip")],
+            concurrency=1,
+        )
+
+    assert not (context.workspace.extracted_bundles / "manifest.json").exists()
+
+
+def test_cold_publish_uses_dotnet_hashes_without_python_rehash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from ba_downloader.infrastructure.extraction.assetripper import bundles
 
     monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.assetripper.entry_store."
-        "BundleEntryStore.resolve_many",
-        deny_staging,
+        bundles,
+        "calculate_sha256",
+        lambda _path: (_ for _ in ()).throw(AssertionError("unexpected hash")),
     )
 
-    with pytest.raises(PermissionError):
-        workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
-
-    assert exporter.calls == []
-    assert not (_context(tmp_path).workspace.extracted_bundles).exists()
-
-
-def test_workflow_treats_batch_cleanup_error_as_fatal(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workflow = AssetRipperBundleWorkflow(
-        ScriptedExporter([{"Assets/a.bin": b"a"}]),
-        FakeDependencyScanner(),
-        RecordingLogger(),
-    )
-    real_rmtree = shutil.rmtree
-
-    def fail_batch_cleanup(
-        path: str | Path,
-        ignore_errors: bool = False,
-        **kwargs: object,
-    ) -> None:
-        if Path(path).name == "batch-1":
-            if ignore_errors:
-                return
-            raise PermissionError("batch cleanup denied")
-        real_rmtree(path, ignore_errors=ignore_errors, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.extraction.assetripper.bundles.shutil.rmtree",
-        fail_batch_cleanup,
-    )
-
-    with pytest.raises(PermissionError):
-        workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
-
-    assert not (_context(tmp_path).workspace.extracted_bundles).exists()
-
-
-def test_workflow_skips_invalid_component_and_transitive_dependents(
-    tmp_path: Path,
-) -> None:
-    exporter = ScriptedExporter([{"Assets/c.bin": b"c"}])
-    logger = RecordingLogger()
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(
-            {
-                "a.zip": ("missing-cab",),
-                "b.zip": ("a.bundle",),
-            }
-        ),
-        logger,
-        max_batch_bytes=4,
-    )
-
-    report = workflow.run(
+    _workflow(RecordingExporter(), RecordingScanner()).run(
         _context(tmp_path),
-        [
-            _bundle(tmp_path, "a.zip"),
-            _bundle(tmp_path, "b.zip"),
-            _bundle(tmp_path, "c.zip"),
-        ],
-    )
-
-    assert exporter.calls == [(b"c" * 4,)]
-    assert report.complete is False
-    assert report.skipped_components == 2
-    manifest_path = (
-        _context(tmp_path).workspace.extracted_bundles / "content" / "manifest.json"
-    )
-    manifest = json.loads(manifest_path.read_text(encoding="utf8"))
-    skipped_entries = {
-        entry
-        for component in manifest["skipped_components"]
-        for entry in component["entries"]
-    }
-    assert skipped_entries == {"a.zip::a.bundle", "b.zip::b.bundle"}
-    assert manifest["summary"]["skipped_components"] == 2
-    assert any(
-        "missing-cab" in item["reason"] for item in manifest["skipped_components"]
-    )
-    assert any(
-        "depends on skipped component" in item["reason"]
-        for item in manifest["skipped_components"]
+        [_bundle(tmp_path, "a.zip")],
+        concurrency=1,
     )
 
 
-def test_workflow_records_archive_scan_failure_and_extracts_other_components(
+def test_publish_writes_constant_journal_and_one_manifest(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    exporter = ScriptedExporter([{"Assets/b.bin": b"b"}])
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(errors={"a.zip": "archive is corrupt"}),
-        RecordingLogger(),
-        max_batch_bytes=4,
-    )
+    from ba_downloader.infrastructure.extraction.assetripper import bundles
 
-    report = workflow.run(
+    real_write = bundles.write_json_atomic
+    writes: list[str] = []
+
+    def record_write(path: Path, payload: object, **kwargs: object) -> None:
+        writes.append(path.name)
+        real_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(bundles, "write_json_atomic", record_write)
+    _workflow(RecordingExporter(), RecordingScanner()).run(
         _context(tmp_path),
         [_bundle(tmp_path, "a.zip"), _bundle(tmp_path, "b.zip")],
+        concurrency=2,
     )
 
-    assert exporter.calls == [(b"b" * 4,)]
-    assert report.complete is False
-    assert report.skipped_archives == 1
-    assert any(
-        "1 scan source(s) skipped" in warning
-        for warning in report.warnings
-        if "[BUNDLE_EXTRACTION_PARTIAL]" in warning
-    )
-    manifest_path = (
-        _context(tmp_path).workspace.extracted_bundles / "content" / "manifest.json"
-    )
-    manifest = json.loads(manifest_path.read_text(encoding="utf8"))
-    assert manifest["skipped_archives"] == [
-        {"archive": "a.zip", "entry": None, "reason": "archive is corrupt"}
-    ]
-    assert manifest["summary"]["skipped_archives"] == 1
-
-
-def test_workflow_rejects_exporter_use_of_conflict_namespace(tmp_path: Path) -> None:
-    exporter = ScriptedExporter([{"_baad_conflicts/owned-by-exporter.bin": b"unsafe"}])
-    workflow = AssetRipperBundleWorkflow(
-        exporter,
-        FakeDependencyScanner(),
-        RecordingLogger(),
-    )
-
-    with pytest.raises(ExtractionFailureError):
-        workflow.run(_context(tmp_path), [_bundle(tmp_path, "a.zip")])
-
-    assert not (_context(tmp_path).workspace.extracted_bundles).exists()
-
-
-@pytest.mark.parametrize(
-    "unsafe_path",
-    (
-        "../outside.bin",
-        "Assets/../../outside.bin",
-        "Assets\\outside.bin",
-        "Assets/file.bin:stream",
-        "C:/outside.bin",
-    ),
-)
-def test_workflow_rejects_unsafe_export_paths(unsafe_path: str) -> None:
-    with pytest.raises(AssetRipperExportError):
-        AssetRipperBundleWorkflow._validate_output_path(unsafe_path)
+    assert writes.count(".bundle-publish.json") == 3
+    assert writes.count("manifest.json") == 1

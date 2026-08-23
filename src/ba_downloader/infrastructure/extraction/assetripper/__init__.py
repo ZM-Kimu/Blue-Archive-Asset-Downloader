@@ -7,9 +7,11 @@ from ba_downloader.infrastructure.extraction.assetripper.entry_store import (
 from ba_downloader.infrastructure.extraction.assetripper.exporter import (
     AssetRipperBatchExporter,
     AssetRipperDependencyScanner,
+    AssetRipperExportedAsset,
     AssetRipperExportError,
     AssetRipperExportInput,
     AssetRipperExportResult,
+    AssetRipperOutOfMemoryError,
     AssetRipperRuntimeMetadata,
     AssetRipperRuntimeMetadataInspector,
     AssetRipperToolError,
@@ -20,9 +22,6 @@ from ba_downloader.infrastructure.extraction.assetripper.scan_cache import (
 )
 from ba_downloader.infrastructure.extraction.assetripper.scanner import (
     CachedBundleDependencyScanner,
-)
-from ba_downloader.infrastructure.extraction.assetripper.scheduler import (
-    BundleBatchScheduler,
 )
 from ba_downloader.infrastructure.extraction.assetripper.source import (
     AssetRipperSourceResolver,
@@ -35,11 +34,12 @@ __all__ = [
     "AssetRipperExportError",
     "AssetRipperExportInput",
     "AssetRipperExportResult",
+    "AssetRipperExportedAsset",
+    "AssetRipperOutOfMemoryError",
     "AssetRipperRuntimeMetadata",
     "AssetRipperRuntimeMetadataInspector",
     "AssetRipperSourceResolver",
     "AssetRipperToolError",
-    "BundleBatchScheduler",
     "BundleDependencyScanCache",
     "BundleEntryStore",
     "BundleEntryStoreResult",

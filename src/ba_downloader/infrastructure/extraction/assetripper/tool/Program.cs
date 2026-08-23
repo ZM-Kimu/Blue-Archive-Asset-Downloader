@@ -1,4 +1,4 @@
-using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -22,11 +22,6 @@ using AssetRipper.Processing;
 using AssetRipper.SourceGenerated.Classes.ClassID_28;
 using AssetRipper.SourceGenerated.Classes.ClassID_43;
 using AssetRipper.SourceGenerated.Classes.ClassID_83;
-using AssetRipper.SourceGenerated.Classes.ClassID_117;
-using AssetRipper.SourceGenerated.Classes.ClassID_187;
-using AssetRipper.SourceGenerated.Classes.ClassID_188;
-using AssetRipper.SourceGenerated.Classes.ClassID_189;
-using AssetRipper.SourceGenerated.Classes.ClassID_329;
 using AssetRipper.SourceGenerated.Classes.ClassID_49;
 using AssetRipper.SourceGenerated.Subclasses.StreamedResource;
 using AssetRipper.SourceGenerated.Subclasses.StreamingInfo;
@@ -48,25 +43,25 @@ try
     ) ?? throw new InvalidDataException("Exporter request is empty.");
     request.Validate();
     List<string> inputPaths = request.GetInputPaths();
-    if (request.Operation == "export_primary_content")
-    {
-        AssetProvenanceRegistry.Configure(
-            request.GetExportInputs().Select(input =>
-                new AssetProvenanceInput(input.Path, input.NodeId, input.Target)
-            )
-        );
-    }
-
-    FullConfiguration settings = new();
-    ExportHandler handler = new(settings);
     ExportResult result;
     if (request.Operation == "scan_bundle_dependencies")
     {
         eventLogger.Enabled = false;
         result = ScanBundleDependencies(request);
     }
+    else if (request.Operation == "materialize_bundle_entries")
+    {
+        eventLogger.Enabled = false;
+        result = MaterializeBundleEntries(request);
+    }
+    else if (request.Operation == "export_primary_content")
+    {
+        result = ExportPrimaryContentGroups(request);
+    }
     else
     {
+        FullConfiguration settings = new();
+        ExportHandler handler = new(settings);
         EventWriter.WritePhase("loading");
         GameData gameData = handler.Load(
             inputPaths,
@@ -78,14 +73,11 @@ try
             EventWriter.WritePhase("processing");
             ProcessWithHeartbeat(handler, gameData);
         }
-        result = request.Operation switch
-        {
-            "export_primary_content" => ExportPrimaryContent(request, gameData, settings),
-            "inspect_jp_runtime" => InspectJpRuntime(gameData),
-            _ => throw new InvalidDataException(
+        result = request.Operation == "inspect_jp_runtime"
+            ? InspectJpRuntime(gameData)
+            : throw new InvalidDataException(
                 $"Unsupported AssetRipper operation: {request.Operation}"
-            ),
-        };
+            );
     }
     WriteResult(resultPath, result);
     return 0;
@@ -108,6 +100,9 @@ catch (Exception exception)
             null,
             [],
             [],
+            [],
+            IsOutOfMemory(exception) ? "out_of_memory" : "export_failure",
+            null,
             []
         )
     );
@@ -128,20 +123,17 @@ static void WriteResult(string resultPath, ExportResult result)
 }
 
 static ExportResult ExportPrimaryContent(
-    ExportRequest request,
+    IReadOnlyList<ExportInput> exportInputs,
+    string outputPath,
+    int concurrency,
     GameData gameData,
     FullConfiguration settings
 )
 {
-    if (string.IsNullOrWhiteSpace(request.OutputDirectory))
-    {
-        throw new InvalidDataException("Exporter output directory is required.");
-    }
-    string outputPath = Path.GetFullPath(request.OutputDirectory);
     Directory.CreateDirectory(outputPath);
     settings.ExportRootPath = outputPath;
     EventWriter.WritePhase("exporting");
-    List<string> requestedTargetIds = request.GetExportInputs()
+    List<string> requestedTargetIds = exportInputs
         .Where(input => input.Target)
         .Select(input => input.NodeId)
         .Order(StringComparer.Ordinal)
@@ -151,28 +143,194 @@ static ExportResult ExportPrimaryContent(
             gameData.GameBundle,
             settings,
             LocalFileSystem.Instance,
-            requestedTargetIds.ToHashSet(StringComparer.Ordinal)
+            requestedTargetIds.ToHashSet(StringComparer.Ordinal),
+            concurrency
         );
-    List<ExportedFile> files = Directory.EnumerateFiles(
-            outputPath, "*", SearchOption.AllDirectories
-        )
-        .Order(StringComparer.Ordinal)
-        .Select(path => new ExportedFile(
-            Path.GetRelativePath(outputPath, path).Replace('\\', '/'),
-            new FileInfo(path).Length
-        ))
-        .ToList();
     return new ExportResult(
         true,
         null,
-        files,
+        [],
         null,
         null,
         null,
         requestedTargetIds,
         coverage.ResolvedTargetIds.ToList(),
-        coverage.ExportedTargetIds.ToList()
+        coverage.ExportedTargetIds.ToList(),
+        null,
+        null,
+        coverage.Assets.ToList(),
+        coverage.Failures.ToList()
     );
+}
+
+static ExportResult ExportPrimaryContentGroups(ExportRequest request)
+{
+    if (string.IsNullOrWhiteSpace(request.OutputDirectory))
+    {
+        throw new InvalidDataException("Exporter output directory is required.");
+    }
+    string outputPath = Path.GetFullPath(request.OutputDirectory);
+    int concurrency = Math.Min(
+        request.Concurrency ?? throw new InvalidDataException(
+            "Exporter concurrency is required."
+        ),
+        Environment.ProcessorCount
+    );
+    List<ResolvedExportGroup> groups = request.GetExportGroups();
+    Dictionary<string, SelectiveExportAsset> assets = new(StringComparer.Ordinal);
+    Dictionary<string, SelectiveExportFailure> failures = new(StringComparer.Ordinal);
+    HashSet<string> requestedTargetIds = new(StringComparer.Ordinal);
+    HashSet<string> resolvedTargetIds = new(StringComparer.Ordinal);
+    HashSet<string> exportedTargetIds = new(StringComparer.Ordinal);
+
+    foreach (ResolvedExportGroup group in groups)
+    {
+        AssetProvenanceRegistry.Configure(
+            group.Inputs.Select(input =>
+                new AssetProvenanceInput(input.Path, input.NodeId, input.Target)
+            )
+        );
+        FullConfiguration settings = new();
+        ExportHandler handler = new(settings);
+        GameData? gameData = null;
+        try
+        {
+            EventWriter.WritePhase("loading");
+            gameData = handler.LoadPrimaryContent(
+                group.Inputs.Select(input => input.Path).ToList(),
+                LocalFileSystem.Instance,
+                concurrency,
+                new BaadLoadProgress()
+            );
+            HashSet<string> expectedInputIds = group.Inputs
+                .Select(input => input.NodeId)
+                .ToHashSet(StringComparer.Ordinal);
+            HashSet<string> loadedInputIds = AssetProvenanceRegistry
+                .GetLoadedInputIds()
+                .ToHashSet(StringComparer.Ordinal);
+            if (gameData.GameBundle.AnyFailed || !loadedInputIds.SetEquals(expectedInputIds))
+            {
+                throw new InvalidDataException(
+                    $"AssetRipper could not load every input in group '{group.GroupId}'."
+                );
+            }
+            if (gameData.GameBundle.HasAnyAssetCollections())
+            {
+                EventWriter.WritePhase("processing");
+                ProcessWithHeartbeat(handler, gameData);
+            }
+            ExportResult groupResult = ExportPrimaryContent(
+                group.Inputs,
+                outputPath,
+                concurrency,
+                gameData,
+                settings
+            );
+            HashSet<string> unresolvedTargetIds = (groupResult.RequestedTargetIds ?? [])
+                .Except(groupResult.ResolvedTargetIds ?? [], StringComparer.Ordinal)
+                .ToHashSet(StringComparer.Ordinal);
+            if (unresolvedTargetIds.Count > 0)
+            {
+                throw new InvalidDataException(
+                    $"AssetRipper did not resolve {unresolvedTargetIds.Count} target input(s) "
+                    + $"in group '{group.GroupId}'."
+                );
+            }
+            requestedTargetIds.UnionWith(groupResult.RequestedTargetIds ?? []);
+            resolvedTargetIds.UnionWith(groupResult.ResolvedTargetIds ?? []);
+            exportedTargetIds.UnionWith(groupResult.ExportedTargetIds ?? []);
+            foreach (SelectiveExportFailure failure in groupResult.Failures ?? [])
+            {
+                if (failures.TryGetValue(failure.StableId, out SelectiveExportFailure? existing))
+                {
+                    failures[failure.StableId] = existing with
+                    {
+                        SourceTargetIds = existing.SourceTargetIds
+                            .Concat(failure.SourceTargetIds)
+                            .Distinct(StringComparer.Ordinal)
+                            .Order(StringComparer.Ordinal)
+                            .ToArray(),
+                    };
+                }
+                else
+                {
+                    failures.Add(failure.StableId, failure);
+                }
+            }
+            foreach (SelectiveExportAsset asset in groupResult.Assets ?? [])
+            {
+                failures.Remove(asset.StableId);
+                if (!assets.TryGetValue(asset.StableId, out SelectiveExportAsset? existing))
+                {
+                    assets.Add(asset.StableId, asset);
+                    continue;
+                }
+                if (
+                    existing.NormalizedCollection != asset.NormalizedCollection
+                    || existing.ClassId != asset.ClassId
+                    || existing.PathId != asset.PathId
+                )
+                {
+                    throw new InvalidDataException(
+                        $"Stable asset ID collision: {asset.StableId}"
+                    );
+                }
+                DeleteDuplicateAssetFiles(outputPath, asset.Files);
+                assets[asset.StableId] = existing with
+                {
+                    SourceTargetIds = existing.SourceTargetIds
+                        .Concat(asset.SourceTargetIds)
+                        .Distinct(StringComparer.Ordinal)
+                        .Order(StringComparer.Ordinal)
+                        .ToArray(),
+                };
+            }
+        }
+        finally
+        {
+            gameData?.AssemblyManager.Dispose();
+            gameData?.GameBundle.Dispose();
+            AssetProvenanceRegistry.Configure([]);
+        }
+    }
+
+    return new ExportResult(
+        true,
+        null,
+        [],
+        null,
+        null,
+        null,
+        requestedTargetIds.Order(StringComparer.Ordinal).ToList(),
+        resolvedTargetIds.Order(StringComparer.Ordinal).ToList(),
+        exportedTargetIds.Order(StringComparer.Ordinal).ToList(),
+        null,
+        null,
+        assets.Values.OrderBy(item => item.StableId, StringComparer.Ordinal).ToList(),
+        failures.Values.OrderBy(item => item.StableId, StringComparer.Ordinal).ToList()
+    );
+}
+
+static void DeleteDuplicateAssetFiles(
+    string outputRoot,
+    IReadOnlyList<SelectiveExportFile> files
+)
+{
+    string root = Path.GetFullPath(outputRoot);
+    foreach (SelectiveExportFile file in files)
+    {
+        string path = Path.GetFullPath(Path.Combine(root, file.Path));
+        string relative = Path.GetRelativePath(root, path);
+        if (
+            Path.IsPathRooted(relative)
+            || relative == ".."
+            || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+        )
+        {
+            throw new InvalidDataException("Duplicate asset output escaped its root.");
+        }
+        File.Delete(path);
+    }
 }
 
 static ExportResult ScanBundleDependencies(ExportRequest request)
@@ -189,16 +347,11 @@ static ExportResult ScanBundleDependencies(ExportRequest request)
     {
         string input = Path.GetFullPath(inputs[index]);
         string archiveId = request.ArchiveIds[index];
-        using FileStream inputStream = File.OpenRead(input);
-        string sha256 = Convert.ToHexString(
-            SHA256.HashData(inputStream)
-        ).ToLowerInvariant();
         try
         {
             scans.Add(
                 new ArchiveScanResult(
                     archiveId,
-                    sha256,
                     ScanArchiveEntries(input),
                     null
                 )
@@ -209,7 +362,6 @@ static ExportResult ScanBundleDependencies(ExportRequest request)
             scans.Add(
                 new ArchiveScanResult(
                     archiveId,
-                    sha256,
                     [],
                     $"{exception.GetType().Name}: {exception.Message}"
                 )
@@ -243,6 +395,7 @@ static List<BundleEntryScanResult> ScanArchiveEntries(string input)
                 buffer.ToArray(),
                 input,
                 entry.FullName,
+                entry.Crc32,
                 assetFactory
             ));
         }
@@ -253,6 +406,7 @@ static List<BundleEntryScanResult> ScanArchiveEntries(string input)
             File.ReadAllBytes(input),
             input,
             Path.GetFileName(input),
+            null,
             assetFactory
         ));
     }
@@ -263,6 +417,7 @@ static BundleEntryScanResult ScanEntry(
     byte[] buffer,
     string filePath,
     string entryPath,
+    uint? crc32,
     GameAssetFactory assetFactory
 )
 {
@@ -294,6 +449,7 @@ static BundleEntryScanResult ScanEntry(
         entryPath,
         sha256,
         buffer.LongLength,
+        crc32,
         serializedFiles,
         resourceFiles.Order(StringComparer.Ordinal).ToList(),
         streamedResources
@@ -427,21 +583,6 @@ static void ScanStreamedResources(
             case IAudioClip audio:
                 AddStreamedResource(result, source, audio.Resource, "AudioClip");
                 break;
-            case ITexture3D texture:
-                AddStreamingInfo(result, source, texture.StreamData, "Texture3D");
-                break;
-            case ITexture2DArray texture:
-                AddStreamingInfo(result, source, texture.StreamData, "Texture2DArray");
-                break;
-            case ICubemapArray texture:
-                AddStreamingInfo(result, source, texture.StreamData, "CubemapArray");
-                break;
-            case IImageTexture texture:
-                AddStreamingInfo(result, source, texture.StreamData_C189, "ImageTexture");
-                break;
-            case IVideoClip video:
-                AddStreamedResource(result, source, video.ExternalResources, "VideoClip");
-                break;
         }
     }
 }
@@ -476,10 +617,175 @@ static void AddStreamedResource(
     }
 }
 
+static ExportResult MaterializeBundleEntries(ExportRequest request)
+{
+    if (string.IsNullOrWhiteSpace(request.OutputDirectory))
+    {
+        throw new InvalidDataException("Bundle entry cache root is required.");
+    }
+    string cacheRoot = Path.GetFullPath(request.OutputDirectory);
+    Directory.CreateDirectory(cacheRoot);
+    List<MaterializeEntryInput> inputs = request.GetMaterializeInputs();
+    ConcurrentBag<MaterializedEntryResult> results = [];
+    int completed = 0;
+    int archiveCount = inputs
+        .Select(item => item.Path)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Count();
+    int concurrency = Math.Min(
+        Math.Max(1, request.Concurrency ?? 1),
+        Math.Min(Environment.ProcessorCount, archiveCount)
+    );
+    Parallel.ForEach(
+        inputs.GroupBy(item => item.Path, StringComparer.OrdinalIgnoreCase),
+        new ParallelOptions { MaxDegreeOfParallelism = concurrency },
+        group =>
+        {
+            if (Path.GetExtension(group.Key).Equals(".zip", StringComparison.OrdinalIgnoreCase))
+            {
+                using ZipArchive archive = ZipFile.OpenRead(group.Key);
+                Dictionary<string, ZipArchiveEntry> entries = archive.Entries
+                    .Where(entry => !string.IsNullOrEmpty(entry.Name))
+                    .ToDictionary(entry => entry.FullName, StringComparer.Ordinal);
+                foreach (MaterializeEntryInput input in group)
+                {
+                    if (!entries.TryGetValue(input.EntryPath, out ZipArchiveEntry? entry))
+                    {
+                        throw new InvalidDataException($"Bundle entry was not found: {input.NodeId}");
+                    }
+                    if (
+                        entry.Length != input.Size
+                        || (input.Crc32 is not null && entry.Crc32 != input.Crc32)
+                    )
+                    {
+                        throw new InvalidDataException($"Bundle entry changed after dependency scanning: {input.NodeId}");
+                    }
+                    using Stream source = entry.Open();
+                    results.Add(MaterializeEntry(source, input, cacheRoot));
+                    int current = Interlocked.Increment(ref completed);
+                    EventWriter.WriteCacheProgress(current, inputs.Count, input.NodeId);
+                }
+                return;
+            }
+            foreach (MaterializeEntryInput input in group)
+            {
+                using FileStream source = File.OpenRead(group.Key);
+                results.Add(MaterializeEntry(source, input, cacheRoot));
+                int current = Interlocked.Increment(ref completed);
+                EventWriter.WriteCacheProgress(current, inputs.Count, input.NodeId);
+            }
+        }
+    );
+    return new ExportResult(
+        true,
+        null,
+        [],
+        null,
+        null,
+        null,
+        [],
+        [],
+        [],
+        null,
+        results.OrderBy(item => item.NodeId, StringComparer.Ordinal).ToList()
+    );
+}
+
+static bool IsOutOfMemory(Exception exception) =>
+    exception is OutOfMemoryException
+    || exception is AggregateException aggregate
+        && aggregate.Flatten().InnerExceptions.Any(IsOutOfMemory);
+
+static MaterializedEntryResult MaterializeEntry(
+    Stream source,
+    MaterializeEntryInput input,
+    string cacheRoot
+)
+{
+    string destination = Path.GetFullPath(input.Destination);
+    string relative = Path.GetRelativePath(cacheRoot, destination);
+    if (
+        Path.IsPathRooted(relative)
+        || relative == ".."
+        || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+    )
+    {
+        throw new InvalidDataException($"Bundle cache destination escaped its root: {input.NodeId}");
+    }
+    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+    string temporary = destination + $".{Guid.NewGuid():N}.tmp";
+    string? markerTemporary = null;
+    try
+    {
+        using IncrementalHash digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        long written = 0;
+        using (FileStream target = new(
+            temporary,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            1024 * 1024,
+            FileOptions.SequentialScan
+        ))
+        {
+            byte[] buffer = new byte[1024 * 1024];
+            int count;
+            while ((count = source.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                target.Write(buffer, 0, count);
+                digest.AppendData(buffer, 0, count);
+                written += count;
+            }
+            target.Flush(true);
+        }
+        string actualHash = Convert.ToHexString(digest.GetHashAndReset()).ToLowerInvariant();
+        if (written != input.Size || actualHash != input.Sha256)
+        {
+            throw new InvalidDataException($"Bundle entry changed after dependency scanning: {input.NodeId}");
+        }
+        File.Move(temporary, destination, true);
+        long mtimeNs = (
+            File.GetLastWriteTimeUtc(destination).Ticks - DateTime.UnixEpoch.Ticks
+        ) * 100;
+        string marker = destination + ".json";
+        markerTemporary = marker + $".{Guid.NewGuid():N}.tmp";
+        File.WriteAllText(
+            markerTemporary,
+            JsonSerializer.Serialize(
+                new
+                {
+                    schema_version = 2,
+                    identity = input.MarkerIdentity,
+                    mtime_ns = mtimeNs,
+                },
+                JsonOptions.Default
+            )
+        );
+        using (FileStream markerStream = new(
+            markerTemporary,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None
+        ))
+        {
+            markerStream.Flush(true);
+        }
+        File.Move(markerTemporary, marker, true);
+        return new MaterializedEntryResult(input.NodeId, destination, written);
+    }
+    finally
+    {
+        File.Delete(temporary);
+        if (markerTemporary is not null)
+        {
+            File.Delete(markerTemporary);
+        }
+    }
+}
+
 static void ProcessWithHeartbeat(ExportHandler handler, GameData gameData)
 {
     using CancellationTokenSource cancellation = new();
-    Stopwatch stopwatch = Stopwatch.StartNew();
     Task heartbeat = Task.Run(async () =>
     {
         try
@@ -487,7 +793,7 @@ static void ProcessWithHeartbeat(ExportHandler handler, GameData gameData)
             while (true)
             {
                 await Task.Delay(TimeSpan.FromSeconds(1), cancellation.Token);
-                EventWriter.WriteHeartbeat("processing", stopwatch.Elapsed.TotalSeconds);
+                EventWriter.WriteHeartbeat("processing");
             }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
@@ -497,7 +803,11 @@ static void ProcessWithHeartbeat(ExportHandler handler, GameData gameData)
 
     try
     {
-        handler.Process(gameData);
+        handler.Process(
+            gameData,
+            (current, total, processor) =>
+                EventWriter.WriteProcessorProgress(current, total, processor)
+        );
     }
     finally
     {
@@ -548,12 +858,27 @@ static ExportResult InspectJpRuntime(GameData gameData)
 }
 
 internal sealed record ExportInput(string Path, string NodeId, bool Target);
+internal sealed record ExportGroupInput(string NodeId, bool Target);
+internal sealed record ExportGroupRequest(string GroupId, List<ExportGroupInput> Inputs);
+internal sealed record ResolvedExportGroup(string GroupId, List<ExportInput> Inputs);
+internal sealed record MaterializeEntryInput(
+    string Path,
+    string NodeId,
+    string EntryPath,
+    string Sha256,
+    long Size,
+    uint? Crc32,
+    JsonElement MarkerIdentity,
+    string Destination
+);
 
 internal sealed record ExportRequest(
     string Operation,
     List<JsonElement> Inputs,
     string? OutputDirectory,
-    List<string>? ArchiveIds
+    List<string>? ArchiveIds,
+    int? Concurrency,
+    List<ExportGroupRequest>? Groups
 )
 {
     public void Validate()
@@ -570,9 +895,30 @@ internal sealed record ExportRequest(
         if (Operation == "export_primary_content")
         {
             List<ExportInput> exportInputs = GetExportInputs();
+            if (Concurrency is null or <= 0)
+            {
+                throw new InvalidDataException("Exporter concurrency must be positive.");
+            }
             if (exportInputs.Select(input => input.NodeId).Distinct(StringComparer.Ordinal).Count() != exportInputs.Count)
             {
                 throw new InvalidDataException("Exporter input node IDs must be unique.");
+            }
+            _ = GetExportGroups();
+        }
+        if (Operation == "materialize_bundle_entries")
+        {
+            List<MaterializeEntryInput> materializeInputs = GetMaterializeInputs();
+            if (Concurrency is null or <= 0)
+            {
+                throw new InvalidDataException("Bundle entry cache concurrency must be positive.");
+            }
+            if (materializeInputs.Select(input => input.NodeId).Distinct(StringComparer.Ordinal).Count() != materializeInputs.Count)
+            {
+                throw new InvalidDataException("Bundle entry cache node IDs must be unique.");
+            }
+            if (materializeInputs.Select(input => input.Destination).Distinct(StringComparer.OrdinalIgnoreCase).Count() != materializeInputs.Count)
+            {
+                throw new InvalidDataException("Bundle entry cache destinations must be unique.");
             }
         }
     }
@@ -609,6 +955,86 @@ internal sealed record ExportRequest(
         }
         return result;
     }
+
+    public List<ResolvedExportGroup> GetExportGroups()
+    {
+        List<ExportInput> inputs = GetExportInputs();
+        if (Groups is null || Groups.Count == 0)
+        {
+            return [new ResolvedExportGroup("all", inputs)];
+        }
+        Dictionary<string, ExportInput> byNodeId = inputs.ToDictionary(
+            input => input.NodeId,
+            StringComparer.Ordinal
+        );
+        HashSet<string> groupIds = new(StringComparer.Ordinal);
+        HashSet<string> covered = new(StringComparer.Ordinal);
+        List<ResolvedExportGroup> result = [];
+        foreach (ExportGroupRequest group in Groups)
+        {
+            if (
+                string.IsNullOrWhiteSpace(group.GroupId)
+                || !groupIds.Add(group.GroupId)
+                || group.Inputs.Count == 0
+            )
+            {
+                throw new InvalidDataException("Exporter groups must have unique IDs and inputs.");
+            }
+            HashSet<string> local = new(StringComparer.Ordinal);
+            List<ExportInput> resolved = [];
+            foreach (ExportGroupInput item in group.Inputs)
+            {
+                if (
+                    string.IsNullOrWhiteSpace(item.NodeId)
+                    || !local.Add(item.NodeId)
+                    || !byNodeId.TryGetValue(item.NodeId, out ExportInput? input)
+                )
+                {
+                    throw new InvalidDataException("Exporter group input is invalid.");
+                }
+                covered.Add(item.NodeId);
+                resolved.Add(input with { Target = item.Target });
+            }
+            result.Add(new ResolvedExportGroup(group.GroupId, resolved));
+        }
+        if (!covered.SetEquals(byNodeId.Keys))
+        {
+            throw new InvalidDataException("Exporter groups must cover every input.");
+        }
+        return result;
+    }
+
+    public List<MaterializeEntryInput> GetMaterializeInputs()
+    {
+        List<MaterializeEntryInput> result = [];
+        foreach (JsonElement input in Inputs)
+        {
+            if (input.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException("Bundle entry cache inputs must be objects.");
+            }
+            MaterializeEntryInput? parsed = input.Deserialize<MaterializeEntryInput>(JsonOptions.Default);
+            if (
+                parsed is null
+                || string.IsNullOrWhiteSpace(parsed.Path)
+                || string.IsNullOrWhiteSpace(parsed.NodeId)
+                || string.IsNullOrWhiteSpace(parsed.EntryPath)
+                || string.IsNullOrWhiteSpace(parsed.Destination)
+                || parsed.Size < 0
+                || parsed.Sha256.Length != 64
+                || parsed.Sha256.Any(character => !Uri.IsHexDigit(character))
+            )
+            {
+                throw new InvalidDataException("Bundle entry cache input is invalid.");
+            }
+            result.Add(parsed with
+            {
+                Path = Path.GetFullPath(parsed.Path),
+                Destination = Path.GetFullPath(parsed.Destination),
+            });
+        }
+        return result;
+    }
 }
 
 internal sealed record ExportedFile(string Path, long Size);
@@ -621,7 +1047,16 @@ internal sealed record ExportResult(
     List<ArchiveScanResult>? Scans = null,
     List<string>? RequestedTargetIds = null,
     List<string>? ResolvedTargetIds = null,
-    List<string>? ExportedTargetIds = null
+    List<string>? ExportedTargetIds = null,
+    string? FailureKind = null,
+    List<MaterializedEntryResult>? MaterializedEntries = null,
+    List<SelectiveExportAsset>? Assets = null,
+    List<SelectiveExportFailure>? Failures = null
+);
+internal sealed record MaterializedEntryResult(
+    string NodeId,
+    string Path,
+    long BytesWritten
 );
 internal sealed record SerializedFileScanResult(
     string LogicalName,
@@ -634,7 +1069,6 @@ internal sealed record StreamedResourceScanResult(
 );
 internal sealed record ArchiveScanResult(
     string ArchiveId,
-    string Sha256,
     List<BundleEntryScanResult> Entries,
     string? Error
 );
@@ -642,6 +1076,7 @@ internal sealed record BundleEntryScanResult(
     string EntryPath,
     string Sha256,
     long Size,
+    uint? Crc32,
     List<SerializedFileScanResult> SerializedFiles,
     List<string> ResourceFiles,
     List<StreamedResourceScanResult> StreamedResources,
@@ -710,7 +1145,7 @@ internal sealed class BaadLoadProgress : IGameLoadProgress
 internal static class EventWriter
 {
     private const string Prefix = "BAAD_ASSETRIPPER_EVENT ";
-    private const int Version = 4;
+    private const int Version = 5;
     private static readonly object SyncRoot = new();
 
     public static void WritePhase(string phase) =>
@@ -727,14 +1162,26 @@ internal static class EventWriter
             total,
         });
 
-    public static void WriteHeartbeat(string phase, double elapsedSeconds) =>
+    public static void WriteHeartbeat(string phase) =>
         Write(new
         {
             version = Version,
             kind = "heartbeat",
             phase,
-            elapsed_seconds = Math.Round(elapsedSeconds, 1),
         });
+
+    public static void WriteProcessorProgress(
+        int current,
+        int total,
+        string processor
+    ) => Write(new
+    {
+        version = Version,
+        kind = "processor_progress",
+        current,
+        total,
+        processor,
+    });
 
     public static void WriteLoadingProgress(string stage, int current, int total) =>
         Write(new
@@ -755,6 +1202,16 @@ internal static class EventWriter
             current,
             total,
             archive_id = archiveId,
+        });
+
+    public static void WriteCacheProgress(int current, int total, string nodeId) =>
+        Write(new
+        {
+            version = Version,
+            kind = "cache_progress",
+            current,
+            total,
+            node_id = nodeId,
         });
 
     public static void WriteLog(string level, string category, string message) =>

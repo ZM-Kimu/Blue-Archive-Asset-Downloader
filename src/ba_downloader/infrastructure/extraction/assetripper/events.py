@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
 EVENT_PREFIX = "BAAD_ASSETRIPPER_EVENT "
-EVENT_VERSION = 4
+EVENT_VERSION = 5
 SERIALIZE_REFERENCE_UNSUPPORTED_MESSAGE = (
     "MonoBehaviour has a field with the [SerializeReference] attribute, "
     "which is not currently supported."
@@ -45,7 +44,13 @@ class AssetRipperLogEvent:
 @dataclass(frozen=True, slots=True)
 class AssetRipperHeartbeatEvent:
     phase: Literal["processing"]
-    elapsed_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class AssetRipperProcessorProgressEvent:
+    current: int
+    total: int
+    processor: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,12 +60,21 @@ class AssetRipperScanProgressEvent:
     archive_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class AssetRipperEntryCacheProgressEvent:
+    current: int
+    total: int
+    node_id: str
+
+
 AssetRipperProcessEvent: TypeAlias = (
     AssetRipperPhaseEvent
     | AssetRipperProgressEvent
     | AssetRipperLogEvent
     | AssetRipperHeartbeatEvent
+    | AssetRipperProcessorProgressEvent
     | AssetRipperScanProgressEvent
+    | AssetRipperEntryCacheProgressEvent
 )
 
 
@@ -122,15 +136,22 @@ def parse_assetripper_event(line: str) -> AssetRipperProcessEvent | None:
             return AssetRipperLogEvent(level, category, message)
     if kind == "heartbeat":
         phase = payload.get("phase")
-        elapsed_seconds = payload.get("elapsed_seconds")
+        if phase == "processing":
+            return AssetRipperHeartbeatEvent(phase)
+    if kind == "processor_progress":
+        current = payload.get("current")
+        total = payload.get("total")
+        processor = payload.get("processor")
         if (
-            phase == "processing"
-            and isinstance(elapsed_seconds, (int, float))
-            and not isinstance(elapsed_seconds, bool)
-            and math.isfinite(elapsed_seconds)
-            and elapsed_seconds >= 0
+            isinstance(current, int)
+            and not isinstance(current, bool)
+            and isinstance(total, int)
+            and not isinstance(total, bool)
+            and 0 < current <= total
+            and isinstance(processor, str)
+            and bool(processor)
         ):
-            return AssetRipperHeartbeatEvent(phase, float(elapsed_seconds))
+            return AssetRipperProcessorProgressEvent(current, total, processor)
     if kind == "scan_progress":
         current = payload.get("current")
         total = payload.get("total")
@@ -146,4 +167,19 @@ def parse_assetripper_event(line: str) -> AssetRipperProcessEvent | None:
             and bool(archive_id)
         ):
             return AssetRipperScanProgressEvent(current, total, archive_id)
+    if kind == "cache_progress":
+        current = payload.get("current")
+        total = payload.get("total")
+        node_id = payload.get("node_id")
+        if (
+            isinstance(current, int)
+            and not isinstance(current, bool)
+            and isinstance(total, int)
+            and not isinstance(total, bool)
+            and 0 <= current <= total
+            and total > 0
+            and isinstance(node_id, str)
+            and bool(node_id)
+        ):
+            return AssetRipperEntryCacheProgressEvent(current, total, node_id)
     return None

@@ -15,6 +15,8 @@ from ba_downloader.domain.models.region_catalog import DecodedJPCatalog
 from ba_downloader.domain.ports.http import HttpResponse
 from ba_downloader.infrastructure.extraction.assetripper.exporter import (
     AssetRipperRuntimeMetadata,
+    assetripper_exporter_cache_key,
+    assetripper_runtime_inspector_cache_key,
 )
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.packages.android_package import (
@@ -967,6 +969,125 @@ def test_jp_bootstrap_uses_runtime_metadata_inspector(tmp_path: Path) -> None:
     assert bootstrapper.get_server_url(context) == (
         "https://example.invalid/server-info.json"
     )
+
+
+def _write_jp_runtime_metadata_manifest(
+    context: ExecutionContext,
+    *,
+    schema_version: int = JPBootstrapper.METADATA_CACHE_SCHEMA_VERSION,
+    tool_fingerprint: str | None = None,
+) -> None:
+    manifest = (
+        context.workspace.runtime_state
+        / context.require_resource_version()
+        / "Metadata"
+        / "manifest.json"
+    )
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": schema_version,
+                "region": context.region,
+                "platform": context.platform,
+                "release": context.resource_version,
+                "tool_fingerprint": tool_fingerprint
+                or assetripper_runtime_inspector_cache_key(),
+                "package": {"size": 123, "sha256": "1" * 64},
+                "server_url": "https://example.invalid/server-info.json",
+                "bundle_version": "1.2.3",
+                "game_main_config_base64": "ZW5jcnlwdGVk",
+            }
+        ),
+        encoding="utf8",
+    )
+
+
+def test_jp_runtime_metadata_warm_hit_skips_inspection_and_package_hash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    context = build_execution_context(tmp_path, region="jp", version="1.2.3")
+    _write_jp_runtime_metadata_manifest(context)
+    bootstrapper = JPBootstrapper(RecordingHttpClient({}), NullLogger())
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.regions.jp.bootstrapper.calculate_sha256",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("warm metadata cache must not hash the package")
+        ),
+    )
+
+    assert bootstrapper.get_server_url(context) == (
+        "https://example.invalid/server-info.json"
+    )
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "tool_fingerprint"),
+    [
+        (1, assetripper_runtime_inspector_cache_key()),
+        (
+            JPBootstrapper.METADATA_CACHE_SCHEMA_VERSION,
+            assetripper_exporter_cache_key(),
+        ),
+    ],
+)
+def test_jp_runtime_metadata_rebuilds_incompatible_manifests(
+    tmp_path: Path,
+    schema_version: int,
+    tool_fingerprint: str,
+) -> None:
+    class MetadataInspector:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def inspect(
+            self, context: ExecutionContext, data_root: Path
+        ) -> AssetRipperRuntimeMetadata:
+            _ = (context, data_root)
+            self.calls += 1
+            return AssetRipperRuntimeMetadata(b"encrypted", "1.2.3")
+
+    class ServerInfoDecoder:
+        def decode_server_url(self, data: bytes) -> str:
+            assert data == b"encrypted"
+            return "https://example.invalid/server-info.json"
+
+    context = build_execution_context(tmp_path, region="jp", version="1.2.3")
+    _write_jp_runtime_metadata_manifest(
+        context,
+        schema_version=schema_version,
+        tool_fingerprint=tool_fingerprint,
+    )
+    inspector = MetadataInspector()
+    bootstrapper = JPBootstrapper(
+        RecordingHttpClient({}),
+        NullLogger(),
+        runtime_metadata_inspector=inspector,
+        server_info_decoder=ServerInfoDecoder(),  # type: ignore[arg-type]
+    )
+
+    assert bootstrapper.get_server_url(context) == (
+        "https://example.invalid/server-info.json"
+    )
+    assert inspector.calls == 1
+
+
+def test_jp_runtime_metadata_rebuilds_after_inspector_fingerprint_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    context = build_execution_context(tmp_path, region="jp", version="1.2.3")
+    _write_jp_runtime_metadata_manifest(context)
+    bootstrapper = JPBootstrapper(RecordingHttpClient({}), NullLogger())
+    monkeypatch.setattr(
+        "ba_downloader.infrastructure.regions.jp.bootstrapper."
+        "assetripper_runtime_inspector_cache_key",
+        lambda: "changed-inspector-fingerprint",
+    )
+
+    with pytest.raises(RuntimeError):
+        bootstrapper.get_server_url(context)
 
 
 def test_jp_bootstrap_translates_package_download_validation_errors(

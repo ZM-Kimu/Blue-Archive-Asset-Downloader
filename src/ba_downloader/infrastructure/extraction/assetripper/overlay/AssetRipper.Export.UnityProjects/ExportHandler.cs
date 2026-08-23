@@ -7,13 +7,9 @@ using AssetRipper.Import.Configuration;
 using AssetRipper.Import.Logging;
 using AssetRipper.Import.Structure;
 using AssetRipper.Processing;
-using AssetRipper.Processing.AnimatorControllers;
-using AssetRipper.Processing.Assemblies;
-using AssetRipper.Processing.AudioMixers;
 using AssetRipper.Processing.Editor;
 using AssetRipper.Processing.Prefabs;
 using AssetRipper.Processing.Scenes;
-using AssetRipper.Processing.ScriptableObject;
 using AssetRipper.Processing.Textures;
 
 namespace AssetRipper.Export.UnityProjects;
@@ -44,11 +40,31 @@ public class ExportHandler
 		return gameData;
 	}
 
-	public void Process(GameData gameData)
+	public GameData LoadPrimaryContent(
+		IReadOnlyList<string> paths,
+		FileSystem fileSystem,
+		int concurrency,
+		IGameLoadProgress? progress = null)
+	{
+		GameStructure gameStructure = GameStructure.LoadPrimaryContent(
+			paths,
+			fileSystem,
+			Settings,
+			progress,
+			concurrency);
+		return GameData.FromGameStructure(gameStructure);
+	}
+
+	public void Process(
+		GameData gameData,
+		Action<int, int, string>? progress = null)
 	{
 		Logger.Info(LogCategory.Processing, "Processing loaded assets...");
-		foreach (IAssetProcessor processor in GetProcessors())
+		IAssetProcessor[] processors = GetProcessors().ToArray();
+		for (int index = 0; index < processors.Length; index++)
 		{
+			IAssetProcessor processor = processors[index];
+			progress?.Invoke(index + 1, processors.Length, processor.GetType().Name);
 			processor.Process(gameData);
 		}
 		Logger.Info(LogCategory.Processing, "Finished processing assets");
@@ -56,40 +72,12 @@ public class ExportHandler
 
 	protected virtual IEnumerable<IAssetProcessor> GetProcessors()
 	{
-		// Assembly processors
-		yield return new AttributePolyfillGenerator();
-		yield return new MonoExplicitPropertyRepairProcessor();
-		yield return new ObfuscationRepairProcessor();
-		yield return new ForwardingAssemblyGenerator();
-		if (Settings.ImportSettings.ScriptContentLevel == ScriptContentLevel.Level1)
-		{
-			yield return new MethodStubbingProcessor();
-		}
-		yield return new NullRefReturnProcessor(Settings.ImportSettings.ScriptContentLevel);
-		yield return new UnmanagedConstraintRecoveryProcessor();
-		if (Settings.ProcessingSettings.RemoveNullableAttributes)
-		{
-			yield return new NullableRemovalProcessor();
-		}
-		if (Settings.ProcessingSettings.PublicizeAssemblies)
-		{
-			yield return new SafeAssemblyPublicizingProcessor();
-		}
-		yield return new RemoveAssemblyKeyFileAttributeProcessor();
-		yield return new InternalsVisibileToPublicKeyRemover();
-
-		// Asset processors
 		yield return new SceneDefinitionProcessor();
 		yield return new OriginalPathProcessor(Settings.ProcessingSettings.BundledAssetsExportMode);
 		yield return new MainAssetProcessor();
-		yield return new AnimatorControllerProcessor();
-		yield return new AudioMixerProcessor();
 		yield return new EditorFormatProcessor(Settings.ProcessingSettings.BundledAssetsExportMode);
-		//Static mesh separation goes here
-		yield return new LightingDataProcessor();//Needs to be after static mesh separation
 		yield return new PrefabProcessor();
 		yield return new SpriteProcessor();
-		yield return new ScriptableObjectProcessor();
 	}
 
 	public void Export(GameData gameData, string outputPath, FileSystem fileSystem)

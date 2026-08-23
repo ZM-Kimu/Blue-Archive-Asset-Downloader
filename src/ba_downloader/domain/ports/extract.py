@@ -23,6 +23,7 @@ class AssetExtractionPort(Protocol):
         resources: AssetCollection | None = None,
         *,
         concurrency: int,
+        filtered: bool = False,
     ) -> ExtractionReport: ...
 
     def extract_media(

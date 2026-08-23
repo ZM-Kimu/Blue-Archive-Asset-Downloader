@@ -38,6 +38,7 @@ class RecordingExtractionWorkflow:
     def __init__(self, warnings: tuple[str, ...] = ()) -> None:
         self.calls: list[str] = []
         self.resource_calls: list[list[str] | None] = []
+        self.bundle_filter_modes: list[bool] = []
         self.warnings = warnings
 
     @staticmethod
@@ -64,10 +65,12 @@ class RecordingExtractionWorkflow:
         resources: AssetCollection | None = None,
         *,
         concurrency: int,
+        filtered: bool = False,
     ) -> ExtractionReport:
         _ = (context, concurrency)
         self.calls.append("extract_bundles")
         self.resource_calls.append(self._resource_paths(resources))
+        self.bundle_filter_modes.append(filtered)
         return ExtractionReport(self.warnings)
 
     def extract_media(
@@ -530,6 +533,7 @@ def test_extract_service_search_extracts_only_existing_filtered_resources(
 
     assert extraction_workflow.calls == ["extract_bundles"]
     assert extraction_workflow.resource_calls == [["Bundle/Shiroko.bundle"]]
+    assert extraction_workflow.bundle_filter_modes == [True]
 
 
 def test_extract_service_advanced_search_filters_existing_resources(

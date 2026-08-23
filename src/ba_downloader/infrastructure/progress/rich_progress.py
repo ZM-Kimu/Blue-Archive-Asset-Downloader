@@ -30,8 +30,8 @@ class RichProgressReporter(ProgressReporterPort):
     FAILURE_STATUS_COLUMN_WIDTH = 10
     EXTRACT_DESCRIPTION_COLUMN_WIDTH = 30
     EXTRACT_BAR_WIDTH = 24
-    EXTRACT_STATUS_COLUMN_WIDTH = 18
-    EXTRACT_SUB_STATUS_COLUMN_WIDTH = 18
+    EXTRACT_STATUS_COLUMN_WIDTH = 24
+    EXTRACT_SUB_STATUS_COLUMN_WIDTH = 48
 
     def __init__(
         self,
@@ -146,13 +146,11 @@ class RichProgressReporter(ProgressReporterPort):
 
         self._progress = Progress(*columns, console=get_console(), transient=False)
         self._task_id: TaskID | None = None
-        self._loading_task_id: TaskID | None = None
         self._total = total
         self._description = description
         self._status = ""
         self._secondary_status = ""
         self._failed_status = ""
-        self._processing_task_id: TaskID | None = None
 
     def __enter__(self) -> RichProgressReporter:
         self._progress.start()
@@ -192,39 +190,27 @@ class RichProgressReporter(ProgressReporterPort):
         if self._task_id is not None:
             self._progress.update(self._task_id, secondary_status=status)
 
-    def set_loading_progress(self, completed: int, total: int, stage: str) -> None:
-        description = f"AssetRipper: {stage}"
-        status = f"{completed}/{total}"
-        if self._loading_task_id is None:
-            self._loading_task_id = self._progress.add_task(
-                description,
-                total=total,
+    def set_progress(
+        self,
+        completed: int,
+        total: int,
+        *,
+        stage: str,
+        unit: str,
+        status: str = "",
+        secondary_status: str = "",
+    ) -> None:
+        self._total = total
+        self._status = status or f"{completed}/{total} {unit}"
+        self._secondary_status = secondary_status
+        if self._task_id is not None:
+            self._progress.update(
+                self._task_id,
                 completed=completed,
-                status=status,
-                secondary_status="",
-                failed_status="",
+                total=total,
+                status=self._status,
+                secondary_status=secondary_status or stage,
             )
-            return
-        self._progress.update(
-            self._loading_task_id,
-            description=description,
-            total=total,
-            completed=completed,
-            status=status,
-        )
-
-    def set_processing_status(self, status: str) -> None:
-        description = f"AssetRipper: {status}"
-        if self._processing_task_id is None:
-            self._processing_task_id = self._progress.add_task(
-                description,
-                total=None,
-                status="",
-                secondary_status="",
-                failed_status="",
-            )
-            return
-        self._progress.update(self._processing_task_id, description=description)
 
     def set_failed_status(self, status: str) -> None:
         self._failed_status = status
@@ -261,11 +247,17 @@ class NullProgressReporter(ProgressReporterPort):
     def set_secondary_status(self, status: str) -> None:
         _ = status
 
-    def set_loading_progress(self, completed: int, total: int, stage: str) -> None:
-        _ = (completed, total, stage)
-
-    def set_processing_status(self, status: str) -> None:
-        _ = status
+    def set_progress(
+        self,
+        completed: int,
+        total: int,
+        *,
+        stage: str,
+        unit: str,
+        status: str = "",
+        secondary_status: str = "",
+    ) -> None:
+        _ = (completed, total, stage, unit, status, secondary_status)
 
     def set_failed_status(self, status: str) -> None:
         _ = status

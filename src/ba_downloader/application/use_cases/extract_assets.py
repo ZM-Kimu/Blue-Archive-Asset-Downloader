@@ -184,6 +184,7 @@ class ExtractAssetsUseCase:
                         active_context,
                         bundle_resources,
                         concurrency=options.concurrency,
+                        filtered=bool(options.asset_filter.predicates),
                     )
                 )
                 self.cancellation.raise_if_cancelled()

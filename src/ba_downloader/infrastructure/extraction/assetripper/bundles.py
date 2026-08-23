@@ -4,18 +4,19 @@ import hashlib
 import json
 import os
 import shutil
-import threading
-import time
-from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 from uuid import uuid4
 
-from ba_downloader.domain.exceptions import OperationCancelledError
 from ba_downloader.domain.models.execution import ExecutionContext
-from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
+from ba_downloader.domain.ports.execution import (
+    CancellationPort,
+    NeverCancelled,
+    OperationCancelledError,
+)
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import (
     ProgressReporterFactoryPort,
@@ -23,149 +24,106 @@ from ba_downloader.domain.ports.progress import (
 )
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
+    BundleArchiveScan,
     BundleComponent,
-    BundleDependencyBatchPlanner,
     BundleDependencyPlan,
     BundleDependencyPlanner,
     BundleEntryInput,
     BundleExportBatch,
 )
 from ba_downloader.infrastructure.extraction.assetripper.entry_store import (
+    BundleEntryMaterializerPort,
     BundleEntryStore,
     BundleEntryStoreResult,
+    BundleEntryStoreSpaceError,
     bundle_entry_store_root,
 )
 from ba_downloader.infrastructure.extraction.assetripper.events import (
     SERIALIZE_REFERENCE_UNSUPPORTED_MESSAGE,
+    AssetRipperEntryCacheProgressEvent,
     AssetRipperHeartbeatEvent,
     AssetRipperLogEvent,
     AssetRipperPhaseEvent,
     AssetRipperProcessEvent,
+    AssetRipperProcessorProgressEvent,
     AssetRipperProgressEvent,
     AssetRipperScanProgressEvent,
 )
 from ba_downloader.infrastructure.extraction.assetripper.exporter import (
-    ASSETRIPPER_EXPORTER_WRAPPER_VERSION,
-    AssetRipperExportError,
+    AssetRipperCollectionFailure,
+    AssetRipperExportedAsset,
+    AssetRipperExportGroup,
     AssetRipperExportInput,
     AssetRipperExportResult,
     AssetRipperToolError,
     assetripper_dependency_scan_cache_key,
     assetripper_exporter_cache_key,
 )
-from ba_downloader.infrastructure.extraction.assetripper.scanner import (
-    BundleDependencyScanBackend,
-)
-from ba_downloader.infrastructure.extraction.assetripper.scheduler import (
-    BundleBatchScheduleDecision,
-    BundleBatchScheduler,
-)
 from ba_downloader.infrastructure.extraction.assetripper.source import (
-    ASSETRIPPER_COMMIT,
-    ASSETRIPPER_OVERLAY_VERSION,
-    AssetRipperSourceResolver,
+    AssetRipperSourceError,
 )
-from ba_downloader.infrastructure.extraction.threaded_runner import (
-    ExtractionFailure,
-    ExtractionFailureError,
-)
-from ba_downloader.infrastructure.files.atomic import (
-    publish_staged_directory,
-    write_json_atomic,
-)
+from ba_downloader.infrastructure.extraction.errors import BundleExtractionError
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
 from ba_downloader.infrastructure.files.checksum import calculate_sha256
+from ba_downloader.infrastructure.files.lock import (
+    InterprocessFileLock,
+    InterprocessLockBusyError,
+)
 from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 
-DEFAULT_MAX_BATCH_BYTES = 500 * 1024 * 1024
-_BUNDLE_MANIFEST_SCHEMA_VERSION = 7
-_BUNDLE_PLANNER_VERSION = 2
-_CONFLICT_NAMESPACE = "_baad_conflicts"
+_BUNDLE_MANIFEST_SCHEMA_VERSION = 10
+_BUNDLE_LAYOUT = "assetripper-readable-v1"
+_PROCESSING_PROFILE = "readable-fast-v1"
+_TRANSACTION_SCHEMA_VERSION = 1
+_STREAM_GROUP_TARGET_ENTRY_LIMIT = 512
+
+
+def bundle_extraction_lock_path(context: ExecutionContext) -> Path:
+    return (
+        context.workspace.locks
+        / context.region
+        / context.platform
+        / "bundle-extraction.lock"
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class BundleExtractionReport:
     warnings: tuple[str, ...] = ()
-    complete: bool = True
     total_batches: int = 0
     succeeded_batches: int = 0
     failed_batches: int = 0
     skipped_archives: int = 0
     skipped_components: int = 0
-    conflict_paths: int = 0
-    conflict_variants: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class _SkippedComponent:
-    component: BundleComponent
-    reason: str
 
 
 @dataclass(frozen=True, slots=True)
 class _PreparedDependencyPlan:
     executable: BundleDependencyPlan
-    skipped_components: tuple[_SkippedComponent, ...]
+    skipped: tuple[tuple[BundleComponent, str], ...]
 
 
-@dataclass(frozen=True, slots=True)
-class _PartialResumeState:
-    successful_batches: dict[str, dict[str, object]]
-    merge_index: _OutputMergeIndex
-
-
-@dataclass(slots=True)
-class _OutputVariant:
-    stored_path: str
-    sha256: str | None
-    size: int
-    source_batches: list[str] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class _OutputPathRecord:
-    original_path: str
-    canonical: _OutputVariant
-    variants: dict[str, _OutputVariant] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class _OutputMergeIndex:
-    records: dict[str, _OutputPathRecord] = field(default_factory=dict)
-
-    @property
-    def conflict_paths(self) -> int:
-        return sum(bool(record.variants) for record in self.records.values())
-
-    @property
-    def conflict_variants(self) -> int:
-        return sum(len(record.variants) for record in self.records.values())
-
-
-@dataclass(frozen=True, slots=True)
-class _ValidatedOutput:
-    relative_path: str
-    source: Path
-    size: int
-
-
-class _BundleBatchError(AssetRipperExportError):
-    """A recoverable failure caused by one dependency batch."""
-
-
-class _UnsafeBundleOutputError(AssetRipperToolError):
-    """An exporter output path violated the extraction boundary."""
-
-
-class _BundleExporter(Protocol):
+class _BundleExporter(BundleEntryMaterializerPort, Protocol):
     def prepare(self, context: ExecutionContext) -> None: ...
 
-    def export(
+    def export_grouped(
         self,
         context: ExecutionContext,
-        inputs: list[AssetRipperExportInput],
+        groups: list[AssetRipperExportGroup],
         output_directory: Path,
+        *,
+        concurrency: int,
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
     ) -> AssetRipperExportResult: ...
+
+
+class _DependencyScanner(Protocol):
+    def scan(
+        self,
+        context: ExecutionContext,
+        archives: list[BundleArchiveInput],
+        event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
+    ) -> tuple[BundleArchiveScan, ...]: ...
 
 
 class _AssetRipperLogAggregator:
@@ -177,7 +135,6 @@ class _AssetRipperLogAggregator:
         if event.message == SERIALIZE_REFERENCE_UNSUPPORTED_MESSAGE:
             self._serialize_reference_count += 1
             return
-
         message = f"AssetRipper {event.category}: {event.message}"
         if event.level == "warning":
             self._logger.warn(message)
@@ -185,1465 +142,1191 @@ class _AssetRipperLogAggregator:
             self._logger.error(message)
 
     def flush(self) -> None:
-        if self._serialize_reference_count == 0:
-            return
-        self._logger.warn(
-            "AssetRipper Import: SerializeReference is not supported for "
-            f"{self._serialize_reference_count} MonoBehaviour assets; "
-            "structured fields were not parsed."
-        )
+        if self._serialize_reference_count:
+            self._logger.warn(
+                "AssetRipper Import: SerializeReference is not supported for "
+                f"{self._serialize_reference_count} MonoBehaviour assets; "
+                "structured fields were not parsed."
+            )
 
 
 class AssetRipperBundleWorkflow:
     def __init__(
         self,
         exporter: _BundleExporter,
-        dependency_scanner: BundleDependencyScanBackend,
+        dependency_scanner: _DependencyScanner,
         logger: LoggerPort,
         *,
         progress_factory: ProgressReporterFactoryPort | None = None,
         cancellation: CancellationPort | None = None,
-        max_batch_bytes: int = DEFAULT_MAX_BATCH_BYTES,
-        batch_scheduler: BundleBatchScheduler | None = None,
     ) -> None:
         self._exporter = exporter
         self._dependency_scanner = dependency_scanner
         self._logger = logger
         self._progress_factory = progress_factory or NullProgressReporterFactory()
         self._cancellation = cancellation or NeverCancelled()
-        self._max_batch_bytes = max_batch_bytes
-        self._batch_scheduler = batch_scheduler
-        self._batch_planner = BundleDependencyBatchPlanner(
-            max_batch_bytes=max_batch_bytes
-        )
 
     def run(
         self,
         context: ExecutionContext,
-        inputs: list[Path],
+        inputs: Sequence[Path | BundleArchiveInput],
+        *,
+        concurrency: int,
+        filtered: bool = False,
     ) -> BundleExtractionReport:
-        run_started = time.perf_counter()
+        if concurrency <= 0:
+            raise ValueError("Bundle extraction concurrency must be positive.")
+        try:
+            with InterprocessFileLock(
+                bundle_extraction_lock_path(context),
+                operation="bundle extraction",
+            ):
+                return self._run_locked(
+                    context,
+                    inputs,
+                    concurrency=concurrency,
+                    filtered=filtered,
+                )
+        except OperationCancelledError:
+            raise
+        except InterprocessLockBusyError as exc:
+            raise BundleExtractionError(str(exc)) from exc
+        except BundleExtractionError:
+            raise
+        except (
+            AssetRipperSourceError,
+            AssetRipperToolError,
+            BundleEntryStoreSpaceError,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ) as exc:
+            raise BundleExtractionError(
+                f"Bundle extraction could not continue: {exc}"
+            ) from exc
+
+    def _run_locked(
+        self,
+        context: ExecutionContext,
+        inputs: Sequence[Path | BundleArchiveInput],
+        *,
+        concurrency: int,
+        filtered: bool,
+    ) -> BundleExtractionReport:
+        self._cancellation.raise_if_cancelled()
+        output_root = context.workspace.extracted_bundles
+        output_root.mkdir(parents=True, exist_ok=True)
+        self._recover_publish_transaction(output_root)
+        self._cleanup_staging(output_root)
         archives = self._normalize_inputs(context, inputs)
         if not archives:
-            raise ValueError("AssetRipper requires at least one input archive.")
-        fingerprint = self._extraction_fingerprint(archives)
-        cached = self._load_complete_report(
-            context.workspace.extracted_bundles,
-            fingerprint,
-        )
-        if cached is not None:
-            self._logger.info("Bundle extraction is already up to date.")
-            return cached
+            return BundleExtractionReport()
+        manifest = self._load_manifest(output_root / "manifest.json", context)
+        run_fingerprint = self._run_fingerprint(context, archives, filtered=filtered)
+        warm = self._load_warm_report(output_root, manifest, run_fingerprint)
+        if warm is not None:
+            return warm
 
-        completed = False
+        warnings: list[str] = []
         with self._progress_factory.create(
             len(archives),
             "Extracting bundles...",
             extract_mode=True,
         ) as progress:
-            progress.set_status(f"Scanning 0/{len(archives)} archives")
-            progress.set_loading_progress(0, len(archives), "Scanning dependencies")
             try:
-                self._cancellation.raise_if_cancelled()
-                scan_started = time.perf_counter()
+                progress.set_progress(
+                    0,
+                    len(archives),
+                    stage="scanning",
+                    unit="archives",
+                    secondary_status="Scanning dependencies",
+                )
                 scans = self._dependency_scanner.scan(
                     context,
                     list(archives),
-                    lambda event: self._handle_event(progress, event, None),
+                    lambda event: self._handle_scan_event(progress, event),
                 )
-                scan_seconds = time.perf_counter() - scan_started
-                progress.set_secondary_status("Planning dependency batches")
-                planner_started = time.perf_counter()
-                plan = BundleDependencyPlanner().build(archives, scans)
-                warnings: list[str] = []
-                prepared = self._prepare_plan(plan, warnings)
-                batches = self._batch_planner.build(prepared.executable)
-                planner_seconds = time.perf_counter() - planner_started
-                if not batches:
-                    detail = (
-                        prepared.skipped_components[0].reason
-                        if prepared.skipped_components
-                        else "the dependency scan produced no bundle entries"
+                plan = BundleDependencyPlanner(
+                    self._cancellation.raise_if_cancelled
+                ).build(archives, scans)
+                prepared = self._prepare_plan(plan)
+                warnings.extend(self._plan_warnings(prepared))
+                if not prepared.executable.components:
+                    raise BundleExtractionError(
+                        "Bundle dependency scan found no complete exportable inputs."
                     )
-                    raise AssetRipperExportError(
-                        "AssetRipper dependency scan produced no executable "
-                        f"components: {detail}."
-                    )
-                progress.set_total(len(plan.entries))
-                skipped_node_ids = {
-                    node_id
-                    for skipped in prepared.skipped_components
-                    for node_id in skipped.component.node_ids
-                }
-                progress.set_completed(len(skipped_node_ids))
-                progress.set_status(
-                    f"{len(skipped_node_ids)}/{len(plan.entries)} entries"
+
+                entries = self._unique_entries(prepared.executable.entries)
+                progress.set_progress(
+                    0,
+                    len(entries),
+                    stage="cache_fill",
+                    unit="entries",
+                    secondary_status="Preparing entry cache",
                 )
-                report = self._export_all(
+                store = BundleEntryStore(
+                    bundle_entry_store_root(context),
+                    materializer=self._exporter,
+                    cancellation=self._cancellation,
+                )
+                resolved = store.resolve_many(
                     context,
-                    archives,
-                    plan,
-                    prepared,
-                    batches,
-                    progress,
-                    warnings,
-                    fingerprint,
-                    {
-                        "scan_seconds": scan_seconds,
-                        "planner_seconds": planner_seconds,
-                    },
-                    run_started,
+                    entries,
+                    concurrency=concurrency,
+                    event_callback=lambda event: self._handle_cache_event(
+                        progress, event
+                    ),
                 )
-                self._cancellation.raise_if_cancelled()
-                completed = True
+                resolved_by_node = {
+                    entry.node_id: item
+                    for entry, item in zip(entries, resolved, strict=True)
+                }
+                self._exporter.prepare(context)
+                job_root = output_root.parent / f".bundles-staging-{uuid4().hex}"
+                job_root.mkdir(parents=True)
+                try:
+                    result, batches = self._export_streamed(
+                        context,
+                        prepared.executable,
+                        resolved_by_node,
+                        job_root,
+                        progress,
+                        concurrency=concurrency,
+                    )
+                    merged_assets, collection_failures = self._merge_results(
+                        [result], job_root
+                    )
+                    if collection_failures:
+                        warnings.append(
+                            "AssetRipper could not export "
+                            f"{len(collection_failures)} collection(s); successful "
+                            "outputs were published."
+                        )
+                    exported_target_ids = {
+                        target_id for target_id in result.exported_target_ids
+                    }
+                    requested_target_ids = {
+                        entry.node_id for entry in prepared.executable.entries
+                    }
+                    missing_coverage = requested_target_ids - exported_target_ids
+                    failed_coverage = {
+                        target_id
+                        for failure in collection_failures
+                        for target_id in failure.source_target_ids
+                    }
+                    if missing_coverage - failed_coverage:
+                        raise AssetRipperToolError(
+                            "AssetRipper result did not account for every target input."
+                        )
+                    new_manifest, publish_assets = self._build_manifest(
+                        context,
+                        manifest,
+                        merged_assets,
+                        collection_failures,
+                        prepared.executable,
+                        run_fingerprint,
+                        filtered=filtered,
+                        status=("partial" if collection_failures else "complete"),
+                    )
+                    publish_root = self._prepare_publish_tree(
+                        output_root,
+                        job_root,
+                        manifest,
+                        publish_assets,
+                        filtered=filtered,
+                    )
+                    self._publish_directory_transaction(
+                        output_root,
+                        publish_root,
+                        new_manifest,
+                    )
+                finally:
+                    shutil.rmtree(job_root, ignore_errors=True)
+                progress.set_progress(
+                    len(batches),
+                    len(batches),
+                    stage="exporting",
+                    unit="batches",
+                    status=f"{len(batches)}/{len(batches)} groups",
+                    secondary_status="Bundle extraction complete",
+                )
             except OperationCancelledError:
                 progress.set_failed_status("Bundle extraction cancelled")
                 raise
-            except AssetRipperExportError as exc:
-                progress.set_failed_status(
-                    f"Bundle extraction failed: {exc.__class__.__name__}: {exc}"
-                )
-                failure = ExtractionFailure("<all bundle inputs>", exc)
-                raise ExtractionFailureError("bundle extraction", [failure]) from exc
-            finally:
-                if not completed:
-                    progress.set_secondary_status("Bundle extraction failed")
+            except BaseException:
+                progress.set_failed_status("Bundle extraction failed")
+                raise
 
-        self._logger.info(
-            "Bundle extraction completed: "
-            f"{report.succeeded_batches}/{report.total_batches} batches succeeded, "
-            f"{report.failed_batches} failed, "
-            f"{report.skipped_archives} scan sources skipped, "
-            f"{report.skipped_components} components skipped, "
-            f"{report.conflict_paths} conflicting paths preserved."
+        return BundleExtractionReport(
+            tuple(warnings),
+            len(batches),
+            len(batches),
+            0,
+            len(
+                {
+                    failure.archive_id
+                    for failure in plan.scan_failures
+                    if failure.entry_path is None
+                }
+            ),
+            len(prepared.skipped),
         )
-        return report
 
-    def _export_all(
+    def _export_streamed(
         self,
         context: ExecutionContext,
-        archives: tuple[BundleArchiveInput, ...],
         plan: BundleDependencyPlan,
-        prepared: _PreparedDependencyPlan,
-        batches: tuple[BundleExportBatch, ...],
+        resolved_by_node: dict[str, BundleEntryStoreResult],
+        job_root: Path,
         progress: ProgressReporterPort,
-        warnings: list[str],
-        fingerprint: str,
-        phase_timings: dict[str, float],
-        run_started: float,
-    ) -> BundleExtractionReport:
-        output_root = context.workspace.extracted_bundles
-        staging_root = output_root.parent / f".{output_root.name}.staging-{uuid4().hex}"
-        content_root = staging_root / "content"
-        resume = self._load_partial_resume(output_root, fingerprint, batches)
+        *,
+        concurrency: int,
+    ) -> tuple[AssetRipperExportResult, tuple[BundleExportBatch, ...]]:
+        batches = self._stream_batches(plan)
+        groups: list[AssetRipperExportGroup] = []
+        for batch in batches:
+            target_ids = set(batch.target_node_ids)
+            groups.append(
+                AssetRipperExportGroup(
+                    batch.batch_id,
+                    tuple(
+                        AssetRipperExportInput(
+                            resolved_by_node[entry.node_id].path,
+                            entry.node_id,
+                            entry.node_id in target_ids,
+                        )
+                        for entry in self._unique_entries(batch.entries)
+                    ),
+                )
+            )
+        aggregate = self._batch_for_targets(plan, plan.components, batch_id="stream")
         log_aggregator = _AssetRipperLogAggregator(self._logger)
-        staging_root.mkdir(parents=True)
         try:
-            if resume is not None:
-                self._seed_partial_output(
-                    output_root / "content",
-                    content_root,
-                    resume.merge_index,
-                )
-            completed_node_ids = {
-                node_id
-                for skipped in prepared.skipped_components
-                for node_id in skipped.component.node_ids
-            }
-            batch_records: list[dict[str, object]] = []
-            merge_index = (
-                resume.merge_index if resume is not None else _OutputMergeIndex()
-            )
-            succeeded_batches = 0
-            failed_batches = 0
-            first_batch_error: AssetRipperExportError | None = None
-            entry_store = BundleEntryStore(
-                bundle_entry_store_root(context),
-                cancellation=self._cancellation,
-            )
-            cache_started = time.perf_counter()
-            try:
-                resolved_entries = entry_store.resolve_many(prepared.executable.entries)
-            except (KeyError, RuntimeError, ValueError) as exc:
-                raise AssetRipperToolError(
-                    "Could not populate the AssetRipper entry cache: "
-                    f"{exc.__class__.__name__}: {exc}"
-                ) from exc
-            resolved_by_node = {
-                entry.node_id: resolved
-                for entry, resolved in zip(
-                    prepared.executable.entries,
-                    resolved_entries,
-                    strict=True,
-                )
-            }
-            logical_entry_count = sum(len(batch.entries) for batch in batches)
-            duplicate_entry_reuses = logical_entry_count - len(resolved_entries)
-            entry_cache_hits = (
-                sum(result.hit for result in resolved_entries) + duplicate_entry_reuses
-            )
-            entry_cache_misses = sum(not result.hit for result in resolved_entries)
-            entry_cache_bytes_written = sum(
-                result.bytes_written for result in resolved_entries
-            )
-            phase_timings["entry_cache_seconds"] = time.perf_counter() - cache_started
-            successful_batch_ids = (
-                set(resume.successful_batches) if resume is not None else set()
-            )
-            pending_batches = tuple(
-                batch for batch in batches if batch.batch_id not in successful_batch_ids
-            )
-            schedule = self._schedule_batches(pending_batches or batches)
-            self._logger.info(
-                "AssetRipper batch scheduler selected "
-                f"{schedule.worker_count} worker(s); estimated peak per worker is "
-                f"{schedule.estimated_worker_bytes} bytes."
-            )
-            if (
-                schedule.worker_count == 1
-                and len(pending_batches) > 1
-                and schedule.available_memory_bytes
-                < schedule.memory_reserve_bytes + schedule.estimated_worker_bytes
-            ):
-                self._logger.warn(
-                    "Available memory does not satisfy the preferred parallel "
-                    "AssetRipper reserve; continuing with one worker and the "
-                    "persistent disk entry cache."
-                )
-            prepare = getattr(self._exporter, "prepare", None)
-            prepare_started = time.perf_counter()
-            if callable(prepare):
-                prepare(context)
-            phase_timings["tool_prepare_seconds"] = (
-                time.perf_counter() - prepare_started
-            )
-            event_lock = threading.Lock()
-            export_outcomes: dict[
-                str,
-                tuple[
-                    Path,
-                    tuple[AssetRipperExportResult, float] | AssetRipperExportError,
-                ],
-            ] = {}
-            export_merge_started = time.perf_counter()
-            merge_seconds = 0.0
-            with ThreadPoolExecutor(
-                max_workers=schedule.worker_count,
-                thread_name_prefix="assetripper-batch",
-            ) as executor:
-                pending = iter(
-                    (batch_index, batch)
-                    for batch_index, batch in enumerate(batches, start=1)
-                    if batch.batch_id not in successful_batch_ids
-                )
-                active: dict[
-                    Future[tuple[AssetRipperExportResult, float]],
-                    tuple[Path, BundleExportBatch],
-                ] = {}
-
-                def submit_next() -> bool:
-                    try:
-                        batch_index, batch = next(pending)
-                    except StopIteration:
-                        return False
-                    self._cancellation.raise_if_cancelled()
-                    if batch.oversized:
-                        self._logger.warn(
-                            f"AssetRipper dependency batch {batch.batch_id} is "
-                            f"{batch.total_bytes} bytes and exceeds the "
-                            f"{batch.max_batch_bytes}-byte batch target; dependent "
-                            "entries will remain together."
-                        )
-                    batch_label = f"Batch {batch_index}/{len(batches)}"
-                    progress.set_secondary_status(batch_label)
-                    batch_work_root = staging_root / ".work" / batch.batch_id
-                    batch_output_root = batch_work_root / "output"
-                    batch_inputs = self._batch_inputs(batch, resolved_by_node)
-
-                    def handle_batch_event(
-                        event: AssetRipperProcessEvent,
-                        label: str = batch_label,
-                    ) -> None:
-                        with event_lock:
-                            self._handle_event(
-                                progress,
-                                event,
-                                log_aggregator,
-                                label,
-                            )
-
-                    future = executor.submit(
-                        self._export_timed,
-                        self._exporter,
-                        context,
-                        batch_inputs,
-                        batch_output_root,
-                        handle_batch_event,
-                    )
-                    active[future] = (batch_work_root, batch)
-                    return True
-
-                for _ in range(schedule.worker_count):
-                    if not submit_next():
-                        break
-
-                fatal_error: BaseException | None = None
-                while active:
-                    done, _ = wait(tuple(active), return_when=FIRST_COMPLETED)
-                    for future in done:
-                        batch_work_root, batch = active.pop(future)
-                        if future.cancelled():
-                            continue
-                        try:
-                            outcome = future.result()
-                        except AssetRipperExportError as exc:
-                            if isinstance(exc, AssetRipperToolError):
-                                fatal_error = fatal_error or exc
-                            else:
-                                export_outcomes[batch.batch_id] = (
-                                    batch_work_root,
-                                    exc,
-                                )
-                        except BaseException as exc:
-                            fatal_error = fatal_error or exc
-                        else:
-                            export_outcomes[batch.batch_id] = (
-                                batch_work_root,
-                                outcome,
-                            )
-
-                    if fatal_error is not None:
-                        for future in active:
-                            future.cancel()
-                        continue
-                    while len(active) < schedule.worker_count and submit_next():
-                        pass
-
-                if fatal_error is not None:
-                    raise fatal_error
-
-                for batch_index, batch in enumerate(batches, start=1):
-                    if batch.batch_id in successful_batch_ids:
-                        succeeded_batches += 1
-                        batch_records.append(
-                            dict(resume.successful_batches[batch.batch_id])  # type: ignore[union-attr]
-                        )
-                        completed_node_ids.update(batch.node_ids)
-                        progress.set_completed(len(completed_node_ids))
-                        progress.set_status(
-                            f"{len(completed_node_ids)}/{len(plan.entries)} entries"
-                        )
-                        continue
-                    batch_work_root, export_outcome = export_outcomes[batch.batch_id]
-                    if schedule.worker_count > 1:
-                        progress.set_secondary_status(
-                            f"Merging batch {batch_index}/{len(batches)}"
-                        )
-                    batch_output_root = batch_work_root / "output"
-                    batch_record = self._batch_manifest(batch)
-                    try:
-                        if isinstance(export_outcome, AssetRipperExportError):
-                            raise export_outcome
-                        result, export_seconds = export_outcome
-                        self._validate_target_coverage(batch, result)
-                        merge_started = time.perf_counter()
-                        conflict_paths = self._merge_batch_output(
-                            batch_output_root,
-                            content_root,
-                            result.files,
-                            batch.batch_id,
-                            merge_index,
-                        )
-                        merge_seconds += time.perf_counter() - merge_started
-                    except OperationCancelledError:
-                        raise
-                    except AssetRipperToolError:
-                        raise
-                    except AssetRipperExportError as exc:
-                        failed_batches += 1
-                        if first_batch_error is None:
-                            first_batch_error = exc
-                        warning = (
-                            f"[BUNDLE_BATCH_FAILED] {batch.batch_id} failed; "
-                            "continuing with later batches: "
-                            f"{exc.__class__.__name__}: {exc}"
-                        )
-                        self._record_warning(warnings, warning)
-                        batch_record.update(
-                            {
-                                "status": "failed",
-                                "error": {
-                                    "type": exc.__class__.__name__,
-                                    "message": str(exc),
-                                },
-                                "conflict_count": 0,
-                            }
-                        )
-                    else:
-                        succeeded_batches += 1
-                        batch_record.update(
-                            {
-                                "status": "succeeded",
-                                "error": None,
-                                "conflict_count": len(conflict_paths),
-                                "export_seconds": export_seconds,
-                                "coverage": {
-                                    "requested": list(result.requested_target_ids),
-                                    "resolved": list(result.resolved_target_ids),
-                                    "exported": list(result.exported_target_ids),
-                                },
-                            }
-                        )
-                        if conflict_paths:
-                            examples = ", ".join(conflict_paths[:3])
-                            warning = (
-                                f"[BUNDLE_OUTPUT_CONFLICT] {batch.batch_id} produced "
-                                f"{len(conflict_paths)} conflicting path(s); all unique "
-                                f"variants were preserved. Examples: {examples}"
-                            )
-                            self._record_warning(warnings, warning)
-                    finally:
-                        if batch_work_root.exists():
-                            shutil.rmtree(batch_work_root)
-                    completed_node_ids.update(batch.node_ids)
-                    progress.set_completed(len(completed_node_ids))
-                    progress.set_status(
-                        f"{len(completed_node_ids)}/{len(plan.entries)} entries"
-                    )
-                    batch_records.append(batch_record)
-            phase_timings["export_merge_seconds"] = (
-                time.perf_counter() - export_merge_started
-            )
-            phase_timings["merge_seconds"] = merge_seconds
-            work_root = staging_root / ".work"
-            if work_root.exists():
-                work_root.rmdir()
-            if succeeded_batches == 0:
-                detail = (
-                    f" First error: {first_batch_error.__class__.__name__}: "
-                    f"{first_batch_error}"
-                    if first_batch_error is not None
-                    else ""
-                )
-                raise AssetRipperExportError(
-                    "AssetRipper bundle extraction produced no publishable output; "
-                    f"no batch succeeded.{detail}"
-                )
             self._cancellation.raise_if_cancelled()
-            exported_files = self._files_manifest(merge_index)
-            complete = not (
-                failed_batches
-                or prepared.skipped_components
-                or plan.scan_failures
-                or merge_index.conflict_paths
+            progress.set_progress(
+                0,
+                len(groups),
+                stage="loading",
+                unit="groups",
+                status=f"0/{len(groups)} groups",
+                secondary_status="Loading bundle groups",
             )
-            if not complete:
-                self._record_warning(
-                    warnings,
-                    "[BUNDLE_EXTRACTION_PARTIAL] Bundle extraction published "
-                    f"partial output: {succeeded_batches}/{len(batches)} batches "
-                    f"succeeded, {failed_batches} failed, "
-                    f"{len(plan.scan_failures)} scan source(s) skipped, "
-                    f"{len(prepared.skipped_components)} components skipped, and "
-                    f"{merge_index.conflict_paths} conflicting paths preserved.",
-                )
-            manifest = {
-                "schema_version": _BUNDLE_MANIFEST_SCHEMA_VERSION,
-                "layout": "content",
-                "complete": complete,
-                "fingerprint": fingerprint,
-                "warnings": list(warnings),
-                "entry_cache": {
-                    "hits": entry_cache_hits,
-                    "misses": entry_cache_misses,
-                    "bytes_written": entry_cache_bytes_written,
-                },
-                "scheduler": {
-                    "worker_count": schedule.worker_count,
-                    "available_memory_bytes": schedule.available_memory_bytes,
-                    "memory_reserve_bytes": schedule.memory_reserve_bytes,
-                    "estimated_worker_bytes": schedule.estimated_worker_bytes,
-                },
-                "timings": {
-                    **phase_timings,
-                    "total_seconds": time.perf_counter() - run_started,
-                },
-                "assetripper": {
-                    "commit": ASSETRIPPER_COMMIT,
-                    "overlay_version": ASSETRIPPER_OVERLAY_VERSION,
-                    "overlay_hash": AssetRipperSourceResolver.overlay_hash(),
-                    "wrapper_version": ASSETRIPPER_EXPORTER_WRAPPER_VERSION,
-                },
-                "inputs": [
-                    {"name": archive.archive_id, "size": archive.size}
-                    for archive in archives
-                ],
-                "entries": [self._entry_manifest(entry) for entry in plan.entries],
-                "components": [
-                    self._component_manifest(component) for component in plan.components
-                ],
-                "batches": batch_records,
-                "skipped_archives": [
-                    {
-                        "archive": failure.archive_id,
-                        "entry": failure.entry_path,
-                        "reason": failure.error,
-                    }
-                    for failure in plan.scan_failures
-                ],
-                "skipped_components": [
-                    {
-                        "id": skipped.component.component_id,
-                        "entries": list(skipped.component.node_ids),
-                        "reason": skipped.reason,
-                    }
-                    for skipped in prepared.skipped_components
-                ],
-                "conflicts": self._conflict_manifest(merge_index),
-                "outputs": self._output_manifest(merge_index),
-                "summary": {
-                    "total_batches": len(batches),
-                    "succeeded_batches": succeeded_batches,
-                    "failed_batches": failed_batches,
-                    "total_components": len(plan.components),
-                    "executable_components": len(prepared.executable.components),
-                    "skipped_components": len(prepared.skipped_components),
-                    "skipped_archives": len(plan.scan_failures),
-                    "conflict_paths": merge_index.conflict_paths,
-                    "conflict_variants": merge_index.conflict_variants,
-                },
-                "files": exported_files,
-            }
-            write_json_atomic(
-                content_root / "manifest.json",
-                manifest,
-                indent=2,
-                sort_keys=True,
+            result = self._exporter.export_grouped(
+                context,
+                groups,
+                job_root,
+                concurrency=concurrency,
+                event_callback=partial(
+                    self._handle_export_event,
+                    progress,
+                    batch=aggregate,
+                    completed_batches=0,
+                    total_batches=len(groups),
+                    logs=log_aggregator,
+                ),
             )
-            publish_staged_directory(staging_root, output_root)
-            return BundleExtractionReport(
-                warnings=tuple(warnings),
-                complete=complete,
-                total_batches=len(batches),
-                succeeded_batches=succeeded_batches,
-                failed_batches=failed_batches,
-                skipped_archives=len(plan.scan_failures),
-                skipped_components=len(prepared.skipped_components),
-                conflict_paths=merge_index.conflict_paths,
-                conflict_variants=merge_index.conflict_variants,
-            )
+            self._validate_result(aggregate, result, job_root)
         finally:
             log_aggregator.flush()
-            shutil.rmtree(staging_root, ignore_errors=True)
+        return result, batches
 
-    @staticmethod
-    def _export_timed(
-        exporter: _BundleExporter,
-        context: ExecutionContext,
-        inputs: list[AssetRipperExportInput],
-        output_directory: Path,
-        event_callback: Callable[[AssetRipperProcessEvent], None],
-    ) -> tuple[AssetRipperExportResult, float]:
-        started = time.perf_counter()
-        result = exporter.export(
-            context,
-            inputs,
-            output_directory,
-            event_callback,
-        )
-        return result, time.perf_counter() - started
-
-    @staticmethod
-    def _batch_inputs(
-        batch: BundleExportBatch,
-        resolved_by_node: dict[str, BundleEntryStoreResult],
-    ) -> list[AssetRipperExportInput]:
-        inputs: list[AssetRipperExportInput] = []
-        target_node_ids = set(batch.target_node_ids)
-        for entry in batch.entries:
-            resolved = resolved_by_node[entry.node_id]
-            inputs.append(
-                AssetRipperExportInput(
-                    resolved.path,
-                    entry.node_id,
-                    entry.node_id in target_node_ids,
-                )
-            )
-        return inputs
-
-    def _schedule_batches(
+    def _validate_result(
         self,
-        batches: tuple[BundleExportBatch, ...],
-    ) -> BundleBatchScheduleDecision:
-        estimates = [
-            BundleBatchScheduler.estimate_batch_memory(
-                batch.total_bytes,
-                len(batch.entries),
-            )
-            for batch in batches
-        ]
-        if self._batch_scheduler is None:
-            return BundleBatchScheduleDecision(
-                worker_count=1,
-                available_memory_bytes=0,
-                memory_reserve_bytes=0,
-                estimated_worker_bytes=max(estimates),
-            )
-        return self._batch_scheduler.decide(estimates)
-
-    @staticmethod
-    def _validate_target_coverage(
         batch: BundleExportBatch,
         result: AssetRipperExportResult,
+        staging_root: Path,
     ) -> None:
         expected = set(batch.target_node_ids)
-        coverage = {
-            "requested": result.requested_target_ids,
-            "resolved": result.resolved_target_ids,
-            "exported": result.exported_target_ids,
-        }
-        mismatches = [
-            name
-            for name, node_ids in coverage.items()
-            if len(node_ids) != len(expected) or set(node_ids) != expected
-        ]
-        if mismatches:
-            raise _BundleBatchError(
-                "AssetRipper selective export target coverage is incomplete for "
-                f"{batch.batch_id}: {', '.join(mismatches)} coverage did not match "
-                f"the {len(expected)} requested target(s)."
+        if set(result.requested_target_ids) != expected:
+            raise AssetRipperToolError(
+                "AssetRipper result target set does not match the export request."
             )
+        if not set(result.exported_target_ids) <= expected:
+            raise AssetRipperToolError(
+                "AssetRipper result contains unexpected target coverage."
+            )
+        stable_ids: set[str] = set()
+        paths: set[str] = set()
+        for asset in result.assets:
+            if asset.stable_id in stable_ids:
+                raise AssetRipperToolError(
+                    "AssetRipper returned a duplicate stable ID."
+                )
+            stable_ids.add(asset.stable_id)
+            identity = (
+                f"{asset.normalized_collection}\n{asset.class_id}\n{asset.path_id}"
+            )
+            if hashlib.sha256(identity.encode()).hexdigest()[:20] != asset.stable_id:
+                raise AssetRipperToolError("AssetRipper stable identity is invalid.")
+            for item in asset.files:
+                path = self._safe_child(staging_root, item.path)
+                if not PurePosixPath(item.path).parts[0].casefold() == "assets":
+                    raise AssetRipperToolError(
+                        "AssetRipper output is outside the Assets layout."
+                    )
+                key = item.path.casefold()
+                if key in paths:
+                    raise AssetRipperToolError(
+                        "AssetRipper returned duplicate output paths."
+                    )
+                paths.add(key)
+                try:
+                    stat = path.stat()
+                except OSError as exc:
+                    raise AssetRipperToolError(
+                        "AssetRipper did not publish a declared output file."
+                    ) from exc
+                if stat.st_size != item.size or stat.st_mtime_ns != item.mtime_ns:
+                    raise AssetRipperToolError(
+                        "AssetRipper output metadata changed before publication."
+                    )
 
-    @staticmethod
-    def _entry_manifest(entry: BundleEntryInput) -> dict[str, object]:
-        return {
-            "node_id": entry.node_id,
-            "source_archive": entry.archive.archive_id,
-            "entry_path": entry.entry_path,
-            "sha256": entry.sha256,
-            "size": entry.size,
-            "aliases": [
-                {"source_archive": archive_id, "entry_path": entry_path}
-                for archive_id, entry_path in entry.aliases
-            ],
-        }
-
-    def _handle_event(
+    def _merge_results(
         self,
-        progress: ProgressReporterPort,
-        event: AssetRipperProcessEvent,
-        log_aggregator: _AssetRipperLogAggregator | None,
-        batch_label: str | None = None,
-    ) -> None:
-        if isinstance(event, AssetRipperPhaseEvent):
-            if event.phase == "processing":
-                progress.set_secondary_status("Processing")
-                progress.set_processing_status("Processing")
-            elif event.phase == "exporting":
-                progress.set_secondary_status(
-                    f"{batch_label}: Exporting" if batch_label else "Exporting"
+        results: Sequence[AssetRipperExportResult],
+        staging_root: Path,
+    ) -> tuple[
+        tuple[AssetRipperExportedAsset, ...], tuple[AssetRipperCollectionFailure, ...]
+    ]:
+        assets: dict[str, AssetRipperExportedAsset] = {}
+        failures: dict[str, AssetRipperCollectionFailure] = {}
+        for result in results:
+            for failure in result.failures:
+                existing_failure = failures.get(failure.stable_id)
+                if existing_failure is None:
+                    failures[failure.stable_id] = failure
+                else:
+                    failures[failure.stable_id] = replace(
+                        existing_failure,
+                        source_target_ids=tuple(
+                            sorted(
+                                set(existing_failure.source_target_ids)
+                                | set(failure.source_target_ids),
+                                key=str.casefold,
+                            )
+                        ),
+                    )
+            for asset in result.assets:
+                failures.pop(asset.stable_id, None)
+                existing = assets.get(asset.stable_id)
+                if existing is None:
+                    assets[asset.stable_id] = asset
+                    continue
+                if (
+                    existing.normalized_collection != asset.normalized_collection
+                    or existing.class_id != asset.class_id
+                    or existing.path_id != asset.path_id
+                ):
+                    raise AssetRipperToolError("Stable asset identity collision.")
+                for item in asset.files:
+                    self._safe_child(staging_root, item.path).unlink(missing_ok=True)
+                assets[asset.stable_id] = replace(
+                    existing,
+                    source_target_ids=tuple(
+                        sorted(
+                            set(existing.source_target_ids)
+                            | set(asset.source_target_ids),
+                            key=str.casefold,
+                        )
+                    ),
                 )
-                progress.set_processing_status("Processing complete")
-        elif isinstance(event, AssetRipperProgressEvent):
-            if event.phase == "loading":
-                progress.set_loading_progress(
-                    event.current,
-                    event.total,
-                    self._format_stage(event.stage),
-                )
-            else:
-                progress.set_secondary_status(
-                    f"{batch_label + ': ' if batch_label else ''}"
-                    f"Exporting assets {event.current}/{event.total}"
-                )
-        elif isinstance(event, AssetRipperHeartbeatEvent):
-            progress.set_processing_status(
-                f"Processing {self._format_elapsed(event.elapsed_seconds)}"
-            )
-        elif isinstance(event, AssetRipperLogEvent):
-            if log_aggregator is not None:
-                log_aggregator.handle(event)
-        elif isinstance(event, AssetRipperScanProgressEvent):
-            progress.set_loading_progress(
-                event.current,
-                event.total,
-                "Scanning dependencies",
-            )
-            progress.set_status(f"Scanned {event.current}/{event.total} bundles")
+        return (
+            tuple(sorted(assets.values(), key=lambda item: item.stable_id)),
+            tuple(sorted(failures.values(), key=lambda item: item.stable_id)),
+        )
 
-    def _normalize_inputs(
+    def _build_manifest(
         self,
         context: ExecutionContext,
-        inputs: list[Path],
-    ) -> tuple[BundleArchiveInput, ...]:
-        raw_root = context.workspace.raw_bundles.resolve(strict=False)
-        archives: list[BundleArchiveInput] = []
-        identifiers: set[str] = set()
-        for path in inputs:
-            resolved = path.resolve(strict=True)
-            try:
-                archive_id = resolved.relative_to(raw_root).as_posix()
-            except ValueError:
-                archive_id = resolved.name
-            normalized_id = archive_id.casefold()
-            if normalized_id in identifiers:
-                raise ValueError(f"Duplicate bundle archive identifier: {archive_id}")
-            identifiers.add(normalized_id)
-            archives.append(
-                BundleArchiveInput.from_path(resolved, archive_id=archive_id)
+        old_manifest: dict[str, object],
+        assets: Sequence[AssetRipperExportedAsset],
+        failures: Sequence[AssetRipperCollectionFailure],
+        plan: BundleDependencyPlan,
+        run_fingerprint: str,
+        *,
+        filtered: bool,
+        status: str,
+    ) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
+        entries = {entry.node_id: entry for entry in plan.entries}
+        old_assets = self._manifest_assets(old_manifest)
+        records = dict(old_assets) if filtered else {}
+        successful_ids = {asset.stable_id for asset in assets}
+        for stable_id in successful_ids:
+            records.pop(stable_id, None)
+        publish_assets: dict[str, dict[str, object]] = {}
+        for asset in assets:
+            canonical = sorted(set(asset.source_target_ids), key=str.casefold)
+            aliases = sorted(
+                {
+                    f"{archive_id}::{entry_path}"
+                    for source in canonical
+                    if (entry := entries.get(source)) is not None
+                    for archive_id, entry_path in entry.aliases
+                },
+                key=str.casefold,
             )
-        return tuple(sorted(archives, key=lambda item: item.archive_id.casefold()))
-
-    def _extraction_fingerprint(
-        self,
-        archives: tuple[BundleArchiveInput, ...],
-    ) -> str:
-        inputs: list[dict[str, object]] = []
-        for archive in archives:
-            identity: dict[str, object] = {
-                "archive_id": archive.archive_id,
-                "size": archive.size,
+            record: dict[str, object] = {
+                "asset_type": asset.asset_type,
+                "readable_name": asset.readable_name,
+                "collection": asset.collection,
+                "normalized_collection": asset.normalized_collection,
+                "class_id": asset.class_id,
+                "path_id": asset.path_id,
+                "canonical_sources": canonical,
+                "alias_sources": aliases,
+                "resource_version": context.resource_version,
+                "files": [
+                    {
+                        "path": item.path,
+                        "size": item.size,
+                        "mtime_ns": item.mtime_ns,
+                        "sha256": item.sha256,
+                    }
+                    for item in asset.files
+                ],
             }
-            if archive.checksum is not None:
-                identity.update(
-                    {
-                        "identity": "catalog",
-                        "checksum_algorithm": archive.checksum.algorithm,
-                        "checksum_value": archive.checksum.value,
-                    }
-                )
-            else:
-                identity.update(
-                    {
-                        "identity": "local",
-                        "path": str(archive.path),
-                        "mtime_ns": archive.mtime_ns,
-                    }
-                )
-            inputs.append(identity)
-        payload = {
-            "manifest_schema": _BUNDLE_MANIFEST_SCHEMA_VERSION,
-            "planner_version": _BUNDLE_PLANNER_VERSION,
-            "max_batch_bytes": self._max_batch_bytes,
-            "dependency_scanner": assetripper_dependency_scan_cache_key(),
-            "exporter": assetripper_exporter_cache_key(),
-            "inputs": inputs,
+            records[asset.stable_id] = record
+            publish_assets[asset.stable_id] = record
+        manifest = {
+            "schema_version": _BUNDLE_MANIFEST_SCHEMA_VERSION,
+            "layout": _BUNDLE_LAYOUT,
+            "region": context.region,
+            "platform": context.platform,
+            "resource_version": context.resource_version,
+            "profile": _PROCESSING_PROFILE,
+            "tool_fingerprint": assetripper_exporter_cache_key(),
+            "run_fingerprint": run_fingerprint,
+            "status": status,
+            "assets": records,
+            "failures": [
+                {
+                    "stable_id": failure.stable_id,
+                    "source_target_ids": list(failure.source_target_ids),
+                    "error": failure.error,
+                    "preserved_previous": (
+                        filtered and failure.stable_id in old_assets
+                    ),
+                }
+                for failure in failures
+            ],
         }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(encoded.encode("utf8")).hexdigest()
+        return manifest, publish_assets
 
-    @staticmethod
-    def _load_complete_report(
+    def _prepare_publish_tree(
+        self,
         output_root: Path,
+        job_root: Path,
+        old_manifest: dict[str, object],
+        publish_assets: dict[str, dict[str, object]],
+        *,
+        filtered: bool,
+    ) -> Path:
+        source_assets = self._find_assets_directory(job_root)
+        if source_assets is None:
+            source_assets = job_root / "Assets"
+            source_assets.mkdir()
+        if not filtered or old_manifest.get("schema_version") != 10:
+            return source_assets
+
+        self._validate_complete_inventory(output_root, old_manifest)
+        merged = job_root / "MergedAssets"
+        merged.mkdir()
+        updated_ids = set(publish_assets)
+        old_assets = self._manifest_assets(old_manifest)
+        claimed: set[str] = set()
+        for stable_id, record in sorted(old_assets.items()):
+            if stable_id in updated_ids:
+                continue
+            files = record.get("files")
+            assert isinstance(files, list)
+            for item in files:
+                assert isinstance(item, dict)
+                relative = str(item["path"])
+                relative_inside = self._inside_assets(relative)
+                source = self._safe_child(output_root, relative)
+                destination = self._safe_child(merged, relative_inside)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                self._link_or_copy(source, destination)
+                claimed.add(relative.casefold())
+
+        for record in publish_assets.values():
+            files = record.get("files")
+            assert isinstance(files, list)
+            rewritten: list[dict[str, object]] = []
+            for item in files:
+                assert isinstance(item, dict)
+                desired = str(item["path"])
+                allocated = self._allocate_path(desired, claimed)
+                claimed.add(allocated.casefold())
+                source = self._safe_child(job_root, desired)
+                destination = self._safe_child(merged, self._inside_assets(allocated))
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                source.replace(destination)
+                stat = destination.stat()
+                rewritten.append(
+                    {
+                        **item,
+                        "path": allocated,
+                        "mtime_ns": stat.st_mtime_ns,
+                    }
+                )
+            record["files"] = rewritten
+        return merged
+
+    def _publish_directory_transaction(
+        self,
+        output_root: Path,
+        staged_assets: Path,
+        manifest: dict[str, object],
+    ) -> None:
+        journal_path = output_root / ".bundle-publish.json"
+        transaction_root = output_root / f".publish-{uuid4().hex}"
+        transaction_root.mkdir()
+        manifest_path = output_root / "manifest.json"
+        manifest_backup = transaction_root / "manifest.backup"
+        had_manifest = manifest_path.is_file()
+        if had_manifest:
+            shutil.copy2(manifest_path, manifest_backup)
+        existing = self._existing_assets_directories(output_root)
+        backups = [
+            {
+                "name": path.name,
+                "backup": str(transaction_root / f"assets-{index}"),
+            }
+            for index, path in enumerate(existing)
+        ]
+        journal: dict[str, object] = {
+            "schema_version": _TRANSACTION_SCHEMA_VERSION,
+            "phase": "prepared",
+            "transaction_root": str(transaction_root),
+            "staged_assets": str(staged_assets),
+            "had_manifest": had_manifest,
+            "backups": backups,
+        }
+        write_json_atomic(journal_path, journal, separators=(",", ":"))
+        try:
+            for path, item in zip(existing, backups, strict=True):
+                path.replace(Path(str(item["backup"])))
+            public_assets = output_root / "Assets"
+            staged_assets.replace(public_assets)
+            journal["phase"] = "files_applied"
+            write_json_atomic(journal_path, journal, separators=(",", ":"))
+            write_json_atomic(
+                manifest_path,
+                manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            journal["phase"] = "manifest_committed"
+            write_json_atomic(journal_path, journal, separators=(",", ":"))
+        except BaseException:
+            self._recover_publish_transaction(output_root)
+            raise
+        shutil.rmtree(transaction_root, ignore_errors=True)
+        journal_path.unlink(missing_ok=True)
+
+    def _recover_publish_transaction(self, output_root: Path) -> None:
+        journal_path = output_root / ".bundle-publish.json"
+        if not journal_path.is_file():
+            return
+        try:
+            payload = json.loads(journal_path.read_text(encoding="utf8"))
+        except (OSError, ValueError) as exc:
+            raise BundleExtractionError(
+                "The bundle publish journal is corrupted; existing output was left unchanged."
+            ) from exc
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != _TRANSACTION_SCHEMA_VERSION
+            or payload.get("phase")
+            not in {"prepared", "files_applied", "manifest_committed"}
+            or not isinstance(payload.get("transaction_root"), str)
+            or not isinstance(payload.get("staged_assets"), str)
+            or not isinstance(payload.get("backups"), list)
+        ):
+            raise BundleExtractionError("The bundle publish journal is invalid.")
+        transaction_root = Path(payload["transaction_root"]).resolve(strict=False)
+        output_resolved = output_root.resolve(strict=False)
+        if (
+            transaction_root.parent != output_resolved
+            or not transaction_root.name.startswith(".publish-")
+        ):
+            raise BundleExtractionError("The bundle publish journal is unsafe.")
+        if payload["phase"] == "manifest_committed":
+            shutil.rmtree(transaction_root, ignore_errors=True)
+            journal_path.unlink(missing_ok=True)
+            return
+        staged_assets = Path(payload["staged_assets"])
+        files_were_applied = (
+            payload["phase"] == "files_applied" or not staged_assets.exists()
+        )
+        if files_were_applied:
+            public_assets = output_root / "Assets"
+            if public_assets.is_dir():
+                shutil.rmtree(public_assets, ignore_errors=True)
+        for item in payload["backups"]:
+            if not isinstance(item, dict):
+                raise BundleExtractionError("The bundle publish journal is invalid.")
+            name = item.get("name")
+            backup = item.get("backup")
+            if (
+                not isinstance(name, str)
+                or name.casefold() != "assets"
+                or not isinstance(backup, str)
+            ):
+                raise BundleExtractionError("The bundle publish journal is invalid.")
+            source = Path(backup).resolve(strict=False)
+            if source.parent != transaction_root:
+                raise BundleExtractionError("The bundle publish journal is unsafe.")
+            if source.exists():
+                source.replace(output_root / name)
+        manifest_path = output_root / "manifest.json"
+        manifest_backup = transaction_root / "manifest.backup"
+        if payload.get("had_manifest") is True and manifest_backup.is_file():
+            os.replace(manifest_backup, manifest_path)
+        elif payload.get("had_manifest") is False:
+            manifest_path.unlink(missing_ok=True)
+        shutil.rmtree(transaction_root, ignore_errors=True)
+        journal_path.unlink(missing_ok=True)
+
+    def _load_manifest(
+        self,
+        path: Path,
+        context: ExecutionContext,
+    ) -> dict[str, object]:
+        if not path.exists():
+            return self._empty_manifest(context)
+        try:
+            payload = json.loads(path.read_text(encoding="utf8"))
+        except (OSError, ValueError) as exc:
+            raise BundleExtractionError(
+                "The bundle manifest is unreadable or corrupted; existing output was left unchanged."
+            ) from exc
+        if isinstance(payload, dict) and payload.get("schema_version") == 9:
+            return self._empty_manifest(context)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != _BUNDLE_MANIFEST_SCHEMA_VERSION
+            or payload.get("layout") != _BUNDLE_LAYOUT
+            or payload.get("region") != context.region
+            or payload.get("platform") != context.platform
+            or not isinstance(payload.get("assets"), dict)
+            or not isinstance(payload.get("failures"), list)
+        ):
+            raise BundleExtractionError(
+                "The bundle manifest has an incompatible or invalid structure; existing output was left unchanged."
+            )
+        declared_paths: set[str] = set()
+        for stable_id, record in self._manifest_assets(payload).items():
+            if not self._valid_asset_record(stable_id, record):
+                raise BundleExtractionError(
+                    "The bundle manifest contains an invalid asset record; existing output was left unchanged."
+                )
+            files = record["files"]
+            assert isinstance(files, list)
+            for item in files:
+                assert isinstance(item, dict)
+                path_key = str(item["path"]).casefold()
+                if path_key in declared_paths:
+                    raise BundleExtractionError(
+                        "The bundle manifest assigns one output path to multiple assets."
+                    )
+                declared_paths.add(path_key)
+        return payload
+
+    def _load_warm_report(
+        self,
+        output_root: Path,
+        manifest: dict[str, object],
         fingerprint: str,
     ) -> BundleExtractionReport | None:
-        content_root = output_root / "content"
-        manifest_path = content_root / "manifest.json"
-        try:
-            payload = json.loads(manifest_path.read_text(encoding="utf8"))
-        except (OSError, ValueError):
-            return None
         if (
-            not isinstance(payload, dict)
-            or payload.get("schema_version") != _BUNDLE_MANIFEST_SCHEMA_VERSION
-            or payload.get("fingerprint") != fingerprint
-            or payload.get("complete") is not True
+            manifest.get("schema_version") != _BUNDLE_MANIFEST_SCHEMA_VERSION
+            or manifest.get("run_fingerprint") != fingerprint
+            or manifest.get("status") != "complete"
+            or manifest.get("tool_fingerprint") != assetripper_exporter_cache_key()
+            or manifest.get("profile") != _PROCESSING_PROFILE
         ):
             return None
-        summary = payload.get("summary")
-        warnings = payload.get("warnings", [])
-        files = payload.get("files")
-        if (
-            not isinstance(summary, dict)
-            or not isinstance(warnings, list)
-            or not AssetRipperBundleWorkflow._validate_complete_inventory(
-                content_root,
-                files,
-            )
-        ):
-            return None
-
-        def count(name: str) -> int | None:
-            value = summary.get(name)
-            return (
-                value
-                if isinstance(value, int) and not isinstance(value, bool)
-                else None
-            )
-
-        values = {
-            name: count(name)
-            for name in (
-                "total_batches",
-                "succeeded_batches",
-                "failed_batches",
-                "skipped_archives",
-                "skipped_components",
-                "conflict_paths",
-                "conflict_variants",
-            )
-        }
-        if any(value is None for value in values.values()) or not all(
-            isinstance(item, str) for item in warnings
-        ):
-            return None
-        return BundleExtractionReport(
-            warnings=tuple(warnings),
-            complete=True,
-            total_batches=values["total_batches"] or 0,
-            succeeded_batches=values["succeeded_batches"] or 0,
-            failed_batches=values["failed_batches"] or 0,
-            skipped_archives=values["skipped_archives"] or 0,
-            skipped_components=values["skipped_components"] or 0,
-            conflict_paths=values["conflict_paths"] or 0,
-            conflict_variants=values["conflict_variants"] or 0,
-        )
-
-    @staticmethod
-    def _validate_complete_inventory(content_root: Path, payload: object) -> bool:
-        if not isinstance(payload, list):
-            return False
         try:
-            resolved_root = content_root.resolve(strict=True)
-        except OSError:
-            return False
-        if content_root.is_symlink() or not resolved_root.is_dir():
-            return False
+            changed = self._validate_complete_inventory(output_root, manifest)
+        except BundleExtractionError:
+            return None
+        if changed:
+            write_json_atomic(
+                output_root / "manifest.json",
+                manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        return BundleExtractionReport(total_batches=1, succeeded_batches=1)
 
-        paths: set[str] = set()
-        for item in payload:
-            if not isinstance(item, dict):
-                return False
-            try:
-                relative_path = AssetRipperBundleWorkflow._validate_manifest_path(
-                    item.get("path")
-                )
-            except ValueError:
-                return False
-            size = item.get("size")
-            normalized_path = relative_path.casefold()
-            if (
-                not isinstance(size, int)
-                or isinstance(size, bool)
-                or size < 0
-                or normalized_path in paths
-            ):
-                return False
-            paths.add(normalized_path)
-            candidate = content_root.joinpath(*PurePosixPath(relative_path).parts)
-            try:
-                resolved_candidate = candidate.resolve(strict=True)
-                resolved_candidate.relative_to(resolved_root)
-                actual_size = resolved_candidate.stat().st_size
-            except (OSError, ValueError):
-                return False
-            if candidate.is_symlink() or not resolved_candidate.is_file():
-                return False
-            if actual_size != size:
-                return False
-        return True
-
-    @classmethod
-    def _load_partial_resume(
-        cls,
+    def _validate_complete_inventory(
+        self,
         output_root: Path,
-        fingerprint: str,
-        batches: tuple[BundleExportBatch, ...],
-    ) -> _PartialResumeState | None:
-        manifest_path = output_root / "content" / "manifest.json"
-        try:
-            payload = json.loads(manifest_path.read_text(encoding="utf8"))
-        except (OSError, ValueError):
-            return None
-        if (
-            not isinstance(payload, dict)
-            or payload.get("schema_version") != _BUNDLE_MANIFEST_SCHEMA_VERSION
-            or payload.get("fingerprint") != fingerprint
-            or payload.get("complete") is not False
-        ):
-            return None
-        batch_payloads = payload.get("batches")
-        output_payloads = payload.get("outputs")
-        if not isinstance(batch_payloads, list) or not isinstance(
-            output_payloads, list
-        ):
-            return None
-        current_batches = {batch.batch_id: batch for batch in batches}
-        successful: dict[str, dict[str, object]] = {}
-        for item in batch_payloads:
-            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-                return None
-            batch_id = item["id"]
-            batch = current_batches.get(batch_id)
-            if (
-                batch is None
-                or item.get("targets") != list(batch.target_node_ids)
-                or item.get("entries") != list(batch.node_ids)
-            ):
-                return None
-            if item.get("status") == "succeeded":
-                successful[batch_id] = dict(item)
-        if not successful:
-            return None
-
-        merge_index = _OutputMergeIndex()
-        try:
-            for item in output_payloads:
-                if not isinstance(item, dict):
-                    return None
-                original_path = cls._validate_manifest_path(item.get("original_path"))
-                canonical = cls._parse_manifest_variant(item.get("canonical"))
-                variants_payload = item.get("variants")
-                if not isinstance(variants_payload, list):
-                    return None
-                variants: dict[str, _OutputVariant] = {}
-                for variant_payload in variants_payload:
-                    variant = cls._parse_manifest_variant(variant_payload)
-                    if variant.sha256 is None or variant.sha256 in variants:
-                        return None
-                    variants[variant.sha256] = variant
-                key = original_path.casefold()
-                if key in merge_index.records:
-                    return None
-                merge_index.records[key] = _OutputPathRecord(
-                    original_path,
-                    canonical,
-                    variants,
-                )
-        except (TypeError, ValueError):
-            return None
-        if not cls._validate_resume_inventory(output_root / "content", merge_index):
-            return None
-        return _PartialResumeState(successful, merge_index)
-
-    @classmethod
-    def _validate_resume_inventory(
-        cls,
-        content_root: Path,
-        merge_index: _OutputMergeIndex,
+        manifest: dict[str, object],
     ) -> bool:
-        try:
-            resolved_root = content_root.resolve(strict=True)
-        except OSError:
-            return False
-        if content_root.is_symlink() or not resolved_root.is_dir():
-            return False
-
-        stored_paths: set[str] = set()
-        for record in merge_index.records.values():
-            for variant in (record.canonical, *record.variants.values()):
-                normalized_path = variant.stored_path.casefold()
-                if normalized_path in stored_paths:
-                    return False
-                stored_paths.add(normalized_path)
-                relative = PurePosixPath(variant.stored_path)
-                candidate = content_root.joinpath(*relative.parts)
+        declared: set[str] = set()
+        changed = False
+        for record in self._manifest_assets(manifest).values():
+            files = record["files"]
+            assert isinstance(files, list)
+            for item in files:
+                assert isinstance(item, dict)
+                relative = str(item["path"])
+                path = self._safe_child(output_root, relative)
                 try:
-                    resolved_candidate = candidate.resolve(strict=True)
-                    resolved_candidate.relative_to(resolved_root)
-                    stat = resolved_candidate.stat()
-                except (OSError, ValueError):
-                    return False
-                if (
-                    candidate.is_symlink()
-                    or not resolved_candidate.is_file()
-                    or stat.st_size != variant.size
-                ):
-                    return False
-                if variant.sha256 is not None:
-                    try:
-                        with resolved_candidate.open("rb") as source:
-                            actual_hash = hashlib.file_digest(
-                                source, "sha256"
-                            ).hexdigest()
-                    except OSError:
-                        return False
-                    if actual_hash != variant.sha256:
-                        return False
-        return True
-
-    @classmethod
-    def _parse_manifest_variant(cls, payload: object) -> _OutputVariant:
-        if not isinstance(payload, dict):
-            raise TypeError("Bundle output variant must be an object.")
-        stored_path = cls._validate_manifest_path(payload.get("stored_path"))
-        sha256 = payload.get("sha256")
-        size = payload.get("size")
-        source_batches = payload.get("source_batches")
-        if (
-            (sha256 is not None and not cls._is_sha256(sha256))
-            or not isinstance(size, int)
-            or isinstance(size, bool)
-            or size < 0
-            or not isinstance(source_batches, list)
-            or not all(isinstance(item, str) for item in source_batches)
-        ):
-            raise ValueError("Bundle output variant is invalid.")
-        return _OutputVariant(stored_path, sha256, size, list(source_batches))
+                    stat = path.stat()
+                except OSError as exc:
+                    raise BundleExtractionError(
+                        "A published bundle asset is missing; the extraction must be rebuilt."
+                    ) from exc
+                if stat.st_size != item["size"]:
+                    raise BundleExtractionError(
+                        "A published bundle asset was modified; the extraction must be rebuilt."
+                    )
+                if stat.st_mtime_ns != item["mtime_ns"]:
+                    if calculate_sha256(path) != item["sha256"]:
+                        raise BundleExtractionError(
+                            "A published bundle asset was modified; the extraction must be rebuilt."
+                        )
+                    item["mtime_ns"] = stat.st_mtime_ns
+                    changed = True
+                declared.add(relative.casefold())
+        assets_root = self._find_assets_directory(output_root)
+        actual = (
+            {
+                f"Assets/{path.relative_to(assets_root).as_posix()}".casefold()
+                for path in assets_root.rglob("*")
+                if path.is_file()
+            }
+            if assets_root is not None
+            else set()
+        )
+        if actual != declared:
+            raise BundleExtractionError(
+                "The published Assets inventory differs from the bundle manifest; the extraction must be rebuilt."
+            )
+        return changed
 
     @staticmethod
-    def _validate_manifest_path(value: object) -> str:
-        if not isinstance(value, str) or not value or "\\" in value:
-            raise ValueError("Bundle manifest path is invalid.")
-        relative = PurePosixPath(value)
-        if (
-            relative.is_absolute()
-            or not relative.parts
-            or any(part in {"", ".", ".."} or ":" in part for part in relative.parts)
-        ):
-            raise ValueError("Bundle manifest path is unsafe.")
-        return relative.as_posix()
-
-    @staticmethod
-    def _is_sha256(value: object) -> bool:
+    def _valid_asset_record(stable_id: str, record: dict[str, object]) -> bool:
+        files = record.get("files")
+        collection = record.get("collection")
+        normalized = record.get("normalized_collection")
+        class_id = record.get("class_id")
+        path_id = record.get("path_id")
+        canonical_sources = record.get("canonical_sources")
+        alias_sources = record.get("alias_sources")
+        identity = f"{normalized}\n{class_id}\n{path_id}"
         return (
-            isinstance(value, str)
-            and len(value) == 64
-            and all(character in "0123456789abcdef" for character in value)
+            len(stable_id) == 20
+            and all(character in "0123456789abcdef" for character in stable_id)
+            and hashlib.sha256(identity.encode()).hexdigest()[:20] == stable_id
+            and isinstance(record.get("asset_type"), str)
+            and isinstance(record.get("readable_name"), str)
+            and isinstance(collection, str)
+            and isinstance(normalized, str)
+            and normalized == collection.replace("\\", "/").strip().lower()
+            and isinstance(class_id, int)
+            and not isinstance(class_id, bool)
+            and isinstance(path_id, int)
+            and not isinstance(path_id, bool)
+            and isinstance(canonical_sources, list)
+            and all(isinstance(item, str) and bool(item) for item in canonical_sources)
+            and isinstance(alias_sources, list)
+            and all(isinstance(item, str) and bool(item) for item in alias_sources)
+            and isinstance(files, list)
+            and bool(files)
+            and all(
+                isinstance(item, dict)
+                and isinstance(item.get("path"), str)
+                and str(item["path"]).startswith("Assets/")
+                and isinstance(item.get("size"), int)
+                and isinstance(item.get("mtime_ns"), int)
+                and isinstance(item.get("sha256"), str)
+                and len(str(item["sha256"])) == 64
+                and all(
+                    character in "0123456789abcdef" for character in str(item["sha256"])
+                )
+                for item in files
+            )
         )
 
-    def _seed_partial_output(
+    def _run_fingerprint(
         self,
-        source_root: Path,
-        destination_root: Path,
-        merge_index: _OutputMergeIndex,
-    ) -> None:
-        resolved_source_root = source_root.resolve(strict=True)
-        for file_record in self._files_manifest(merge_index):
-            self._cancellation.raise_if_cancelled()
-            relative = PurePosixPath(str(file_record["path"]))
-            source = source_root.joinpath(*relative.parts)
-            resolved_source = source.resolve(strict=True)
-            try:
-                resolved_source.relative_to(resolved_source_root)
-            except ValueError as exc:
-                raise AssetRipperToolError(
-                    f"Bundle resume output escaped its root: {relative.as_posix()}"
-                ) from exc
-            if (
-                source.is_symlink()
-                or not resolved_source.is_file()
-                or resolved_source.stat().st_size != file_record["size"]
-            ):
-                raise AssetRipperToolError(
-                    f"Bundle resume output is missing or invalid: {relative.as_posix()}"
-                )
-            destination = destination_root.joinpath(*relative.parts)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.link(resolved_source, destination)
-            except OSError:
-                shutil.copy2(resolved_source, destination)
-
-    def _prepare_plan(
-        self,
-        plan: BundleDependencyPlan,
-        warnings: list[str],
-    ) -> _PreparedDependencyPlan:
-        if plan.ambiguous_dependencies:
-            self._record_warning(
-                warnings,
-                "AssetRipper dependency scan found "
-                f"{len(plan.ambiguous_dependencies)} ambiguous reference(s); "
-                "all matching owner entries will be loaded together.",
-            )
-
-        components_by_id = {
-            component.component_id: component for component in plan.components
+        context: ExecutionContext,
+        archives: tuple[BundleArchiveInput, ...],
+        *,
+        filtered: bool,
+    ) -> str:
+        payload = {
+            "schema": _BUNDLE_MANIFEST_SCHEMA_VERSION,
+            "layout": _BUNDLE_LAYOUT,
+            "profile": _PROCESSING_PROFILE,
+            "mode": "filtered" if filtered else "full",
+            "resource_version": context.resource_version,
+            "dependency_scanner": assetripper_dependency_scan_cache_key(),
+            "exporter": assetripper_exporter_cache_key(),
+            "inputs": [
+                {
+                    "archive_id": item.archive_id,
+                    "size": item.size,
+                    "mtime_ns": item.mtime_ns,
+                    "checksum": (
+                        {
+                            "algorithm": item.checksum.algorithm,
+                            "value": item.checksum.value,
+                        }
+                        if item.checksum is not None
+                        else None
+                    ),
+                }
+                for item in archives
+            ],
         }
-        skipped_reasons: dict[str, str] = {}
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    @staticmethod
+    def _empty_manifest(context: ExecutionContext) -> dict[str, object]:
+        return {
+            "schema_version": _BUNDLE_MANIFEST_SCHEMA_VERSION,
+            "layout": _BUNDLE_LAYOUT,
+            "region": context.region,
+            "platform": context.platform,
+            "resource_version": context.resource_version,
+            "profile": _PROCESSING_PROFILE,
+            "tool_fingerprint": assetripper_exporter_cache_key(),
+            "run_fingerprint": "",
+            "status": "partial",
+            "assets": {},
+            "failures": [],
+        }
+
+    @staticmethod
+    def _manifest_assets(manifest: dict[str, object]) -> dict[str, dict[str, object]]:
+        value = manifest.get("assets")
+        if not isinstance(value, dict):
+            return {}
+        return {
+            key: item
+            for key, item in value.items()
+            if isinstance(key, str) and isinstance(item, dict)
+        }
+
+    @staticmethod
+    def _prepare_plan(plan: BundleDependencyPlan) -> _PreparedDependencyPlan:
+        by_id = {component.component_id: component for component in plan.components}
+        reasons: dict[str, str] = {}
         for component in plan.components:
             if component.scan_failed:
-                failures = [
-                    failure
-                    for failure in plan.scan_failures
-                    if failure.entry_path is not None
-                    and f"{failure.archive_id}::{failure.entry_path}"
-                    in component.node_ids
-                ]
-                detail = failures[0].error if failures else "dependency scan failed"
-                skipped_reasons[component.component_id] = (
-                    f"component scan failed: {detail}"
-                )
+                reasons[component.component_id] = "dependency scan failed"
             elif component.unresolved_dependencies:
                 names = sorted(
-                    {issue.logical_name for issue in component.unresolved_dependencies},
+                    {item.logical_name for item in component.unresolved_dependencies},
                     key=str.casefold,
                 )
-                skipped_reasons[component.component_id] = (
+                reasons[component.component_id] = (
                     "unresolved dependencies: " + ", ".join(names[:6])
                 )
-
         changed = True
         while changed:
             changed = False
             for component in plan.components:
-                if component.component_id in skipped_reasons:
+                if component.component_id in reasons:
                     continue
                 missing = [
-                    dependency_id
-                    for dependency_id in component.dependency_component_ids
-                    if dependency_id not in components_by_id
+                    item
+                    for item in component.dependency_component_ids
+                    if item not in by_id or item in reasons
                 ]
                 if missing:
-                    skipped_reasons[component.component_id] = (
-                        "dependency closure references unavailable component(s): "
-                        + ", ".join(missing)
+                    reasons[component.component_id] = (
+                        "depends on unavailable component(s): " + ", ".join(missing)
                     )
                     changed = True
-                    continue
-                skipped_dependencies = [
-                    dependency_id
-                    for dependency_id in component.dependency_component_ids
-                    if dependency_id in skipped_reasons
-                ]
-                if skipped_dependencies:
-                    skipped_reasons[component.component_id] = (
-                        "depends on skipped component(s): "
-                        + ", ".join(skipped_dependencies)
-                    )
-                    changed = True
-
-        skipped = tuple(
-            _SkippedComponent(component, skipped_reasons[component.component_id])
-            for component in plan.components
-            if component.component_id in skipped_reasons
+        executable = tuple(
+            item for item in plan.components if item.component_id not in reasons
         )
-        executable_components = tuple(
+        return _PreparedDependencyPlan(
+            BundleDependencyPlan(executable, (), plan.ambiguous_dependencies, ()),
+            tuple(
+                (item, reasons[item.component_id])
+                for item in plan.components
+                if item.component_id in reasons
+            ),
+        )
+
+    @staticmethod
+    def _plan_warnings(prepared: _PreparedDependencyPlan) -> list[str]:
+        warnings: list[str] = []
+        if prepared.executable.ambiguous_dependencies:
+            warnings.append(
+                "AssetRipper dependency scan found "
+                f"{len(prepared.executable.ambiguous_dependencies)} ambiguous "
+                "reference(s); all matching owners will be loaded."
+            )
+        if prepared.skipped:
+            warnings.append(
+                f"AssetRipper skipped {len(prepared.skipped)} incomplete component(s)."
+            )
+        return warnings
+
+    @staticmethod
+    def _batch_for_targets(
+        plan: BundleDependencyPlan,
+        targets: Sequence[BundleComponent],
+        *,
+        batch_id: str,
+    ) -> BundleExportBatch:
+        by_id = {item.component_id: item for item in plan.components}
+        loaded: set[str] = set()
+        pending = [item.component_id for item in targets]
+        while pending:
+            current = pending.pop()
+            if current in loaded:
+                continue
+            component = by_id[current]
+            loaded.add(current)
+            pending.extend(component.dependency_component_ids)
+        loaded_components = tuple(
             component
             for component in plan.components
-            if component.component_id not in skipped_reasons
+            if component.component_id in loaded
         )
-        executable_ids = {component.component_id for component in executable_components}
-        executable = BundleDependencyPlan(
-            components=executable_components,
-            unresolved_dependencies=(),
-            ambiguous_dependencies=tuple(
-                issue
-                for issue in plan.ambiguous_dependencies
-                if any(
-                    issue.source_archive_id == entry.archive.archive_id
-                    and issue.source_entry_path == entry.entry_path
-                    for component in executable_components
-                    for entry in component.entries
-                )
-            ),
-            scan_failures=(),
+        return BundleExportBatch(
+            batch_id,
+            tuple(targets),
+            loaded_components,
         )
-        for component in executable.components:
-            if any(
-                dependency_id not in executable_ids
-                for dependency_id in component.dependency_component_ids
-            ):
-                raise RuntimeError(
-                    "AssetRipper executable plan retained a skipped dependency."
-                )
 
-        if plan.scan_failures:
-            first = plan.scan_failures[0]
-            self._record_warning(
-                warnings,
-                "[BUNDLE_SCAN_SKIPPED] Dependency scanning skipped "
-                f"{len(plan.scan_failures)} archive or entry source(s); "
-                f"first: {first.archive_id}: {first.error}",
-            )
-        if skipped:
-            examples = "; ".join(
-                f"{item.component.component_id}: {item.reason}" for item in skipped[:3]
-            )
-            self._record_warning(
-                warnings,
-                "[BUNDLE_COMPONENT_SKIPPED] Skipped "
-                f"{len(skipped)} incomplete dependency component(s). "
-                f"Examples: {examples}",
-            )
-        return _PreparedDependencyPlan(executable, skipped)
-
-    def _merge_batch_output(
+    def _stream_batches(
         self,
-        batch_root: Path,
-        content_root: Path,
-        files: tuple[object, ...],
-        batch_id: str,
-        merge_index: _OutputMergeIndex,
-    ) -> tuple[str, ...]:
-        validated = self._validate_batch_output(batch_root, files)
-        content_root.mkdir(parents=True, exist_ok=True)
-        conflicts: set[str] = set()
-        for item in validated:
-            key = item.relative_path.casefold()
-            record = merge_index.records.get(key)
-            if record is None:
-                destination = content_root.joinpath(
-                    *PurePosixPath(item.relative_path).parts
-                )
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                item.source.replace(destination)
-                merge_index.records[key] = _OutputPathRecord(
-                    item.relative_path,
-                    _OutputVariant(
-                        item.relative_path,
-                        None,
-                        item.size,
-                        [batch_id],
-                    ),
-                )
-                continue
-
-            canonical_path = content_root.joinpath(
-                *PurePosixPath(record.canonical.stored_path).parts
+        plan: BundleDependencyPlan,
+        *,
+        target_entry_limit: int = _STREAM_GROUP_TARGET_ENTRY_LIMIT,
+    ) -> tuple[BundleExportBatch, ...]:
+        if target_entry_limit <= 0:
+            raise ValueError("Bundle stream group target limit must be positive.")
+        ordered = sorted(
+            plan.components,
+            key=lambda item: min(entry.node_id.casefold() for entry in item.entries),
+        )
+        target_groups: list[list[BundleComponent]] = []
+        current: list[BundleComponent] = []
+        current_entries = 0
+        for component in ordered:
+            self._cancellation.raise_if_cancelled()
+            component_entries = len(component.entries)
+            if current and current_entries + component_entries > target_entry_limit:
+                target_groups.append(current)
+                current = []
+                current_entries = 0
+            current.append(component)
+            current_entries += component_entries
+        if current:
+            target_groups.append(current)
+        width = max(1, len(str(len(target_groups))))
+        return tuple(
+            self._batch_for_targets(
+                plan,
+                targets,
+                batch_id=f"group-{index:0{width}d}",
             )
-            canonical_hash = record.canonical.sha256
-            if canonical_hash is None:
-                canonical_hash = calculate_sha256(
-                    canonical_path,
-                    on_chunk=self._cancellation.raise_if_cancelled,
-                )
-                record.canonical.sha256 = canonical_hash
-            item_hash = calculate_sha256(
-                item.source,
-                on_chunk=self._cancellation.raise_if_cancelled,
-            )
-            if item_hash == canonical_hash:
-                self._append_source_batch(record.canonical, batch_id)
-                item.source.unlink()
-                continue
-
-            conflicts.add(record.original_path)
-            variant = record.variants.get(item_hash)
-            if variant is None:
-                stored_path = (
-                    f"{_CONFLICT_NAMESPACE}/{item_hash}/{record.original_path}"
-                )
-                destination = content_root.joinpath(*PurePosixPath(stored_path).parts)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if destination.exists() or destination.is_symlink():
-                    raise RuntimeError(
-                        "AssetRipper conflict index selected an occupied variant path."
-                    )
-                item.source.replace(destination)
-                record.variants[item_hash] = _OutputVariant(
-                    stored_path,
-                    item_hash,
-                    item.size,
-                    [batch_id],
-                )
-                continue
-
-            if item.size != variant.size:
-                raise RuntimeError(
-                    "AssetRipper conflict index contains an inconsistent SHA-256 variant."
-                )
-            self._append_source_batch(variant, batch_id)
-            item.source.unlink()
-        return tuple(sorted(conflicts, key=str.casefold))
-
-    def _validate_batch_output(
-        self,
-        batch_root: Path,
-        files: tuple[object, ...],
-    ) -> tuple[_ValidatedOutput, ...]:
-        validated: list[_ValidatedOutput] = []
-        seen: set[str] = set()
-        try:
-            resolved_root = batch_root.resolve(strict=True)
-        except FileNotFoundError as exc:
-            raise _BundleBatchError(
-                "AssetRipper output directory was not created."
-            ) from exc
-        for item in files:
-            raw_relative = getattr(item, "path", None)
-            expected_size = getattr(item, "size", None)
-            if (
-                not isinstance(raw_relative, str)
-                or not isinstance(expected_size, int)
-                or isinstance(expected_size, bool)
-                or expected_size < 0
-            ):
-                raise AssetRipperToolError(
-                    "AssetRipper returned an invalid exported file record."
-                )
-            relative = self._validate_output_path(raw_relative)
-            normalized = relative.as_posix()
-            key = normalized.casefold()
-            if key in seen:
-                raise AssetRipperToolError(
-                    f"AssetRipper returned a duplicate output path: {raw_relative}"
-                )
-            seen.add(key)
-            source = batch_root.joinpath(*relative.parts)
-            try:
-                resolved_source = source.resolve(strict=True)
-            except FileNotFoundError as exc:
-                raise _BundleBatchError(
-                    f"AssetRipper output validation failed: {raw_relative}"
-                ) from exc
-            try:
-                resolved_source.relative_to(resolved_root)
-            except ValueError as exc:
-                raise _UnsafeBundleOutputError(
-                    f"AssetRipper output escaped its batch directory: {raw_relative}"
-                ) from exc
-            if (
-                not resolved_source.is_file()
-                or resolved_source.stat().st_size != expected_size
-            ):
-                raise _BundleBatchError(
-                    f"AssetRipper output validation failed: {raw_relative}"
-                )
-            validated.append(
-                _ValidatedOutput(
-                    normalized,
-                    resolved_source,
-                    expected_size,
-                )
-            )
-        return tuple(validated)
+            for index, targets in enumerate(target_groups, start=1)
+        )
 
     @staticmethod
-    def _validate_output_path(raw_relative: str) -> PurePosixPath:
-        relative = PurePosixPath(raw_relative)
-        if (
-            relative.is_absolute()
-            or not relative.parts
-            or any(part in {"", ".", ".."} for part in relative.parts)
-            or "\\" in raw_relative
-            or any(ord(character) < 32 for character in raw_relative)
-            or any(
-                any(character in '<>:"|?*' for character in part)
-                or part[-1] in {" ", "."}
-                for part in relative.parts
+    def _unique_entries(
+        entries: Sequence[BundleEntryInput],
+    ) -> tuple[BundleEntryInput, ...]:
+        by_node = {entry.node_id: entry for entry in entries}
+        return tuple(by_node[key] for key in sorted(by_node, key=str.casefold))
+
+    @staticmethod
+    def _normalize_inputs(
+        context: ExecutionContext,
+        inputs: Sequence[Path | BundleArchiveInput],
+    ) -> tuple[BundleArchiveInput, ...]:
+        raw_root = context.workspace.raw_bundles.resolve(strict=False)
+        archives: list[BundleArchiveInput] = []
+        identifiers: set[str] = set()
+        for item in inputs:
+            if isinstance(item, BundleArchiveInput):
+                resolved = item.path.resolve(strict=True)
+                archive_id = item.archive_id
+                checksum = item.checksum
+            else:
+                resolved = item.resolve(strict=True)
+                checksum = None
+                try:
+                    archive_id = resolved.relative_to(raw_root).as_posix()
+                except ValueError:
+                    archive_id = resolved.name
+            if archive_id.casefold() in identifiers:
+                raise ValueError(f"Duplicate bundle archive identifier: {archive_id}")
+            identifiers.add(archive_id.casefold())
+            archives.append(
+                BundleArchiveInput.from_path(
+                    resolved,
+                    archive_id=archive_id,
+                    checksum=checksum,
+                )
             )
-        ):
-            raise _UnsafeBundleOutputError(
-                f"AssetRipper returned an unsafe output path: {raw_relative}"
+        return tuple(sorted(archives, key=lambda item: item.archive_id.casefold()))
+
+    @staticmethod
+    def _handle_scan_event(
+        progress: ProgressReporterPort,
+        event: AssetRipperProcessEvent,
+    ) -> None:
+        if isinstance(event, AssetRipperScanProgressEvent):
+            progress.set_progress(
+                event.current,
+                event.total,
+                stage="scanning",
+                unit="archives",
+                secondary_status=event.archive_id,
             )
-        if relative.parts[0].casefold() == _CONFLICT_NAMESPACE.casefold():
-            raise _UnsafeBundleOutputError(
-                f"AssetRipper returned a reserved output path: {raw_relative}"
+
+    @staticmethod
+    def _handle_cache_event(
+        progress: ProgressReporterPort,
+        event: AssetRipperProcessEvent,
+    ) -> None:
+        if isinstance(event, AssetRipperEntryCacheProgressEvent):
+            progress.set_progress(
+                event.current,
+                event.total,
+                stage="cache_fill",
+                unit="entries",
+                secondary_status=event.node_id,
             )
-        return relative
 
     @staticmethod
-    def _append_source_batch(variant: _OutputVariant, batch_id: str) -> None:
-        if batch_id not in variant.source_batches:
-            variant.source_batches.append(batch_id)
-
-    @staticmethod
-    def _batch_manifest(batch: BundleExportBatch) -> dict[str, object]:
-        return {
-            "id": batch.batch_id,
-            "targets": list(batch.target_node_ids),
-            "entries": list(batch.node_ids),
-            "size": batch.total_bytes,
-            "oversized": batch.oversized,
-            "target_components": [
-                component.component_id for component in batch.target_components
-            ],
-            "loaded_components": [
-                component.component_id for component in batch.loaded_components
-            ],
-        }
-
-    @staticmethod
-    def _component_manifest(component: BundleComponent) -> dict[str, object]:
-        return {
-            "id": component.component_id,
-            "entries": list(component.node_ids),
-            "dependencies": list(component.dependency_component_ids),
-            "ambiguous_dependencies": len(component.ambiguous_dependencies),
-        }
-
-    @staticmethod
-    def _conflict_manifest(index: _OutputMergeIndex) -> list[dict[str, object]]:
-        records: list[dict[str, object]] = []
-        for record in sorted(
-            index.records.values(),
-            key=lambda item: item.original_path.casefold(),
-        ):
-            if not record.variants:
-                continue
-            records.append(
-                {
-                    "original_path": record.original_path,
-                    "canonical": AssetRipperBundleWorkflow._variant_manifest(
-                        record.canonical
-                    ),
-                    "variants": [
-                        AssetRipperBundleWorkflow._variant_manifest(variant)
-                        for variant in sorted(
-                            record.variants.values(),
-                            key=lambda item: item.sha256 or "",
-                        )
-                    ],
-                }
-            )
-        return records
-
-    @staticmethod
-    def _output_manifest(index: _OutputMergeIndex) -> list[dict[str, object]]:
-        return [
-            {
-                "original_path": record.original_path,
-                "canonical": AssetRipperBundleWorkflow._resume_variant_manifest(
-                    record.canonical
+    def _handle_export_event(
+        progress: ProgressReporterPort,
+        event: AssetRipperProcessEvent,
+        batch: BundleExportBatch,
+        completed_batches: int,
+        total_batches: int,
+        logs: _AssetRipperLogAggregator,
+    ) -> None:
+        status = f"{completed_batches}/{total_batches} batches"
+        prefix = f"{batch.batch_id}: "
+        if isinstance(event, AssetRipperLogEvent):
+            logs.handle(event)
+        elif isinstance(event, AssetRipperProcessorProgressEvent):
+            progress.set_progress(
+                event.current,
+                event.total,
+                stage="processing",
+                unit="processors",
+                status=status,
+                secondary_status=(
+                    f"{prefix}{event.processor.removesuffix('Processor')}"
                 ),
-                "variants": [
-                    AssetRipperBundleWorkflow._resume_variant_manifest(variant)
-                    for variant in sorted(
-                        record.variants.values(),
-                        key=lambda item: item.stored_path.casefold(),
-                    )
-                ],
-            }
-            for record in sorted(
-                index.records.values(),
-                key=lambda item: item.original_path.casefold(),
             )
-        ]
+        elif isinstance(event, AssetRipperProgressEvent):
+            progress.set_progress(
+                event.current,
+                event.total,
+                stage=event.phase,
+                unit="assets" if event.phase == "exporting" else "inputs",
+                status=status,
+                secondary_status=f"{prefix}{event.stage}",
+            )
+        elif isinstance(event, AssetRipperHeartbeatEvent):
+            progress.set_progress(
+                0,
+                1,
+                stage="processing",
+                unit="processors",
+                status=status,
+                secondary_status=f"{prefix}Processing",
+            )
+        elif isinstance(event, AssetRipperPhaseEvent):
+            progress.set_progress(
+                0,
+                1,
+                stage=event.phase,
+                unit="assets" if event.phase == "exporting" else "inputs",
+                status=status,
+                secondary_status=f"{prefix}{event.phase.title()}",
+            )
 
     @staticmethod
-    def _files_manifest(index: _OutputMergeIndex) -> list[dict[str, object]]:
-        files = [
-            {"path": variant.stored_path, "size": variant.size}
-            for record in index.records.values()
-            for variant in (record.canonical, *record.variants.values())
-        ]
-        return sorted(files, key=lambda item: str(item["path"]).casefold())
+    def _existing_assets_directories(output_root: Path) -> list[Path]:
+        if not output_root.is_dir():
+            return []
+        return sorted(
+            (
+                path
+                for path in output_root.iterdir()
+                if path.is_dir() and path.name.casefold() == "assets"
+            ),
+            key=lambda item: item.name,
+        )
+
+    @classmethod
+    def _find_assets_directory(cls, root: Path) -> Path | None:
+        matches = cls._existing_assets_directories(root)
+        return matches[0] if matches else None
 
     @staticmethod
-    def _resume_variant_manifest(variant: _OutputVariant) -> dict[str, object]:
-        return {
-            "stored_path": variant.stored_path,
-            "sha256": variant.sha256,
-            "size": variant.size,
-            "source_batches": list(variant.source_batches),
-        }
+    def _inside_assets(relative: str) -> str:
+        parts = PurePosixPath(relative).parts
+        if len(parts) < 2 or parts[0].casefold() != "assets":
+            raise AssetRipperToolError(
+                "AssetRipper output is outside the Assets layout."
+            )
+        return PurePosixPath(*parts[1:]).as_posix()
 
     @staticmethod
-    def _variant_manifest(variant: _OutputVariant) -> dict[str, object]:
-        if variant.sha256 is None:
-            raise RuntimeError("AssetRipper conflict variant has no SHA-256.")
-        return {
-            "stored_path": variant.stored_path,
-            "sha256": variant.sha256,
-            "size": variant.size,
-            "source_batches": list(variant.source_batches),
-        }
-
-    def _record_warning(self, warnings: list[str], message: str) -> None:
-        warnings.append(message)
-        self._logger.warn(message)
-
-    @staticmethod
-    def _format_stage(stage: str) -> str:
-        return stage.replace("_", " ").capitalize()
+    def _allocate_path(desired: str, claimed: set[str]) -> str:
+        if desired.casefold() not in claimed:
+            return desired
+        path = PurePosixPath(desired)
+        stem = path.stem
+        suffix = path.suffix
+        counter = 0
+        while True:
+            candidate = str(path.with_name(f"{stem}_{counter}{suffix}"))
+            if candidate.casefold() not in claimed:
+                return candidate
+            counter += 1
 
     @staticmethod
-    def _format_elapsed(elapsed_seconds: float) -> str:
-        total_seconds = max(0, int(elapsed_seconds))
-        minutes, seconds = divmod(total_seconds, 60)
-        hours, minutes = divmod(minutes, 60)
-        if hours:
-            return f"{hours}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes:02d}:{seconds:02d}"
+    def _link_or_copy(source: Path, destination: Path) -> None:
+        try:
+            os.link(source, destination)
+        except OSError:
+            shutil.copy2(source, destination)
+
+    @staticmethod
+    def _safe_child(root: Path, relative: str) -> Path:
+        pure = PurePosixPath(relative)
+        if (
+            not relative
+            or pure.is_absolute()
+            or any(part in ("", ".", "..") for part in pure.parts)
+            or any("\\" in part or ":" in part or "\0" in part for part in pure.parts)
+        ):
+            raise AssetRipperToolError("AssetRipper output path is unsafe.")
+        root_resolved = root.resolve(strict=False)
+        candidate = root_resolved.joinpath(*pure.parts).resolve(strict=False)
+        try:
+            candidate.relative_to(root_resolved)
+        except ValueError as exc:
+            raise AssetRipperToolError("AssetRipper output escaped its root.") from exc
+        return candidate
+
+    @staticmethod
+    def _cleanup_staging(output_root: Path) -> None:
+        for path in output_root.parent.glob(".bundles-staging-*"):
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)

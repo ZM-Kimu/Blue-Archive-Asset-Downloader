@@ -9,7 +9,6 @@ from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
     BundleArchiveScan,
-    BundleDependencyBatchPlanner,
     BundleDependencyPlanner,
     BundleEntryScan,
     SerializedFileScan,
@@ -59,12 +58,10 @@ def _scan(
     if error is not None:
         return BundleArchiveScan(
             archive_id=archive_id,
-            sha256=hashlib.sha256(archive_id.encode()).hexdigest(),
             error=error,
         )
     return BundleArchiveScan(
         archive_id=archive_id,
-        sha256=hashlib.sha256(archive_id.encode()).hexdigest(),
         entries=(
             BundleEntryScan(
                 entry_path=f"{archive_id}.bundle",
@@ -250,102 +247,6 @@ def test_planner_rejects_missing_or_duplicate_scan_records(tmp_path: Path) -> No
         assert str(exc) == "Dependency scan results do not match bundle inputs."
     else:
         raise AssertionError("duplicate scan record was accepted")
-
-
-def test_batch_planner_keeps_dependency_components_atomic(tmp_path: Path) -> None:
-    archives = (
-        _archive(tmp_path, "a.zip"),
-        _archive(tmp_path, "b.zip"),
-        _archive(tmp_path, "c.zip"),
-    )
-    scans = (
-        _scan(
-            "a.zip",
-            serialized_files=(SerializedFileScan("cab-a", ("cab-b",)),),
-        ),
-        _scan(
-            "b.zip",
-            serialized_files=(SerializedFileScan("cab-b"),),
-        ),
-        _scan(
-            "c.zip",
-            serialized_files=(SerializedFileScan("cab-c"),),
-        ),
-    )
-    plan = BundleDependencyPlanner().build(archives, scans)
-
-    batches = BundleDependencyBatchPlanner(max_batch_bytes=9).build(plan)
-
-    assert [batch.archive_ids for batch in batches] == [
-        ("a.zip", "b.zip"),
-        ("c.zip",),
-    ]
-    assert batches[0].oversized is True
-    assert batches[1].oversized is False
-
-
-def test_batch_planner_packs_independent_components_deterministically(
-    tmp_path: Path,
-) -> None:
-    archives = tuple(_archive(tmp_path, name) for name in ("a.zip", "b.zip", "c.zip"))
-    scans = tuple(
-        _scan(
-            archive.archive_id,
-            serialized_files=(SerializedFileScan(archive.archive_id),),
-        )
-        for archive in archives
-    )
-    plan = BundleDependencyPlanner().build(archives, scans)
-
-    batches = BundleDependencyBatchPlanner(max_batch_bytes=10).build(plan)
-
-    assert [batch.archive_ids for batch in batches] == [
-        ("a.zip", "b.zip"),
-        ("c.zip",),
-    ]
-    assert [batch.total_bytes for batch in batches] == [10, 5]
-
-
-def test_batch_planner_reloads_shared_dependency_without_coupling_targets(
-    tmp_path: Path,
-) -> None:
-    archives = tuple(
-        _archive(tmp_path, name) for name in ("a.zip", "b.zip", "shared.zip")
-    )
-    scans = (
-        _scan(
-            "a.zip",
-            size=4,
-            serialized_files=(SerializedFileScan("a", ("shared",)),),
-        ),
-        _scan(
-            "b.zip",
-            size=4,
-            serialized_files=(SerializedFileScan("b", ("shared",)),),
-        ),
-        _scan(
-            "shared.zip",
-            size=4,
-            serialized_files=(SerializedFileScan("shared"),),
-        ),
-    )
-    plan = BundleDependencyPlanner().build(archives, scans)
-
-    batches = BundleDependencyBatchPlanner(max_batch_bytes=8).build(plan)
-
-    assert [batch.archive_ids for batch in batches] == [
-        ("a.zip", "shared.zip"),
-        ("b.zip", "shared.zip"),
-    ]
-    target_ids = [
-        component.component_id
-        for batch in batches
-        for component in batch.target_components
-    ]
-    assert sorted(target_ids) == sorted(
-        component.component_id for component in plan.components
-    )
-    assert len(target_ids) == len(set(target_ids))
 
 
 def test_dependency_scan_cache_key_is_independent_from_export_overlay() -> None:

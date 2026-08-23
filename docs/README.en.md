@@ -39,7 +39,7 @@ cd Blue-Archive-Asset-Downloader
 uv sync
 ```
 
-- If a Cpp2IL or AssetRipper submodule is missing locally, the related workflow will try to download and verify the corresponding source archive.
+- If a Cpp2IL, AssetRipper, or SharpZipLib submodule is missing locally, the related workflow will try to download and verify the corresponding source archive.
 
 Make sure Python is installed, then install the required libraries:
 

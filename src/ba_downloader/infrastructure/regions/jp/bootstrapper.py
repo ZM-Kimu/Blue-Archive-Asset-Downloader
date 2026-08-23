@@ -16,7 +16,7 @@ from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
 from ba_downloader.infrastructure.extraction.assetripper.exporter import (
     AssetRipperRuntimeMetadata,
-    assetripper_exporter_cache_key,
+    assetripper_runtime_inspector_cache_key,
 )
 from ba_downloader.infrastructure.files.atomic import write_json_atomic
 from ba_downloader.infrastructure.files.checksum import calculate_sha256
@@ -58,7 +58,7 @@ class _MissingRuntimeMetadataInspector:
 
 
 class JPBootstrapper:
-    METADATA_CACHE_SCHEMA_VERSION = 1
+    METADATA_CACHE_SCHEMA_VERSION = 2
 
     def __init__(
         self,
@@ -309,7 +309,8 @@ class JPBootstrapper:
             and payload.get("region") == context.region
             and payload.get("platform") == context.platform
             and payload.get("release") == context.resource_version
-            and payload.get("tool_fingerprint") == assetripper_exporter_cache_key()
+            and payload.get("tool_fingerprint")
+            == assetripper_runtime_inspector_cache_key()
             and isinstance(package, dict)
             and isinstance(package.get("size"), int)
             and package.get("size", 0) > 0
@@ -342,18 +343,19 @@ class JPBootstrapper:
             context.require_resource_version(),
             directory_name="Metadata",
         ) as metadata_dir:
+            package_hash = calculate_sha256(
+                package_archive,
+                on_chunk=self.cancellation.raise_if_cancelled,
+            )
             payload = {
                 "schema_version": self.METADATA_CACHE_SCHEMA_VERSION,
                 "region": context.region,
                 "platform": context.platform,
                 "release": context.resource_version,
-                "tool_fingerprint": assetripper_exporter_cache_key(),
+                "tool_fingerprint": assetripper_runtime_inspector_cache_key(),
                 "package": {
                     "size": package_archive.stat().st_size,
-                    "sha256": calculate_sha256(
-                        package_archive,
-                        on_chunk=self.cancellation.raise_if_cancelled,
-                    ),
+                    "sha256": package_hash,
                 },
                 "server_url": server_url,
                 "bundle_version": metadata.bundle_version,

@@ -39,7 +39,7 @@ cd Blue-Archive-Asset-Downloader
 uv sync
 ```
 
-- 若本地缺失 Cpp2IL 或 AssetRipper submodule，相关流程会尝试下载并校验对应源码包。
+- 若本地缺失 Cpp2IL、AssetRipper 或 SharpZipLib submodule，相关流程会尝试下载并校验对应源码包。
 
 请确保已安装 Python，并安装必要的库：
 

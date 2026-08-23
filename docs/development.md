@@ -30,14 +30,15 @@ git diff --check
 
 The available focused suites are `application`, `runtime`, `extraction`, `regions`, and
 `api`. They are local development shortcuts only. CI runs the complete core suite on
-Python 3.11, 3.12, and 3.13. Static quality gates and the actual AssetRipper exporter
-.NET build run once on Python 3.13.
+Python 3.11, 3.12, and 3.13. Static quality gates and the actual AssetRipper and
+media extractor .NET builds run once on Python 3.13.
 
 The AssetRipper integration build is opt-in locally:
 
 ```powershell
 $env:BAAD_RUN_DOTNET_BUILD = "1"
 uv run pytest -q tests/test_assetripper_dotnet.py
+uv run pytest -q tests/test_media_extractor_dotnet.py
 ```
 
 Use `scripts/run-preflight.ps1` when a single local gate is more convenient.
@@ -86,15 +87,40 @@ Use `scripts/run-preflight.ps1` when a single local gate is more convenient.
 
 AssetRipper source is pinned as a submodule. The fallback archive is verified before use. Overlay manifests validate both upstream source SHA-256 and replacement SHA-256; `.gitattributes` forces every overlay C# file to LF because replacement hashes are byte-sensitive on Windows.
 
-The patched source and exporter build are shared at
+The patched source and tool builds are shared at
 `<workspace>/.ba-downloader/tools`, keyed by the AssetRipper commit, overlay, and wrapper
-fingerprints. They are not copied once per region or platform. The wheel source under
-`src/ba_downloader/infrastructure/extraction/assetripper/tool` is the only exporter
-wrapper source; repository builds and tests must reference it directly.
+fingerprints. They are not copied once per region or platform. JP runtime metadata
+inspection uses a dedicated Release tool with an eight-project AssetRipper dependency
+closure containing only what is needed to read `GameMainConfig` and `PlayerSettings`.
+The full exporter has a separate cache and is built lazily by dependency scanning or
+bundle extraction; both tools reuse intermediate outputs from the same patched source.
+The wheel source under
+`src/ba_downloader/infrastructure/extraction/assetripper/tool` is the only wrapper
+source; repository builds and tests must reference it directly.
 
 Bundle planning scans Unity entries, deduplicates historical content by SHA-256, groups serialized/resource dependencies into strongly connected components and transitive closures, and targets 500 MiB batches. Shared dependencies may appear in multiple batches; an indivisible oversized closure runs separately with a warning.
 
 Missing dependencies or scan failures skip only affected components and their dependents. Independent batches continue after a failure. If at least one batch succeeds, usable output is atomically published; if all batches fail, the old output remains. Manifest schema 7 records source fingerprints, scans, batch outcomes, conflicts, skips, and `complete`. Conflicting contents are retained under `_baad_conflicts/<sha256>/<original-path>`.
+
+## JP Media Extraction
+
+JP media ZIP files are processed in one .NET 10 Release process using SharpZipLib
+1.4.2 at commit `33f64eb0f28cdd2b084cb822fcc224c7c5aba553`. The checked-out
+submodule is preferred; a missing submodule uses the same archive/source-tree
+SHA-256 verified fallback model as other source-built tools. A local bridge project
+compiles the production C# source directly and the dependency closure contains no
+NuGet package references. Python sends one temporary request for all selected ZIPs;
+the tool preflights every central directory, rejects unsafe or ambiguous targets,
+validates actual size and CRC while writing, and returns structured archive results.
+Successful archive directories are published atomically to
+`extracted/media/<zip-stem>`. A failed archive keeps its previous output.
+
+The tool build is content-addressed under
+`<workspace>/.ba-downloader/tools/media-extractor`. Archive outputs are deliberately
+not cached: every media sync invokes the tool and fully extracts every selected ZIP,
+including two consecutive runs with identical inputs. Requests, passwords, results,
+and unpublished staging files exist only under the operation job directory and are
+removed after success, failure, or cancellation.
 
 ## Outputs
 

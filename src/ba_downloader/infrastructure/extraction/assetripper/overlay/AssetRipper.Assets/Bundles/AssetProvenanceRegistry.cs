@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using AssetRipper.Assets.Collections;
 using AssetRipper.IO.Files;
 
@@ -11,10 +12,10 @@ public readonly record struct AssetProvenanceInput(
 
 public static class AssetProvenanceRegistry
 {
-	private static readonly Dictionary<string, AssetProvenanceInput> Inputs = new(StringComparer.OrdinalIgnoreCase);
-	private static readonly Dictionary<FileBase, AssetProvenanceInput> Files = new(ReferenceEqualityComparer.Instance);
-	private static readonly Dictionary<AssetCollection, HashSet<string>> Collections = new(ReferenceEqualityComparer.Instance);
-	private static readonly Dictionary<IUnityObjectBase, HashSet<string>> DerivedAssets = new(ReferenceEqualityComparer.Instance);
+	private static readonly ConcurrentDictionary<string, AssetProvenanceInput> Inputs = new(StringComparer.OrdinalIgnoreCase);
+	private static readonly ConcurrentDictionary<FileBase, AssetProvenanceInput> Files = new(ReferenceEqualityComparer.Instance);
+	private static readonly ConcurrentDictionary<AssetCollection, HashSet<string>> Collections = new(ReferenceEqualityComparer.Instance);
+	private static readonly ConcurrentDictionary<IUnityObjectBase, HashSet<string>> DerivedAssets = new(ReferenceEqualityComparer.Instance);
 	private static readonly HashSet<string> TargetIds = new(StringComparer.Ordinal);
 
 	public static void Configure(IEnumerable<AssetProvenanceInput> inputs)
@@ -83,6 +84,12 @@ public static class AssetProvenanceRegistry
 		}
 		return resolved.Order(StringComparer.Ordinal).ToArray();
 	}
+
+	public static IReadOnlyList<string> GetLoadedInputIds() => Files.Values
+		.Select(input => input.NodeId)
+		.Distinct(StringComparer.Ordinal)
+		.Order(StringComparer.Ordinal)
+		.ToArray();
 
 	private static HashSet<string> ResolveProvenance(
 		IUnityObjectBase asset,

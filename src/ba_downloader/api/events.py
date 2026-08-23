@@ -82,9 +82,12 @@ class QueueProgressReporter(ProgressReporterPort):
         self._total = total
         self._completed = 0
         self._description = description
+        self._stage = "operation"
+        self._unit = "items"
+        self._status = ""
+        self._secondary_status = ""
         self._last_emit = 0.0
         self._pending: dict[str, object] | None = None
-        self._emitted_extra_fields: set[str] = set()
 
     def __enter__(self) -> QueueProgressReporter:
         self._emit()
@@ -106,23 +109,34 @@ class QueueProgressReporter(ProgressReporterPort):
         self._emit()
 
     def set_status(self, status: str) -> None:
-        self._emit(status=status)
+        self._status = status
+        self._emit()
 
     def set_secondary_status(self, status: str) -> None:
-        self._emit(secondary_status=status)
+        self._secondary_status = status
+        self._emit()
 
-    def set_loading_progress(self, completed: int, total: int, stage: str) -> None:
-        self._emit(
-            loading_completed=completed,
-            loading_total=total,
-            loading_stage=stage,
-        )
-
-    def set_processing_status(self, status: str) -> None:
-        self._emit(processing_status=status)
+    def set_progress(
+        self,
+        completed: int,
+        total: int,
+        *,
+        stage: str,
+        unit: str,
+        status: str = "",
+        secondary_status: str = "",
+    ) -> None:
+        self._completed = completed
+        self._total = total
+        self._stage = stage
+        self._unit = unit
+        self._status = status
+        self._secondary_status = secondary_status
+        self._emit()
 
     def set_failed_status(self, status: str) -> None:
-        self._emit(failed_status=status)
+        self._status = status
+        self._emit(force=True)
 
     def set_completed(self, completed: int) -> None:
         self._completed = completed
@@ -131,21 +145,19 @@ class QueueProgressReporter(ProgressReporterPort):
     def stop(self) -> None:
         if self._pending is not None:
             self._emit(force=True)
-        self._emit(stopped=True)
 
-    def _emit(self, *, force: bool = False, **extra: object) -> None:
+    def _emit(self, *, force: bool = False) -> None:
         payload: dict[str, object] = {
             "completed": self._completed,
             "total": self._total,
-            "description": self._description,
+            "stage": self._stage,
+            "unit": self._unit,
+            "status": self._status,
+            "secondary_status": self._secondary_status,
         }
-        payload.update(extra)
         now = monotonic()
-        has_new_field = bool(extra.keys() - self._emitted_extra_fields)
         if (
             not force
-            and not has_new_field
-            and not extra.get("stopped")
             and self._last_emit
             and now - self._last_emit < self._MIN_EMIT_INTERVAL
         ):
@@ -155,9 +167,6 @@ class QueueProgressReporter(ProgressReporterPort):
             payload = self._pending | payload
             self._pending = None
         self._last_emit = now
-        self._emitted_extra_fields.update(
-            payload.keys() - {"completed", "total", "description"}
-        )
         self._queue.put(
             {"type": "progress", "timestamp": utc_now(), "payload": payload}
         )

@@ -5,9 +5,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ba_downloader.api.jobs import JobManager
+import pytest
+
+from ba_downloader.api.jobs import BundleJobConflictError, JobManager
 from ba_downloader.application.contracts import ApplicationCommand, AssetsExtractCommand
 from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.infrastructure.extraction.assetripper.bundles import (
+    bundle_extraction_lock_path,
+)
+from ba_downloader.infrastructure.files.lock import InterprocessFileLock
 from support.fixtures import build_execution_context
 
 
@@ -110,6 +116,28 @@ def test_cancelled_job_releases_queue_capacity(tmp_path: Path) -> None:
     replacement = manager.submit(_command(), _context(tmp_path), "context-1")
 
     assert replacement.status == "queued"
+
+
+def test_bundle_job_conflict_is_rejected_before_queueing(tmp_path: Path) -> None:
+    manager = JobManager(process_target=successful_worker)
+    context = _context(tmp_path)
+    manager.submit(_command(), context, "context-1")
+
+    with pytest.raises(BundleJobConflictError):
+        manager.submit(_command(), context, "context-1")
+
+
+def test_external_bundle_lock_is_rejected_before_queueing(tmp_path: Path) -> None:
+    manager = JobManager(process_target=successful_worker)
+    context = _context(tmp_path)
+
+    with (
+        InterprocessFileLock(
+            bundle_extraction_lock_path(context), operation="external extraction"
+        ),
+        pytest.raises(BundleJobConflictError),
+    ):
+        manager.submit(_command(), context, "context-1")
 
 
 def test_job_manager_reports_worker_exit_without_terminal_message(

@@ -4,7 +4,11 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ba_downloader.api.files import FileBoundaryError
-from ba_downloader.api.jobs import JobQueueFullError, JobStateError
+from ba_downloader.api.jobs import (
+    BundleJobConflictError,
+    JobQueueFullError,
+    JobStateError,
+)
 from ba_downloader.api.models import (
     JobCreateRequest,
     JobResponse,
@@ -78,6 +82,13 @@ def create_router(services: ApiServices) -> APIRouter:
             job = services.jobs.submit(command, context, body.context_id)
         except JobQueueFullError as exc:
             raise ApiProblem(429, "QUEUE_FULL", "Job queue is full", str(exc)) from exc
+        except BundleJobConflictError as exc:
+            raise ApiProblem(
+                409,
+                "BUNDLE_EXTRACTION_CONFLICT",
+                "Bundle extraction is already active",
+                str(exc),
+            ) from exc
         except JobStateError as exc:
             raise ApiProblem(
                 503, "SERVER_SHUTTING_DOWN", "Server is shutting down", str(exc)

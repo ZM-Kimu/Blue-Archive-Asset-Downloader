@@ -33,11 +33,15 @@ from ba_downloader.infrastructure.extraction.assetripper.events import (
 )
 from ba_downloader.infrastructure.extraction.assetripper.exporter import (
     ASSETRIPPER_EXPORTER_WRAPPER_VERSION,
+    ASSETRIPPER_RUNTIME_INSPECTOR_WRAPPER_VERSION,
     AssetRipperBatchExporter,
     AssetRipperDependencyScanner,
     AssetRipperExportError,
+    AssetRipperExportGroup,
     AssetRipperExportInput,
     AssetRipperRuntimeMetadataInspector,
+    assetripper_exporter_cache_key,
+    assetripper_runtime_inspector_cache_key,
 )
 from ba_downloader.infrastructure.extraction.assetripper.source import (
     ASSETRIPPER_COMMIT,
@@ -79,7 +83,14 @@ class FakeProcessRunner:
         if command.argv[1] == "build":
             output = Path(command.argv[command.argv.index("--output") + 1])
             output.mkdir(parents=True, exist_ok=True)
-            (output / "AssetRipperExporter.dll").write_bytes(b"dll")
+            project = next(
+                Path(value) for value in command.argv if value.endswith(".csproj")
+            )
+            (output / f"{project.stem}.dll").write_bytes(b"dll")
+            (output / f"{project.stem}.deps.json").write_text("{}", encoding="utf8")
+            (output / f"{project.stem}.runtimeconfig.json").write_text(
+                "{}", encoding="utf8"
+            )
             return ProcessResult(command, 0, "", "")
 
         result_path = Path(command.argv[-1])
@@ -123,12 +134,12 @@ class FakeProcessRunner:
                         "scans": [
                             {
                                 "archive_id": request["archive_ids"][0],
-                                "sha256": "a" * 64,
                                 "entries": [
                                     {
                                         "entry_path": "asset.bundle",
                                         "sha256": "b" * 64,
                                         "size": 123,
+                                        "crc32": 1234,
                                         "serialized_files": [
                                             {
                                                 "logical_name": "cab-a",
@@ -160,6 +171,27 @@ class FakeProcessRunner:
             for item in request["inputs"]
             if isinstance(item, dict) and item["target"]
         ]
+        exported_assets = [
+            {
+                "stable_id": hashlib.sha256(b"cab-test\n49\n1").hexdigest()[:20],
+                "asset_type": "textasset",
+                "readable_name": "asset",
+                "collection": "cab-test",
+                "normalized_collection": "cab-test",
+                "path_id": 1,
+                "class_id": 49,
+                "source_target_ids": [item],
+                "files": [
+                    {
+                        "path": "Assets/_MX/asset.bin",
+                        "size": 3,
+                        "mtime_ns": 1,
+                        "sha256": "a" * 64,
+                    }
+                ],
+            }
+            for item in requested_target_ids
+        ]
         if output_observer is not None:
             output_observer.on_output(
                 ProcessOutputLine(
@@ -190,13 +222,23 @@ class FakeProcessRunner:
                     "succeeded": self.export_succeeds,
                     "error": None if self.export_succeeds else "Invalid bundle",
                     "files": (
-                        [{"path": "asset.bin", "size": 3}]
+                        [
+                            {
+                                "path": "Assets/_MX/asset.bin",
+                                "size": 3,
+                                "mtime_ns": 1,
+                                "sha256": "a" * 64,
+                            }
+                        ]
                         if self.export_succeeds and self.exported_files
                         else []
                     ),
                     "requested_target_ids": requested_target_ids,
                     "resolved_target_ids": requested_target_ids,
                     "exported_target_ids": requested_target_ids,
+                    "failure_kind": None,
+                    "assets": exported_assets if self.export_succeeds else None,
+                    "failures": [] if self.export_succeeds else None,
                 }
             ),
             encoding="utf8",
@@ -327,10 +369,8 @@ def test_source_resolver_applies_shared_versioned_overlay(tmp_path: Path) -> Non
         / "GlbPrefabModelExportCollection.cs"
     ).read_text(encoding="utf8")
 
-    assert "asset.Root.Collection.Name" in collection
-    assert "asset.Root.PathID" in collection
-    assert "GetStableDirectoryName" in collection
-    assert "asset.PathID" not in collection
+    assert "GetStableDirectoryName" not in collection
+    assert "UnityGuid" not in collection
     registry = (
         patched
         / "Source"
@@ -352,6 +392,46 @@ def test_source_resolver_applies_shared_versioned_overlay(tmp_path: Path) -> Non
     assert "ExportSelective" in exporter
     assert "handledEmptyTargetIds" in exporter
     assert "collection is EmptyExportCollection" in exporter
+    assert "JsonContentExtractor" not in exporter
+    assert "IMonoScript" not in exporter
+    assert "IVideoClip" not in exporter
+    assert "INavMeshData" not in exporter
+    assert "ITerrainData" not in exporter
+    assert "RegisterHandler<ITexture2D>" in exporter
+    assert "RegisterHandler<ISprite>" in exporter
+    assert "RegisterHandler<IAudioClip>" in exporter
+    assert "RegisterHandler<IFont>" in exporter
+    assert "RegisterHandler<ITextAsset>" in exporter
+    assert "RegisterHandler<IMesh>" in exporter
+    handler = (
+        patched / "Source" / "AssetRipper.Export.UnityProjects" / "ExportHandler.cs"
+    ).read_text(encoding="utf8")
+    processor_section = handler.split("GetProcessors()", 1)[1].split(
+        "public void Export", 1
+    )[0]
+    assert processor_section.count("yield return new ") == 6
+    for processor_name in (
+        "SceneDefinitionProcessor",
+        "OriginalPathProcessor",
+        "MainAssetProcessor",
+        "EditorFormatProcessor",
+        "PrefabProcessor",
+        "SpriteProcessor",
+    ):
+        assert f"new {processor_name}" in processor_section
+    assert "AnimatorControllerProcessor" not in processor_section
+    assert "AudioMixerProcessor" not in processor_section
+    assert "LightingDataProcessor" not in processor_section
+    assert "ScriptableObjectProcessor" not in processor_section
+    sprite_exporter = (
+        patched
+        / "Source"
+        / "AssetRipper.Export.PrimaryContent"
+        / "Textures"
+        / "SpritePngExporter.cs"
+    ).read_text(encoding="utf8")
+    assert "SpriteConverter.TryConvertToBitmap" in sprite_exporter
+    assert 'ExportExtension => "png"' in sprite_exporter
 
 
 def test_batch_exporter_builds_once_and_reads_typed_result(tmp_path: Path) -> None:
@@ -394,7 +474,7 @@ def test_batch_exporter_builds_once_and_reads_typed_result(tmp_path: Path) -> No
         tmp_path / "out-again",
     )
 
-    assert result.files[0].path == "asset.bin"
+    assert result.files[0].path == "Assets/_MX/asset.bin"
     assert context.workspace.tools_cache == other_context.workspace.tools_cache
     assert [command.argv[1] for command in runner.commands] == [
         "build",
@@ -429,9 +509,11 @@ def test_batch_exporter_sends_targeted_inputs_and_reads_coverage(
             AssetRipperExportInput(target, "archive::target", True),
         ],
         tmp_path / "out",
+        concurrency=23,
     )
 
     request = runner.requests[-1]
+    assert request["concurrency"] == 23
     assert request["inputs"] == [
         {
             "node_id": "archive::dependency",
@@ -447,6 +529,72 @@ def test_batch_exporter_sends_targeted_inputs_and_reads_coverage(
     assert result.requested_target_ids == ("archive::target",)
     assert result.resolved_target_ids == ("archive::target",)
     assert result.exported_target_ids == ("archive::target",)
+
+
+def test_grouped_export_reuses_dependency_in_one_process_request(
+    tmp_path: Path,
+) -> None:
+    source = type("Resolver", (), {"resolve_patched": lambda self, context: tmp_path})()
+    runner = FakeProcessRunner()
+    exporter = AssetRipperBatchExporter(
+        source,  # type: ignore[arg-type]
+        runner,
+        repository_root=tmp_path,
+    )
+    dependency = tmp_path / "dependency.bundle"
+    first = tmp_path / "first.bundle"
+    second = tmp_path / "second.bundle"
+    for path in (dependency, first, second):
+        path.write_bytes(path.name.encode())
+
+    result = exporter.export_grouped(
+        _context(tmp_path),
+        [
+            AssetRipperExportGroup(
+                "group-1",
+                (
+                    AssetRipperExportInput(first, "archive::first", True),
+                    AssetRipperExportInput(dependency, "archive::dependency", False),
+                ),
+            ),
+            AssetRipperExportGroup(
+                "group-2",
+                (
+                    AssetRipperExportInput(second, "archive::second", True),
+                    AssetRipperExportInput(dependency, "archive::dependency", False),
+                ),
+            ),
+        ],
+        tmp_path / "out",
+        concurrency=9,
+    )
+
+    request = runner.requests[-1]
+    assert len(runner.requests) == 1
+    assert request["concurrency"] == 9
+    assert request["groups"] == [
+        {
+            "group_id": "group-1",
+            "inputs": [
+                {"node_id": "archive::dependency", "target": False},
+                {"node_id": "archive::first", "target": True},
+            ],
+        },
+        {
+            "group_id": "group-2",
+            "inputs": [
+                {"node_id": "archive::dependency", "target": False},
+                {"node_id": "archive::second", "target": True},
+            ],
+        },
+    ]
+    assert (
+        sum(item["node_id"] == "archive::dependency" for item in request["inputs"]) == 1
+    )
+    assert result.requested_target_ids == (
+        "archive::first",
+        "archive::second",
+    )
 
 
 def test_batch_exporter_forwards_structured_process_events(tmp_path: Path) -> None:
@@ -467,7 +615,7 @@ def test_batch_exporter_forwards_structured_process_events(tmp_path: Path) -> No
         _context(tmp_path),
         [_export_input(bundle)],
         tmp_path / "out",
-        events.append,
+        event_callback=events.append,
     )
 
     assert events == [
@@ -509,10 +657,10 @@ def test_assetripper_event_parser_reads_warning_and_error_events() -> None:
 def test_assetripper_event_parser_reads_processing_heartbeat() -> None:
     heartbeat = parse_assetripper_event(
         f'BAAD_ASSETRIPPER_EVENT {{"version":{EVENT_VERSION},"kind":"heartbeat",'
-        '"phase":"processing","elapsed_seconds":12.5}'
+        '"phase":"processing"}'
     )
 
-    assert heartbeat == AssetRipperHeartbeatEvent("processing", 12.5)
+    assert heartbeat == AssetRipperHeartbeatEvent("processing")
 
 
 def test_assetripper_event_parser_reads_dependency_scan_progress() -> None:
@@ -528,7 +676,7 @@ def test_assetripper_event_parser_reads_dependency_scan_progress() -> None:
 def test_assetripper_event_parser_ignores_invalid_processing_heartbeat() -> None:
     heartbeat = parse_assetripper_event(
         f'BAAD_ASSETRIPPER_EVENT {{"version":{EVENT_VERSION},"kind":"heartbeat",'
-        '"phase":"loading","elapsed_seconds":-1}'
+        '"phase":"loading"}'
     )
 
     assert heartbeat is None
@@ -553,7 +701,9 @@ def test_packaged_exporter_preserves_runtime_contracts() -> None:
     assert "WriteHeartbeat" in program
     assert "ProcessWithHeartbeat" in program
     assert "handler.Load(" in program
-    assert "handler.Process(gameData);" in program
+    assert "handler.Process(" in program
+    assert "WriteProcessorProgress" in program
+    assert '"materialize_bundle_entries"' in program
     assert "LoadAndProcess" not in program
     assert '"scan_bundle_dependencies"' in program
     assert "SchemeReader.ReadFile(buffer" in program
@@ -570,7 +720,9 @@ def test_packaged_exporter_preserves_runtime_contracts() -> None:
     assert "ExportedTargetIds" in program
 
 
-def test_legacy_exporter_cache_marker_forces_wrapper_rebuild(tmp_path: Path) -> None:
+def test_legacy_exporter_cache_marker_does_not_invalidate_fingerprinted_cache(
+    tmp_path: Path,
+) -> None:
     source = type("Resolver", (), {"resolve_patched": lambda self, context: tmp_path})()
     runner = FakeProcessRunner()
     exporter = AssetRipperBatchExporter(
@@ -589,7 +741,7 @@ def test_legacy_exporter_cache_marker_forces_wrapper_rebuild(tmp_path: Path) -> 
     exporter.export(context, [_export_input(bundle)], tmp_path / "second")
 
     assert ASSETRIPPER_EXPORTER_WRAPPER_VERSION != "1"
-    assert [command.argv[1] for command in runner.commands].count("build") == 2
+    assert [command.argv[1] for command in runner.commands].count("build") == 1
 
 
 def test_batch_exporter_reports_structured_failure(tmp_path: Path) -> None:
@@ -607,7 +759,7 @@ def test_batch_exporter_reports_structured_failure(tmp_path: Path) -> None:
         exporter.export(_context(tmp_path), [_export_input(bundle)], tmp_path / "out")
 
 
-def test_batch_exporter_rejects_success_without_output(tmp_path: Path) -> None:
+def test_batch_exporter_accepts_covered_targets_without_output(tmp_path: Path) -> None:
     source = type("Resolver", (), {"resolve_patched": lambda self, context: tmp_path})()
     runner = FakeProcessRunner(exported_files=False)
     exporter = AssetRipperBatchExporter(
@@ -618,8 +770,11 @@ def test_batch_exporter_rejects_success_without_output(tmp_path: Path) -> None:
     bundle = tmp_path / "empty.bundle"
     bundle.write_bytes(b"empty")
 
-    with pytest.raises(AssetRipperExportError):
-        exporter.export(_context(tmp_path), [_export_input(bundle)], tmp_path / "out")
+    result = exporter.export(
+        _context(tmp_path), [_export_input(bundle)], tmp_path / "out"
+    )
+
+    assert result.files == ()
 
 
 def test_runtime_metadata_inspector_reads_typed_result(tmp_path: Path) -> None:
@@ -641,6 +796,130 @@ def test_runtime_metadata_inspector_reads_typed_result(tmp_path: Path) -> None:
         "inputs": [str(data_root.resolve())],
         "operation": "inspect_jp_runtime",
     }
+    build_command = next(
+        command for command in runner.commands if "build" in command.argv
+    )
+    project = next(value for value in build_command.argv if value.endswith(".csproj"))
+    assert Path(project).name == "AssetRipperRuntimeInspector.csproj"
+    assert Path(runner.commands[-1].argv[1]).name == "AssetRipperRuntimeInspector.dll"
+    assert not (
+        _context(tmp_path).workspace.tools_cache
+        / "assetripper"
+        / "exporter"
+        / "AssetRipperExporter.dll"
+    ).exists()
+
+
+def test_runtime_inspector_and_exporter_use_independent_caches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = type("Resolver", (), {"resolve_patched": lambda self, context: tmp_path})()
+    runner = FakeProcessRunner()
+    context = _context(tmp_path)
+    data_root = tmp_path / "Data"
+    data_root.mkdir()
+    bundle = tmp_path / "bundle"
+    bundle.write_bytes(b"bundle")
+    inspector = AssetRipperRuntimeMetadataInspector(
+        source,  # type: ignore[arg-type]
+        runner,
+        repository_root=tmp_path,
+    )
+    exporter = AssetRipperBatchExporter(
+        source,  # type: ignore[arg-type]
+        runner,
+        repository_root=tmp_path,
+    )
+
+    inspector.inspect(context, data_root)
+    exporter.export(context, [_export_input(bundle)], tmp_path / "output")
+
+    build_projects = {
+        Path(next(value for value in command.argv if value.endswith(".csproj"))).name
+        for command in runner.commands
+        if "build" in command.argv
+    }
+    assert build_projects == {
+        "AssetRipperRuntimeInspector.csproj",
+        "AssetRipperExporter.csproj",
+    }
+    assert (
+        len(
+            list(
+                (
+                    context.workspace.tools_cache / "assetripper" / "runtime-inspector"
+                ).glob("*/AssetRipperRuntimeInspector.dll")
+            )
+        )
+        == 1
+    )
+    assert (
+        len(
+            list(
+                (context.workspace.tools_cache / "assetripper" / "exporter").glob(
+                    "*/AssetRipperExporter.dll"
+                )
+            )
+        )
+        == 1
+    )
+    assert assetripper_runtime_inspector_cache_key() != assetripper_exporter_cache_key()
+    assert ASSETRIPPER_RUNTIME_INSPECTOR_WRAPPER_VERSION == "1"
+
+    runner.commands.clear()
+    monkeypatch.setattr(
+        exporter_module,
+        "ASSETRIPPER_RUNTIME_INSPECTOR_WRAPPER_VERSION",
+        "changed",
+    )
+    inspector.inspect(context, data_root)
+    exporter.export(context, [_export_input(bundle)], tmp_path / "output-2")
+
+    rebuild_projects = [
+        Path(next(value for value in command.argv if value.endswith(".csproj"))).name
+        for command in runner.commands
+        if "build" in command.argv
+    ]
+    assert rebuild_projects == ["AssetRipperRuntimeInspector.csproj"]
+
+
+def test_runtime_inspector_project_excludes_full_export_dependencies() -> None:
+    project = (
+        Path(exporter_module.__file__).with_name("tool")
+        / "runtime_inspector"
+        / "AssetRipperRuntimeInspector.csproj"
+    )
+    content = project.read_text(encoding="utf8")
+
+    assert "AssetRipper.Import.csproj" in content
+    assert "AssetRipper.Assets.csproj" in content
+    for forbidden in (
+        "AssetRipper.Export",
+        "AssetRipper.Processing",
+        "AssetRipper.Yaml",
+        "AssetRipper.Export.Modules.Audio",
+        "AssetRipper.Export.Modules.Models",
+        "AssetRipper.Export.Modules.Textures",
+    ):
+        assert forbidden not in content
+
+
+def test_dependency_scan_tracks_streams_only_for_exported_bundle_types() -> None:
+    program = (
+        Path(exporter_module.__file__).with_name("tool") / "Program.cs"
+    ).read_text(encoding="utf8")
+
+    for required in ("ITexture2D texture", "IMesh mesh", "IAudioClip audio"):
+        assert f"case {required}" in program
+    for excluded in (
+        "ITexture3D texture",
+        "ITexture2DArray texture",
+        "ICubemapArray texture",
+        "IImageTexture texture",
+        "IVideoClip video",
+    ):
+        assert f"case {excluded}" not in program
 
 
 def test_dependency_scanner_reads_strict_archive_results(tmp_path: Path) -> None:
