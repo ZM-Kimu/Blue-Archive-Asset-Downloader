@@ -14,10 +14,7 @@ from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.models.schema import SchemaPurpose
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.infrastructure.files.atomic import write_json_atomic
-from ba_downloader.infrastructure.files.checksum import (
-    calculate_sha256,
-    calculate_source_fingerprint,
-)
+from ba_downloader.infrastructure.files.checksum import calculate_source_fingerprint
 
 SCHEMA_MANIFEST_VERSION = 0
 
@@ -66,18 +63,10 @@ class SchemaSnapshotError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class SchemaArtifact:
-    path: str
-    size: int
-    sha256: str
-
-
-@dataclass(frozen=True, slots=True)
 class SchemaInput:
     role: str
     path: str
     size: int
-    sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +81,6 @@ class SchemaSnapshotManifest:
     target_types: tuple[str, ...]
     inputs: tuple[SchemaInput, ...]
     tool_fingerprints: tuple[tuple[str, str], ...]
-    artifacts: tuple[SchemaArtifact, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,17 +191,12 @@ class SchemaSnapshotStore:
         self.cancellation.raise_if_cancelled()
         if fingerprint != self.fingerprint(context, runtime, purpose, target_types):
             raise SchemaSnapshotError("Schema snapshot fingerprint is stale.")
-        artifacts = self._artifact_manifest(staging)
-        required = {"schemas/flatbuffers", "diagnostics"}
+        required = [staging / "schemas" / "flatbuffers", staging / "diagnostics"]
         if purpose is SchemaPurpose.FULL:
-            required.update({"dumps/dump.cs", "schemas/memorypack"})
-        paths = {item.path for item in artifacts}
-        directories = {
-            path.relative_to(staging).as_posix()
-            for path in staging.rglob("*")
-            if path.is_dir()
-        }
-        if not required.issubset(paths | directories):
+            required.extend(
+                (staging / "dumps" / "dump.cs", staging / "schemas" / "memorypack")
+            )
+        if any(not path.exists() for path in required):
             raise SchemaSnapshotError(
                 "Schema generation did not produce a complete snapshot."
             )
@@ -228,7 +211,6 @@ class SchemaSnapshotStore:
             target_types=tuple(sorted(target_types)),
             inputs=self._runtime_inputs(runtime),
             tool_fingerprints=self.tool_fingerprints,
-            artifacts=artifacts,
         )
         self._write_manifest(staging / "manifest.json", manifest)
         destination = self.snapshots_root(context, purpose) / fingerprint
@@ -269,19 +251,13 @@ class SchemaSnapshotStore:
                 or manifest.purpose != purpose.value
             ):
                 return None
-            for artifact in manifest.artifacts:
-                self.cancellation.raise_if_cancelled()
-                path = self._resolve(root, artifact.path)
-                if (
-                    not path.is_file()
-                    or path.stat().st_size != artifact.size
-                    or calculate_sha256(
-                        path,
-                        on_chunk=self.cancellation.raise_if_cancelled,
-                    )
-                    != artifact.sha256
-                ):
-                    return None
+            required = [root / "schemas" / "flatbuffers", root / "diagnostics"]
+            if purpose is SchemaPurpose.FULL:
+                required.extend(
+                    (root / "dumps" / "dump.cs", root / "schemas" / "memorypack")
+                )
+            if any(not path.exists() for path in required):
+                return None
             return SchemaSnapshot(root, manifest)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return None
@@ -325,49 +301,11 @@ class SchemaSnapshotStore:
             self.cancellation.raise_if_cancelled()
             if not path.is_file():
                 raise SchemaSnapshotError(f"Schema input is missing: {role}.")
-            recorded = runtime.file_fingerprints.get(path.name)
-            if (
-                isinstance(recorded, dict)
-                and recorded.get("size") == path.stat().st_size
-                and isinstance(recorded.get("sha256"), str)
-            ):
-                result.append(
-                    SchemaInput(
-                        role,
-                        path.name,
-                        path.stat().st_size,
-                        str(recorded["sha256"]),
-                    )
-                )
-                continue
             result.append(
                 SchemaInput(
                     role,
                     path.name,
                     path.stat().st_size,
-                    calculate_sha256(
-                        path,
-                        on_chunk=self.cancellation.raise_if_cancelled,
-                    ),
-                )
-            )
-        return tuple(result)
-
-    def _artifact_manifest(self, root: Path) -> tuple[SchemaArtifact, ...]:
-        result: list[SchemaArtifact] = []
-        for path in sorted(root.rglob("*")):
-            self.cancellation.raise_if_cancelled()
-            if not path.is_file() or path.name == "manifest.json":
-                continue
-            relative = path.relative_to(root).as_posix()
-            result.append(
-                SchemaArtifact(
-                    relative,
-                    path.stat().st_size,
-                    calculate_sha256(
-                        path,
-                        on_chunk=self.cancellation.raise_if_cancelled,
-                    ),
                 )
             )
         return tuple(result)
@@ -403,7 +341,6 @@ class SchemaSnapshotStore:
         if not isinstance(payload, dict):
             raise ValueError("Schema snapshot manifest must be an object.")
         inputs = tuple(SchemaInput(**item) for item in payload["inputs"])
-        artifacts = tuple(SchemaArtifact(**item) for item in payload["artifacts"])
         tool_fingerprints = tuple(
             sorted(
                 (str(key), str(value))
@@ -421,7 +358,6 @@ class SchemaSnapshotStore:
             target_types=tuple(str(item) for item in payload["target_types"]),
             inputs=inputs,
             tool_fingerprints=tool_fingerprints,
-            artifacts=artifacts,
         )
 
     @staticmethod
@@ -429,14 +365,3 @@ class SchemaSnapshotStore:
         payload = asdict(manifest)
         payload["tool_fingerprints"] = dict(manifest.tool_fingerprints)
         write_json_atomic(path, payload, indent=2, sort_keys=True)
-
-    @staticmethod
-    def _resolve(root: Path, relative: str) -> Path:
-        path = (root / relative).resolve()
-        try:
-            path.relative_to(root.resolve())
-        except ValueError as exc:
-            raise ValueError(
-                f"Schema artifact escapes snapshot root: {relative}."
-            ) from exc
-        return path

@@ -37,7 +37,7 @@ public sealed record SelectiveExportResult(
 	IReadOnlyList<SelectiveExportFailure> Failures
 );
 
-public sealed record SelectiveExportFile(string Path, long Size, long MtimeNs, string Sha256);
+public sealed record SelectiveExportFile(string Path, long Size, long MtimeNs);
 
 public sealed record SelectiveExportAsset(
 	string StableId,
@@ -143,11 +143,10 @@ public sealed class SelectivePrimaryContentExporter
 			handledEmptyTargetIds,
 			exportedAssets,
 			reusedAssets);
-		ExportTrackingFileSystem trackingFileSystem = new(fileSystem);
 		return ExportDescriptors(
 			descriptors,
 			settings,
-			trackingFileSystem,
+			fileSystem,
 			handledEmptyTargetIds,
 			reusedAssets,
 			concurrency,
@@ -248,7 +247,7 @@ public sealed class SelectivePrimaryContentExporter
 	private static SelectiveExportResult ExportDescriptors(
 		IReadOnlyList<ExportDescriptor> descriptors,
 		FullConfiguration settings,
-		ExportTrackingFileSystem fileSystem,
+		FileSystem fileSystem,
 		HashSet<string> handledEmptyTargetIds,
 		IReadOnlyList<SelectiveExportReuse> reusedAssets,
 		int requestedConcurrency,
@@ -289,7 +288,7 @@ public sealed class SelectivePrimaryContentExporter
 					{
 						throw new InvalidDataException("The content extractor returned failure.");
 					}
-					assets.Add(ToExportedAsset(item, settings.ExportRootPath, fileSystem));
+					assets.Add(ToExportedAsset(item, settings.ExportRootPath));
 				}
 				catch (Exception exception) when (exception is not OutOfMemoryException)
 				{
@@ -337,8 +336,7 @@ public sealed class SelectivePrimaryContentExporter
 
 	private static SelectiveExportAsset ToExportedAsset(
 		PlannedDescriptor item,
-		string outputRoot,
-		ExportTrackingFileSystem fileSystem)
+		string outputRoot)
 	{
 		string normalizedFilePath = Path.GetFullPath(item.Plan.FilePath);
 		FileInfo info = new(normalizedFilePath);
@@ -354,18 +352,8 @@ public sealed class SelectivePrimaryContentExporter
 		{
 			throw new InvalidDataException("Asset output escaped its export root.");
 		}
-		if (!fileSystem.TryGetMetadata(
-			normalizedFilePath,
-			out ExportedFileMetadata metadata))
-		{
-			throw new InvalidDataException("Asset export did not register file metadata.");
-		}
 		long mtimeNs = (info.LastWriteTimeUtc.Ticks - DateTime.UnixEpoch.Ticks) * 100;
-		if (metadata.Size != info.Length || metadata.MtimeNs != mtimeNs)
-		{
-			throw new InvalidDataException("Asset export metadata does not match the output file.");
-		}
-		SelectiveExportFile file = new(relativePath, metadata.Size, metadata.MtimeNs, metadata.Sha256);
+		SelectiveExportFile file = new(relativePath, info.Length, mtimeNs);
 		ExportDescriptor descriptor = item.Descriptor;
 		return new SelectiveExportAsset(
 			descriptor.StableId,

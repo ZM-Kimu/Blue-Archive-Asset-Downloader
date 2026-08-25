@@ -993,7 +993,6 @@ def _write_jp_runtime_metadata_manifest(
                 "release": context.resource_version,
                 "tool_fingerprint": tool_fingerprint
                 or assetripper_runtime_inspector_cache_key(),
-                "package": {"size": 123, "sha256": "1" * 64},
                 "server_url": "https://example.invalid/server-info.json",
                 "bundle_version": "1.2.3",
                 "game_main_config_base64": "ZW5jcnlwdGVk",
@@ -1003,20 +1002,10 @@ def _write_jp_runtime_metadata_manifest(
     )
 
 
-def test_jp_runtime_metadata_warm_hit_skips_inspection_and_package_hash(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
+def test_jp_runtime_metadata_warm_hit_skips_inspection(tmp_path: Path) -> None:
     context = build_execution_context(tmp_path, region="jp", version="1.2.3")
     _write_jp_runtime_metadata_manifest(context)
     bootstrapper = JPBootstrapper(RecordingHttpClient({}), NullLogger())
-    monkeypatch.setattr(
-        "ba_downloader.infrastructure.regions.jp.bootstrapper.calculate_sha256",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("warm metadata cache must not hash the package")
-        ),
-    )
-
     assert bootstrapper.get_server_url(context) == (
         "https://example.invalid/server-info.json"
     )

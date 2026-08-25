@@ -1,85 +1,58 @@
 {
-  "source_commit": "7534ed93857d1ef4464bab6e3c7a13777529f94d",
   "schema_version": 0,
   "files": [
     {
       "path": "Source/AssetRipper.Assets/Bundles/GameLoadProgress.cs",
       "replacement": "AssetRipper.Assets/Bundles/GameLoadProgress.cs",
-      "content_affecting": false,
-      "source_sha256": null,
-      "replacement_sha256": "88864871abfbf903df7da141352fd7cdd4fd715822ca4d8ee87526125114bcf5"
+      "content_affecting": false
     },
     {
       "path": "Source/AssetRipper.Assets/Bundles/GameBundle.FromPathsParallel.cs",
-      "replacement": "AssetRipper.Assets/Bundles/GameBundle.FromPathsParallel.cs",
-      "source_sha256": null,
-      "replacement_sha256": "1631e644a9ec0c9f423fba1c0a826fac6621bed989ed4d2da76cb18328213abd"
+      "replacement": "AssetRipper.Assets/Bundles/GameBundle.FromPathsParallel.cs"
     },
     {
       "path": "Source/AssetRipper.Assets/Bundles/BundleLookupIndex.cs",
-      "replacement": "AssetRipper.Assets/Bundles/BundleLookupIndex.cs",
-      "source_sha256": null,
-      "replacement_sha256": "de47b3e86e7cdf0b0cbffa322fd08db6b26d38d93b25f69f6d42cf71360716f3"
+      "replacement": "AssetRipper.Assets/Bundles/BundleLookupIndex.cs"
     },
     {
       "path": "Source/AssetRipper.Assets/Bundles/AssetProvenanceRegistry.cs",
-      "replacement": "AssetRipper.Assets/Bundles/AssetProvenanceRegistry.cs",
-      "source_sha256": null,
-      "replacement_sha256": "126845bc924a9c63b75ad66f4c78e3607fdb5555b3fe04cad463a5748281ba2d"
+      "replacement": "AssetRipper.Assets/Bundles/AssetProvenanceRegistry.cs"
     },
     {
       "path": "Source/AssetRipper.Assets/Collections/SerializedAssetCollection.cs",
-      "replacement": "AssetRipper.Assets/Collections/SerializedAssetCollection.cs",
-      "source_sha256": "73d1910e41ef9acb831270e25f34d26a013e305718ff3a6c082bbd003ac434aa",
-      "replacement_sha256": "12a5981b4b4b7efdc75ce66a57a4e525f859ee1b9fb02197ba1b7b395baea7e2"
+      "replacement": "AssetRipper.Assets/Collections/SerializedAssetCollection.cs"
     },
     {
       "path": "Source/AssetRipper.Assets/Collections/ProcessedAssetCollection.cs",
-      "replacement": "AssetRipper.Assets/Collections/ProcessedAssetCollection.cs",
-      "source_sha256": "dd35eeab684531e78f1e16998f559698c930d10639bb54bd852e92da70104670",
-      "replacement_sha256": "363ff907fe26f6a8679f16b258b0c0a0a16c1129551f0ac7b0b60bda63dbe60f"
+      "replacement": "AssetRipper.Assets/Collections/ProcessedAssetCollection.cs"
     },
     {
       "path": "Source/AssetRipper.Export.PrimaryContent/ExportCollectionBase.cs",
-      "replacement": "AssetRipper.Export.PrimaryContent/ExportCollectionBase.cs",
-      "source_sha256": "4098f04bf3c7c4ed469a0fe305f47c40b61b3fbf65fa88352dab203e52ccefda",
-      "replacement_sha256": "652120224446b2861f8598f1823938fbeaf0fe866f9ab08bf4692df5ab8e8b6c"
+      "replacement": "AssetRipper.Export.PrimaryContent/ExportCollectionBase.cs"
     },
     {
       "path": "Source/AssetRipper.Export.PrimaryContent/SingleExportCollection.cs",
-      "replacement": "AssetRipper.Export.PrimaryContent/SingleExportCollection.cs",
-      "source_sha256": "055d0ebd3549ac3c63ded46f6b67d9b7cbb33b31e91259f9bce9f080391305c3",
-      "replacement_sha256": "1ba198b757affc62ac873179a7a8563278fb906f90728fd0f683e2541ae19dd9"
+      "replacement": "AssetRipper.Export.PrimaryContent/SingleExportCollection.cs"
     },
     {
       "path": "Source/AssetRipper.Import/Structure/GameStructure.cs",
-      "replacement": "AssetRipper.Import/Structure/GameStructure.cs",
-      "source_sha256": "593b3f8b60965423adaaea5a14104a2aae95bd24de128a50ca7c9c42cc2914df",
-      "replacement_sha256": "a2b92db9bed7a01bfedc396c4272df9e965f2fa4052672d4581551aef722e009"
+      "replacement": "AssetRipper.Import/Structure/GameStructure.cs"
     },
     {
       "path": "Source/AssetRipper.Processing/Editor/EditorFormatProcessor.cs",
-      "replacement": "AssetRipper.Processing/Editor/EditorFormatProcessor.cs",
-      "source_sha256": "04d2c187d13b45b3f7035254c219ae1df60e08de20193c4dd1aef7ed73e7defc",
-      "replacement_sha256": "7e47d8c7dda4bb9e2c06ddc405437b9271d8811b722cd245878843595669da64"
+      "replacement": "AssetRipper.Processing/Editor/EditorFormatProcessor.cs"
     },
     {
       "path": "Source/AssetRipper.Processing/AnimationClips/PathChecksumCache.cs",
-      "replacement": "AssetRipper.Processing/AnimationClips/PathChecksumCache.cs",
-      "source_sha256": "17a95b1e293d55c8b5362ef3ed706299ab0d4b13a053e1c56261393d19a341c3",
-      "replacement_sha256": "942dbbc3b18e69eb016a7c764fc5563bda32b12a7388de4e7d4dd831b7bbcd7c"
+      "replacement": "AssetRipper.Processing/AnimationClips/PathChecksumCache.cs"
     },
     {
       "path": "Source/AssetRipper.Export.Modules.Models/PlayableGlbLevelBuilder.cs",
-      "replacement": "AssetRipper.Export.Modules.Models/PlayableGlbLevelBuilder.cs",
-      "source_sha256": null,
-      "replacement_sha256": "1d5d6798adc34f4ee344c1216f7ae20cf62bce0b05dddc1e1a14c8b4f10f5a3a"
+      "replacement": "AssetRipper.Export.Modules.Models/PlayableGlbLevelBuilder.cs"
     },
     {
       "path": "Source/AssetRipper.SourceGenerated.Extensions/StreamedResourceExtensions.cs",
-      "replacement": "AssetRipper.SourceGenerated.Extensions/StreamedResourceExtensions.cs",
-      "source_sha256": "ae5e539ca52824ef3c3cabcb58d92c7484ed01642c5dc0e72b500762a650d2a5",
-      "replacement_sha256": "b55c792a85890aed1ca47385cf172decb2468ffc8c3c7213dd673e1b841ec8cf"
+      "replacement": "AssetRipper.SourceGenerated.Extensions/StreamedResourceExtensions.cs"
     }
   ]
 }

@@ -226,7 +226,6 @@ class JobManager:
                     raise BundleJobConflictError(
                         "Bundle extraction is already queued or running for this context."
                     )
-                self._preflight_bundle_lock(context)
             if self._is_media_command(command):
                 key = (context.region, context.platform)
                 if any(
@@ -238,7 +237,6 @@ class JobManager:
                     raise MediaJobConflictError(
                         "Media extraction is already queued or running for this context."
                     )
-                self._preflight_media_lock(context)
             job = JobRecord(
                 id=uuid4().hex,
                 command=command,
@@ -263,44 +261,6 @@ class JobManager:
         return isinstance(command, AssetsSyncCommand | AssetsExtractCommand) and (
             command.options.resources.contains("media")
         )
-
-    @staticmethod
-    def _preflight_bundle_lock(context: ExecutionContext) -> None:
-        from ba_downloader.infrastructure.extraction.assetripper.bundles import (
-            bundle_extraction_lock_path,
-        )
-        from ba_downloader.infrastructure.files.lock import (
-            InterprocessFileLock,
-            InterprocessLockBusyError,
-        )
-
-        try:
-            with InterprocessFileLock(
-                bundle_extraction_lock_path(context),
-                operation="bundle extraction preflight",
-            ):
-                pass
-        except InterprocessLockBusyError as exc:
-            raise BundleJobConflictError(str(exc)) from exc
-
-    @staticmethod
-    def _preflight_media_lock(context: ExecutionContext) -> None:
-        from ba_downloader.infrastructure.extraction.media.exporter import (
-            media_extraction_lock_path,
-        )
-        from ba_downloader.infrastructure.files.lock import (
-            InterprocessFileLock,
-            InterprocessLockBusyError,
-        )
-
-        try:
-            with InterprocessFileLock(
-                media_extraction_lock_path(context),
-                operation="media extraction preflight",
-            ):
-                pass
-        except InterprocessLockBusyError as exc:
-            raise MediaJobConflictError(str(exc)) from exc
 
     def list_jobs(self) -> list[JobRecord]:
         with self._lock:

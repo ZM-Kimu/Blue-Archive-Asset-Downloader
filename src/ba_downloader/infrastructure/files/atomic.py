@@ -40,8 +40,6 @@ def write_json_atomic(
             )
             if trailing_newline:
                 stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
         if validate is not None:
             validate(temporary)
         os.replace(temporary, path)
@@ -64,5 +62,25 @@ def publish_staged_directory(source: Path, destination: Path) -> None:
     else:
         if backup.is_dir():
             shutil.rmtree(backup)
+        else:
+            backup.unlink(missing_ok=True)
+
+
+def recover_replaced_directory(destination: Path) -> None:
+    backups = sorted(
+        destination.parent.glob(f".{destination.name}.replaced-*"),
+        key=lambda path: path.name,
+    )
+    if destination.exists() or destination.is_symlink():
+        stale = backups
+    elif backups:
+        latest = backups.pop()
+        latest.replace(destination)
+        stale = backups
+    else:
+        return
+    for backup in stale:
+        if backup.is_dir():
+            shutil.rmtree(backup, ignore_errors=True)
         else:
             backup.unlink(missing_ok=True)

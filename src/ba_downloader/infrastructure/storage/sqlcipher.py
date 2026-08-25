@@ -16,10 +16,7 @@ from Crypto.Cipher import AES
 from ba_downloader.domain.models.database import DatabaseSourceIdentity
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.files.atomic import write_json_atomic
-from ba_downloader.infrastructure.files.checksum import (
-    calculate_sha256,
-    calculate_source_fingerprint,
-)
+from ba_downloader.infrastructure.files.checksum import calculate_source_fingerprint
 
 SQLITE_HEADER = b"SQLite format 3\x00"
 
@@ -256,7 +253,6 @@ class SqlCipherDatabaseResolver:
                 raise SqlCipherRawExportError(
                     "SQLCipher exporter produced a file without a SQLite header."
                 )
-            output_hash = calculate_sha256(staged_output)
             output_size = staged_output.stat().st_size
             entry_root.mkdir(parents=True, exist_ok=True)
             os.replace(staged_output, output_path)
@@ -270,7 +266,6 @@ class SqlCipherDatabaseResolver:
                     "output": {
                         "name": output_path.name,
                         "size": output_size,
-                        "sha256": output_hash,
                         "mtime_ns": output_stat.st_mtime_ns,
                     },
                 },
@@ -356,14 +351,11 @@ class SqlCipherDatabaseResolver:
                 and payload.get("source_identity") == asdict(identity)
                 and output.get("name") == output_path.name
                 and output.get("size") == stat.st_size
-                and isinstance(output.get("sha256"), str)
                 and is_sqlite_database(output_path)
             ):
                 return False
             if output.get("mtime_ns") == stat.st_mtime_ns:
                 return True
-            if calculate_sha256(output_path) != output["sha256"]:
-                return False
             output["mtime_ns"] = stat.st_mtime_ns
             self._write_manifest(manifest_path, payload)
             return True

@@ -147,17 +147,16 @@ def test_bundle_job_conflict_is_rejected_before_queueing(tmp_path: Path) -> None
         manager.submit(_command(), context, "context-1")
 
 
-def test_external_bundle_lock_is_rejected_before_queueing(tmp_path: Path) -> None:
+def test_external_bundle_lock_is_left_to_worker_boundary(tmp_path: Path) -> None:
     manager = JobManager(process_target=successful_worker)
     context = _context(tmp_path)
 
-    with (
-        InterprocessFileLock(
-            bundle_extraction_lock_path(context), operation="external extraction"
-        ),
-        pytest.raises(BundleJobConflictError),
+    with InterprocessFileLock(
+        bundle_extraction_lock_path(context), operation="external extraction"
     ):
-        manager.submit(_command(), context, "context-1")
+        job = manager.submit(_command(), context, "context-1")
+
+    assert job.status == "queued"
 
 
 def test_queued_media_job_is_rejected_before_queueing(tmp_path: Path) -> None:
@@ -169,17 +168,16 @@ def test_queued_media_job_is_rejected_before_queueing(tmp_path: Path) -> None:
         manager.submit(_media_command(), context, "context-1")
 
 
-def test_external_media_lock_is_rejected_before_queueing(tmp_path: Path) -> None:
+def test_external_media_lock_is_left_to_worker_boundary(tmp_path: Path) -> None:
     manager = JobManager(process_target=successful_worker)
     context = _context(tmp_path)
 
-    with (
-        InterprocessFileLock(
-            media_extraction_lock_path(context), operation="external media extraction"
-        ),
-        pytest.raises(MediaJobConflictError),
+    with InterprocessFileLock(
+        media_extraction_lock_path(context), operation="external media extraction"
     ):
-        manager.submit(_media_command(), context, "context-1")
+        job = manager.submit(_media_command(), context, "context-1")
+
+    assert job.status == "queued"
 
 
 def test_job_manager_reports_worker_exit_without_terminal_message(

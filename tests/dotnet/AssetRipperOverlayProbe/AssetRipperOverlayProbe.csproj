@@ -10,6 +10,5 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="$(BaadToolSource)\Models\*.cs" Link="Tool\Models\%(Filename)%(Extension)" />
-    <Compile Include="$(BaadToolSource)\PrimaryContent\ExportTrackingFileSystem.cs" Link="Tool\PrimaryContent\ExportTrackingFileSystem.cs" />
   </ItemGroup>
 </Project>

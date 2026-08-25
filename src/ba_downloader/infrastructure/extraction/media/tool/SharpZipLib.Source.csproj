@@ -17,7 +17,7 @@
   <Target Name="ValidateSharpZipLibSource" BeforeTargets="PrepareForBuild">
     <Error
       Condition="'$(SharpZipLibSource)' == '' Or !Exists('$(SharpZipLibSource)/src/ICSharpCode.SharpZipLib/Zip/ZipFile.cs')"
-      Text="SharpZipLibSource must point to the verified SharpZipLib source tree." />
+      Text="SharpZipLibSource must point to a SharpZipLib source tree." />
   </Target>
 
   <ItemGroup>

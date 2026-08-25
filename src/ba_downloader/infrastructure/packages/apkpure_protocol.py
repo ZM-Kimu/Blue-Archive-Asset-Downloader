@@ -3,9 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-MAX_PROTOBUF_BYTES = 16 * 1024 * 1024
-MAX_PROTOBUF_FIELDS = 100_000
-
 
 class ApkPureProtocolError(ValueError):
     """Raised when the APKPure response does not match the expected wire schema."""
@@ -99,17 +96,9 @@ def _decode_release_record(payload: bytes, *, path: str) -> ApkPurePackageVarian
 
 
 def _decode_message(payload: bytes, *, path: str) -> tuple[ProtobufField, ...]:
-    if len(payload) > MAX_PROTOBUF_BYTES:
-        raise ApkPureProtocolError(
-            f"APKPure protobuf message exceeds the size limit at {path}."
-        )
     fields: list[ProtobufField] = []
     position = 0
     while position < len(payload):
-        if len(fields) >= MAX_PROTOBUF_FIELDS:
-            raise ApkPureProtocolError(
-                f"APKPure protobuf message exceeds the field limit at {path}."
-            )
         key, position = _read_varint(payload, position, path=path)
         field_number = key >> 3
         wire_type = key & 0x07

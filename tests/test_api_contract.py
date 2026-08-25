@@ -62,7 +62,7 @@ def test_typed_job_submission() -> None:
     assert created.json()["operation"] == "extract"
 
 
-def test_media_extraction_conflict_uses_http_409_wire(tmp_path: Path) -> None:
+def test_external_media_lock_is_decided_by_extraction_worker(tmp_path: Path) -> None:
     execution_context = build_execution_context(
         tmp_path,
         region="cn",
@@ -83,8 +83,7 @@ def test_media_extraction_conflict_uses_http_409_wire(tmp_path: Path) -> None:
                 },
             )
 
-    assert response.status_code == 409
-    assert response.json()["code"] == "MEDIA_EXTRACTION_CONFLICT"
+    assert response.status_code == 202
 
 
 def test_openapi_exposes_unique_explicit_operation_ids() -> None:
@@ -99,22 +98,6 @@ def test_openapi_exposes_unique_explicit_operation_ids() -> None:
     assert "createContext" in operation_ids
     assert "createJob" in operation_ids
     assert "downloadFile" in operation_ids
-
-
-def test_private_network_preflight_is_allowed_without_credentials() -> None:
-    with TestClient(create_app(port=9230)) as client:
-        response = client.options(
-            "/api/v1/discovery",
-            headers={
-                "Origin": "https://remote.example",
-                "Access-Control-Request-Method": "GET",
-                "Access-Control-Request-Private-Network": "true",
-            },
-        )
-    assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "*"
-    assert response.headers["access-control-allow-private-network"] == "true"
-    assert "access-control-allow-credentials" not in response.headers
 
 
 def test_validation_errors_do_not_echo_request_values() -> None:

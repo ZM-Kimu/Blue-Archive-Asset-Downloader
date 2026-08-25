@@ -22,7 +22,7 @@ def _context(tmp_path: Path, *, proxy: str = "") -> ExecutionContext:
 
 
 def test_registry_enforces_capacity_and_deduplicates(tmp_path: Path) -> None:
-    registry = ContextRegistry(capacity=1, fingerprint_key=b"x" * 32)
+    registry = ContextRegistry(capacity=1)
     first, created = registry.create(_context(tmp_path))
     duplicate, duplicate_created = registry.create(_context(tmp_path))
     assert created is True
@@ -38,7 +38,6 @@ def test_registry_expires_idle_contexts(tmp_path: Path) -> None:
         capacity=1,
         idle_ttl=timedelta(hours=1),
         clock=lambda: now,
-        fingerprint_key=b"x" * 32,
     )
     first, _ = registry.create(_context(tmp_path))
     now += timedelta(hours=2)
@@ -47,7 +46,7 @@ def test_registry_expires_idle_contexts(tmp_path: Path) -> None:
 
 
 def test_freeze_uses_resolved_context(tmp_path: Path) -> None:
-    registry = ContextRegistry(fingerprint_key=b"x" * 32)
+    registry = ContextRegistry()
     item, _ = registry.create(_context(tmp_path))
 
     frozen = registry.freeze(

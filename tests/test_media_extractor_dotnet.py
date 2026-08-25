@@ -18,7 +18,6 @@ from ba_downloader.infrastructure.extraction.media.exporter import (
 )
 from ba_downloader.infrastructure.extraction.media.source import (
     SHARPZIPLIB_COMMIT,
-    SHARPZIPLIB_SOURCE_TREE_SHA256,
     SharpZipLibSourceResolver,
 )
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
@@ -103,9 +102,6 @@ def test_media_extractor_builds_and_enforces_archive_boundaries(
     )
     source_root = source_resolver.resolve(context)
     assert source_root == repository / "third_party" / "SharpZipLib"
-    assert source_resolver.source_tree_hash(source_root) == (
-        SHARPZIPLIB_SOURCE_TREE_SHA256
-    )
     assert SHARPZIPLIB_COMMIT == "33f64eb0f28cdd2b084cb822fcc224c7c5aba553"
     extractor = MediaArchiveExtractor(
         CancellableProcessRunner(),

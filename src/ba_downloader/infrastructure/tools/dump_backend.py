@@ -18,7 +18,6 @@ from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.process import ProcessCommand, ProcessRunnerPort
 from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
-from ba_downloader.infrastructure.files.checksum import calculate_sha256
 from ba_downloader.infrastructure.runtime.process import CancellableProcessRunner
 from ba_downloader.infrastructure.tools.runtime_probe import (
     get_installed_dotnet_sdk_major_versions,
@@ -28,11 +27,6 @@ CPP2IL_COMMIT = "6af99f218501529af84202243aedb7089f5307dc"
 CPP2IL_ARCHIVE_URL = (
     f"https://github.com/SamboyCoding/Cpp2IL/archive/{CPP2IL_COMMIT}.zip"
 )
-CPP2IL_ARCHIVE_SHA256 = (
-    "968f043b28c53c3bedebe1da8fed432e9ec52deb1d2b19021f3a0964d854d32c"
-)
-CPP2IL_MAX_ARCHIVE_FILES = 20_000
-CPP2IL_MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 CPP2IL_PROJECT = Path("Cpp2IL") / "Cpp2IL.csproj"
 LIBCPP2IL_PROJECT = Path("LibCpp2IL") / "LibCpp2IL.csproj"
 EXPORTER_PROJECT_NAME = "dumpcs_exporter"
@@ -60,18 +54,12 @@ class Cpp2ILSourceResolver:
         logger: LoggerPort,
         commit: str = CPP2IL_COMMIT,
         archive_url: str = CPP2IL_ARCHIVE_URL,
-        archive_sha256: str = CPP2IL_ARCHIVE_SHA256,
-        max_archive_files: int = CPP2IL_MAX_ARCHIVE_FILES,
-        max_archive_bytes: int = CPP2IL_MAX_ARCHIVE_BYTES,
         cancellation: CancellationPort | None = None,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
         self.commit = commit
         self.archive_url = archive_url
-        self.archive_sha256 = archive_sha256
-        self.max_archive_files = max_archive_files
-        self.max_archive_bytes = max_archive_bytes
         self.cancellation = cancellation or NeverCancelled()
 
     def resolve(self, context: ExecutionContext) -> Path:
@@ -133,9 +121,8 @@ class Cpp2ILSourceResolver:
             self.http_client.download_to_file(self.archive_url, str(archive_path))
             self.cancellation.raise_if_cancelled()
             try:
-                self._verify_archive_checksum(archive_path)
                 with ZipFile(archive_path, "r") as archive:
-                    self._safe_extract_archive(archive, extract_dir)
+                    archive.extractall(extract_dir)
             except (BadZipFile, ValueError) as exc:
                 last_error = exc
                 if archive_path.exists():
@@ -177,43 +164,6 @@ class Cpp2ILSourceResolver:
             archive_path.unlink()
         if extract_dir.exists():
             shutil.rmtree(extract_dir)
-
-    def _verify_archive_checksum(self, archive_path: Path) -> None:
-        if not self.archive_sha256:
-            return
-        digest = calculate_sha256(
-            archive_path,
-            on_chunk=self.cancellation.raise_if_cancelled,
-        )
-        if digest.lower() != self.archive_sha256.lower():
-            raise ValueError(
-                "Cpp2IL source archive checksum mismatch: "
-                f"expected {self.archive_sha256}, got {digest}."
-            )
-
-    def _safe_extract_archive(self, archive: ZipFile, extract_dir: Path) -> None:
-        extract_root = extract_dir.resolve()
-        total_size = 0
-        infos = archive.infolist()
-        if len(infos) > self.max_archive_files:
-            raise ValueError(f"Cpp2IL source archive has too many files: {len(infos)}.")
-
-        for info in infos:
-            self.cancellation.raise_if_cancelled()
-            total_size += max(info.file_size, 0)
-            if total_size > self.max_archive_bytes:
-                raise ValueError(
-                    "Cpp2IL source archive exceeds maximum extracted size."
-                )
-            target_path = (extract_dir / info.filename).resolve()
-            try:
-                target_path.relative_to(extract_root)
-            except ValueError as exc:
-                raise ValueError(
-                    f"Cpp2IL source archive contains unsafe path: {info.filename}"
-                ) from exc
-
-        archive.extractall(extract_dir)
 
 
 class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):

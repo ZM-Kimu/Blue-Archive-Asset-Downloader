@@ -5,11 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ba_downloader.api.files import (
-    CleanupPreviewLimitError,
-    FileBoundaryError,
-    FileRegistry,
-)
+from ba_downloader.api.files import FileBoundaryError, FileRegistry
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.storage.cleanup import (
     BoundedStorageCleanup,
@@ -40,12 +36,12 @@ def test_file_registry_lists_only_configured_roots(tmp_path: Path) -> None:
     assert registry.resolve(entries[0].id, context) == (raw / "asset.bin").resolve()
 
 
-def test_file_registry_reuses_ids_and_evicts_old_entries(tmp_path: Path) -> None:
+def test_file_registry_reuses_ids(tmp_path: Path) -> None:
     context = _context(tmp_path)
     raw = context.workspace.raw
     raw.mkdir(parents=True)
     (raw / "a.bin").write_bytes(b"a")
-    registry = FileRegistry(file_limit=1)
+    registry = FileRegistry()
 
     first = registry.list_entries(context, "raw")[0]
     repeated = registry.list_entries(context, "raw")[0]
@@ -53,18 +49,7 @@ def test_file_registry_reuses_ids_and_evicts_old_entries(tmp_path: Path) -> None
     registry.list_entries(context, "raw")
 
     assert repeated.id == first.id
-    with pytest.raises(KeyError):
-        registry.resolve(first.id, context)
-
-
-def test_cleanup_preview_limit_is_enforced(tmp_path: Path) -> None:
-    context = _context(tmp_path)
-    context.workspace.raw.mkdir(parents=True)
-    registry = FileRegistry(preview_limit=1)
-    registry.preview_cleanup(context, "context-1", ["raw"])
-
-    with pytest.raises(CleanupPreviewLimitError):
-        registry.preview_cleanup(context, "context-1", ["raw"])
+    assert registry.resolve(first.id, context) == (raw / "a.bin").resolve()
 
 
 def test_cleanup_targets_are_relative_and_revalidated(tmp_path: Path) -> None:

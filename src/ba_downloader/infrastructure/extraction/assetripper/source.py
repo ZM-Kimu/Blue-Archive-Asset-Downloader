@@ -15,17 +15,11 @@ from ba_downloader.infrastructure.files.atomic import (
     publish_staged_directory,
     write_json_atomic,
 )
-from ba_downloader.infrastructure.files.checksum import (
-    calculate_sha256,
-    calculate_source_fingerprint,
-)
+from ba_downloader.infrastructure.files.checksum import calculate_source_fingerprint
 from ba_downloader.infrastructure.files.lock import wait_for_interprocess_lock
 
 ASSETRIPPER_VERSION = "1.3.14"
 ASSETRIPPER_COMMIT = "7534ed93857d1ef4464bab6e3c7a13777529f94d"
-ASSETRIPPER_ARCHIVE_SHA256 = (
-    "5e91287f339ab2e1cb2a26c96ab358b0c438505808eb589a86201cc871abc0d9"
-)
 ASSETRIPPER_ARCHIVE_URL = (
     f"https://github.com/AssetRipper/AssetRipper/archive/{ASSETRIPPER_COMMIT}.zip"
 )
@@ -41,9 +35,6 @@ class AssetRipperSourceOverlayError(AssetRipperSourceError):
 
 
 class AssetRipperSourceResolver:
-    MAX_ARCHIVE_FILES = 20_000
-    MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
-
     def __init__(
         self,
         http_client: HttpClientPort,
@@ -52,7 +43,6 @@ class AssetRipperSourceResolver:
         cancellation: CancellationPort | None = None,
         repository_root: Path | None = None,
         archive_url: str = ASSETRIPPER_ARCHIVE_URL,
-        archive_sha256: str = ASSETRIPPER_ARCHIVE_SHA256,
         commit: str = ASSETRIPPER_COMMIT,
     ) -> None:
         self._http_client = http_client
@@ -60,7 +50,6 @@ class AssetRipperSourceResolver:
         self._cancellation = cancellation or NeverCancelled()
         self._repository_root = repository_root or Path(__file__).resolve().parents[5]
         self._archive_url = archive_url
-        self._archive_sha256 = archive_sha256.lower()
         self._commit = commit
 
     def resolve(self, context: ExecutionContext) -> Path:
@@ -117,10 +106,6 @@ class AssetRipperSourceResolver:
             raise AssetRipperSourceOverlayError(
                 "AssetRipper source overlay manifest must be an object."
             )
-        if manifest.get("source_commit") != self._commit:
-            raise AssetRipperSourceOverlayError(
-                "AssetRipper source overlay does not match the configured commit."
-            )
         if manifest.get("schema_version") != ASSETRIPPER_OVERLAY_SCHEMA_VERSION:
             raise AssetRipperSourceOverlayError(
                 "AssetRipper source overlay schema is unsupported."
@@ -150,7 +135,6 @@ class AssetRipperSourceResolver:
             self._logger.info("Preparing patched AssetRipper source...")
             marker_payload = {
                 "schema_version": ASSETRIPPER_OVERLAY_SCHEMA_VERSION,
-                "source_commit": self._commit,
                 "overlay_key": cache_key,
             }
             try:
@@ -183,7 +167,6 @@ class AssetRipperSourceResolver:
         return (
             isinstance(cached, dict)
             and cached.get("schema_version") == ASSETRIPPER_OVERLAY_SCHEMA_VERSION
-            and cached.get("source_commit") == self._commit
             and cached.get("overlay_key") == cache_key
             and self._is_valid_source(cache_root)
         )
@@ -201,17 +184,7 @@ class AssetRipperSourceResolver:
                 )
             relative_path = item.get("path")
             replacement = item.get("replacement")
-            expected_source_hash = item.get("source_sha256")
-            expected_replacement_hash = item.get("replacement_sha256")
-            if (
-                not isinstance(relative_path, str)
-                or not isinstance(replacement, str)
-                or not isinstance(expected_replacement_hash, str)
-                or (
-                    expected_source_hash is not None
-                    and not isinstance(expected_source_hash, str)
-                )
-            ):
+            if not isinstance(relative_path, str) or not isinstance(replacement, str):
                 raise AssetRipperSourceOverlayError(
                     "AssetRipper source overlay entry is incomplete."
                 )
@@ -224,28 +197,6 @@ class AssetRipperSourceResolver:
                 raise AssetRipperSourceOverlayError(
                     "AssetRipper source overlay contains an unsafe path."
                 ) from exc
-            if expected_source_hash is None:
-                if target.exists():
-                    raise AssetRipperSourceOverlayError(
-                        f"AssetRipper source overlay target already exists: {relative_path}"
-                    )
-            elif not target.is_file():
-                raise AssetRipperSourceOverlayError(
-                    f"AssetRipper source overlay target is missing: {relative_path}"
-                )
-            if expected_source_hash is not None:
-                actual_source_hash = calculate_sha256(target)
-                if actual_source_hash != expected_source_hash.lower():
-                    raise AssetRipperSourceOverlayError(
-                        "AssetRipper source changed; the source overlay no longer "
-                        f"matches {relative_path}. Expected {expected_source_hash}, "
-                        f"got {actual_source_hash}."
-                    )
-            actual_replacement_hash = calculate_sha256(overlay_file)
-            if actual_replacement_hash != expected_replacement_hash.lower():
-                raise AssetRipperSourceOverlayError(
-                    f"AssetRipper source overlay replacement is corrupted: {replacement}"
-                )
             temporary = target.with_name(f".{target.name}.overlay-{uuid4().hex}")
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(overlay_file, temporary)
@@ -278,10 +229,7 @@ class AssetRipperSourceResolver:
             raise AssetRipperSourceOverlayError(
                 "AssetRipper source overlay manifest is invalid."
             )
-        identities = [
-            ("schema", str(ASSETRIPPER_OVERLAY_SCHEMA_VERSION)),
-            ("source-commit", str(manifest.get("source_commit", ""))),
-        ]
+        identities = [("schema", str(ASSETRIPPER_OVERLAY_SCHEMA_VERSION))]
         sources: list[Path] = []
         for index, item in enumerate(manifest["files"]):
             if not isinstance(item, dict):
@@ -292,13 +240,7 @@ class AssetRipperSourceResolver:
                 continue
             path = item.get("path")
             replacement = item.get("replacement")
-            source_hash = item.get("source_sha256")
-            replacement_hash = item.get("replacement_sha256")
-            if (
-                not isinstance(path, str)
-                or not isinstance(replacement, str)
-                or not isinstance(replacement_hash, str)
-            ):
+            if not isinstance(path, str) or not isinstance(replacement, str):
                 raise AssetRipperSourceOverlayError(
                     "AssetRipper source overlay entry is incomplete."
                 )
@@ -307,8 +249,6 @@ class AssetRipperSourceResolver:
                 (
                     (f"{prefix}-path", path),
                     (f"{prefix}-replacement", replacement),
-                    (f"{prefix}-source", str(source_hash or "")),
-                    (f"{prefix}-declared-replacement", replacement_hash),
                 )
             )
             sources.append(overlay_root / replacement)
@@ -327,17 +267,8 @@ class AssetRipperSourceResolver:
         try:
             self._http_client.download_to_file(self._archive_url, str(archive))
             self._cancellation.raise_if_cancelled()
-            actual_hash = calculate_sha256(
-                archive,
-                on_chunk=self._cancellation.raise_if_cancelled,
-            )
-            if actual_hash != self._archive_sha256:
-                raise AssetRipperSourceError(
-                    "AssetRipper source archive checksum mismatch: "
-                    f"expected {self._archive_sha256}, got {actual_hash}."
-                )
             with ZipFile(archive) as source_archive:
-                self._safe_extract(source_archive, staging)
+                source_archive.extractall(staging)
             source_root = next(
                 (
                     path
@@ -354,31 +285,6 @@ class AssetRipperSourceResolver:
         finally:
             archive.unlink(missing_ok=True)
             shutil.rmtree(staging, ignore_errors=True)
-
-    def _safe_extract(self, archive: ZipFile, destination: Path) -> None:
-        destination.mkdir(parents=True, exist_ok=False)
-        root = destination.resolve()
-        infos = archive.infolist()
-        if len(infos) > self.MAX_ARCHIVE_FILES:
-            raise AssetRipperSourceError(
-                f"AssetRipper source archive has too many files: {len(infos)}."
-            )
-        total_size = 0
-        for info in infos:
-            self._cancellation.raise_if_cancelled()
-            total_size += max(info.file_size, 0)
-            if total_size > self.MAX_ARCHIVE_BYTES:
-                raise AssetRipperSourceError(
-                    "AssetRipper source archive exceeds the extraction size limit."
-                )
-            target = (destination / info.filename).resolve(strict=False)
-            try:
-                target.relative_to(root)
-            except ValueError as exc:
-                raise AssetRipperSourceError(
-                    f"AssetRipper source archive contains an unsafe path: {info.filename}"
-                ) from exc
-        archive.extractall(destination)
 
     @staticmethod
     def _is_valid_source(path: Path) -> bool:

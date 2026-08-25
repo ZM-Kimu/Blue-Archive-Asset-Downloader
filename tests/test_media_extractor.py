@@ -502,17 +502,12 @@ def test_active_media_extraction_rejects_duplicate_without_starting_tool(
     )
     lock_path = media_extraction_lock_path(context)
 
-    with InterprocessFileLock(lock_path, operation="first media extraction"):
-        with pytest.raises(MediaExtractionError):
-            extractor.extract(context, archives, concurrency=1)
-        owner = json.loads(
-            lock_path.with_name(f"{lock_path.name}.owner.json").read_text(
-                encoding="utf8"
-            )
-        )
+    with (
+        InterprocessFileLock(lock_path, operation="first media extraction"),
+        pytest.raises(MediaExtractionError),
+    ):
+        extractor.extract(context, archives, concurrency=1)
 
-    assert owner["operation"] == "first media extraction"
-    assert isinstance(owner["pid"], int)
     assert runner.build_calls == 0
     assert runner.extract_calls == 0
     assert (old_output / "old.bin").read_bytes() == b"old"

@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
 
-from ba_downloader.api.files import CleanupPreviewLimitError, FileBoundaryError
+from ba_downloader.api.files import FileBoundaryError
 from ba_downloader.api.models import (
     CleanupPreviewRequest,
     CleanupPreviewResponse,
@@ -82,10 +82,6 @@ def create_router(services: ApiServices) -> APIRouter:
             preview = services.files.preview_cleanup(
                 context, context_id, body.categories
             )
-        except CleanupPreviewLimitError as exc:
-            raise ApiProblem(
-                429, "CLEANUP_PREVIEW_LIMIT", "Cleanup preview limit reached", str(exc)
-            ) from exc
         except (FileBoundaryError, OSError) as exc:
             raise ApiProblem(
                 400, "CLEANUP_INVALID", "Cleanup is invalid", str(exc)

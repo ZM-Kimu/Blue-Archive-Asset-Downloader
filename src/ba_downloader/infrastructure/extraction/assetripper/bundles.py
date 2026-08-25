@@ -72,8 +72,11 @@ from ba_downloader.infrastructure.extraction.assetripper.source import (
     AssetRipperSourceError,
 )
 from ba_downloader.infrastructure.extraction.errors import BundleExtractionError
-from ba_downloader.infrastructure.files.atomic import write_json_atomic
-from ba_downloader.infrastructure.files.checksum import calculate_sha256
+from ba_downloader.infrastructure.files.atomic import (
+    publish_staged_directory,
+    recover_replaced_directory,
+    write_json_atomic,
+)
 from ba_downloader.infrastructure.files.lock import (
     InterprocessFileLock,
     InterprocessLockBusyError,
@@ -83,7 +86,6 @@ from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 _BUNDLE_MANIFEST_SCHEMA_VERSION = 0
 _BUNDLE_LAYOUT = "assetripper-readable"
 _PROCESSING_PROFILE = "readable-playable"
-_TRANSACTION_SCHEMA_VERSION = 0
 _STREAM_GROUP_TARGET_ENTRY_LIMIT = 512
 _STREAM_GROUPING_PROFILE = "dependency-topology"
 
@@ -359,8 +361,9 @@ class AssetRipperBundleWorkflow:
     ) -> BundleExtractionReport:
         self._cancellation.raise_if_cancelled()
         output_root = context.workspace.extracted_bundles
+        output_root.parent.mkdir(parents=True, exist_ok=True)
+        recover_replaced_directory(output_root)
         output_root.mkdir(parents=True, exist_ok=True)
-        self._recover_publish_transaction(output_root)
         self._cleanup_staging(output_root)
         archives = self._normalize_inputs(context, inputs)
         if not archives:
@@ -613,31 +616,13 @@ class AssetRipperBundleWorkflow:
             raise AssetRipperToolError(
                 "AssetRipper result contains unexpected target coverage."
             )
-        stable_ids: set[str] = set()
-        paths: set[str] = set()
         for asset in result.assets:
-            if asset.stable_id in stable_ids:
-                raise AssetRipperToolError(
-                    "AssetRipper returned a duplicate stable ID."
-                )
-            stable_ids.add(asset.stable_id)
-            identity = (
-                f"{asset.normalized_collection}\n{asset.class_id}\n{asset.path_id}"
-            )
-            if hashlib.sha256(identity.encode()).hexdigest()[:20] != asset.stable_id:
-                raise AssetRipperToolError("AssetRipper stable identity is invalid.")
             for item in asset.files:
                 path = self._safe_child(staging_root, item.path)
                 if not PurePosixPath(item.path).parts[0].casefold() == "assets":
                     raise AssetRipperToolError(
                         "AssetRipper output is outside the Assets layout."
                     )
-                key = item.path.casefold()
-                if key in paths:
-                    raise AssetRipperToolError(
-                        "AssetRipper returned duplicate output paths."
-                    )
-                paths.add(key)
                 try:
                     stat = path.stat()
                 except OSError as exc:
@@ -748,7 +733,6 @@ class AssetRipperBundleWorkflow:
                         "path": item.path,
                         "size": item.size,
                         "mtime_ns": item.mtime_ns,
-                        "sha256": item.sha256,
                     }
                     for item in asset.files
                 ],
@@ -847,116 +831,17 @@ class AssetRipperBundleWorkflow:
         staged_assets: Path,
         manifest: dict[str, object],
     ) -> None:
-        journal_path = output_root / ".bundle-publish.json"
-        transaction_root = output_root / f".publish-{uuid4().hex}"
-        transaction_root.mkdir()
-        manifest_path = output_root / "manifest.json"
-        manifest_backup = transaction_root / "manifest.backup"
-        had_manifest = manifest_path.is_file()
-        if had_manifest:
-            shutil.copy2(manifest_path, manifest_backup)
-        existing = self._existing_assets_directories(output_root)
-        backups = [
-            {
-                "name": path.name,
-                "backup": str(transaction_root / f"assets-{index}"),
-            }
-            for index, path in enumerate(existing)
-        ]
-        journal: dict[str, object] = {
-            "schema_version": _TRANSACTION_SCHEMA_VERSION,
-            "phase": "prepared",
-            "transaction_root": str(transaction_root),
-            "staged_assets": str(staged_assets),
-            "had_manifest": had_manifest,
-            "backups": backups,
-        }
-        write_json_atomic(journal_path, journal, separators=(",", ":"))
-        try:
-            for path, item in zip(existing, backups, strict=True):
-                path.replace(Path(str(item["backup"])))
-            public_assets = output_root / "Assets"
-            staged_assets.replace(public_assets)
-            journal["phase"] = "files_applied"
-            write_json_atomic(journal_path, journal, separators=(",", ":"))
-            write_json_atomic(
-                manifest_path,
-                manifest,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            journal["phase"] = "manifest_committed"
-            write_json_atomic(journal_path, journal, separators=(",", ":"))
-        except BaseException:
-            self._recover_publish_transaction(output_root)
-            raise
-        shutil.rmtree(transaction_root, ignore_errors=True)
-        journal_path.unlink(missing_ok=True)
-
-    def _recover_publish_transaction(self, output_root: Path) -> None:
-        journal_path = output_root / ".bundle-publish.json"
-        if not journal_path.is_file():
-            return
-        try:
-            payload = json.loads(journal_path.read_text(encoding="utf8"))
-        except (OSError, ValueError) as exc:
-            raise BundleExtractionError(
-                "The bundle publish journal is corrupted; existing output was left unchanged."
-            ) from exc
-        if (
-            not isinstance(payload, dict)
-            or payload.get("schema_version") != _TRANSACTION_SCHEMA_VERSION
-            or payload.get("phase")
-            not in {"prepared", "files_applied", "manifest_committed"}
-            or not isinstance(payload.get("transaction_root"), str)
-            or not isinstance(payload.get("staged_assets"), str)
-            or not isinstance(payload.get("backups"), list)
-        ):
-            raise BundleExtractionError("The bundle publish journal is invalid.")
-        transaction_root = Path(payload["transaction_root"]).resolve(strict=False)
-        output_resolved = output_root.resolve(strict=False)
-        if (
-            transaction_root.parent != output_resolved
-            or not transaction_root.name.startswith(".publish-")
-        ):
-            raise BundleExtractionError("The bundle publish journal is unsafe.")
-        if payload["phase"] == "manifest_committed":
-            shutil.rmtree(transaction_root, ignore_errors=True)
-            journal_path.unlink(missing_ok=True)
-            return
-        staged_assets = Path(payload["staged_assets"])
-        files_were_applied = (
-            payload["phase"] == "files_applied" or not staged_assets.exists()
+        publish_root = staged_assets.parent / f".publish-bundles-{uuid4().hex}"
+        publish_root.mkdir()
+        staged_assets.replace(publish_root / "Assets")
+        write_json_atomic(
+            publish_root / "manifest.json",
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
         )
-        if files_were_applied:
-            public_assets = output_root / "Assets"
-            if public_assets.is_dir():
-                shutil.rmtree(public_assets, ignore_errors=True)
-        for item in payload["backups"]:
-            if not isinstance(item, dict):
-                raise BundleExtractionError("The bundle publish journal is invalid.")
-            name = item.get("name")
-            backup = item.get("backup")
-            if (
-                not isinstance(name, str)
-                or name.casefold() != "assets"
-                or not isinstance(backup, str)
-            ):
-                raise BundleExtractionError("The bundle publish journal is invalid.")
-            source = Path(backup).resolve(strict=False)
-            if source.parent != transaction_root:
-                raise BundleExtractionError("The bundle publish journal is unsafe.")
-            if source.exists():
-                source.replace(output_root / name)
-        manifest_path = output_root / "manifest.json"
-        manifest_backup = transaction_root / "manifest.backup"
-        if payload.get("had_manifest") is True and manifest_backup.is_file():
-            os.replace(manifest_backup, manifest_path)
-        elif payload.get("had_manifest") is False:
-            manifest_path.unlink(missing_ok=True)
-        shutil.rmtree(transaction_root, ignore_errors=True)
-        journal_path.unlink(missing_ok=True)
+        publish_staged_directory(publish_root, output_root)
 
     def _load_manifest(
         self,
@@ -1025,26 +910,17 @@ class AssetRipperBundleWorkflow:
         ):
             return None
         try:
-            changed = self._validate_complete_inventory(output_root, manifest)
+            self._validate_complete_inventory(output_root, manifest)
         except BundleExtractionError:
             return None
-        if changed:
-            write_json_atomic(
-                output_root / "manifest.json",
-                manifest,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
         return BundleExtractionReport(total_batches=1, succeeded_batches=1)
 
     def _validate_complete_inventory(
         self,
         output_root: Path,
         manifest: dict[str, object],
-    ) -> bool:
+    ) -> None:
         declared: set[str] = set()
-        changed = False
         for record in self._manifest_assets(manifest).values():
             files = record["files"]
             assert isinstance(files, list)
@@ -1063,12 +939,9 @@ class AssetRipperBundleWorkflow:
                         "A published bundle asset was modified; the extraction must be rebuilt."
                     )
                 if stat.st_mtime_ns != item["mtime_ns"]:
-                    if calculate_sha256(path) != item["sha256"]:
-                        raise BundleExtractionError(
-                            "A published bundle asset was modified; the extraction must be rebuilt."
-                        )
-                    item["mtime_ns"] = stat.st_mtime_ns
-                    changed = True
+                    raise BundleExtractionError(
+                        "A published bundle asset was modified; the extraction must be rebuilt."
+                    )
                 declared.add(relative.casefold())
         assets_root = self._find_assets_directory(output_root)
         actual = (
@@ -1084,35 +957,22 @@ class AssetRipperBundleWorkflow:
             raise BundleExtractionError(
                 "The published Assets inventory differs from the bundle manifest; the extraction must be rebuilt."
             )
-        return changed
 
     @staticmethod
     def _valid_asset_record(stable_id: str, record: dict[str, object]) -> bool:
         files = record.get("files")
-        collection = record.get("collection")
-        normalized = record.get("normalized_collection")
-        class_id = record.get("class_id")
-        path_id = record.get("path_id")
         canonical_sources = record.get("canonical_sources")
         alias_sources = record.get("alias_sources")
-        identity = f"{normalized}\n{class_id}\n{path_id}"
         return (
-            len(stable_id) == 20
-            and all(character in "0123456789abcdef" for character in stable_id)
-            and hashlib.sha256(identity.encode()).hexdigest()[:20] == stable_id
+            bool(stable_id)
             and isinstance(record.get("asset_type"), str)
             and isinstance(record.get("readable_name"), str)
-            and isinstance(collection, str)
-            and isinstance(normalized, str)
-            and normalized == collection.replace("\\", "/").strip().lower()
-            and isinstance(class_id, int)
-            and not isinstance(class_id, bool)
-            and isinstance(path_id, int)
-            and not isinstance(path_id, bool)
+            and isinstance(record.get("collection"), str)
+            and isinstance(record.get("normalized_collection"), str)
+            and isinstance(record.get("class_id"), int)
+            and isinstance(record.get("path_id"), int)
             and isinstance(canonical_sources, list)
-            and all(isinstance(item, str) and bool(item) for item in canonical_sources)
             and isinstance(alias_sources, list)
-            and all(isinstance(item, str) and bool(item) for item in alias_sources)
             and isinstance(files, list)
             and bool(files)
             and all(
@@ -1121,11 +981,6 @@ class AssetRipperBundleWorkflow:
                 and str(item["path"]).startswith("Assets/")
                 and isinstance(item.get("size"), int)
                 and isinstance(item.get("mtime_ns"), int)
-                and isinstance(item.get("sha256"), str)
-                and len(str(item["sha256"])) == 64
-                and all(
-                    character in "0123456789abcdef" for character in str(item["sha256"])
-                )
                 for item in files
             )
         )

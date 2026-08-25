@@ -19,7 +19,6 @@ from ba_downloader.infrastructure.extraction.assetripper.exporter import (
     assetripper_runtime_inspector_cache_key,
 )
 from ba_downloader.infrastructure.files.atomic import write_json_atomic
-from ba_downloader.infrastructure.files.checksum import calculate_sha256
 from ba_downloader.infrastructure.packages import (
     PackageArchiveError,
     download_package_file,
@@ -279,7 +278,6 @@ class JPBootstrapper:
                 context,
                 metadata,
                 url,
-                package_archive,
             )
         self._log_runtime_metadata(url, version, context)
         return url
@@ -302,7 +300,6 @@ class JPBootstrapper:
             payload = json.loads(manifest_path.read_text(encoding="utf8"))
         except (OSError, json.JSONDecodeError):
             return None
-        package = payload.get("package") if isinstance(payload, dict) else None
         if not (
             isinstance(payload, dict)
             and payload.get("schema_version") == self.METADATA_CACHE_SCHEMA_VERSION
@@ -311,11 +308,6 @@ class JPBootstrapper:
             and payload.get("release") == context.resource_version
             and payload.get("tool_fingerprint")
             == assetripper_runtime_inspector_cache_key()
-            and isinstance(package, dict)
-            and isinstance(package.get("size"), int)
-            and package.get("size", 0) > 0
-            and isinstance(package.get("sha256"), str)
-            and len(package["sha256"]) == 64
             and isinstance(payload.get("server_url"), str)
             and isinstance(payload.get("bundle_version"), str)
             and isinstance(payload.get("game_main_config_base64"), str)
@@ -336,27 +328,18 @@ class JPBootstrapper:
         context: ExecutionContext,
         metadata: AssetRipperRuntimeMetadata,
         server_url: str,
-        package_archive: Path,
     ) -> None:
         with self.snapshot_store.staging_directory(
             context,
             context.require_resource_version(),
             directory_name="Metadata",
         ) as metadata_dir:
-            package_hash = calculate_sha256(
-                package_archive,
-                on_chunk=self.cancellation.raise_if_cancelled,
-            )
             payload = {
                 "schema_version": self.METADATA_CACHE_SCHEMA_VERSION,
                 "region": context.region,
                 "platform": context.platform,
                 "release": context.resource_version,
                 "tool_fingerprint": assetripper_runtime_inspector_cache_key(),
-                "package": {
-                    "size": package_archive.stat().st_size,
-                    "sha256": package_hash,
-                },
                 "server_url": server_url,
                 "bundle_version": metadata.bundle_version,
                 "game_main_config_base64": base64.b64encode(

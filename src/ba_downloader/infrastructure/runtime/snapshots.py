@@ -16,7 +16,6 @@ from ba_downloader.infrastructure.files.atomic import (
     publish_staged_directory,
     write_json_atomic,
 )
-from ba_downloader.infrastructure.files.checksum import calculate_sha256
 
 MANIFEST_NAME = "manifest.json"
 MANIFEST_SCHEMA_VERSION = 0
@@ -214,26 +213,12 @@ class RuntimeSnapshotStore:
             if not path.is_file():
                 raise ValueError(f"Runtime snapshot file is missing: {relative_path}.")
             expected_size = metadata.get("size")
-            expected_hash = metadata.get("sha256")
-            if (
-                not isinstance(expected_size, int)
-                or isinstance(expected_size, bool)
-                or not isinstance(expected_hash, str)
-                or re.fullmatch(r"[0-9a-f]{64}", expected_hash) is None
-            ):
+            if not isinstance(expected_size, int) or isinstance(expected_size, bool):
                 raise ValueError(
                     f"Runtime manifest metadata is invalid: {relative_path}."
                 )
             if path.stat().st_size != expected_size:
                 raise ValueError(f"Runtime snapshot size mismatch: {relative_path}.")
-            if (
-                calculate_sha256(
-                    path,
-                    on_chunk=self.cancellation.raise_if_cancelled,
-                )
-                != expected_hash
-            ):
-                raise ValueError(f"Runtime snapshot hash mismatch: {relative_path}.")
             validated_paths[relative_path] = path
 
         def resolve_role(role: str, *, required: bool) -> Path | None:
@@ -281,10 +266,6 @@ class RuntimeSnapshotStore:
             relative_path = path.relative_to(runtime_dir).as_posix()
             files[relative_path] = {
                 "size": path.stat().st_size,
-                "sha256": calculate_sha256(
-                    path,
-                    on_chunk=self.cancellation.raise_if_cancelled,
-                ),
             }
         return files
 

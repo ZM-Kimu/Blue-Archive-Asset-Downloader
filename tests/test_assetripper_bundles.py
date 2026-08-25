@@ -299,7 +299,6 @@ class RecordingExporter:
                 relative.replace("\\", "/"),
                 len(payload),
                 stat.st_mtime_ns,
-                hashlib.sha256(payload).hexdigest(),
             )
             assets.append(
                 AssetRipperExportedAsset(
@@ -832,26 +831,24 @@ def test_unsafe_export_path_is_rejected_before_publish(tmp_path: Path) -> None:
     assert not (context.workspace.extracted_bundles / "manifest.json").exists()
 
 
-def test_cold_publish_uses_dotnet_hashes_without_python_rehash(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from ba_downloader.infrastructure.extraction.assetripper import bundles
-
-    monkeypatch.setattr(
-        bundles,
-        "calculate_sha256",
-        lambda _path: (_ for _ in ()).throw(AssertionError("unexpected hash")),
-    )
-
+def test_manifest_uses_file_metadata_without_content_hash(tmp_path: Path) -> None:
+    context = _context(tmp_path)
     _workflow(RecordingExporter(), RecordingScanner()).run(
-        _context(tmp_path),
+        context,
         [_bundle(tmp_path, "a.zip")],
         concurrency=1,
     )
+    manifest = json.loads(
+        (context.workspace.extracted_bundles / "manifest.json").read_text(
+            encoding="utf8"
+        )
+    )
+    files = next(iter(manifest["assets"].values()))["files"]
+
+    assert all("sha256" not in item for item in files)
 
 
-def test_publish_writes_constant_journal_and_one_manifest(
+def test_publish_writes_one_manifest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -871,5 +868,4 @@ def test_publish_writes_constant_journal_and_one_manifest(
         concurrency=2,
     )
 
-    assert writes.count(".bundle-publish.json") == 3
     assert writes.count("manifest.json") == 1

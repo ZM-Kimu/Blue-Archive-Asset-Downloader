@@ -5,7 +5,7 @@ import json
 import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 from uuid import uuid4
 
 from ba_downloader.domain.exceptions import (
@@ -38,7 +38,6 @@ from ba_downloader.infrastructure.extraction.errors import (
 )
 from ba_downloader.infrastructure.extraction.media.source import (
     SHARPZIPLIB_COMMIT,
-    SHARPZIPLIB_SOURCE_TREE_SHA256,
     SHARPZIPLIB_VERSION,
     SharpZipLibSourcePort,
 )
@@ -507,26 +506,16 @@ class MediaArchiveExtractor:
                 raise MediaArchiveExtractorError(
                     "Media archive extractor archive result is invalid."
                 )
-            succeeded = raw_result.get("succeeded")
-            error = raw_result.get("error")
-            staging_path = raw_result.get("staging_path")
-            member_count = raw_result.get("member_count")
-            output_bytes = raw_result.get("output_bytes")
-            if (
-                raw_result.get("archive_path") != str(request.path)
-                or raw_result.get("output_name") != request.output_name
-                or not isinstance(succeeded, bool)
-                or (error is not None and not isinstance(error, str))
-                or not isinstance(member_count, int)
-                or isinstance(member_count, bool)
-                or member_count < 0
-                or not isinstance(output_bytes, int)
-                or isinstance(output_bytes, bool)
-                or output_bytes < 0
-            ):
+            try:
+                succeeded = cast(bool, raw_result["succeeded"])
+                staging_path = cast(str | None, raw_result.get("staging_path"))
+                error = cast(str | None, raw_result.get("error"))
+                member_count = cast(int, raw_result["member_count"])
+                output_bytes = cast(int, raw_result["output_bytes"])
+            except KeyError as exc:
                 raise MediaArchiveExtractorError(
-                    "Media archive extractor archive result schema is invalid."
-                )
+                    "Media archive extractor archive result is incomplete."
+                ) from exc
             if succeeded:
                 if not isinstance(staging_path, str):
                     raise MediaArchiveExtractorError(
@@ -544,10 +533,6 @@ class MediaArchiveExtractor:
                     raise MediaArchiveExtractorError(
                         "Media archive extractor returned an unsafe staging path."
                     )
-            elif staging_path is not None:
-                raise MediaArchiveExtractorError(
-                    "Failed media extraction returned a staging directory."
-                )
             results.append(
                 {
                     "archive_path": str(request.path),
@@ -603,7 +588,6 @@ def media_extractor_cache_fingerprint() -> str:
             ("protocol-schema", str(MEDIA_EXTRACTOR_SCHEMA_VERSION)),
             ("sharpziplib-version", SHARPZIPLIB_VERSION),
             ("sharpziplib-commit", SHARPZIPLIB_COMMIT),
-            ("sharpziplib-source", SHARPZIPLIB_SOURCE_TREE_SHA256),
         ),
     )
 

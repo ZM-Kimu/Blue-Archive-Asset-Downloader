@@ -26,7 +26,7 @@ internal static class MediaArchiveEngine
             {
                 ArchivePlan plan = ScanArchive(index, archive, request.StagingRoot);
                 plans[index] = plan;
-                totalMembers = checked(totalMembers + plan.Entries.Count);
+                totalMembers = checked(totalMembers + plan.MemberCount);
             }
             catch (Exception exception)
             {
@@ -131,59 +131,24 @@ internal static class MediaArchiveEngine
         ArchiveRequest request,
         string stagingRoot)
     {
-        FileInfo identity = new(request.ArchivePath);
-        List<EntryPlan> entries = new();
-        HashSet<string> targets = new(StringComparer.OrdinalIgnoreCase);
-        HashSet<string> fileTargets = new(StringComparer.OrdinalIgnoreCase);
+        int memberCount = 0;
         long declaredBytes = 0;
 
         using FileStream archiveStream = OpenArchive(request.ArchivePath);
         using ZipFile archive = new(archiveStream);
         foreach (ZipEntry entry in archive)
         {
-            ValidateEntryType(entry);
-            string relativePath = NormalizeEntryPath(entry.Name, entry.IsDirectory);
-            if (!targets.Add(relativePath))
-            {
-                throw new InvalidDataException(
-                    $"Archive contains duplicate target '{relativePath}'.");
-            }
-            if (entry.Size < 0 || entry.CompressedSize < 0 || entry.Crc < 0)
+            string relativePath = NormalizeEntryPath(entry.Name);
+            if (entry.Size < 0 || entry.Crc < 0)
             {
                 throw new InvalidDataException(
                     $"Archive entry '{relativePath}' has invalid metadata.");
             }
-            if (entry.IsDirectory && entry.Size != 0)
-            {
-                throw new InvalidDataException(
-                    $"Archive directory '{relativePath}' declares file data.");
-            }
             if (!entry.IsDirectory)
             {
                 declaredBytes = checked(declaredBytes + entry.Size);
-                fileTargets.Add(relativePath);
             }
-            entries.Add(
-                new EntryPlan(
-                    relativePath,
-                    entry.IsDirectory,
-                    entry.Size,
-                    entry.CompressedSize,
-                    checked((uint)entry.Crc)));
-        }
-
-        foreach (string fileTarget in fileTargets)
-        {
-            string? parent = GetParent(fileTarget);
-            while (parent is not null)
-            {
-                if (fileTargets.Contains(parent))
-                {
-                    throw new InvalidDataException(
-                        $"Archive file '{parent}' is also used as a directory.");
-                }
-                parent = GetParent(parent);
-            }
+            memberCount++;
         }
 
         string stagingPath = Path.Combine(
@@ -194,23 +159,14 @@ internal static class MediaArchiveEngine
             index,
             request,
             stagingPath,
-            identity.Length,
-            identity.LastWriteTimeUtc.Ticks,
             declaredBytes,
-            entries);
+            memberCount);
     }
 
     private static ArchiveResult ExtractArchive(
         ArchivePlan plan,
         Action memberCompleted)
     {
-        FileInfo identity = new(plan.Request.ArchivePath);
-        if (identity.Length != plan.ArchiveLength ||
-            identity.LastWriteTimeUtc.Ticks != plan.ArchiveWriteTicks)
-        {
-            throw new IOException("Archive changed after its central directory scan.");
-        }
-
         Directory.CreateDirectory(plan.StagingPath);
         long outputBytes = 0;
         int memberCount = 0;
@@ -220,26 +176,9 @@ internal static class MediaArchiveEngine
         {
             Password = plan.Request.Password,
         };
-        if (archive.Count != plan.Entries.Count)
+        foreach (ZipEntry entry in archive)
         {
-            throw new InvalidDataException(
-                "Archive member count changed after its central directory scan.");
-        }
-
-        for (int index = 0; index < archive.Count; index++)
-        {
-            ZipEntry entry = archive[index];
-            EntryPlan expected = plan.Entries[index];
-            string relativePath = NormalizeEntryPath(entry.Name, entry.IsDirectory);
-            if (relativePath != expected.RelativePath ||
-                entry.IsDirectory != expected.IsDirectory ||
-                entry.Size != expected.Size ||
-                entry.CompressedSize != expected.CompressedSize ||
-                checked((uint)entry.Crc) != expected.Crc)
-            {
-                throw new InvalidDataException(
-                    "Archive metadata changed after its central directory scan.");
-            }
+            string relativePath = NormalizeEntryPath(entry.Name);
 
             string targetPath = Path.Combine(
                 plan.StagingPath,
@@ -330,7 +269,7 @@ internal static class MediaArchiveEngine
             FileOptions.SequentialScan);
     }
 
-    private static string NormalizeEntryPath(string rawName, bool isDirectory)
+    private static string NormalizeEntryPath(string rawName)
     {
         if (string.IsNullOrWhiteSpace(rawName) || rawName.IndexOf('\0') >= 0)
         {
@@ -351,29 +290,7 @@ internal static class MediaArchiveEngine
             throw new InvalidDataException(
                 $"Archive entry '{rawName}' uses an unsafe path.");
         }
-        if (isDirectory && !rawName.EndsWith('/') && !rawName.EndsWith('\\'))
-        {
-            throw new InvalidDataException(
-                $"Archive directory '{rawName}' has an inconsistent name.");
-        }
         return string.Join('/', parts);
-    }
-
-    private static void ValidateEntryType(ZipEntry entry)
-    {
-        int unixType = (entry.ExternalFileAttributes >> 16) & 0xf000;
-        const int UnixRegularFile = 0x8000;
-        const int UnixDirectory = 0x4000;
-        if (unixType != 0 && unixType != UnixRegularFile && unixType != UnixDirectory)
-        {
-            throw new InvalidDataException(
-                $"Archive entry '{entry.Name}' is not a regular file or directory.");
-        }
-        if ((unixType == UnixDirectory) != entry.IsDirectory && unixType != 0)
-        {
-            throw new InvalidDataException(
-                $"Archive entry '{entry.Name}' has inconsistent type metadata.");
-        }
     }
 
     private static bool HasDrivePrefix(string path)
@@ -405,12 +322,6 @@ internal static class MediaArchiveEngine
             return false;
         }
         return true;
-    }
-
-    private static string? GetParent(string relativePath)
-    {
-        int separator = relativePath.LastIndexOf('/');
-        return separator > 0 ? relativePath[..separator] : null;
     }
 
     private static void EnsureContainedPath(string root, string candidate)
@@ -453,15 +364,6 @@ internal static class MediaArchiveEngine
         int Index,
         ArchiveRequest Request,
         string StagingPath,
-        long ArchiveLength,
-        long ArchiveWriteTicks,
         long DeclaredBytes,
-        List<EntryPlan> Entries);
-
-    private sealed record EntryPlan(
-        string RelativePath,
-        bool IsDirectory,
-        long Size,
-        long CompressedSize,
-        uint Crc);
+        int MemberCount);
 }

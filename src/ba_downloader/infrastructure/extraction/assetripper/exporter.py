@@ -7,7 +7,7 @@ import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 from uuid import uuid4
 
 from ba_downloader.domain.exceptions import ProcessExecutionError
@@ -152,7 +152,6 @@ class _ExportedFilePayload(TypedDict):
     path: str
     size: int
     mtime_ns: int
-    sha256: str
 
 
 class _ExportResultPayload(TypedDict):
@@ -172,7 +171,6 @@ class AssetRipperExportedFile:
     path: str
     size: int
     mtime_ns: int
-    sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,177 +430,84 @@ class _AssetRipperTool:
 
     @staticmethod
     def _read_export_result(payload: dict[str, object]) -> _ExportResultPayload:
-        files = payload.get("files")
-        if not isinstance(files, list):
-            raise AssetRipperToolError("AssetRipper result files are invalid.")
-        normalized_files: list[_ExportedFilePayload] = []
-        for item in files:
-            if (
-                not isinstance(item, dict)
-                or not isinstance(item.get("path"), str)
-                or not isinstance(item.get("size"), int)
-            ):
-                raise AssetRipperToolError("AssetRipper result file is invalid.")
-            mtime_ns = item.get("mtime_ns")
-            sha256 = item.get("sha256")
-            if (
-                not isinstance(mtime_ns, int)
-                or isinstance(mtime_ns, bool)
-                or mtime_ns < 0
-                or not isinstance(sha256, str)
-                or len(sha256) != 64
-                or any(character not in "0123456789abcdef" for character in sha256)
-            ):
-                raise AssetRipperToolError("AssetRipper result file is invalid.")
-            normalized_files.append(
-                {
-                    "path": item["path"],
-                    "size": item["size"],
-                    "mtime_ns": mtime_ns,
-                    "sha256": sha256,
-                }
-            )
-        error = payload.get("error")
-        if error is not None and not isinstance(error, str):
-            raise AssetRipperToolError("AssetRipper result error is invalid.")
-        coverage: dict[str, list[str]] = {}
-        for key in (
-            "requested_target_ids",
-            "resolved_target_ids",
-            "exported_target_ids",
-        ):
-            value = payload.get(key)
-            if not isinstance(value, list) or not all(
-                isinstance(item, str) for item in value
-            ):
-                raise AssetRipperToolError(
-                    "AssetRipper result target coverage is invalid."
-                )
-            coverage[key] = value
-        assets_payload = payload.get("assets")
-        if assets_payload is None and payload.get("succeeded") is False:
-            assets_payload = []
-        if not isinstance(assets_payload, list):
-            raise AssetRipperToolError("AssetRipper result assets are invalid.")
-        assets = [
-            _AssetRipperTool._read_exported_asset(item) for item in assets_payload
-        ]
-        failures_payload = payload.get("failures")
-        if failures_payload is None and payload.get("succeeded") is False:
-            failures_payload = []
-        if not isinstance(failures_payload, list):
-            raise AssetRipperToolError("AssetRipper result failures are invalid.")
-        failures = [
-            _AssetRipperTool._read_collection_failure(item) for item in failures_payload
-        ]
-        failure_kind = payload.get("failure_kind")
-        if failure_kind is not None and not isinstance(failure_kind, str):
-            raise AssetRipperToolError("AssetRipper failure kind is invalid.")
-        return {
-            "succeeded": bool(payload["succeeded"]),
-            "error": error,
-            "files": normalized_files,
-            "requested_target_ids": coverage["requested_target_ids"],
-            "resolved_target_ids": coverage["resolved_target_ids"],
-            "exported_target_ids": coverage["exported_target_ids"],
-            "assets": assets,
-            "failures": failures,
-            "failure_kind": failure_kind,
-        }
+        try:
+            raw_files = cast(list[dict[str, object]], payload["files"])
+            assets_payload = cast(list[object], payload.get("assets", []))
+            failures_payload = cast(list[object], payload.get("failures", []))
+            return {
+                "succeeded": cast(bool, payload["succeeded"]),
+                "error": cast(str | None, payload.get("error")),
+                "files": [
+                    {
+                        "path": cast(str, item["path"]),
+                        "size": cast(int, item["size"]),
+                        "mtime_ns": cast(int, item["mtime_ns"]),
+                    }
+                    for item in raw_files
+                ],
+                "requested_target_ids": cast(
+                    list[str], payload["requested_target_ids"]
+                ),
+                "resolved_target_ids": cast(list[str], payload["resolved_target_ids"]),
+                "exported_target_ids": cast(list[str], payload["exported_target_ids"]),
+                "assets": [
+                    _AssetRipperTool._read_exported_asset(item)
+                    for item in assets_payload
+                ],
+                "failures": [
+                    _AssetRipperTool._read_collection_failure(item)
+                    for item in failures_payload
+                ],
+                "failure_kind": cast(str | None, payload.get("failure_kind")),
+            }
+        except (KeyError, TypeError) as exc:
+            raise AssetRipperToolError(
+                "AssetRipper export result is incomplete."
+            ) from exc
 
     @staticmethod
     def _read_exported_asset(payload: object) -> AssetRipperExportedAsset:
         if not isinstance(payload, dict):
             raise AssetRipperToolError("AssetRipper exported asset is invalid.")
-        stable_id = payload.get("stable_id")
-        asset_type = payload.get("asset_type")
-        readable_name = payload.get("readable_name")
-        collection = payload.get("collection")
-        normalized_collection = payload.get("normalized_collection")
-        path_id = payload.get("path_id")
-        class_id = payload.get("class_id")
-        source_ids = payload.get("source_target_ids")
-        files = payload.get("files")
-        if (
-            not isinstance(stable_id, str)
-            or len(stable_id) != 20
-            or any(character not in "0123456789abcdef" for character in stable_id)
-            or not isinstance(asset_type, str)
-            or not asset_type
-            or not isinstance(readable_name, str)
-            or not readable_name
-            or not isinstance(collection, str)
-            or not isinstance(normalized_collection, str)
-            or not normalized_collection
-            or not isinstance(path_id, int)
-            or isinstance(path_id, bool)
-            or not isinstance(class_id, int)
-            or isinstance(class_id, bool)
-            or not isinstance(source_ids, list)
-            or not all(isinstance(item, str) and item for item in source_ids)
-            or not isinstance(files, list)
-            or not files
-        ):
-            raise AssetRipperToolError("AssetRipper exported asset is invalid.")
-        parsed_files: list[AssetRipperExportedFile] = []
-        for item in files:
-            if (
-                not isinstance(item, dict)
-                or not isinstance(item.get("path"), str)
-                or not item["path"]
-                or not isinstance(item.get("size"), int)
-                or isinstance(item["size"], bool)
-                or item["size"] < 0
-                or not isinstance(item.get("mtime_ns"), int)
-                or isinstance(item["mtime_ns"], bool)
-                or item["mtime_ns"] < 0
-                or not isinstance(item.get("sha256"), str)
-                or len(item["sha256"]) != 64
-                or any(
-                    character not in "0123456789abcdef" for character in item["sha256"]
-                )
-            ):
-                raise AssetRipperToolError(
-                    "AssetRipper exported asset file is invalid."
-                )
-            parsed_files.append(
-                AssetRipperExportedFile(
-                    item["path"],
-                    item["size"],
-                    item["mtime_ns"],
-                    item["sha256"],
-                )
+        try:
+            files = cast(list[dict[str, object]], payload["files"])
+            return AssetRipperExportedAsset(
+                cast(str, payload["stable_id"]),
+                cast(str, payload["asset_type"]),
+                cast(str, payload["readable_name"]),
+                cast(str, payload["collection"]),
+                cast(str, payload["normalized_collection"]),
+                cast(int, payload["path_id"]),
+                cast(int, payload["class_id"]),
+                tuple(cast(list[str], payload["source_target_ids"])),
+                tuple(
+                    AssetRipperExportedFile(
+                        cast(str, item["path"]),
+                        cast(int, item["size"]),
+                        cast(int, item["mtime_ns"]),
+                    )
+                    for item in files
+                ),
             )
-        return AssetRipperExportedAsset(
-            stable_id,
-            asset_type,
-            readable_name,
-            collection,
-            normalized_collection,
-            path_id,
-            class_id,
-            tuple(source_ids),
-            tuple(parsed_files),
-        )
+        except (KeyError, TypeError) as exc:
+            raise AssetRipperToolError(
+                "AssetRipper exported asset is incomplete."
+            ) from exc
 
     @staticmethod
     def _read_collection_failure(payload: object) -> AssetRipperCollectionFailure:
         if not isinstance(payload, dict):
             raise AssetRipperToolError("AssetRipper collection failure is invalid.")
-        stable_id = payload.get("stable_id")
-        source_ids = payload.get("source_target_ids")
-        error = payload.get("error")
-        if (
-            not isinstance(stable_id, str)
-            or len(stable_id) != 20
-            or any(character not in "0123456789abcdef" for character in stable_id)
-            or not isinstance(source_ids, list)
-            or not all(isinstance(item, str) and item for item in source_ids)
-            or not isinstance(error, str)
-            or not error
-        ):
-            raise AssetRipperToolError("AssetRipper collection failure is invalid.")
-        return AssetRipperCollectionFailure(stable_id, tuple(source_ids), error)
+        try:
+            return AssetRipperCollectionFailure(
+                cast(str, payload["stable_id"]),
+                tuple(cast(list[str], payload["source_target_ids"])),
+                cast(str, payload["error"]),
+            )
+        except (KeyError, TypeError) as exc:
+            raise AssetRipperToolError(
+                "AssetRipper collection failure is incomplete."
+            ) from exc
 
     @staticmethod
     def _process_error(value: str) -> str:
@@ -677,25 +582,22 @@ class AssetRipperBatchExporter(_AssetRipperTool):
                 "AssetRipper entry cache result schema is invalid."
             )
         result: dict[str, int] = {}
-        for item in items:
-            if not isinstance(item, dict):
-                raise AssetRipperToolError("AssetRipper entry cache result is invalid.")
-            node_id = item.get("node_id")
-            path = item.get("path")
-            written = item.get("bytes_written")
-            if (
-                not isinstance(node_id, str)
-                or node_id not in destinations
-                or node_id in result
-                or not isinstance(path, str)
-                or Path(path).resolve(strict=False)
-                != destinations[node_id].resolve(strict=False)
-                or not isinstance(written, int)
-                or isinstance(written, bool)
-                or written < 0
-            ):
-                raise AssetRipperToolError("AssetRipper entry cache result is invalid.")
-            result[node_id] = written
+        try:
+            for raw_item in items:
+                item = cast(dict[str, object], raw_item)
+                node_id = cast(str, item["node_id"])
+                destination = destinations[node_id]
+                if node_id in result or Path(cast(str, item["path"])).resolve(
+                    strict=False
+                ) != destination.resolve(strict=False):
+                    raise AssetRipperToolError(
+                        "AssetRipper entry cache result does not match its request."
+                    )
+                result[node_id] = cast(int, item["bytes_written"])
+        except (KeyError, TypeError) as exc:
+            raise AssetRipperToolError(
+                "AssetRipper entry cache result is incomplete."
+            ) from exc
         if set(result) != set(destinations):
             raise AssetRipperToolError(
                 "AssetRipper entry cache result does not cover every input."
@@ -753,7 +655,6 @@ class AssetRipperBatchExporter(_AssetRipperTool):
                     item["path"],
                     item["size"],
                     item["mtime_ns"],
-                    item["sha256"],
                 )
                 for item in result["files"]
             ),
@@ -876,7 +777,6 @@ class AssetRipperBatchExporter(_AssetRipperTool):
                     item["path"],
                     item["size"],
                     item["mtime_ns"],
-                    item["sha256"],
                 )
                 for item in result["files"]
             ),
@@ -939,115 +839,58 @@ class AssetRipperDependencyScanner(_AssetRipperTool):
     def _read_archive_scan(payload: object) -> BundleArchiveScan:
         if not isinstance(payload, dict):
             raise AssetRipperExportError("AssetRipper archive scan result is invalid.")
-        archive_id = payload.get("archive_id")
-        entries = payload.get("entries")
-        error = payload.get("error")
-        if (
-            not isinstance(archive_id, str)
-            or not isinstance(entries, list)
-            or (error is not None and not isinstance(error, str))
-        ):
-            raise AssetRipperExportError(
-                "AssetRipper archive scan result schema is invalid."
+        try:
+            return BundleArchiveScan(
+                archive_id=cast(str, payload["archive_id"]),
+                entries=tuple(
+                    AssetRipperDependencyScanner._read_entry_scan(item)
+                    for item in cast(list[object], payload["entries"])
+                ),
+                error=cast(str | None, payload.get("error")),
             )
-
-        return BundleArchiveScan(
-            archive_id=archive_id,
-            entries=tuple(
-                AssetRipperDependencyScanner._read_entry_scan(item) for item in entries
-            ),
-            error=error,
-        )
+        except (KeyError, TypeError) as exc:
+            raise AssetRipperExportError(
+                "AssetRipper archive scan result is incomplete."
+            ) from exc
 
     @staticmethod
     def _read_entry_scan(payload: object) -> BundleEntryScan:
         if not isinstance(payload, dict):
             raise AssetRipperExportError("AssetRipper bundle entry scan is invalid.")
-        entry_path = payload.get("entry_path")
-        sha256 = payload.get("sha256")
-        size = payload.get("size")
-        crc32 = payload.get("crc32")
-        serialized_files = payload.get("serialized_files")
-        resource_files = payload.get("resource_files")
-        streamed_resources = payload.get("streamed_resources")
-        error = payload.get("error")
-        if (
-            not isinstance(entry_path, str)
-            or not isinstance(sha256, str)
-            or len(sha256) != 64
-            or any(character not in "0123456789abcdef" for character in sha256)
-            or not isinstance(size, int)
-            or isinstance(size, bool)
-            or size < 0
-            or (
-                crc32 is not None
-                and (
-                    not isinstance(crc32, int)
-                    or isinstance(crc32, bool)
-                    or not 0 <= crc32 <= 0xFFFFFFFF
-                )
+        try:
+            serialized_files = cast(
+                list[dict[str, object]], payload["serialized_files"]
             )
-            or not isinstance(serialized_files, list)
-            or not isinstance(resource_files, list)
-            or not all(isinstance(item, str) for item in resource_files)
-            or not isinstance(streamed_resources, list)
-            or (error is not None and not isinstance(error, str))
-        ):
+            streamed_resources = cast(
+                list[dict[str, object]], payload["streamed_resources"]
+            )
+            return BundleEntryScan(
+                entry_path=cast(str, payload["entry_path"]),
+                sha256=cast(str, payload["sha256"]),
+                size=cast(int, payload["size"]),
+                crc32=cast(int | None, payload.get("crc32")),
+                serialized_files=tuple(
+                    SerializedFileScan(
+                        cast(str, item["logical_name"]),
+                        tuple(cast(list[str], item["dependencies"])),
+                    )
+                    for item in serialized_files
+                ),
+                resource_files=tuple(cast(list[str], payload["resource_files"])),
+                streamed_resources=tuple(
+                    StreamedResourceScan(
+                        cast(str, item["source_serialized_file"]),
+                        cast(str, item["resource_path"]),
+                        cast(str, item["asset_type"]),
+                    )
+                    for item in streamed_resources
+                ),
+                error=cast(str | None, payload.get("error")),
+            )
+        except (KeyError, TypeError) as exc:
             raise AssetRipperExportError(
-                "AssetRipper bundle entry scan schema is invalid."
-            )
-
-        parsed_serialized: list[SerializedFileScan] = []
-        for item in serialized_files:
-            if not isinstance(item, dict):
-                raise AssetRipperExportError(
-                    "AssetRipper serialized file scan is invalid."
-                )
-            logical_name = item.get("logical_name")
-            dependencies = item.get("dependencies")
-            if (
-                not isinstance(logical_name, str)
-                or not isinstance(dependencies, list)
-                or not all(isinstance(value, str) for value in dependencies)
-            ):
-                raise AssetRipperExportError(
-                    "AssetRipper serialized file scan is invalid."
-                )
-            parsed_serialized.append(
-                SerializedFileScan(logical_name, tuple(dependencies))
-            )
-
-        parsed_streamed: list[StreamedResourceScan] = []
-        for item in streamed_resources:
-            if not isinstance(item, dict):
-                raise AssetRipperExportError(
-                    "AssetRipper streamed resource scan is invalid."
-                )
-            source = item.get("source_serialized_file")
-            resource_path = item.get("resource_path")
-            asset_type = item.get("asset_type")
-            if (
-                not isinstance(source, str)
-                or not isinstance(resource_path, str)
-                or not isinstance(asset_type, str)
-            ):
-                raise AssetRipperExportError(
-                    "AssetRipper streamed resource scan is invalid."
-                )
-            parsed_streamed.append(
-                StreamedResourceScan(source, resource_path, asset_type)
-            )
-
-        return BundleEntryScan(
-            entry_path=entry_path,
-            sha256=sha256,
-            size=size,
-            crc32=crc32,
-            serialized_files=tuple(parsed_serialized),
-            resource_files=tuple(resource_files),
-            streamed_resources=tuple(parsed_streamed),
-            error=error,
-        )
+                "AssetRipper bundle entry scan is incomplete."
+            ) from exc
 
 
 class AssetRipperRuntimeMetadataInspector(_AssetRipperTool):

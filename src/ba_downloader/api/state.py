@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
-import secrets
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -44,12 +41,10 @@ class ContextRegistry:
         capacity: int = 16,
         idle_ttl: timedelta = timedelta(hours=24),
         clock: Callable[[], datetime] | None = None,
-        fingerprint_key: bytes | None = None,
     ) -> None:
         self._capacity = capacity
         self._idle_ttl = idle_ttl
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._key = fingerprint_key or secrets.token_bytes(32)
         self._items: OrderedDict[str, ApiContext] = OrderedDict()
         self._fingerprints: dict[str, str] = {}
         self._lock = RLock()
@@ -156,7 +151,7 @@ class ContextRegistry:
                     self._fingerprints.pop(item.fingerprint, None)
 
     def _fingerprint(self, context: ExecutionContext) -> str:
-        payload = json.dumps(
+        return json.dumps(
             {
                 "region": context.region,
                 "platform": context.platform,
@@ -167,5 +162,4 @@ class ContextRegistry:
             },
             sort_keys=True,
             separators=(",", ":"),
-        ).encode()
-        return hmac.new(self._key, payload, hashlib.sha256).hexdigest()
+        )

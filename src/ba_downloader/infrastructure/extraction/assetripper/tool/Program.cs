@@ -759,7 +759,6 @@ static MaterializedEntryResult MaterializeEntry(
                 digest.AppendData(buffer, 0, count);
                 written += count;
             }
-            target.Flush(true);
         }
         string actualHash = Convert.ToHexString(digest.GetHashAndReset()).ToLowerInvariant();
         if (written != input.Size || actualHash != input.Sha256)
@@ -784,15 +783,6 @@ static MaterializedEntryResult MaterializeEntry(
                 JsonOptions.Default
             )
         );
-        using (FileStream markerStream = new(
-            markerTemporary,
-            FileMode.Open,
-            FileAccess.ReadWrite,
-            FileShare.None
-        ))
-        {
-            markerStream.Flush(true);
-        }
         File.Move(markerTemporary, marker, true);
         return new MaterializedEntryResult(input.NodeId, destination, written);
     }

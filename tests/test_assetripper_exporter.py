@@ -192,7 +192,6 @@ class FakeProcessRunner:
                         "path": "Assets/_MX/asset.bin",
                         "size": 3,
                         "mtime_ns": 1,
-                        "sha256": "a" * 64,
                     }
                 ],
             }
@@ -234,7 +233,6 @@ class FakeProcessRunner:
                                 "path": "Assets/_MX/asset.bin",
                                 "size": 3,
                                 "mtime_ns": 1,
-                                "sha256": "a" * 64,
                             }
                         ]
                         if self.export_succeeds and self.exported_files
@@ -314,7 +312,7 @@ def test_source_resolver_prefers_valid_submodule(tmp_path: Path) -> None:
     assert client.downloads == 0
 
 
-def test_source_resolver_downloads_verified_fallback(tmp_path: Path) -> None:
+def test_source_resolver_downloads_and_reuses_fallback(tmp_path: Path) -> None:
     archive = _write_source_archive(tmp_path / "source.zip")
     client = FakeHttpClient(archive)
     resolver = AssetRipperSourceResolver(
@@ -322,7 +320,6 @@ def test_source_resolver_downloads_verified_fallback(tmp_path: Path) -> None:
         NullLogger(),
         repository_root=tmp_path / "repository",
         archive_url="https://example.invalid/source.zip",
-        archive_sha256=hashlib.sha256(archive).hexdigest(),
         commit="test-commit",
     )
 

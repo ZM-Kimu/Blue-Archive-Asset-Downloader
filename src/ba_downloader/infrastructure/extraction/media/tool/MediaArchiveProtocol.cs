@@ -114,8 +114,6 @@ internal static class MediaArchiveProtocol
                 FileOptions.SequentialScan))
             {
                 await JsonSerializer.SerializeAsync(stream, result);
-                await stream.FlushAsync();
-                stream.Flush(flushToDisk: true);
             }
             File.Move(temporary, target, overwrite: true);
         }

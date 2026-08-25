@@ -8,7 +8,6 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHttpException
 
@@ -74,17 +73,9 @@ def create_app(
         redoc_url="/redoc",
         lifespan=lifespan,
     )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-        allow_credentials=False,
-        allow_private_network=True,
-    )
 
     @app.middleware("http")
-    async def private_network_access(request: Request, call_next: Any) -> Any:
+    async def reject_work_during_shutdown(request: Request, call_next: Any) -> Any:
         if (
             services.shutdown_event.is_set()
             and request.url.path != "/api/v1/system/shutdown"
@@ -96,10 +87,7 @@ def create_app(
                 "Server is shutting down",
                 "The server is not accepting new work.",
             )
-        response = await call_next(request)
-        if request.headers.get("access-control-request-private-network") == "true":
-            response.headers["Access-Control-Allow-Private-Network"] = "true"
-        return response
+        return await call_next(request)
 
     @app.exception_handler(ApiProblem)
     async def handle_problem(request: Request, exc: ApiProblem) -> JSONResponse:

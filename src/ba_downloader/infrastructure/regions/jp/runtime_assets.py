@@ -15,7 +15,6 @@ from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
-from ba_downloader.infrastructure.files.checksum import calculate_sha256
 from ba_downloader.infrastructure.runtime import RuntimeSnapshotStore
 
 MFTL_FOOTER_SIZE = 0x2C
@@ -29,8 +28,6 @@ PADDED_65537 = b"\x00" * 125 + b"\x01\x00\x01"
 ELF64_LITTLE_ENDIAN_PREFIX = b"\x7fELF\x02\x01"
 AARCH64_MACHINE = 0xB7
 STREAM_CHUNK_SIZE = 1024 * 1024
-MAX_UNPACKED_SIZE = 512 * 1024 * 1024
-MAX_MFTL_DIRECTORY_SIZE = 1024 * 1024
 
 
 class JpRuntimeDecryptError(RuntimeError):
@@ -152,7 +149,7 @@ def _parse_mftl_footer(footer: bytes, file_size: int) -> MftlFooter:
         raise JpRuntimeDecryptError("MFTL directory does not end at the footer offset.")
     if payload_size == 0 or payload_size % AES.block_size:
         raise JpRuntimeDecryptError("MFTL payload size is not AES block aligned.")
-    if directory_size == 0 or directory_size > MAX_MFTL_DIRECTORY_SIZE:
+    if directory_size == 0:
         raise JpRuntimeDecryptError("MFTL directory is empty.")
     return MftlFooter(
         payload_offset=payload_offset,
@@ -398,7 +395,7 @@ class JpEncryptedRuntimeExtractor:
                             raise JpRuntimeDecryptError(
                                 "TARA side or compressed length is invalid."
                             )
-                        if out_len <= 0 or out_len > MAX_UNPACKED_SIZE:
+                        if out_len <= 0:
                             raise JpRuntimeDecryptError(
                                 "TARA output size is outside the allowed range."
                             )
@@ -613,10 +610,6 @@ class JPRuntimeAssetPreparer(RuntimeAssetPreparerPort):
                 "Restoring JP libil2cpp.so from MFTL runtime payload "
                 f"'{runtime_payload.path.name}'..."
             )
-            parent_hash = calculate_sha256(
-                runtime_payload.path,
-                on_chunk=self.cancellation.raise_if_cancelled,
-            )
             self.extractor.extract(runtime_payload.path, output_path)
             self.cancellation.raise_if_cancelled()
             self.logger.info("Restored JP libil2cpp.so successfully.")
@@ -638,7 +631,6 @@ class JPRuntimeAssetPreparer(RuntimeAssetPreparerPort):
                     "parent": {
                         "name": runtime_payload.path.name,
                         "size": runtime_payload.path.stat().st_size,
-                        "sha256": parent_hash,
                     },
                     "footer": {
                         "payload_offset": runtime_payload.container.footer.payload_offset,

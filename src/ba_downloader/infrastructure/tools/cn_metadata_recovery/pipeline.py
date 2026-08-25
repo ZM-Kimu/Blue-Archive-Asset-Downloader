@@ -8,7 +8,6 @@ from typing import Protocol, TypeVar
 
 from ba_downloader.domain.exceptions import OperationCancelledError
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
-from ba_downloader.infrastructure.files.checksum import calculate_source_fingerprint
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.codegen_registration import (
     RelocatedElf,
     apply_codegen_module_order,
@@ -38,15 +37,6 @@ from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.validato
 
 PhaseResult = TypeVar("PhaseResult")
 RecoveryProgressCallback = Callable[[str, int, int], None]
-
-
-def recovery_tool_fingerprint() -> str:
-    root = Path(__file__).resolve().parent
-    return calculate_source_fingerprint(
-        root,
-        root.rglob("*.py"),
-        identities=(("tool", "cn-metadata-recovery"),),
-    )
 
 
 class _PhaseFailure(RuntimeError):
@@ -334,7 +324,6 @@ class CnMetadataRecoveryPipeline:
         binary_path: Path,
     ) -> dict[str, object]:
         diagnostics: dict[str, object] = {
-            "tool_fingerprint": recovery_tool_fingerprint(),
             "metadata_size": len(protected_metadata),
             "metadata_sha256": hashlib.sha256(protected_metadata).hexdigest(),
         }

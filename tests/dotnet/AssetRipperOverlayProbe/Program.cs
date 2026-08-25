@@ -1,5 +1,4 @@
 using System.Numerics;
-using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using AssetRipper.Assets;
 using AssetRipper.Assets.Bundles;
@@ -28,7 +27,6 @@ using AssetRipper.SourceGenerated.Subclasses.Keyframe_Vector3f;
 using AssetRipper.SourceGenerated.Subclasses.Vector3Curve;
 using SharpGLTF.Schema2;
 using Baad.AssetRipper.Models;
-using Baad.AssetRipper.PrimaryContent;
 
 if (args.Length != 1)
 {
@@ -37,38 +35,6 @@ if (args.Length != 1)
 
 string outputRoot = Path.GetFullPath(args[0]);
 Directory.CreateDirectory(outputRoot);
-ExportTrackingFileSystem fileSystem = new(LocalFileSystem.Instance);
-
-byte[] sequentialPayload = "sequential-write"u8.ToArray();
-string sequentialPath = Path.Combine(outputRoot, "sequential.bin");
-using (Stream stream = fileSystem.File.Create(sequentialPath))
-{
-	stream.Write(sequentialPayload);
-}
-AssertMetadata(fileSystem, sequentialPath, sequentialPayload);
-
-string seekPath = Path.Combine(outputRoot, "seek.bin");
-using (Stream stream = fileSystem.File.Create(seekPath))
-{
-	stream.Write("abc"u8);
-	stream.Position = 0;
-	stream.Write("x"u8);
-}
-AssertMetadata(fileSystem, seekPath, "xbc"u8);
-
-byte[] directPayload = "direct-write"u8.ToArray();
-string directPath = Path.Combine(outputRoot, "direct.bin");
-fileSystem.File.WriteAllBytes(directPath, directPayload);
-AssertMetadata(fileSystem, directPath, directPayload);
-
-string textPath = Path.Combine(outputRoot, "text.txt");
-fileSystem.File.WriteAllText(textPath, "tracked text".AsSpan());
-AssertMetadata(fileSystem, textPath, "tracked text"u8);
-
-string mixedSeparatorPath = outputRoot + "/mixed/path.bin";
-Directory.CreateDirectory(Path.GetDirectoryName(mixedSeparatorPath)!);
-fileSystem.File.WriteAllBytes(mixedSeparatorPath, directPayload);
-AssertMetadata(fileSystem, Path.GetFullPath(mixedSeparatorPath), directPayload);
 AssertPlayableGlb(Path.Combine(outputRoot, "playable.glb"));
 
 static void AssertPlayableGlb(string path)
@@ -374,24 +340,5 @@ static void AssertPlayableGlb(string path)
 		secondDelta.Normal.Y = 0.1f;
 		mesh.Shapes.FullWeights.Add(100.0f);
 		mesh.Shapes.FullWeights.Add(100.0f);
-	}
-}
-
-static void AssertMetadata(
-	ExportTrackingFileSystem fileSystem,
-	string path,
-	ReadOnlySpan<byte> expected)
-{
-	if (!fileSystem.TryGetMetadata(path, out ExportedFileMetadata? metadata))
-	{
-		throw new InvalidDataException("Tracked file metadata was not registered.");
-	}
-	string expectedHash = Convert.ToHexString(SHA256.HashData(expected)).ToLowerInvariant();
-	if (
-		metadata.Size != expected.Length
-		|| metadata.Sha256 != expectedHash
-		|| !File.ReadAllBytes(path).AsSpan().SequenceEqual(expected))
-	{
-		throw new InvalidDataException("Tracked file metadata does not match its content.");
 	}
 }

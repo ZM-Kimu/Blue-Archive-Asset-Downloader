@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -63,16 +62,10 @@ class FileBoundaryError(ValueError):
     pass
 
 
-class CleanupPreviewLimitError(RuntimeError):
-    pass
-
-
 class FileRegistry:
-    def __init__(self, *, file_limit: int = 100_000, preview_limit: int = 8) -> None:
+    def __init__(self) -> None:
         self._lock = RLock()
-        self._file_limit = file_limit
-        self._preview_limit = preview_limit
-        self._files: OrderedDict[str, tuple[str, Path, Path]] = OrderedDict()
+        self._files: dict[str, tuple[str, Path, Path]] = {}
         self._file_ids: dict[tuple[str, str, str], str] = {}
         self._previews: dict[str, CleanupPreview] = {}
 
@@ -115,7 +108,6 @@ class FileRegistry:
                 raise KeyError(f"Unknown file '{file_id}'.") from exc
             if scope not in PUBLIC_FILE_SCOPES or root != self.roots(context)[scope]:
                 raise KeyError(f"Unknown file '{file_id}'.")
-            self._files.move_to_end(file_id)
         resolved = path.resolve()
         self._ensure_within(root, resolved)
         return resolved
@@ -155,10 +147,6 @@ class FileRegistry:
                 targets.append(self._cleanup_target(scope, root, resolved))
         with self._lock:
             self._purge_expired_previews()
-            if len(self._previews) >= self._preview_limit:
-                raise CleanupPreviewLimitError(
-                    "The maximum number of active cleanup previews has been reached."
-                )
             preview = CleanupPreview(
                 uuid4().hex,
                 context_id,
@@ -275,18 +263,6 @@ class FileRegistry:
                 file_id = uuid4().hex
                 self._file_ids[key] = file_id
                 self._files[file_id] = (scope, root, resolved)
-                while len(self._files) > self._file_limit:
-                    _, (old_scope, old_root, old_path) = self._files.popitem(last=False)
-                    self._file_ids.pop(
-                        (
-                            old_scope,
-                            str(old_root),
-                            old_path.relative_to(old_root).as_posix(),
-                        ),
-                        None,
-                    )
-            else:
-                self._files.move_to_end(file_id)
         return self._entry(file_id, scope, root, resolved)
 
     @staticmethod

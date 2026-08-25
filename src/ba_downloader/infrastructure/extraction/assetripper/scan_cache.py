@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import cast
 
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
@@ -140,95 +141,42 @@ class BundleDependencyScanCache:
 
     @classmethod
     def _read_scan(cls, payload: dict[str, object]) -> BundleArchiveScan:
-        archive_id = payload.get("archive_id")
-        entries = payload.get("entries")
-        error = payload.get("error")
-        if (
-            not isinstance(archive_id, str)
-            or not isinstance(entries, list)
-            or (error is not None and not isinstance(error, str))
-        ):
-            raise ValueError("Dependency scan cache schema is invalid.")
         return BundleArchiveScan(
-            archive_id=archive_id,
-            entries=tuple(cls._read_entry(item) for item in entries),
-            error=error,
+            archive_id=cast(str, payload["archive_id"]),
+            entries=tuple(
+                cls._read_entry(item) for item in cast(list[object], payload["entries"])
+            ),
+            error=cast(str | None, payload.get("error")),
         )
 
     @staticmethod
     def _read_entry(payload: object) -> BundleEntryScan:
         if not isinstance(payload, dict):
             raise ValueError("Bundle entry scan cache is invalid.")
-        entry_path = payload.get("entry_path")
-        sha256 = payload.get("sha256")
-        size = payload.get("size")
-        crc32 = payload.get("crc32")
-        serialized_files = payload.get("serialized_files")
-        resource_files = payload.get("resource_files")
-        streamed_resources = payload.get("streamed_resources")
-        error = payload.get("error")
-        if (
-            not isinstance(entry_path, str)
-            or not isinstance(sha256, str)
-            or not isinstance(size, int)
-            or isinstance(size, bool)
-            or size < 0
-            or (
-                crc32 is not None
-                and (
-                    not isinstance(crc32, int)
-                    or isinstance(crc32, bool)
-                    or not 0 <= crc32 <= 0xFFFFFFFF
-                )
-            )
-            or not isinstance(serialized_files, list)
-            or not isinstance(resource_files, list)
-            or not all(isinstance(item, str) for item in resource_files)
-            or not isinstance(streamed_resources, list)
-            or (error is not None and not isinstance(error, str))
-        ):
-            raise ValueError("Bundle entry scan cache is invalid.")
-
-        parsed_serialized: list[SerializedFileScan] = []
-        for item in serialized_files:
-            if not isinstance(item, dict):
-                raise ValueError("Serialized file scan cache is invalid.")
-            logical_name = item.get("logical_name")
-            dependencies = item.get("dependencies")
-            if (
-                not isinstance(logical_name, str)
-                or not isinstance(dependencies, list)
-                or not all(isinstance(value, str) for value in dependencies)
-            ):
-                raise ValueError("Serialized file scan cache is invalid.")
-            parsed_serialized.append(
-                SerializedFileScan(logical_name, tuple(dependencies))
-            )
-
-        parsed_streamed: list[StreamedResourceScan] = []
-        for item in streamed_resources:
-            if not isinstance(item, dict):
-                raise ValueError("Streamed resource scan cache is invalid.")
-            source = item.get("source_serialized_file")
-            resource_path = item.get("resource_path")
-            asset_type = item.get("asset_type")
-            if (
-                not isinstance(source, str)
-                or not isinstance(resource_path, str)
-                or not isinstance(asset_type, str)
-            ):
-                raise ValueError("Streamed resource scan cache is invalid.")
-            parsed_streamed.append(
-                StreamedResourceScan(source, resource_path, asset_type)
-            )
-
+        serialized_files = cast(list[dict[str, object]], payload["serialized_files"])
+        streamed_resources = cast(
+            list[dict[str, object]], payload["streamed_resources"]
+        )
         return BundleEntryScan(
-            entry_path=entry_path,
-            sha256=sha256,
-            size=size,
-            crc32=crc32,
-            serialized_files=tuple(parsed_serialized),
-            resource_files=tuple(resource_files),
-            streamed_resources=tuple(parsed_streamed),
-            error=error,
+            entry_path=cast(str, payload["entry_path"]),
+            sha256=cast(str, payload["sha256"]),
+            size=cast(int, payload["size"]),
+            crc32=cast(int | None, payload.get("crc32")),
+            serialized_files=tuple(
+                SerializedFileScan(
+                    cast(str, item["logical_name"]),
+                    tuple(cast(list[str], item["dependencies"])),
+                )
+                for item in serialized_files
+            ),
+            resource_files=tuple(cast(list[str], payload["resource_files"])),
+            streamed_resources=tuple(
+                StreamedResourceScan(
+                    cast(str, item["source_serialized_file"]),
+                    cast(str, item["resource_path"]),
+                    cast(str, item["asset_type"]),
+                )
+                for item in streamed_resources
+            ),
+            error=cast(str | None, payload.get("error")),
         )

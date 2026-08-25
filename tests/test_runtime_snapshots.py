@@ -32,7 +32,7 @@ def _publish_snapshot(
         )
 
 
-def test_runtime_snapshot_validates_manifest_hashes(tmp_path: Path) -> None:
+def test_runtime_snapshot_validates_manifest_sizes(tmp_path: Path) -> None:
     context = build_execution_context(tmp_path, region="gl", version="1.2.3")
     store = RuntimeSnapshotStore()
     prepared = _publish_snapshot(store, context, "1.2.3", marker=b"current")
