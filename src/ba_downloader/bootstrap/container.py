@@ -227,6 +227,7 @@ class ExecutionScope:
                 self.logger,
                 dumper_backend_factory=definition.runtime.dump_backend,
                 cancellation=self.cancellation,
+                progress_factory=self._progress_factory,
             )
             preparer = definition.runtime.asset_preparer(
                 self.http_client(),
@@ -349,6 +350,7 @@ class ExecutionScope:
                             cancellation=self.cancellation,
                         ),
                         progress_factory=self._progress_factory,
+                        cancellation=self.cancellation,
                     ),
                     bundle_workflow=AssetRipperBundleWorkflow(
                         AssetRipperBatchExporter(

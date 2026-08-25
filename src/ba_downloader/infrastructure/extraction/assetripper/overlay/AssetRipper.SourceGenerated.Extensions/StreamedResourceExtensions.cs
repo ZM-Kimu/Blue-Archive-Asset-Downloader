@@ -9,7 +9,9 @@ public static class StreamedResourceExtensions
 {
 	private static ResourceFile? ResolveResource(AssetCollection collection, string path)
 	{
-		if (BundleLookupIndex.TryResolveResource(collection.Bundle, path, out ResourceFile? resource) && resource is not null)
+		if (
+			BundleLookupIndex.TryResolveResource(collection.Bundle, path, out ResourceFile? resource)
+			&& resource is not null)
 		{
 			return resource;
 		}
@@ -18,29 +20,70 @@ public static class StreamedResourceExtensions
 
 	internal static bool CheckIntegrity(Utf8String? path, ulong offset, ulong size, AssetCollection collection)
 	{
-		if (Utf8String.IsNullOrEmpty(path)) return true;
-		if (offset > long.MaxValue || size > long.MaxValue || offset + size > long.MaxValue || size == 0) return false;
+		if (Utf8String.IsNullOrEmpty(path))
+		{
+			return true;
+		}
+
+		if (offset > long.MaxValue || size > long.MaxValue || offset + size > long.MaxValue)
+		{
+			return false;
+		}
+
+		if (size == 0)
+		{
+			// Data might be read by its type for this verison, so we can't even export raw data.
+			return false;
+		}
+
 		ResourceFile? file = ResolveResource(collection, path.String);
-		return file is not null && file.Stream.Length >= unchecked((long)(offset + size));
+		if (file == null)
+		{
+			return false;
+		}
+
+		return file.Stream.Length >= unchecked((long)(offset + size));
 	}
 
 	internal static byte[]? GetContent(Utf8String? path, ulong offset, ulong size, AssetCollection collection)
 	{
-		if (Utf8String.IsNullOrEmpty(path)) return null;
-		if (offset > long.MaxValue || size > long.MaxValue || offset + size > long.MaxValue || size == 0) return null;
+		if (Utf8String.IsNullOrEmpty(path))
+		{
+			return null;
+		}
+
+		if (offset > long.MaxValue || size > long.MaxValue || offset + size > long.MaxValue)
+		{
+			return null;
+		}
+
+		if (size == 0)
+		{
+			// Data might be read by its type for this verison, so we can't even export raw data.
+			return null;
+		}
+
 		ResourceFile? file = ResolveResource(collection, path.String);
-		if (file is null || file.Stream.Length < unchecked((long)(offset + size))) return null;
+		if (file == null || file.Stream.Length < unchecked((long)(offset + size)))
+		{
+			return null;
+		}
+
 		byte[] data = new byte[size];
 		file.Stream.Position = (long)offset;
 		file.Stream.ReadExactly(data);
 		return data;
 	}
 
-	public static bool CheckIntegrity(this IStreamedResource streamedResource, AssetCollection collection) =>
-		CheckIntegrity(streamedResource.Source, streamedResource.Offset, streamedResource.Size, collection);
+	public static bool CheckIntegrity(this IStreamedResource streamedResource, AssetCollection collection)
+	{
+		return CheckIntegrity(streamedResource.Source, streamedResource.Offset, streamedResource.Size, collection);
+	}
 
-	public static byte[]? GetContent(this IStreamedResource streamedResource, AssetCollection file) =>
-		GetContent(streamedResource.Source, streamedResource.Offset, streamedResource.Size, file);
+	public static byte[]? GetContent(this IStreamedResource streamedResource, AssetCollection file)
+	{
+		return GetContent(streamedResource.Source, streamedResource.Offset, streamedResource.Size, file);
+	}
 
 	public static bool TryGetContent(this IStreamedResource streamedResource, AssetCollection file, [NotNullWhen(true)] out byte[]? data)
 	{

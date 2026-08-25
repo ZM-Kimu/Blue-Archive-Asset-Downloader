@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import inspect
 import json
 import os
 import shutil
@@ -15,7 +16,10 @@ from Crypto.Cipher import AES
 from ba_downloader.domain.models.database import DatabaseSourceIdentity
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.files.atomic import write_json_atomic
-from ba_downloader.infrastructure.files.checksum import calculate_sha256
+from ba_downloader.infrastructure.files.checksum import (
+    calculate_sha256,
+    calculate_source_fingerprint,
+)
 
 SQLITE_HEADER = b"SQLite format 3\x00"
 
@@ -25,7 +29,6 @@ class SqlCipherRawExportError(RuntimeError):
 
 
 class SqlCipherRawExporter:
-    VERSION = "sqlcipher-raw-v1"
     PAGE_SIZE = 4096
     RESERVE_SIZE = 80
     IV_SIZE = 16
@@ -176,6 +179,20 @@ class SqlCipherKeyProvider(Protocol):
     def get_key_hex(self) -> str: ...
 
 
+def _implementation_fingerprint(exporter: object) -> str:
+    implementation = type(exporter)
+    identity = f"{implementation.__module__}.{implementation.__qualname__}"
+    source_file = inspect.getsourcefile(implementation)
+    if source_file is None:
+        return hashlib.sha256(identity.encode("utf8")).hexdigest()
+    source = Path(source_file).resolve(strict=True)
+    return calculate_source_fingerprint(
+        source.parent,
+        (source,),
+        identities=(("implementation", identity),),
+    )
+
+
 def is_sqlite_database(path: Path) -> bool:
     try:
         with path.open("rb") as database_file:
@@ -185,7 +202,7 @@ def is_sqlite_database(path: Path) -> bool:
 
 
 class SqlCipherDatabaseResolver:
-    CACHE_SCHEMA_VERSION = 1
+    CACHE_SCHEMA_VERSION = 0
 
     def __init__(
         self,
@@ -294,13 +311,7 @@ class SqlCipherDatabaseResolver:
         key_hex: str,
     ) -> DatabaseSourceIdentity:
         source = self.source_identity
-        exporter_version = str(
-            getattr(
-                self.exporter,
-                "VERSION",
-                f"{type(self.exporter).__module__}.{type(self.exporter).__qualname__}:1",
-            )
-        )
+        exporter_fingerprint = _implementation_fingerprint(self.exporter)
         key_id = hashlib.sha256(bytes.fromhex(key_hex.strip())).hexdigest()[:16]
         if source is None:
             source = DatabaseSourceIdentity(
@@ -316,7 +327,7 @@ class SqlCipherDatabaseResolver:
             )
         return replace(
             source,
-            exporter_version=exporter_version,
+            exporter_fingerprint=exporter_fingerprint,
             key_id=key_id,
         )
 

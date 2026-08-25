@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
+from threading import Event
 from zipfile import ZipFile
 
 import pytest
@@ -23,6 +25,18 @@ class ArchiveHttpClient:
     def download_to_file(self, _url: str, destination: str) -> None:
         self.calls += 1
         Path(destination).write_bytes(self.payload)
+
+
+class BlockingArchiveHttpClient(ArchiveHttpClient):
+    def __init__(self, payload: bytes) -> None:
+        super().__init__(payload)
+        self.download_started = Event()
+        self.release_download = Event()
+
+    def download_to_file(self, url: str, destination: str) -> None:
+        self.download_started.set()
+        assert self.release_download.wait(timeout=10)
+        super().download_to_file(url, destination)
 
 
 def _create_source_tree(root: Path) -> None:
@@ -111,3 +125,30 @@ def test_source_resolver_rejects_unsafe_verified_archive(tmp_path: Path) -> None
         resolver.resolve(context)
 
     assert not (tmp_path / "escape.cs").exists()
+
+
+def test_concurrent_fallback_resolution_downloads_source_once(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture"
+    _create_source_tree(fixture)
+    source_hash = SharpZipLibSourceResolver.source_tree_hash(fixture)
+    payload = _source_archive(fixture)
+    http = BlockingArchiveHttpClient(payload)
+    context = build_execution_context(tmp_path / "workspace")
+    resolver = SharpZipLibSourceResolver(
+        http,  # type: ignore[arg-type]
+        NullLogger(),
+        repository_root=tmp_path / "missing-repository",
+        archive_sha256=hashlib.sha256(payload).hexdigest(),
+        source_tree_sha256=source_hash,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_result = executor.submit(resolver.resolve, context)
+        assert http.download_started.wait(timeout=10)
+        second_result = executor.submit(resolver.resolve, context)
+        http.release_download.set()
+        first_source = first_result.result(timeout=10)
+        second_source = second_result.result(timeout=10)
+
+    assert first_source == second_source
+    assert http.calls == 1

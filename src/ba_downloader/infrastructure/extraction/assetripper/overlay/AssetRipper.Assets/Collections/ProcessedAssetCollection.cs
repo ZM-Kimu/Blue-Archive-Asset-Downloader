@@ -5,6 +5,9 @@ using AssetRipper.IO.Files.SerializedFiles;
 
 namespace AssetRipper.Assets.Collections;
 
+/// <summary>
+/// A collection of artificial assets generated during asset processing.
+/// </summary>
 public sealed class ProcessedAssetCollection : VirtualAssetCollection
 {
 	private long m_nextId;

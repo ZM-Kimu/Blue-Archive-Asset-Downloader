@@ -85,10 +85,10 @@ def build_runtime_asset_preparer(
     progress_factory: ProgressReporterFactoryPort | None = None,
     cancellation: CancellationPort | None = None,
 ) -> CNRuntimeAssetPreparer:
-    _ = progress_factory
     return CNRuntimeAssetPreparer(
         http_client=http_client,
         logger=logger,
+        progress_factory=progress_factory,
         cancellation=cancellation,
     )
 
@@ -96,11 +96,13 @@ def build_runtime_asset_preparer(
 def build_dumper_backend(
     http_client: HttpClientPort,
     logger: LoggerPort,
+    progress_factory: ProgressReporterFactoryPort | None,
     cancellation: CancellationPort,
 ) -> CnMetadataRecoveryDumpBackend:
     return CnMetadataRecoveryDumpBackend(
         http_client=http_client,
         logger=logger,
+        progress_factory=progress_factory,
         cancellation=cancellation,
     )
 

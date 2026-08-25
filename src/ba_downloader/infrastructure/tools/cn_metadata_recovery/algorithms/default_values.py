@@ -401,8 +401,9 @@ def sanitize_default_values(
     metadata_registration_va: int = DEFAULT_METADATA_REGISTRATION_VA,
     *,
     keep_custom_attributes: bool = False,
+    relocated_elf: RelocatedElf | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
-    elf = RelocatedElf(binary)
+    elf = relocated_elf or RelocatedElf(binary)
     type_table = BinaryTypeTable(elf, metadata_registration_va)
     sections = read_sections(metadata)
     names = MetadataNames(metadata, sections)

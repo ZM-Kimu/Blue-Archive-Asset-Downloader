@@ -6,6 +6,7 @@ from io import BytesIO
 from typing import ClassVar, Literal
 from urllib.parse import urljoin
 
+from ba_downloader.domain.exceptions import OperationCancelledError
 from ba_downloader.domain.models.asset import (
     AssetCollection,
     AssetType,
@@ -17,6 +18,12 @@ from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.progress import (
+    ProgressMeasure,
+    ProgressReporterFactoryPort,
+    ProgressReporterPort,
+    ProgressState,
+)
 from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
 from ba_downloader.infrastructure.packages import (
     ZipEntry,
@@ -25,6 +32,7 @@ from ba_downloader.infrastructure.packages import (
     read_zip_entries,
 )
 from ba_downloader.infrastructure.packages.zip_range_reader import ZipEntryNotFoundError
+from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 from ba_downloader.infrastructure.regions.common import (
     build_region_catalog_result,
     coerce_int,
@@ -297,6 +305,7 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
         logger: LoggerPort,
         *,
         snapshot_store: RuntimeSnapshotStore | None = None,
+        progress_factory: ProgressReporterFactoryPort | None = None,
         cancellation: CancellationPort | None = None,
     ) -> None:
         self.http_client = http_client
@@ -305,6 +314,7 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
         self.snapshot_store = snapshot_store or RuntimeSnapshotStore(
             cancellation=self.cancellation
         )
+        self.progress_factory = progress_factory or NullProgressReporterFactory()
 
     def prepare(self, context: ExecutionContext) -> PreparedRuntimeAssets:
         self.cancellation.raise_if_cancelled()
@@ -315,10 +325,51 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
         if prepared := self.snapshot_store.load(context, context.resource_version):
             return prepared
 
+        initial = ProgressState(
+            "Package",
+            "scanning",
+            overall=ProgressMeasure(0, 1, "archives"),
+            item="CN APK central directory",
+        )
+        with self.progress_factory.create(initial) as progress:
+            try:
+                return self._prepare_from_apk(
+                    context,
+                    context.resource_version,
+                    progress,
+                )
+            except OperationCancelledError:
+                progress.update(ProgressState("Package", "cancelled"))
+                raise
+            except BaseException:
+                progress.update(
+                    ProgressState(
+                        "Package",
+                        "failed",
+                        message="CN runtime preparation failed",
+                        failures=1,
+                    )
+                )
+                raise
+
+    def _prepare_from_apk(
+        self,
+        context: ExecutionContext,
+        resource_version: str,
+        progress: ProgressReporterPort,
+    ) -> PreparedRuntimeAssets:
         self.logger.info("Preparing CN runtime assets from APK central directory...")
         apk_url = CNRegionProvider(self.http_client, self.logger).get_apk_url()
         entries = read_zip_entries(apk_url, self.http_client)
         self.cancellation.raise_if_cancelled()
+        progress.update(
+            ProgressState(
+                "Package",
+                "scanning",
+                overall=ProgressMeasure(1, 1, "archives"),
+                item="CN APK central directory",
+            )
+        )
         metadata_entry = find_zip_entry(
             entries,
             preferred_path=self.METADATA_ENTRY_PATH,
@@ -329,47 +380,81 @@ class CNRuntimeAssetPreparer(RuntimeAssetPreparerPort):
             preferred_path=self.BINARY_ENTRY_PATH,
             fallback_name=self.BINARY_NAME,
         )
+        managers_entry = self._find_optional_globalgamemanagers(entries)
+        selected_entries = [
+            (metadata_entry, self.METADATA_NAME),
+            (binary_entry, self.BINARY_NAME),
+        ]
+        if managers_entry is not None:
+            selected_entries.append((managers_entry, self.GLOBAL_GAME_MANAGERS_NAME))
+        total_bytes = sum(entry.uncompressed_size for entry, _ in selected_entries)
+        completed_bytes = 0
+        completed_files = 0
         with self.snapshot_store.staging_runtime(
             context,
-            context.resource_version,
+            resource_version,
         ) as runtime_dir:
-            metadata_path = runtime_dir / self.METADATA_NAME
-            binary_path = runtime_dir / self.BINARY_NAME
-            managers_path = runtime_dir / self.GLOBAL_GAME_MANAGERS_NAME
-            extract_zip_entry(
-                apk_url,
-                metadata_entry,
-                metadata_path,
-                self.http_client,
-            )
-            self.cancellation.raise_if_cancelled()
-            extract_zip_entry(
-                apk_url,
-                binary_entry,
-                binary_path,
-                self.http_client,
-            )
-            self.cancellation.raise_if_cancelled()
-
-            managers_name: str | None = None
-            if managers_entry := self._find_optional_globalgamemanagers(entries):
+            for entry, destination_name in selected_entries:
+                progress.update(
+                    ProgressState(
+                        "Package",
+                        "extracting",
+                        overall=ProgressMeasure(completed_bytes, total_bytes, "bytes"),
+                        current=ProgressMeasure(
+                            completed_files,
+                            len(selected_entries),
+                            "files",
+                        ),
+                        item=destination_name,
+                    )
+                )
                 extract_zip_entry(
                     apk_url,
-                    managers_entry,
-                    managers_path,
+                    entry,
+                    runtime_dir / destination_name,
                     self.http_client,
                 )
                 self.cancellation.raise_if_cancelled()
-                managers_name = self.GLOBAL_GAME_MANAGERS_NAME
+                completed_bytes += entry.uncompressed_size
+                completed_files += 1
 
-            return self.snapshot_store.publish(
+            progress.update(
+                ProgressState(
+                    "Package",
+                    "publishing",
+                    overall=ProgressMeasure(total_bytes, total_bytes, "bytes"),
+                    current=ProgressMeasure(
+                        completed_files,
+                        len(selected_entries),
+                        "files",
+                    ),
+                )
+            )
+            prepared = self.snapshot_store.publish(
                 context,
-                context.resource_version,
+                resource_version,
                 runtime_dir,
                 binary_name=self.BINARY_NAME,
                 metadata_name=self.METADATA_NAME,
-                globalgamemanagers_name=managers_name,
+                globalgamemanagers_name=(
+                    self.GLOBAL_GAME_MANAGERS_NAME
+                    if managers_entry is not None
+                    else None
+                ),
             )
+            progress.update(
+                ProgressState(
+                    "Package",
+                    "complete",
+                    overall=ProgressMeasure(total_bytes, total_bytes, "bytes"),
+                    current=ProgressMeasure(
+                        completed_files,
+                        len(selected_entries),
+                        "files",
+                    ),
+                )
+            )
+            return prepared
 
     def _find_optional_globalgamemanagers(
         self, entries: list[ZipEntry]

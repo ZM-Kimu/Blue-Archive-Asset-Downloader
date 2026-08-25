@@ -14,14 +14,47 @@ from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.models.schema import SchemaPurpose
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.infrastructure.files.atomic import write_json_atomic
-from ba_downloader.infrastructure.files.checksum import calculate_sha256
+from ba_downloader.infrastructure.files.checksum import (
+    calculate_sha256,
+    calculate_source_fingerprint,
+)
 
-SCHEMA_MANIFEST_VERSION = 2
-SCHEMA_TOOL_VERSIONS = {
-    "flatbuffer_generator": "1",
-    "memorypack_generator": "2",
-    "schema_workflow": "2",
-}
+SCHEMA_MANIFEST_VERSION = 0
+
+
+def _schema_tool_fingerprints() -> dict[str, str]:
+    package_root = Path(__file__).resolve().parents[2]
+    schema_root = package_root / "infrastructure" / "schema"
+    template = (
+        package_root
+        / "infrastructure"
+        / "tools"
+        / "templates"
+        / "dumpcs_exporter.Program.cs"
+    )
+    flatbuffer_sources = tuple((schema_root / "flatbuffer").rglob("*.py"))
+    memorypack_sources = (
+        *(schema_root / "memorypack").rglob("*.py"),
+        template,
+    )
+    workflow_sources = (schema_root / "workflow.py", Path(__file__).resolve())
+    return {
+        "flatbuffer_generator": calculate_source_fingerprint(
+            package_root,
+            flatbuffer_sources,
+            identities=(("tool", "flatbuffer-generator"),),
+        ),
+        "memorypack_generator": calculate_source_fingerprint(
+            package_root,
+            memorypack_sources,
+            identities=(("tool", "memorypack-generator"),),
+        ),
+        "schema_workflow": calculate_source_fingerprint(
+            package_root,
+            workflow_sources,
+            identities=(("tool", "schema-workflow"),),
+        ),
+    }
 
 
 def schema_state_root(context: ExecutionContext) -> Path:
@@ -58,7 +91,7 @@ class SchemaSnapshotManifest:
     purpose: str
     target_types: tuple[str, ...]
     inputs: tuple[SchemaInput, ...]
-    tool_versions: tuple[tuple[str, str], ...]
+    tool_fingerprints: tuple[tuple[str, str], ...]
     artifacts: tuple[SchemaArtifact, ...]
 
 
@@ -73,14 +106,14 @@ class SchemaSnapshotStore:
         self,
         *,
         retained_snapshots: int = 2,
-        tool_versions: Mapping[str, str] | None = None,
+        tool_fingerprints: Mapping[str, str] | None = None,
         cancellation: CancellationPort | None = None,
     ) -> None:
         if retained_snapshots < 1:
             raise ValueError("retained_snapshots must be at least 1.")
         self.retained_snapshots = retained_snapshots
-        self.tool_versions = tuple(
-            sorted((tool_versions or SCHEMA_TOOL_VERSIONS).items())
+        self.tool_fingerprints = tuple(
+            sorted((tool_fingerprints or _schema_tool_fingerprints()).items())
         )
         self.cancellation = cancellation or NeverCancelled()
 
@@ -122,7 +155,7 @@ class SchemaSnapshotStore:
             "platform": context.platform,
             "runtime_version": runtime.version,
             "inputs": [asdict(item) for item in inputs],
-            "tool_versions": dict(self.tool_versions),
+            "tool_fingerprints": dict(self.tool_fingerprints),
             "purpose": purpose.value,
             "target_types": sorted(target_types),
         }
@@ -194,7 +227,7 @@ class SchemaSnapshotStore:
             purpose=purpose.value,
             target_types=tuple(sorted(target_types)),
             inputs=self._runtime_inputs(runtime),
-            tool_versions=self.tool_versions,
+            tool_fingerprints=self.tool_fingerprints,
             artifacts=artifacts,
         )
         self._write_manifest(staging / "manifest.json", manifest)
@@ -371,10 +404,10 @@ class SchemaSnapshotStore:
             raise ValueError("Schema snapshot manifest must be an object.")
         inputs = tuple(SchemaInput(**item) for item in payload["inputs"])
         artifacts = tuple(SchemaArtifact(**item) for item in payload["artifacts"])
-        tool_versions = tuple(
+        tool_fingerprints = tuple(
             sorted(
                 (str(key), str(value))
-                for key, value in payload["tool_versions"].items()
+                for key, value in payload["tool_fingerprints"].items()
             )
         )
         return SchemaSnapshotManifest(
@@ -387,14 +420,14 @@ class SchemaSnapshotStore:
             purpose=str(payload["purpose"]),
             target_types=tuple(str(item) for item in payload["target_types"]),
             inputs=inputs,
-            tool_versions=tool_versions,
+            tool_fingerprints=tool_fingerprints,
             artifacts=artifacts,
         )
 
     @staticmethod
     def _write_manifest(path: Path, manifest: SchemaSnapshotManifest) -> None:
         payload = asdict(manifest)
-        payload["tool_versions"] = dict(manifest.tool_versions)
+        payload["tool_fingerprints"] = dict(manifest.tool_fingerprints)
         write_json_atomic(path, payload, indent=2, sort_keys=True)
 
     @staticmethod

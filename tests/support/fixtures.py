@@ -13,6 +13,7 @@ from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region import Platform, Region
 from ba_downloader.domain.models.region_catalog import RegionCatalogResult
 from ba_downloader.domain.models.workspace import WorkspaceLayout
+from ba_downloader.domain.ports.progress import ProgressState
 
 LogLevel = Literal["info", "warn", "error"]
 
@@ -97,6 +98,33 @@ class RecordingLogger:
             for message_level, message in self.messages
             if level is None or message_level == level
         )
+
+
+class RecordingProgressReporter:
+    def __init__(self, initial_state: ProgressState) -> None:
+        self.states = [initial_state]
+
+    def __enter__(self) -> RecordingProgressReporter:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def update(self, state: ProgressState) -> None:
+        self.states.append(state)
+
+    def stop(self) -> None:
+        return None
+
+
+class RecordingProgressFactory:
+    def __init__(self) -> None:
+        self.reporters: list[RecordingProgressReporter] = []
+
+    def create(self, initial_state: ProgressState) -> RecordingProgressReporter:
+        reporter = RecordingProgressReporter(initial_state)
+        self.reporters.append(reporter)
+        return reporter
 
 
 def build_execution_context(

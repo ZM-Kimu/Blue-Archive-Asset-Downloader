@@ -17,6 +17,7 @@ from ba_downloader.domain.ports.extract import Il2CppDumpBackendPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.process import ProcessCommand, ProcessRunnerPort
+from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
 from ba_downloader.infrastructure.files.checksum import calculate_sha256
 from ba_downloader.infrastructure.runtime.process import CancellableProcessRunner
 from ba_downloader.infrastructure.tools.runtime_probe import (
@@ -360,6 +361,11 @@ class Cpp2IlDumpCsBackend(Il2CppDumpBackendPort):
 
 
 BackendFactory = Callable[
-    [HttpClientPort, LoggerPort, CancellationPort],
+    [
+        HttpClientPort,
+        LoggerPort,
+        ProgressReporterFactoryPort | None,
+        CancellationPort,
+    ],
     Il2CppDumpBackendPort,
 ]

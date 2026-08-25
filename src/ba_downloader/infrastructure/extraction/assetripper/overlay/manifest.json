@@ -1,24 +1,19 @@
 {
   "source_commit": "7534ed93857d1ef4464bab6e3c7a13777529f94d",
-  "version": "9",
+  "schema_version": 0,
   "files": [
     {
       "path": "Source/AssetRipper.Assets/Bundles/GameLoadProgress.cs",
       "replacement": "AssetRipper.Assets/Bundles/GameLoadProgress.cs",
+      "content_affecting": false,
       "source_sha256": null,
       "replacement_sha256": "88864871abfbf903df7da141352fd7cdd4fd715822ca4d8ee87526125114bcf5"
     },
     {
-      "path": "Source/AssetRipper.Assets/Bundles/IGameInitializer.cs",
-      "replacement": "AssetRipper.Assets/Bundles/IGameInitializer.cs",
-      "source_sha256": "2b0080507d8bd2a7fffaf987f285fd10a75881b4b2d4ca695ad4c0e52f55c8a6",
-      "replacement_sha256": "923956f952a038fc3bd6ab5bf523544d8fdb33d06502dc4231a3b6494de9d162"
-    },
-    {
-      "path": "Source/AssetRipper.Assets/Bundles/GameBundle.FromPaths.cs",
-      "replacement": "AssetRipper.Assets/Bundles/GameBundle.FromPaths.cs",
-      "source_sha256": "f0e793be521f98dacacc0e73181e29b8b51f4c248a6b54efee9f3742bfbc798b",
-      "replacement_sha256": "30879f94110f48a3167f765b3d0b523783f0fceee948c5efa2bc6976654aadaa"
+      "path": "Source/AssetRipper.Assets/Bundles/GameBundle.FromPathsParallel.cs",
+      "replacement": "AssetRipper.Assets/Bundles/GameBundle.FromPathsParallel.cs",
+      "source_sha256": null,
+      "replacement_sha256": "1631e644a9ec0c9f423fba1c0a826fac6621bed989ed4d2da76cb18328213abd"
     },
     {
       "path": "Source/AssetRipper.Assets/Bundles/BundleLookupIndex.cs",
@@ -27,94 +22,64 @@
       "replacement_sha256": "de47b3e86e7cdf0b0cbffa322fd08db6b26d38d93b25f69f6d42cf71360716f3"
     },
     {
-      "path": "Source/AssetRipper.Assets/Collections/SerializedAssetCollection.cs",
-      "replacement": "AssetRipper.Assets/Collections/SerializedAssetCollection.cs",
-      "source_sha256": "73d1910e41ef9acb831270e25f34d26a013e305718ff3a6c082bbd003ac434aa",
-      "replacement_sha256": "f3af5c6d2a59ed4ba620d1e6a49bcba225aa4e7d3ef2bbfdcb0b946354c491a3"
-    },
-    {
       "path": "Source/AssetRipper.Assets/Bundles/AssetProvenanceRegistry.cs",
       "replacement": "AssetRipper.Assets/Bundles/AssetProvenanceRegistry.cs",
       "source_sha256": null,
       "replacement_sha256": "126845bc924a9c63b75ad66f4c78e3607fdb5555b3fe04cad463a5748281ba2d"
     },
     {
+      "path": "Source/AssetRipper.Assets/Collections/SerializedAssetCollection.cs",
+      "replacement": "AssetRipper.Assets/Collections/SerializedAssetCollection.cs",
+      "source_sha256": "73d1910e41ef9acb831270e25f34d26a013e305718ff3a6c082bbd003ac434aa",
+      "replacement_sha256": "12a5981b4b4b7efdc75ce66a57a4e525f859ee1b9fb02197ba1b7b395baea7e2"
+    },
+    {
       "path": "Source/AssetRipper.Assets/Collections/ProcessedAssetCollection.cs",
       "replacement": "AssetRipper.Assets/Collections/ProcessedAssetCollection.cs",
       "source_sha256": "dd35eeab684531e78f1e16998f559698c930d10639bb54bd852e92da70104670",
-      "replacement_sha256": "c2321c67501ecf38f5ccf18a011f533640be3e333fd519745c8a6cc5f14895af"
+      "replacement_sha256": "363ff907fe26f6a8679f16b258b0c0a0a16c1129551f0ac7b0b60bda63dbe60f"
     },
     {
       "path": "Source/AssetRipper.Export.PrimaryContent/ExportCollectionBase.cs",
       "replacement": "AssetRipper.Export.PrimaryContent/ExportCollectionBase.cs",
       "source_sha256": "4098f04bf3c7c4ed469a0fe305f47c40b61b3fbf65fa88352dab203e52ccefda",
-      "replacement_sha256": "e75a4c83e8a8b0e47765131f9f884846068287ab71da9d1f9745a7b575ebf4a6"
+      "replacement_sha256": "652120224446b2861f8598f1823938fbeaf0fe866f9ab08bf4692df5ab8e8b6c"
     },
     {
       "path": "Source/AssetRipper.Export.PrimaryContent/SingleExportCollection.cs",
       "replacement": "AssetRipper.Export.PrimaryContent/SingleExportCollection.cs",
       "source_sha256": "055d0ebd3549ac3c63ded46f6b67d9b7cbb33b31e91259f9bce9f080391305c3",
-      "replacement_sha256": "5f49544e963ad70e35c1d171b32b58c93cc48485b08d0610c637fc9912e45eb4"
-    },
-    {
-      "path": "Source/AssetRipper.Export.PrimaryContent/Textures/SpritePngExporter.cs",
-      "replacement": "AssetRipper.Export.PrimaryContent/Textures/SpritePngExporter.cs",
-      "source_sha256": null,
-      "replacement_sha256": "4fadf6d0b77b8da4049aed6725a2906ef17e8c86d7f6634b34bd67b222179d33"
-    },
-    {
-      "path": "Source/AssetRipper.Export.PrimaryContent/PrimaryContentExporter.cs",
-      "replacement": "AssetRipper.Export.PrimaryContent/PrimaryContentExporter.cs",
-      "source_sha256": "17b44b892947ee23356dca6e0a4b9539a3a3a3c07bf353f528a1b04d6a51ed17",
-      "replacement_sha256": "8f804c6ebce6a0d38410239254e080324faa60d3e2fe1c9a92217575adbc1965"
-    },
-    {
-      "path": "Source/AssetRipper.SourceGenerated.Extensions/StreamedResourceExtensions.cs",
-      "replacement": "AssetRipper.SourceGenerated.Extensions/StreamedResourceExtensions.cs",
-      "source_sha256": "ae5e539ca52824ef3c3cabcb58d92c7484ed01642c5dc0e72b500762a650d2a5",
-      "replacement_sha256": "a2b4ca8829b4e60c05359ca2f15451e638ca88b3abd79fe300aeac5c507a47e4"
-    },
-    {
-      "path": "Source/AssetRipper.Import/Structure/ZipExtractor.cs",
-      "replacement": "AssetRipper.Import/Structure/ZipExtractor.cs",
-      "source_sha256": "599974940e3ec55c5f8ec221a2a0360705db43258def727d45a70881c87e11be",
-      "replacement_sha256": "22c2ae7978e5a59eef0875895bc90edab6676dce8f5dc2e3036f17208aaf1eaf"
+      "replacement_sha256": "1ba198b757affc62ac873179a7a8563278fb906f90728fd0f683e2541ae19dd9"
     },
     {
       "path": "Source/AssetRipper.Import/Structure/GameStructure.cs",
       "replacement": "AssetRipper.Import/Structure/GameStructure.cs",
       "source_sha256": "593b3f8b60965423adaaea5a14104a2aae95bd24de128a50ca7c9c42cc2914df",
-      "replacement_sha256": "b5f213dbd22009b32d8edf937d7411e4fe54096fc630d645f828a17c86d49037"
+      "replacement_sha256": "a2b92db9bed7a01bfedc396c4272df9e965f2fa4052672d4581551aef722e009"
     },
     {
-      "path": "Source/AssetRipper.Import/Structure/GameInitializer.cs",
-      "replacement": "AssetRipper.Import/Structure/GameInitializer.cs",
-      "source_sha256": "492612d661b1f9bf238086786c6c4b53f61dccbac94b5e22f938a2199e444943",
-      "replacement_sha256": "e322d46fccee3bd09e9b1105a7f02050454f073e26fd6f24abd65d11949af526"
+      "path": "Source/AssetRipper.Processing/Editor/EditorFormatProcessor.cs",
+      "replacement": "AssetRipper.Processing/Editor/EditorFormatProcessor.cs",
+      "source_sha256": "04d2c187d13b45b3f7035254c219ae1df60e08de20193c4dd1aef7ed73e7defc",
+      "replacement_sha256": "7e47d8c7dda4bb9e2c06ddc405437b9271d8811b722cd245878843595669da64"
     },
     {
-      "path": "Source/AssetRipper.Export.UnityProjects/ExportHandler.cs",
-      "replacement": "AssetRipper.Export.UnityProjects/ExportHandler.cs",
-      "source_sha256": "06b6df9192728f70107fabec98f4dedbd9c34becaef74a8ec050eb0aef1be440",
-      "replacement_sha256": "b0cbcc0c2aed7048b7d9e170f299f225bb72d88848e16393d2c492d41f0c8a91"
+      "path": "Source/AssetRipper.Processing/AnimationClips/PathChecksumCache.cs",
+      "replacement": "AssetRipper.Processing/AnimationClips/PathChecksumCache.cs",
+      "source_sha256": "17a95b1e293d55c8b5362ef3ed706299ab0d4b13a053e1c56261393d19a341c3",
+      "replacement_sha256": "942dbbc3b18e69eb016a7c764fc5563bda32b12a7388de4e7d4dd831b7bbcd7c"
     },
     {
-      "path": "Source/AssetRipper.Processing/AudioMixers/GuidIndexTable.cs",
-      "replacement": "AssetRipper.Processing/AudioMixers/GuidIndexTable.cs",
-      "source_sha256": "6a627d7da5adcd7918c717e3f9b9c2aab03cc379039d7c2f6955affea91a4062",
-      "replacement_sha256": "dbd33f5a770c6bcc7d1073ae5f085986667b78eb39c11bc323a649b62b302b9f"
+      "path": "Source/AssetRipper.Export.Modules.Models/PlayableGlbLevelBuilder.cs",
+      "replacement": "AssetRipper.Export.Modules.Models/PlayableGlbLevelBuilder.cs",
+      "source_sha256": null,
+      "replacement_sha256": "1d5d6798adc34f4ee344c1216f7ae20cf62bce0b05dddc1e1a14c8b4f10f5a3a"
     },
     {
-      "path": "Source/AssetRipper.Processing/AudioMixers/AudioMixerProcessor.cs",
-      "replacement": "AssetRipper.Processing/AudioMixers/AudioMixerProcessor.cs",
-      "source_sha256": "1a2d98eb8fe5dcb551a719963f4c79895eeea5698f256e212e7614045b30b742",
-      "replacement_sha256": "147302ad4c2e465f8e465315609672a61bc6031860a56cf9142dc065fa0de539"
-    },
-    {
-      "path": "Source/AssetRipper.Export.PrimaryContent/Models/GlbPrefabModelExportCollection.cs",
-      "replacement": "AssetRipper.Export.PrimaryContent/Models/GlbPrefabModelExportCollection.cs",
-      "source_sha256": "689b433d0af2c19229dea572716783bd3bb78af2a5c74f79f2792ba035fcbf4b",
-      "replacement_sha256": "7558e699886fc12700c400524454e1c689a1bd336b086b11e16633db11748087"
+      "path": "Source/AssetRipper.SourceGenerated.Extensions/StreamedResourceExtensions.cs",
+      "replacement": "AssetRipper.SourceGenerated.Extensions/StreamedResourceExtensions.cs",
+      "source_sha256": "ae5e539ca52824ef3c3cabcb58d92c7484ed01642c5dc0e72b500762a650d2a5",
+      "replacement_sha256": "b55c792a85890aed1ca47385cf172decb2468ffc8c3c7213dd673e1b841ec8cf"
     }
   ]
 }

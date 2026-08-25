@@ -32,7 +32,7 @@ from ba_downloader.infrastructure.tools.dump_backend import (
     Cpp2IlDumpCsBackend,
     Cpp2ILSourceResolver,
 )
-from support.fixtures import build_execution_context
+from support.fixtures import RecordingProgressFactory, build_execution_context
 
 
 class DummyHttpClient:
@@ -160,17 +160,17 @@ def test_default_dumper_policy_maps_regions_to_expected_backends(
 
     assert isinstance(
         DEFAULT_REGION_GATEWAY_REGISTRY.resolve("jp").runtime.dump_backend(
-            http_client, logger, NeverCancelled()
+            http_client, logger, None, NeverCancelled()
         ),
         Cpp2IlDumpCsBackend,
     )
     gl_backend = DEFAULT_REGION_GATEWAY_REGISTRY.resolve("gl").runtime.dump_backend(
-        http_client, logger, NeverCancelled()
+        http_client, logger, None, NeverCancelled()
     )
     assert isinstance(gl_backend, Cpp2IlDumpCsBackend)
     assert isinstance(
         DEFAULT_REGION_GATEWAY_REGISTRY.resolve("cn").runtime.dump_backend(
-            http_client, logger, NeverCancelled()
+            http_client, logger, None, NeverCancelled()
         ),
         CnMetadataRecoveryDumpBackend,
     )
@@ -192,7 +192,7 @@ def test_schema_workflow_does_not_fallback_when_jp_backend_fails(
     workflow = SchemaWorkflow(
         DummyHttpClient(),
         NullLogger(),
-        dumper_backend_factory=lambda _http_client, _logger, _cancellation: (
+        dumper_backend_factory=lambda _http_client, _logger, _progress, _cancellation: (
             FailingBackend()
         ),
     )
@@ -227,7 +227,9 @@ def test_schema_workflow_discards_cancelled_staging_snapshot(
     workflow = SchemaWorkflow(
         DummyHttpClient(),
         NullLogger(),
-        dumper_backend_factory=lambda _http, _logger, _cancel: CancellingBackend(),
+        dumper_backend_factory=lambda _http, _logger, _progress, _cancel: (
+            CancellingBackend()
+        ),
         cancellation=EventCancellation(cancellation_event),
     )
 
@@ -338,7 +340,7 @@ public class DamageEffectDAO : MX.GameData.DAO.Battle.LogicEffectDAO, MemoryPack
     (dumps_dir / "memorypack_formatters.json").write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "formatters": [
                     {
                         "target_type": "MX.GameData.DAO.Battle.LogicEffectDAO",
@@ -623,8 +625,15 @@ class RecordingMetadataRecoveryPipeline:
         *,
         protected_metadata: bytes,
         binary_path: Path,
+        progress_callback=None,  # type: ignore[no-untyped-def]
     ) -> CnMetadataRecoveryResult:
         self.calls.append((protected_metadata, binary_path))
+        if progress_callback is not None:
+            for completed, stage in enumerate(
+                ("parse", "infer", "rebuild", "validate")
+            ):
+                progress_callback(stage, completed, 4)
+            progress_callback("validate", 4, 4)
         return CnMetadataRecoveryResult(
             standard_v29_metadata=self.standard_v29_metadata,
             validation_summary={"valid": True, "errorCount": 0, "warningCount": 0},
@@ -649,11 +658,13 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
         / "global-metadata.standard-v29.dat"
     )
     pipeline = RecordingMetadataRecoveryPipeline()
+    progress_factory = RecordingProgressFactory()
     backend = CnMetadataRecoveryDumpBackend(
         DummyHttpClient(),
         logger,
         source_resolver,
         recovery_pipeline=pipeline,
+        progress_factory=progress_factory,
     )
     exporter_project = tmp_path / "DumpCsExporter.csproj"
     exporter_project.write_text("<Project />", encoding="utf8")
@@ -717,6 +728,16 @@ def test_cn_metadata_recovery_backend_runs_pipeline_and_writes_only_final_metada
         )
     ]
     assert source_resolver.contexts == [context]
+    progress_states = progress_factory.reporters[0].states
+    assert [state.item for state in progress_states if state.stage == "processing"] == [
+        "Parsing protected metadata",
+        "Parsing protected metadata",
+        "Inferring runtime registrations",
+        "Rebuilding standard metadata",
+        "Validating recovered metadata",
+        "Validating recovered metadata",
+    ]
+    assert progress_states[-1].stage == "complete"
 
 
 def test_cn_metadata_recovery_backend_raises_actionable_pipeline_error(
@@ -728,8 +749,9 @@ def test_cn_metadata_recovery_backend_raises_actionable_pipeline_error(
             *,
             protected_metadata: bytes,
             binary_path: Path,
+            progress_callback=None,  # type: ignore[no-untyped-def]
         ) -> CnMetadataRecoveryResult:
-            _ = (protected_metadata, binary_path)
+            _ = (protected_metadata, binary_path, progress_callback)
             raise CnMetadataRecoveryError(
                 "sanitize_default_values",
                 "default value section is invalid",

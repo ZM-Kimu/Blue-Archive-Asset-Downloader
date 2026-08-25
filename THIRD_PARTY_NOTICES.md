@@ -18,6 +18,20 @@ AssetRipper 1.3.14 currently resolves SharpCompress 0.47.4, which is covered by
 security advisory GHSA-6c8g-7p36-r338. This upstream dependency must be reviewed
 before a v3 release.
 
+## Cpp2IL
+
+IL2CPP metadata and schema preparation uses Cpp2IL at commit
+`6af99f218501529af84202243aedb7089f5307dc`.
+
+- Project: <https://github.com/SamboyCoding/Cpp2IL>
+- License: MIT
+- License text: [licenses/Cpp2IL-MIT.txt](licenses/Cpp2IL-MIT.txt)
+
+BAAD uses the pinned `third_party/Cpp2IL` submodule when available. If it is
+unavailable, BAAD downloads the same pinned source archive, verifies its SHA-256,
+and caches it locally. The dump exporter is built locally; Cpp2IL source and
+binaries are not included in the BAAD Python wheel.
+
 ## SharpZipLib
 
 JP media archive extraction uses SharpZipLib 1.4.2.

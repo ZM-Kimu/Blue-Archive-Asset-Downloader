@@ -6,6 +6,9 @@ using AssetRipper.IO.Files.SerializedFiles.Parser;
 
 namespace AssetRipper.Assets.Collections;
 
+/// <summary>
+/// A collection of assets read from a <see cref="SerializedFile"/>.
+/// </summary>
 public sealed class SerializedAssetCollection : AssetCollection
 {
 	private FileIdentifier[]? DependencyIdentifiers { get; set; }
@@ -40,6 +43,17 @@ public sealed class SerializedAssetCollection : AssetCollection
 		}
 	}
 
+	/// <summary>
+	/// Creates a <see cref="SerializedAssetCollection"/> from a <see cref="SerializedFile"/>.
+	/// </summary>
+	/// <remarks>
+	/// The new <see cref="SerializedAssetCollection"/> is automatically added to the <paramref name="bundle"/>.
+	/// </remarks>
+	/// <param name="bundle">The <see cref="Bundle"/> to add this collection to.</param>
+	/// <param name="file">The <see cref="SerializedFile"/> from which to make the collection.</param>
+	/// <param name="factory">A factory for creating assets.</param>
+	/// <param name="defaultVersion">The default version to use if the file does not have a version, ie the version has been stripped.</param>
+	/// <returns>The new collection.</returns>
 	internal static SerializedAssetCollection FromSerializedFile(Bundle bundle, SerializedFile file, AssetFactoryBase factory, UnityVersion defaultVersion = default)
 	{
 		UnityVersion version = file.Version.Equals(0, 0, 0) ? defaultVersion : file.Version;
@@ -57,6 +71,12 @@ public sealed class SerializedAssetCollection : AssetCollection
 		{
 			collection.DependencyIdentifiers = fileDependencies.ToArray();
 		}
+		ReadData(collection, file, factory);
+		return collection;
+	}
+
+	private static void ReadData(SerializedAssetCollection collection, SerializedFile file, AssetFactoryBase factory)
+	{
 		foreach (ObjectInfo objectInfo in file.Objects)
 		{
 			int classID = objectInfo.TypeID < 0 ? 114 : objectInfo.TypeID;
@@ -67,6 +87,5 @@ public sealed class SerializedAssetCollection : AssetCollection
 				collection.AddAsset(asset);
 			}
 		}
-		return collection;
 	}
 }

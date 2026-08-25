@@ -336,7 +336,7 @@ def test_jp_runtime_preparer_restores_libil2cpp_from_renamed_mftl_container(
     assert source_path.parent != output_path.parent
     assert prepared.binary_path.read_bytes() == b"\x7fELFrestored"
     assert not (prepared.root_dir / "libgedenedo.so").exists()
-    assert prepared.provenance["type"] == "jp_mftl_v1"
+    assert prepared.provenance["type"] == "jp_mftl"
 
 
 def test_jp_mftl_extractor_never_reads_parent_as_one_bytes_object(

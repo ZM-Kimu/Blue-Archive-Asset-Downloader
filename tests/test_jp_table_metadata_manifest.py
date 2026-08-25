@@ -53,7 +53,7 @@ def test_jp_table_metadata_manifest_round_trips_table_includes(
         / "1.70.436321.table-metadata.json"
     )
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 0
     assert payload["region"] == "jp"
     assert payload["platform"] == "android"
     assert payload["version"] == "1.70.436321"

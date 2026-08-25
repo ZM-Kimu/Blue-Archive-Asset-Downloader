@@ -55,6 +55,7 @@ def validate_standard_metadata(
     *,
     binary: Path | None = None,
     metadata_registration_va: int = 0xA3D18A0,
+    relocated_elf: RelocatedElf | None = None,
 ) -> dict[str, Any]:
     target, sections = section_map(metadata)
 
@@ -157,7 +158,7 @@ def validate_standard_metadata(
     default_type_table = None
     if binary is not None:
         default_type_table = BinaryTypeTable(
-            RelocatedElf(binary), metadata_registration_va
+            relocated_elf or RelocatedElf(binary), metadata_registration_va
         )
     validate_defaults(
         metadata, sections, counts, issues, target=target, type_table=default_type_table

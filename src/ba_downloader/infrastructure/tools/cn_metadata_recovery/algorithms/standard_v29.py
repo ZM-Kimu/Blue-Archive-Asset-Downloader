@@ -136,8 +136,12 @@ def convert_default_values_to_v29(
     v27_sections: dict[str, Section],
     binary: Path,
     metadata_registration_va: int,
+    *,
+    relocated_elf: RelocatedElf | None = None,
 ) -> tuple[dict[str, bytes], dict[str, Any]]:
-    type_table = BinaryTypeTable(RelocatedElf(binary), metadata_registration_va)
+    type_table = BinaryTypeTable(
+        relocated_elf or RelocatedElf(binary), metadata_registration_va
+    )
     tuple_sections = {
         name: (section.offset, section.size) for name, section in v27_sections.items()
     }
@@ -220,10 +224,13 @@ def extract_attribute_data(
     tail_offset: int,
     blob_start: int,
     target_count: int,
+    relocated_elf: RelocatedElf | None = None,
 ) -> tuple[bytes, bytes, dict[str, Any]]:
     tail = source_metadata[tail_offset:]
     metadata_types = MetadataTypeInfo(v27_metadata)
-    binary_types = BinaryTypes(RelocatedElf(binary), metadata_registration_va)
+    binary_types = BinaryTypes(
+        relocated_elf or RelocatedElf(binary), metadata_registration_va
+    )
 
     pos = blob_start
     totals = {"attributes": 0, "ctor_args": 0, "fields": 0, "props": 0}
@@ -331,6 +338,7 @@ def build_standard_v29_metadata(
     *,
     tail_offset: int = 0x01C9B1DC,
     blob_start: int = 0x870,
+    relocated_elf: RelocatedElf | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     v27_sections = read_v27_sections(v27_metadata)
     target_count = count_custom_attribute_targets(v27_metadata, v27_sections)
@@ -342,6 +350,7 @@ def build_standard_v29_metadata(
         tail_offset=tail_offset,
         blob_start=blob_start,
         target_count=target_count,
+        relocated_elf=relocated_elf,
     )
 
     default_replacements, default_report = convert_default_values_to_v29(
@@ -349,6 +358,7 @@ def build_standard_v29_metadata(
         v27_sections,
         binary,
         metadata_registration_va,
+        relocated_elf=relocated_elf,
     )
 
     replacements = {

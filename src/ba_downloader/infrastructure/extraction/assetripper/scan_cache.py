@@ -14,7 +14,7 @@ from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
 )
 from ba_downloader.infrastructure.files.atomic import write_json_atomic
 
-SCAN_CACHE_SCHEMA_VERSION = 3
+SCAN_CACHE_SCHEMA_VERSION = 0
 
 
 def dependency_scan_cache_root(context: ExecutionContext) -> Path:
@@ -25,9 +25,16 @@ class BundleDependencyScanCache:
     def __init__(self, root: Path) -> None:
         self._root = root
 
-    def path_for(self, archive: BundleArchiveInput) -> Path:
-        digest = hashlib.sha256(archive.archive_id.encode("utf8")).hexdigest()
-        return self._root / f"{digest}.json"
+    def path_for(self, archive: BundleArchiveInput, *, tool_key: str) -> Path:
+        identity = {
+            "cache_schema": SCAN_CACHE_SCHEMA_VERSION,
+            "tool_key": tool_key,
+            "archive": self._identity(archive),
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return self._root / digest[:2] / f"{digest}.json"
 
     def load(
         self,
@@ -36,7 +43,9 @@ class BundleDependencyScanCache:
         tool_key: str,
     ) -> BundleArchiveScan | None:
         try:
-            payload = json.loads(self.path_for(archive).read_text(encoding="utf8"))
+            payload = json.loads(
+                self.path_for(archive, tool_key=tool_key).read_text(encoding="utf8")
+            )
             if (
                 not isinstance(payload, dict)
                 or payload.get("schema_version") != SCAN_CACHE_SCHEMA_VERSION
@@ -63,7 +72,7 @@ class BundleDependencyScanCache:
     ) -> None:
         if scan.archive_id != archive.archive_id:
             raise ValueError("Dependency scan result does not match bundle input.")
-        path = self.path_for(archive)
+        path = self.path_for(archive, tool_key=tool_key)
         write_json_atomic(
             path,
             {

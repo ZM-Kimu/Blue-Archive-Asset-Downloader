@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
 from pathlib import Path
+from threading import Event
 from typing import Any, Self
 
 import pytest
@@ -15,13 +17,20 @@ from ba_downloader.domain.ports.process import (
     ProcessOutputObserverPort,
     ProcessResult,
 )
-from ba_downloader.infrastructure.extraction.errors import ExtractionFailureError
+from ba_downloader.domain.ports.progress import ProgressMeasure, ProgressState
+from ba_downloader.infrastructure.extraction.errors import (
+    ExtractionFailureError,
+    MediaExtractionError,
+)
 from ba_downloader.infrastructure.extraction.media import exporter as exporter_module
 from ba_downloader.infrastructure.extraction.media.exporter import (
     MEDIA_EXTRACTOR_SCHEMA_VERSION,
     MediaArchiveExtractor,
     MediaArchiveExtractorError,
+    media_extraction_lock_path,
+    media_extractor_cache_fingerprint,
 )
+from ba_downloader.infrastructure.files.lock import InterprocessFileLock
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from support.fixtures import build_execution_context
 
@@ -123,6 +132,9 @@ class FakeProcessRunner:
                             "total_archives": len(archives),
                             "completed_members": len(archives),
                             "total_members": len(archives),
+                            "active_workers": 0,
+                            "worker_limit": min(30, len(archives)),
+                            "failed_archives": len(self.failures),
                         }
                     ),
                 )
@@ -137,6 +149,24 @@ class FakeProcessRunner:
         return ProcessResult(command, 0, "", "")
 
 
+class BlockingBuildRunner(FakeProcessRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.build_started = Event()
+        self.release_build = Event()
+
+    def run(
+        self,
+        command: ProcessCommand,
+        *,
+        output_observer: ProcessOutputObserverPort | None = None,
+    ) -> ProcessResult:
+        if command.argv[1] == "build":
+            self.build_started.set()
+            assert self.release_build.wait(timeout=10)
+        return super().run(command, output_observer=output_observer)
+
+
 class StaticSourceResolver:
     def __init__(self, source_root: Path) -> None:
         self.source_root = source_root
@@ -147,12 +177,23 @@ class StaticSourceResolver:
         return self.source_root
 
 
+class SignallingCancellation:
+    def __init__(self) -> None:
+        self.checked = Event()
+        self.cancelled = Event()
+
+    def is_cancelled(self) -> bool:
+        return self.cancelled.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        self.checked.set()
+        if self.is_cancelled():
+            raise OperationCancelledError("Operation cancelled.")
+
+
 class RecordingProgress(AbstractContextManager["RecordingProgress"]):
     def __init__(self) -> None:
-        self.total = 0
-        self.completed = 0
-        self.status = ""
-        self.secondary_status = ""
+        self.states: list[ProgressState] = []
 
     def __enter__(self) -> Self:
         return self
@@ -160,38 +201,8 @@ class RecordingProgress(AbstractContextManager["RecordingProgress"]):
     def __exit__(self, *_: object) -> None:
         return None
 
-    def advance(self, amount: int = 1) -> None:
-        self.completed += amount
-
-    def set_total(self, total: int) -> None:
-        self.total = total
-
-    def set_description(self, description: str) -> None:
-        _ = description
-
-    def set_status(self, status: str) -> None:
-        self.status = status
-
-    def set_secondary_status(self, status: str) -> None:
-        self.secondary_status = status
-
-    def set_progress(
-        self,
-        completed: int,
-        total: int,
-        *,
-        stage: str,
-        unit: str,
-        status: str = "",
-        secondary_status: str = "",
-    ) -> None:
-        _ = (completed, total, stage, unit, status, secondary_status)
-
-    def set_failed_status(self, status: str) -> None:
-        _ = status
-
-    def set_completed(self, completed: int) -> None:
-        self.completed = completed
+    def update(self, state: ProgressState) -> None:
+        self.states.append(state)
 
     def stop(self) -> None:
         return None
@@ -201,11 +212,8 @@ class RecordingProgressFactory:
     def __init__(self) -> None:
         self.progress = RecordingProgress()
 
-    def create(
-        self, total: int, description: str, **kwargs: object
-    ) -> RecordingProgress:
-        _ = (description, kwargs)
-        self.progress.total = total
+    def create(self, initial_state: ProgressState) -> RecordingProgress:
+        _ = initial_state
         return self.progress
 
 
@@ -241,12 +249,53 @@ def test_batch_request_uses_one_process_and_structured_progress(tmp_path: Path) 
     assert runner.requests[0]["concurrency"] == 30
     assert len(runner.requests[0]["archives"]) == 300
     assert all("password_base64" in item for item in runner.requests[0]["archives"])
-    assert progress_factory.progress.completed == 300
-    assert progress_factory.progress.secondary_status == "300/300 members"
+    state = progress_factory.progress.states[-1]
+    assert state.stage == "complete"
+    assert state.overall is not None and state.overall.completed == 300
+    assert state.current is not None and state.current.completed == 300
+    assert state.workers is not None
+    assert state.workers.active == 0
+    assert state.workers.limit == 30
+    assert state.failures == 0
     assert (
         context.workspace.extracted_media / "voice" / "member.bin"
     ).read_bytes() == b"voice.zip"
     assert "password" not in json.dumps(runner.result_payloads[0])
+
+
+def test_media_progress_does_not_regress_on_reordered_worker_events() -> None:
+    progress = RecordingProgress()
+    initial = ProgressState(
+        "Media",
+        "extracting",
+        overall=ProgressMeasure(0, 2, "archives"),
+    )
+    observer = exporter_module._MediaProgressObserver(progress, initial)
+
+    for completed, members, failures in ((2, 10, 1), (1, 5, 0)):
+        observer.on_output(
+            ProcessOutputLine(
+                "stdout",
+                json.dumps(
+                    {
+                        "schema_version": MEDIA_EXTRACTOR_SCHEMA_VERSION,
+                        "kind": "progress",
+                        "completed_archives": completed,
+                        "total_archives": 2,
+                        "completed_members": members,
+                        "total_members": 10,
+                        "active_workers": 1,
+                        "worker_limit": 2,
+                        "failed_archives": failures,
+                    }
+                ),
+            )
+        )
+
+    state = progress.states[-1]
+    assert state.overall is not None and state.overall.completed == 2
+    assert state.current is not None and state.current.completed == 10
+    assert state.failures == 1
 
 
 def test_consecutive_runs_extract_twice_but_build_once(tmp_path: Path) -> None:
@@ -272,7 +321,7 @@ def test_consecutive_runs_extract_twice_but_build_once(tmp_path: Path) -> None:
     assert all(not job_root.exists() for job_root in runner.job_roots)
 
 
-def test_wrapper_version_change_uses_a_new_content_addressed_build(
+def test_source_change_uses_a_new_content_addressed_build(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -284,12 +333,23 @@ def test_wrapper_version_change_uses_a_new_content_addressed_build(
         source_resolver=StaticSourceResolver(tmp_path),
     )
 
-    first = extractor.prepare(context)
-    monkeypatch.setattr(exporter_module, "MEDIA_EXTRACTOR_WRAPPER_VERSION", "next")
-    second = extractor.prepare(context)
+    source_root = tmp_path / "media-tool"
+    source_root.mkdir()
+    source = source_root / "Program.cs"
+    source.write_text("first", encoding="utf8")
+    (source_root / "MediaArchiveExtractor.csproj").write_text(
+        "<Project />", encoding="utf8"
+    )
+    monkeypatch.setattr(exporter_module, "_media_tool_root", lambda: source_root)
 
-    assert runner.build_calls == 2
-    assert first.parent != second.parent
+    first = extractor.prepare(context)
+    source.write_text("second", encoding="utf8")
+    second = extractor.prepare(context)
+    monkeypatch.setattr(exporter_module, "SHARPZIPLIB_COMMIT", "changed-commit")
+    third = extractor.prepare(context)
+
+    assert runner.build_calls == 3
+    assert len({first.parent, second.parent, third.parent}) == 3
 
 
 def test_incomplete_tool_cache_is_rebuilt_atomically(tmp_path: Path) -> None:
@@ -320,12 +380,14 @@ def test_archive_failure_preserves_old_output_and_publishes_successes(
     (old_output / "old.bin").write_bytes(b"old")
     runner = FakeProcessRunner()
     runner.failures.add("bad.zip")
+    progress_factory = RecordingProgressFactory()
 
     with pytest.raises(ExtractionFailureError) as captured:
         MediaArchiveExtractor(
             runner,
             NullLogger(),
             source_resolver=StaticSourceResolver(tmp_path),
+            progress_factory=progress_factory,
         ).extract(
             context,
             archives,
@@ -337,6 +399,11 @@ def test_archive_failure_preserves_old_output_and_publishes_successes(
     assert (
         context.workspace.extracted_media / "good" / "member.bin"
     ).read_bytes() == b"good.zip"
+    state = progress_factory.progress.states[-1]
+    assert state.stage == "failed"
+    assert state.overall is not None and state.overall.completed == 2
+    assert state.workers is not None and state.workers.active == 0
+    assert state.failures == 1
 
 
 def test_duplicate_output_name_is_rejected_before_build(tmp_path: Path) -> None:
@@ -412,3 +479,126 @@ def test_cancellation_removes_job_staging_without_publication(tmp_path: Path) ->
 
     assert (old_output / "old.bin").read_bytes() == b"old"
     assert all(not job_root.exists() for job_root in runner.job_roots)
+    with InterprocessFileLock(
+        media_extraction_lock_path(context),
+        operation="media extraction lock release verification",
+    ):
+        pass
+
+
+def test_active_media_extraction_rejects_duplicate_without_starting_tool(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path)
+    archives = _write_archives(context, "voice.zip")
+    old_output = context.workspace.extracted_media / "voice"
+    old_output.mkdir(parents=True)
+    (old_output / "old.bin").write_bytes(b"old")
+    runner = FakeProcessRunner()
+    extractor = MediaArchiveExtractor(
+        runner,
+        NullLogger(),
+        source_resolver=StaticSourceResolver(tmp_path),
+    )
+    lock_path = media_extraction_lock_path(context)
+
+    with InterprocessFileLock(lock_path, operation="first media extraction"):
+        with pytest.raises(MediaExtractionError):
+            extractor.extract(context, archives, concurrency=1)
+        owner = json.loads(
+            lock_path.with_name(f"{lock_path.name}.owner.json").read_text(
+                encoding="utf8"
+            )
+        )
+
+    assert owner["operation"] == "first media extraction"
+    assert isinstance(owner["pid"], int)
+    assert runner.build_calls == 0
+    assert runner.extract_calls == 0
+    assert (old_output / "old.bin").read_bytes() == b"old"
+
+
+def test_media_extraction_locks_are_scoped_by_region_and_platform(
+    tmp_path: Path,
+) -> None:
+    jp_context = _build_context(tmp_path)
+    gl_context = build_execution_context(
+        tmp_path,
+        region="gl",
+        platform="android",
+        version="1.0.0",
+    )
+    archives = _write_archives(gl_context, "voice.zip")
+    runner = FakeProcessRunner()
+    extractor = MediaArchiveExtractor(
+        runner,
+        NullLogger(),
+        source_resolver=StaticSourceResolver(tmp_path),
+    )
+
+    with InterprocessFileLock(
+        media_extraction_lock_path(jp_context),
+        operation="JP media extraction",
+    ):
+        extractor.extract(gl_context, archives, concurrency=1)
+
+    assert media_extraction_lock_path(jp_context) != media_extraction_lock_path(
+        gl_context
+    )
+    assert runner.extract_calls == 1
+
+
+def test_concurrent_cold_prepare_builds_tool_once(tmp_path: Path) -> None:
+    context = _build_context(tmp_path)
+    runner = BlockingBuildRunner()
+    source_resolver = StaticSourceResolver(tmp_path)
+    first = MediaArchiveExtractor(
+        runner,
+        NullLogger(),
+        source_resolver=source_resolver,
+    )
+    second = MediaArchiveExtractor(
+        runner,
+        NullLogger(),
+        source_resolver=source_resolver,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_result = executor.submit(first.prepare, context)
+        assert runner.build_started.wait(timeout=10)
+        second_result = executor.submit(second.prepare, context)
+        runner.release_build.set()
+        first_tool = first_result.result(timeout=10)
+        second_tool = second_result.result(timeout=10)
+
+    assert first_tool == second_tool
+    assert runner.build_calls == 1
+    assert source_resolver.calls == 1
+
+
+def test_waiting_for_cold_build_lock_honors_cancellation(tmp_path: Path) -> None:
+    context = _build_context(tmp_path)
+    cancellation = SignallingCancellation()
+    runner = FakeProcessRunner()
+    extractor = MediaArchiveExtractor(
+        runner,
+        NullLogger(),
+        source_resolver=StaticSourceResolver(tmp_path),
+        cancellation=cancellation,
+    )
+    fingerprint = media_extractor_cache_fingerprint()
+    lock_path = (
+        context.workspace.locks / f"media-extractor-build-{fingerprint[:20]}.lock"
+    )
+
+    with (
+        InterprocessFileLock(lock_path, operation="first media extractor build"),
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        result = executor.submit(extractor.prepare, context)
+        assert cancellation.checked.wait(timeout=10)
+        cancellation.cancelled.set()
+        with pytest.raises(OperationCancelledError):
+            result.result(timeout=10)
+
+    assert runner.build_calls == 0

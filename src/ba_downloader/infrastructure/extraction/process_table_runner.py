@@ -16,8 +16,11 @@ from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import (
+    ProgressMeasure,
     ProgressReporterFactoryPort,
     ProgressReporterPort,
+    ProgressStage,
+    ProgressState,
 )
 from ba_downloader.infrastructure.extraction.errors import (
     ExtractionFailure,
@@ -55,6 +58,8 @@ class TableExtractionEvent:
 class TableExtractionRunState:
     failures: list[ExtractionFailure]
     completed_files: set[str]
+    total_files: int
+    active_files: dict[str, str | None]
 
 
 class QueueTableLogger(LoggerPort):
@@ -173,7 +178,12 @@ class ProcessTableExtractionRunner:
             process_context,
             process_count,
         )
-        run_state = TableExtractionRunState(failures=[], completed_files=set())
+        run_state = TableExtractionRunState(
+            failures=[],
+            completed_files=set(),
+            total_files=len(files),
+            active_files={},
+        )
 
         try:
             with (
@@ -184,32 +194,52 @@ class ProcessTableExtractionRunner:
                     on_interrupt=lambda: supervisor.stop(0.0),
                 ),
                 self.progress_factory.create(
-                    len(files),
-                    "Extracting table files...",
-                    extract_mode=True,
+                    ProgressState(
+                        "Tables",
+                        "extracting",
+                        overall=ProgressMeasure(0, len(files), "files"),
+                    )
                 ) as progress,
             ):
-                supervisor.start()
-                self._monitor(
-                    events=events,
-                    files=files,
-                    supervisor=supervisor,
-                    progress=progress,
-                    stop_event=stop_event,
-                    run_state=run_state,
-                )
+                fatal_error = False
+                try:
+                    supervisor.start()
+                    self._monitor(
+                        events=events,
+                        files=files,
+                        supervisor=supervisor,
+                        progress=progress,
+                        stop_event=stop_event,
+                        run_state=run_state,
+                    )
+                except BaseException:
+                    fatal_error = True
+                    raise
+                finally:
+                    if stop_event.is_set():
+                        supervisor.stop(self.interrupt_grace_seconds)
+                    terminal_results = supervisor.close(self.interrupt_grace_seconds)
+                    self._drain_terminal_events(events, files, run_state)
+                    if not stop_event.is_set():
+                        self._record_abandoned_files(files, run_state)
+                        for result in terminal_results:
+                            if result.status == "failed":
+                                self.logger.error(
+                                    f"{result.name} failed: "
+                                    f"{result.error or 'unknown error'}"
+                                )
+                    self._update_progress(
+                        progress,
+                        run_state,
+                        stage=(
+                            "cancelled"
+                            if stop_event.is_set()
+                            else "failed"
+                            if fatal_error or run_state.failures
+                            else "complete"
+                        ),
+                    )
         finally:
-            if stop_event.is_set():
-                supervisor.stop(self.interrupt_grace_seconds)
-            terminal_results = supervisor.close(self.interrupt_grace_seconds)
-            self._drain_terminal_events(events, files, run_state)
-            if not stop_event.is_set():
-                self._record_abandoned_files(files, run_state)
-                for result in terminal_results:
-                    if result.status == "failed":
-                        self.logger.error(
-                            f"{result.name} failed: {result.error or 'unknown error'}"
-                        )
             self._finalize_queue(queue, cancelled=stop_event.is_set())
             self._finalize_queue(events, cancelled=stop_event.is_set())
             if stop_event.is_set():
@@ -260,11 +290,11 @@ class ProcessTableExtractionRunner:
     ) -> None:
         cancellation_state = CancellationFeedbackState()
         cancellation_started: float | None = None
-        progress.set_status(f"0/{len(files)} files")
+        self._update_progress(progress, run_state)
 
         while supervisor.is_alive:
             self._drain_events(events, progress, run_state)
-            progress.set_status(f"{len(run_state.completed_files)}/{len(files)} files")
+            self._update_progress(progress, run_state)
             if self.cancellation.is_cancelled():
                 stop_event.set()
             if stop_event.is_set():
@@ -286,7 +316,7 @@ class ProcessTableExtractionRunner:
             stop_event.wait(self.poll_interval_seconds)
 
         self._drain_events(events, progress, run_state)
-        progress.set_status(f"{len(run_state.completed_files)}/{len(files)} files")
+        self._update_progress(progress, run_state)
 
     def _drain_events(
         self,
@@ -331,15 +361,15 @@ class ProcessTableExtractionRunner:
             self.logger.warn(event.message)
         elif event.level == "error":
             self.logger.error(event.message)
-        elif event.level in {"started", "progress"} and progress is not None:
-            progress.set_description(f"Extracting {Path(event.file_path).name}")
-            if event.message:
-                progress.set_secondary_status(event.message)
+        elif event.level in {"started", "progress"}:
+            run_state.active_files.setdefault(event.file_path, None)
+            if event.level == "progress":
+                run_state.active_files[event.file_path] = event.message or None
+            if progress is not None:
+                self._update_progress(progress, run_state)
         elif event.level in {"done", "failed"}:
             if event.file_path not in run_state.completed_files:
                 run_state.completed_files.add(event.file_path)
-                if progress is not None:
-                    progress.advance()
             if event.level == "failed":
                 run_state.failures.append(
                     ExtractionFailure(event.file_path, RuntimeError(event.message))
@@ -347,6 +377,33 @@ class ProcessTableExtractionRunner:
                 self.logger.error(
                     f"Failed to extract {event.file_path}: {event.message}"
                 )
+            run_state.active_files.pop(event.file_path, None)
+            if progress is not None:
+                self._update_progress(progress, run_state)
+
+    @staticmethod
+    def _update_progress(
+        progress: ProgressReporterPort,
+        run_state: TableExtractionRunState,
+        *,
+        stage: ProgressStage = "extracting",
+    ) -> None:
+        active_file, message = next(
+            iter(run_state.active_files.items()),
+            (None, None),
+        )
+        progress.update(
+            ProgressState(
+                "Tables",
+                stage,
+                overall=ProgressMeasure(
+                    len(run_state.completed_files), run_state.total_files, "files"
+                ),
+                item=Path(active_file).name if active_file is not None else None,
+                message=message,
+                failures=len(run_state.failures),
+            )
+        )
 
     def _record_abandoned_files(
         self,
@@ -357,6 +414,7 @@ class ProcessTableExtractionRunner:
             if file_path in run_state.completed_files:
                 continue
             run_state.completed_files.add(file_path)
+            run_state.active_files.pop(file_path, None)
             error = RuntimeError("table extraction worker exited before completion")
             run_state.failures.append(ExtractionFailure(file_path, error))
             self.logger.error(f"Failed to extract {file_path}: {error}")

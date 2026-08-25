@@ -125,8 +125,10 @@ def build_runtime_asset_preparer(
 def build_dumper_backend(
     http_client: HttpClientPort,
     logger: LoggerPort,
+    progress_factory: ProgressReporterFactoryPort | None,
     cancellation: CancellationPort,
 ) -> Cpp2IlDumpCsBackend:
+    _ = progress_factory
     return Cpp2IlDumpCsBackend(
         http_client=http_client,
         logger=logger,

@@ -19,6 +19,12 @@ from ba_downloader.api.state import ContextRegistry
 from ba_downloader.api.streams import job_event_stream
 from ba_downloader.application.contracts import AssetsExtractCommand
 from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.domain.ports.progress import (
+    ProgressGroup,
+    ProgressMeasure,
+    ProgressState,
+    ProgressWorkers,
+)
 from support import build_execution_context
 
 
@@ -55,14 +61,22 @@ def test_proxy_redactions_cover_credentials_and_encoded_values() -> None:
 
 def test_queue_progress_uses_the_unified_wire_contract() -> None:
     queue: Queue[dict[str, object]] = Queue()
-    reporter = QueueProgressReporter(queue, 10, "Extracting bundles")
-    reporter.set_progress(
-        3,
-        10,
-        stage="processing",
-        unit="entries",
-        status="3/10 entries",
-        secondary_status="Processor 2/17: Prefab",
+    initial = ProgressState(
+        "Bundles",
+        "exporting",
+        overall=ProgressMeasure(0, 52, "groups"),
+    )
+    reporter = QueueProgressReporter(queue, initial, clock=lambda: 0.0)
+    reporter.update(
+        ProgressState(
+            "Bundles",
+            "exporting",
+            overall=ProgressMeasure(7, 52, "groups"),
+            current=ProgressMeasure(312, 647, "assets"),
+            group=ProgressGroup("group-08", 8, 52),
+            item="Cafe_CH0347",
+            workers=None,
+        )
     )
     reporter.stop()
 
@@ -71,13 +85,70 @@ def test_queue_progress_uses_the_unified_wire_contract() -> None:
         events.append(queue.get_nowait())
     payload = events[-1]["payload"]
     assert payload == {
-        "completed": 3,
-        "total": 10,
-        "stage": "processing",
-        "unit": "entries",
-        "status": "3/10 entries",
-        "secondary_status": "Processor 2/17: Prefab",
+        "schema_version": 0,
+        "label": "Bundles",
+        "stage": "exporting",
+        "overall": {"completed": 7, "total": 52, "unit": "groups"},
+        "current": {"completed": 312, "total": 647, "unit": "assets"},
+        "group": {"id": "group-08", "index": 8, "total": 52},
+        "item": "Cafe_CH0347",
+        "message": None,
+        "workers": None,
+        "pending": None,
+        "failures": 0,
+        "timing": {
+            "elapsed_seconds": 0.0,
+            "eta_seconds": None,
+            "rate_per_second": None,
+        },
     }
+    assert not {"completed", "total", "status", "secondary_status"} & payload.keys()
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        ProgressState(
+            "Assets",
+            "downloading",
+            overall=ProgressMeasure(10, 20, "bytes"),
+            current=ProgressMeasure(1, 2, "files"),
+            item="a.zip",
+            workers=ProgressWorkers(2, 4),
+        ),
+        ProgressState(
+            "Package",
+            "downloading",
+            overall=ProgressMeasure(1, 2, "bytes"),
+            item="release.xapk",
+        ),
+        ProgressState(
+            "Media",
+            "extracting",
+            overall=ProgressMeasure(2, 3, "archives"),
+            current=ProgressMeasure(8, 10, "members"),
+        ),
+        ProgressState(
+            "Tables",
+            "extracting",
+            overall=ProgressMeasure(1, 3, "files"),
+            item="ExcelDB.db",
+        ),
+    ],
+)
+def test_queue_progress_serializes_all_workflows_as_schema_zero(
+    state: ProgressState,
+) -> None:
+    queue: Queue[dict[str, object]] = Queue()
+    reporter = QueueProgressReporter(queue, state, clock=lambda: 0.0)
+    reporter.update(state)
+    reporter.stop()
+    payload = queue.get_nowait()["payload"]
+    if not queue.empty():
+        payload = queue.get_nowait()["payload"]
+    assert payload["schema_version"] == 0
+    assert payload["label"] == state.label
+    assert "completed" not in payload
 
 
 def test_job_stream_starts_with_current_snapshot(tmp_path: Path) -> None:

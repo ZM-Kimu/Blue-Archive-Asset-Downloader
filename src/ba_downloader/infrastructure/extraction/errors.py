@@ -35,3 +35,7 @@ class ExtractionFailureError(ExtractError):
 
 class BundleExtractionError(ExtractError):
     """Expected bundle extraction failure safe to expose to CLI and API clients."""
+
+
+class MediaExtractionError(ExtractError):
+    """Expected media extraction failure safe to expose to CLI and API clients."""

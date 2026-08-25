@@ -10,8 +10,11 @@ import pytest
 
 from ba_downloader.domain.exceptions import OperationCancelledError
 from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.domain.ports.progress import ProgressMeasure, ProgressState
 from ba_downloader.infrastructure.extraction.assetripper.bundles import (
     AssetRipperBundleWorkflow,
+    _AssetRipperLogAggregator,
+    _BundleProgressTracker,
 )
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
@@ -26,7 +29,11 @@ from ba_downloader.infrastructure.extraction.assetripper.entry_store import (
     bundle_entry_cache_identity,
 )
 from ba_downloader.infrastructure.extraction.assetripper.events import (
+    AssetRipperAssetLifecycleEvent,
     AssetRipperEntryCacheProgressEvent,
+    AssetRipperGroupCompletedEvent,
+    AssetRipperGroupContext,
+    AssetRipperGroupStartedEvent,
     AssetRipperProcessEvent,
     AssetRipperProcessorProgressEvent,
     AssetRipperProgressEvent,
@@ -62,7 +69,7 @@ class RecordingLogger:
 
 class RecordingProgress:
     def __init__(self) -> None:
-        self.updates: list[dict[str, object]] = []
+        self.updates: list[ProgressState] = []
         self.failures: list[str] = []
 
     def __enter__(self) -> RecordingProgress:
@@ -71,47 +78,10 @@ class RecordingProgress:
     def __exit__(self, *_: object) -> None:
         return None
 
-    def set_progress(
-        self,
-        completed: int,
-        total: int,
-        *,
-        stage: str,
-        unit: str,
-        status: str = "",
-        secondary_status: str = "",
-    ) -> None:
-        self.updates.append(
-            {
-                "completed": completed,
-                "total": total,
-                "stage": stage,
-                "unit": unit,
-                "status": status,
-                "secondary_status": secondary_status,
-            }
-        )
-
-    def advance(self, amount: int = 1) -> None:
-        _ = amount
-
-    def set_total(self, total: int) -> None:
-        _ = total
-
-    def set_description(self, description: str) -> None:
-        _ = description
-
-    def set_status(self, status: str) -> None:
-        _ = status
-
-    def set_secondary_status(self, status: str) -> None:
-        _ = status
-
-    def set_failed_status(self, status: str) -> None:
-        self.failures.append(status)
-
-    def set_completed(self, completed: int) -> None:
-        _ = completed
+    def update(self, state: ProgressState) -> None:
+        self.updates.append(state)
+        if state.stage in {"failed", "cancelled"}:
+            self.failures.append(state.message or state.stage)
 
     def stop(self) -> None:
         return None
@@ -209,7 +179,7 @@ class RecordingExporter:
             write_json_atomic(
                 destination.with_suffix(f"{destination.suffix}.json"),
                 {
-                    "schema_version": 2,
+                    "schema_version": 0,
                     "identity": bundle_entry_cache_identity(entry),
                     "mtime_ns": stat.st_mtime_ns,
                 },
@@ -252,6 +222,54 @@ class RecordingExporter:
         exported: list[str] = []
         assets: list[AssetRipperExportedAsset] = []
         failures: list[AssetRipperCollectionFailure] = []
+        total_groups = len(groups)
+        completed_assets = 0
+        for group_index, group in enumerate(groups, start=1):
+            if event_callback is not None:
+                event_callback(
+                    AssetRipperGroupStartedEvent(
+                        AssetRipperGroupContext(
+                            group.group_id, group_index, total_groups
+                        )
+                    )
+                )
+            group_targets = [item for item in group.inputs if item.target]
+            for item in group_targets:
+                if event_callback is not None:
+                    event_callback(
+                        AssetRipperAssetLifecycleEvent(
+                            "started",
+                            hashlib.sha256(item.node_id.encode()).hexdigest()[:20],
+                            Path(item.node_id.split("::", 1)[-1]).stem,
+                            completed_assets,
+                            len(targets),
+                            AssetRipperGroupContext(
+                                group.group_id, group_index, total_groups
+                            ),
+                        )
+                    )
+                completed_assets += 1
+                if event_callback is not None:
+                    event_callback(
+                        AssetRipperAssetLifecycleEvent(
+                            "completed",
+                            hashlib.sha256(item.node_id.encode()).hexdigest()[:20],
+                            Path(item.node_id.split("::", 1)[-1]).stem,
+                            completed_assets,
+                            len(targets),
+                            AssetRipperGroupContext(
+                                group.group_id, group_index, total_groups
+                            ),
+                        )
+                    )
+            if event_callback is not None:
+                event_callback(
+                    AssetRipperGroupCompletedEvent(
+                        AssetRipperGroupContext(
+                            group.group_id, group_index, total_groups
+                        )
+                    )
+                )
         for index, target in enumerate(targets, start=1):
             collection = f"collection-{target}".replace("\\", "/")
             normalized = collection.strip().lower()
@@ -372,8 +390,8 @@ def test_full_export_uses_one_process_and_readable_assets_layout(
     assert exporter.materialize_calls == 1
     assert report.total_batches == 1
     assert report.succeeded_batches == 1
-    assert manifest["schema_version"] == 10
-    assert manifest["layout"] == "assetripper-readable-v1"
+    assert manifest["schema_version"] == 0
+    assert manifest["layout"] == "assetripper-readable"
     assert "runs" not in manifest
     assert "current_revision" not in json.dumps(manifest)
     assert (context.workspace.extracted_bundles / "Assets/_MX/a.bin").is_file()
@@ -381,16 +399,78 @@ def test_full_export_uses_one_process_and_readable_assets_layout(
     assert not any(
         path.name == "assets" for path in context.workspace.extracted_bundles.iterdir()
     )
-    assert {item["stage"] for item in progress.reporter.updates} >= {
+    assert {item.stage for item in progress.reporter.updates} >= {
         "scanning",
         "cache_fill",
         "processing",
         "exporting",
     }
     assert any(
-        item["stage"] == "processing" and item["unit"] == "processors"
+        item.stage == "processing"
+        and item.current is not None
+        and item.current.unit == "processors"
         for item in progress.reporter.updates
     )
+
+
+def test_group_progress_uses_completed_groups_for_eta_and_oldest_active_asset() -> None:
+    progress = RecordingProgress()
+    clock_value = 0.0
+
+    def clock() -> float:
+        return clock_value
+
+    tracker = _BundleProgressTracker(
+        progress,
+        _AssetRipperLogAggregator(RecordingLogger()),
+        total_groups=3,
+        clock=clock,
+    )
+    first = AssetRipperGroupContext("group-01", 1, 3)
+    second = AssetRipperGroupContext("group-02", 2, 3)
+    third = AssetRipperGroupContext("group-03", 3, 3)
+
+    tracker.handle(AssetRipperGroupStartedEvent(first))
+    tracker.handle(AssetRipperProgressEvent("loading", 5, 10, "loading_files", first))
+    assert progress.updates[-1].overall == ProgressMeasure(0, 3, "groups")
+    assert progress.updates[-1].eta_seconds is None
+
+    clock_value = 10.0
+    tracker.handle(AssetRipperGroupCompletedEvent(first))
+    assert progress.updates[-1].overall == ProgressMeasure(1, 3, "groups")
+    assert progress.updates[-1].eta_seconds == 20.0
+
+    tracker.handle(AssetRipperGroupStartedEvent(second))
+    tracker.handle(
+        AssetRipperAssetLifecycleEvent(
+            "started", "asset-a", "Cafe_CH0347", 0, 2, second
+        )
+    )
+    tracker.handle(
+        AssetRipperAssetLifecycleEvent(
+            "started", "asset-b", "Cafe_CH0348", 0, 2, second
+        )
+    )
+    tracker.handle(
+        AssetRipperAssetLifecycleEvent(
+            "completed", "asset-a", "Cafe_CH0347", 1, 2, second
+        )
+    )
+    state = progress.updates[-1]
+    assert state.overall == ProgressMeasure(1, 3, "groups")
+    assert state.current == ProgressMeasure(1, 2, "assets")
+    assert state.item == "Cafe_CH0348"
+    assert state.eta_seconds == 20.0
+
+    clock_value = 20.0
+    tracker.handle(AssetRipperGroupCompletedEvent(second))
+    assert progress.updates[-1].overall == ProgressMeasure(2, 3, "groups")
+    assert progress.updates[-1].eta_seconds == 10.0
+    tracker.handle(AssetRipperGroupStartedEvent(third))
+    clock_value = 30.0
+    tracker.handle(AssetRipperGroupCompletedEvent(third))
+    assert progress.updates[-1].overall == ProgressMeasure(3, 3, "groups")
+    assert progress.updates[-1].eta_seconds is None
 
 
 def test_stream_groups_keep_components_whole_at_measured_limit(
@@ -426,6 +506,79 @@ def test_stream_groups_keep_components_whole_at_measured_limit(
     } == {component.component_id for component in components}
 
 
+def test_dependency_topology_reduces_repeated_closure_bytes(tmp_path: Path) -> None:
+    archive = BundleArchiveInput.from_path(_bundle(tmp_path, "source.zip"))
+
+    def component(
+        component_id: str,
+        *,
+        size: int = 1,
+        dependencies: tuple[str, ...] = (),
+    ) -> BundleComponent:
+        return BundleComponent(
+            component_id,
+            (
+                BundleEntryInput(
+                    archive,
+                    f"{component_id}.bundle",
+                    hashlib.sha256(component_id.encode()).hexdigest(),
+                    size,
+                ),
+            ),
+            dependencies,
+            (),
+            (),
+        )
+
+    shared = component("shared", size=100)
+    dependents = tuple(
+        component(name, dependencies=(shared.component_id,))
+        for name in ("a", "c", "e", "g")
+    )
+    independent = tuple(component(name) for name in ("b", "d", "f", "h"))
+    plan = BundleDependencyPlan(
+        (*dependents, *independent, shared),
+        (),
+        (),
+        (),
+    )
+    workflow = _workflow(RecordingExporter(), RecordingScanner())
+    lexical = tuple(
+        sorted(
+            plan.components,
+            key=lambda item: item.entries[0].node_id.casefold(),
+        )
+    )
+    lexical_batches = workflow._group_components(
+        plan,
+        lexical,
+        target_entry_limit=2,
+    )
+    optimized = workflow._stream_batches(plan, target_entry_limit=2)
+    reordered = workflow._stream_batches(
+        BundleDependencyPlan(tuple(reversed(plan.components)), (), (), ()),
+        target_entry_limit=2,
+    )
+
+    assert sum(batch.total_bytes for batch in optimized) < sum(
+        batch.total_bytes for batch in lexical_batches
+    )
+    assert tuple(batch.target_node_ids for batch in optimized) == tuple(
+        batch.target_node_ids for batch in reordered
+    )
+    target_ids = [node_id for batch in optimized for node_id in batch.target_node_ids]
+    assert len(target_ids) == len(set(target_ids))
+    assert {
+        component.component_id
+        for batch in optimized
+        for component in batch.target_components
+    } == {component.component_id for component in plan.components}
+    for batch in optimized:
+        loaded_ids = {item.component_id for item in batch.loaded_components}
+        for target in batch.target_components:
+            assert set(target.dependency_component_ids) <= loaded_ids
+
+
 def test_warm_run_validates_output_and_skips_every_tool(tmp_path: Path) -> None:
     exporter = RecordingExporter()
     scanner = RecordingScanner()
@@ -440,6 +593,33 @@ def test_warm_run_validates_output_and_skips_every_tool(tmp_path: Path) -> None:
     assert exporter.materialize_calls == 1
     assert exporter.prepare_calls == 1
     assert exporter.export_calls == 1
+
+
+def test_nonzero_manifest_is_rebuilt_without_reuse(tmp_path: Path) -> None:
+    exporter = RecordingExporter()
+    scanner = RecordingScanner()
+    context = _context(tmp_path)
+    archive = _bundle(tmp_path, "a.zip")
+    workflow = _workflow(exporter, scanner)
+
+    workflow.run(context, [archive], concurrency=2)
+    legacy = _manifest(context)
+    legacy["schema_version"] = 10
+    write_json_atomic(
+        context.workspace.extracted_bundles / "manifest.json",
+        legacy,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    workflow.run(context, [archive], concurrency=8)
+
+    rebuilt = _manifest(context)
+    assert rebuilt["schema_version"] == 0
+    assert "content_fingerprint" in rebuilt
+    assert scanner.calls == 2
+    assert exporter.export_calls == 2
 
 
 def test_actual_oom_fails_once_and_preserves_old_output(tmp_path: Path) -> None:
@@ -463,12 +643,13 @@ def test_actual_oom_fails_once_and_preserves_old_output(tmp_path: Path) -> None:
     assert not (context.workspace.extracted_bundles / "manifest.json").exists()
 
 
-def test_fatal_export_failure_preserves_old_layout(tmp_path: Path) -> None:
+def test_fatal_export_failure_preserves_incompatible_layout(tmp_path: Path) -> None:
     context = _context(tmp_path)
     output_root = context.workspace.extracted_bundles
-    legacy = output_root / "assets/legacy/file.bin"
-    legacy.parent.mkdir(parents=True)
-    legacy.write_bytes(b"old")
+    previous = output_root / "assets/previous/file.bin"
+    previous.parent.mkdir(parents=True)
+    previous.write_bytes(b"old")
+    write_json_atomic(output_root / "manifest.json", {"schema_version": 11})
     exporter = RecordingExporter()
     exporter.fatal_calls.add(1)
 
@@ -479,15 +660,16 @@ def test_fatal_export_failure_preserves_old_layout(tmp_path: Path) -> None:
             concurrency=1,
         )
 
-    assert legacy.read_bytes() == b"old"
+    assert previous.read_bytes() == b"old"
     assert not any(path.name == "Assets" for path in output_root.iterdir())
+    assert _manifest(context)["schema_version"] == 11
 
 
-def test_success_removes_legacy_lowercase_layout(tmp_path: Path) -> None:
+def test_success_replaces_incompatible_lowercase_layout(tmp_path: Path) -> None:
     context = _context(tmp_path)
-    legacy = context.workspace.extracted_bundles / "assets/legacy/file.bin"
-    legacy.parent.mkdir(parents=True)
-    legacy.write_bytes(b"old")
+    previous = context.workspace.extracted_bundles / "assets/previous/file.bin"
+    previous.parent.mkdir(parents=True)
+    previous.write_bytes(b"old")
 
     _workflow(RecordingExporter(), RecordingScanner()).run(
         context,
@@ -495,8 +677,28 @@ def test_success_removes_legacy_lowercase_layout(tmp_path: Path) -> None:
         concurrency=1,
     )
 
-    assert not legacy.exists()
+    assert not previous.exists()
     assert (context.workspace.extracted_bundles / "Assets/_MX/a.bin").is_file()
+
+
+def test_first_filtered_run_replaces_nonzero_public_output(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    output_root = context.workspace.extracted_bundles
+    previous = output_root / "Assets/_MX/previous.bin"
+    previous.parent.mkdir(parents=True)
+    previous.write_bytes(b"old")
+    write_json_atomic(output_root / "manifest.json", {"schema_version": 11})
+
+    _workflow(RecordingExporter(), RecordingScanner()).run(
+        context,
+        [_bundle(tmp_path, "a.zip")],
+        concurrency=1,
+        filtered=True,
+    )
+
+    assert not previous.exists()
+    assert (output_root / "Assets/_MX/a.bin").is_file()
+    assert _manifest(context)["schema_version"] == 0
 
 
 def test_filtered_merge_preserves_existing_and_allocates_native_suffix(
@@ -530,8 +732,9 @@ def test_collection_failure_publishes_partial_result(tmp_path: Path) -> None:
     b = _bundle(tmp_path, "b.zip")
     exporter = RecordingExporter()
     exporter.failed_targets.add("a.zip::a.bundle")
+    progress = RecordingProgressFactory()
 
-    report = _workflow(exporter, RecordingScanner()).run(
+    report = _workflow(exporter, RecordingScanner(), progress=progress).run(
         context,
         [a, b],
         concurrency=2,
@@ -542,6 +745,8 @@ def test_collection_failure_publishes_partial_result(tmp_path: Path) -> None:
     assert len(manifest["failures"]) == 1
     assert len(manifest["assets"]) == 1
     assert report.warnings
+    assert progress.reporter.updates[-1].stage == "complete"
+    assert progress.reporter.updates[-1].failures == 1
     assert not (context.workspace.extracted_bundles / "Assets/_MX/a.bin").exists()
     assert (context.workspace.extracted_bundles / "Assets/_MX/b.bin").is_file()
 

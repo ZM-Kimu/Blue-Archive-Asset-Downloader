@@ -14,6 +14,7 @@ from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelle
 from ba_downloader.domain.ports.extract import SchemaWorkflowPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
 from ba_downloader.infrastructure.schema.flatbuffer.descriptors import (
     FlatBufferEnumDescriptor,
     FlatBufferTypeDescriptor,
@@ -53,6 +54,7 @@ class SchemaWorkflow(SchemaWorkflowPort):
         dumper_backend_factory: BackendFactory | None = None,
         cancellation: CancellationPort | None = None,
         snapshot_store: SchemaSnapshotStore | None = None,
+        progress_factory: ProgressReporterFactoryPort | None = None,
     ) -> None:
         self.http_client = http_client
         self.logger = logger
@@ -61,6 +63,7 @@ class SchemaWorkflow(SchemaWorkflowPort):
         self.snapshot_store = snapshot_store or SchemaSnapshotStore(
             cancellation=self.cancellation
         )
+        self.progress_factory = progress_factory
         self._staging_root: Path | None = None
         self._runtime_assets: PreparedRuntimeAssets | None = None
         self._fingerprint = ""
@@ -112,6 +115,7 @@ class SchemaWorkflow(SchemaWorkflowPort):
         backend = self.dumper_backend_factory(
             self.http_client,
             self.logger,
+            self.progress_factory,
             self.cancellation,
         )
         try:

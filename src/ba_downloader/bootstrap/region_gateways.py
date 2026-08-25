@@ -60,7 +60,12 @@ RuntimeAssetPreparerFactory = Callable[
     RuntimeAssetPreparerPort,
 ]
 DumpBackendFactory = Callable[
-    [HttpClientPort, LoggerPort, CancellationPort],
+    [
+        HttpClientPort,
+        LoggerPort,
+        ProgressReporterFactoryPort | None,
+        CancellationPort,
+    ],
     Il2CppDumpBackendPort,
 ]
 TableExtractionProfileFactory = Callable[

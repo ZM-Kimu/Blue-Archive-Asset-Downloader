@@ -49,8 +49,10 @@ public abstract class ExportCollectionBase
 
 	protected virtual string ExportExtension => "asset";
 
-	protected static string GetUniqueFileName(string directoryPath, string fileName, FileSystem fileSystem) =>
-		fileSystem.GetUniqueName(directoryPath, fileName, FileSystem.MaxFileNameLength);
+	protected static string GetUniqueFileName(string directoryPath, string fileName, FileSystem fileSystem)
+	{
+		return fileSystem.GetUniqueName(directoryPath, fileName, FileSystem.MaxFileNameLength);
+	}
 
 	public abstract IContentExtractor ContentExtractor { get; }
 	public abstract IEnumerable<IUnityObjectBase> Assets { get; }

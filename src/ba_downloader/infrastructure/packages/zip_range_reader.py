@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ba_downloader.domain.ports.http import HttpClientPort, TransportKind
+from ba_downloader.infrastructure.files.size import format_file_size
 
 EOCD_SIGNATURE = 0x06054B50
 CENTRAL_DIRECTORY_SIGNATURE = 0x02014B50
@@ -180,7 +181,8 @@ def extract_zip_entry(
     if len(decompressed) != entry.uncompressed_size:
         raise ZipCentralDirectoryError(
             f"Extracted ZIP entry {entry.path!r} has unexpected size "
-            f"{len(decompressed)} (expected {entry.uncompressed_size}).",
+            f"{format_file_size(len(decompressed))} "
+            f"(expected {format_file_size(entry.uncompressed_size)}).",
         )
 
     destination_path.write_bytes(decompressed)

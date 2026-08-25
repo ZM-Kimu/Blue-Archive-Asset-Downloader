@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from binascii import crc32
+from collections import Counter
 from contextlib import nullcontext
 from pathlib import Path
 from threading import Event
@@ -8,10 +9,17 @@ from typing import Any, ClassVar
 
 import pytest
 
-from ba_downloader.domain.exceptions import DownloadError, NetworkError
+import ba_downloader.infrastructure.download.resource_downloader as resource_downloader_module
+from ba_downloader.domain.exceptions import (
+    DownloadError,
+    NetworkError,
+    OperationCancelledError,
+)
 from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.domain.ports.execution import EventCancellation
 from ba_downloader.domain.ports.http import DownloadResult
+from ba_downloader.domain.ports.progress import ProgressState
 from ba_downloader.infrastructure.download.resource_downloader import ResourceDownloader
 from ba_downloader.infrastructure.files.checksum import calculate_crc, calculate_md5
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
@@ -81,17 +89,13 @@ class RecordingHttpClient:
 class RecordingProgressReporter:
     instances: ClassVar[list[RecordingProgressReporter]] = []
 
-    def __init__(
-        self, total: int, description: str, *, download_mode: bool = False
-    ) -> None:
-        self.total = total
-        self.description = description
-        self.download_mode = download_mode
-        self.advances: list[int] = []
-        self.descriptions: list[str] = [description]
-        self.statuses: list[str] = []
-        self.secondary_statuses: list[str] = []
-        self.failed_statuses: list[str] = []
+    def __init__(self, initial_state: ProgressState) -> None:
+        measure = initial_state.overall or initial_state.current
+        self.total = measure.total if measure is not None else 0
+        self.description = initial_state.label
+        self.download_mode = measure is not None and measure.unit == "bytes"
+        self.initial_state = initial_state
+        self.states: list[ProgressState] = []
         RecordingProgressReporter.instances.append(self)
 
     def __enter__(self) -> RecordingProgressReporter:
@@ -100,27 +104,8 @@ class RecordingProgressReporter:
     def __exit__(self, *_: object) -> None:
         return None
 
-    def advance(self, amount: int = 1) -> None:
-        self.advances.append(amount)
-
-    def set_total(self, total: int) -> None:
-        self.total = total
-
-    def set_description(self, description: str) -> None:
-        self.description = description
-        self.descriptions.append(description)
-
-    def set_status(self, status: str) -> None:
-        self.statuses.append(status)
-
-    def set_secondary_status(self, status: str) -> None:
-        self.secondary_statuses.append(status)
-
-    def set_failed_status(self, status: str) -> None:
-        self.failed_statuses.append(status)
-
-    def set_completed(self, completed: int) -> None:
-        _ = completed
+    def update(self, state: ProgressState) -> None:
+        self.states.append(state)
 
     def stop(self) -> None:
         return None
@@ -128,18 +113,9 @@ class RecordingProgressReporter:
 
 def _create_recording_progress(
     _factory: object,
-    total: int,
-    description: str,
-    *,
-    download_mode: bool = False,
-    extract_mode: bool = False,
+    initial_state: ProgressState,
 ) -> RecordingProgressReporter:
-    _ = extract_mode
-    return RecordingProgressReporter(
-        total,
-        description,
-        download_mode=download_mode,
-    )
+    return RecordingProgressReporter(initial_state)
 
 
 class RecordingLogger:
@@ -156,6 +132,20 @@ class RecordingLogger:
 
     def error(self, message: str) -> None:
         self.error_messages.append(message)
+
+
+class CancelDuringPathPreparation:
+    def __init__(self, allowed_checks: int) -> None:
+        self.allowed_checks = allowed_checks
+        self.checks = 0
+
+    def is_cancelled(self) -> bool:
+        return self.checks > self.allowed_checks
+
+    def raise_if_cancelled(self) -> None:
+        self.checks += 1
+        if self.is_cancelled():
+            raise OperationCancelledError("cancelled during path preparation")
 
 
 def _build_context(tmp_path: Path) -> ExecutionContext:
@@ -241,7 +231,14 @@ def test_download_resources_tracks_aggregate_bytes(monkeypatch, tmp_path: Path) 
     progress = RecordingProgressReporter.instances[-1]
     assert progress.download_mode is True
     assert progress.total == 20
-    assert sum(progress.advances) == 20
+    assert progress.states[-1].overall is not None
+    assert progress.states[-1].overall.completed == 20
+    assert any(
+        state.workers is not None and state.workers.active == 2
+        for state in progress.states
+    )
+    assert progress.states[-1].workers is not None
+    assert progress.states[-1].workers.active == 0
     assert client.download_calls
     assert client.download_calls[0]["timeout"] == downloader.DOWNLOAD_TIMEOUT_SECONDS
     assert callable(client.download_calls[0]["should_stop"])
@@ -756,13 +753,301 @@ def test_verify_resource_canonicalizes_existing_case_only_path(
         "crc",
         AssetType.table,
     )
-    resource = resources[0]
-
-    _, verified = downloader._verify_resource(resource, context)
+    pending = downloader._verify_resources(resources, context, concurrency=2)
 
     table_names = {item.name for item in (context.workspace.raw_tables).iterdir()}
-    assert verified is True
+    assert pending == []
     assert table_names == {"TablePatchPack_GroundStage_1.zip"}
+
+
+def test_verification_indexes_each_existing_parent_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
+    context = _build_context(tmp_path)
+    resources = AssetCollection()
+    paths = (
+        "Bundle/a.bundle",
+        "Bundle/b.bundle",
+        "Media/Audio/one.zip",
+        "Media/Audio/two.zip",
+        "Media/Video/three.zip",
+    )
+    expected_parents: set[Path] = set()
+    for index, path in enumerate(paths):
+        payload = f"payload-{index}".encode()
+        asset_path = _write_asset_file(context, path, payload)
+        expected_parents.add(asset_path.parent)
+        resources.add(
+            f"https://example.com/{path}",
+            path,
+            len(payload),
+            calculate_md5(asset_path),
+            "md5",
+            AssetType(path.split("/", 1)[0].casefold()),
+        )
+
+    original_iterdir = Path.iterdir
+    directory_scans: Counter[Path] = Counter()
+
+    def count_iterdir(path: Path):  # type: ignore[no-untyped-def]
+        if path in expected_parents:
+            directory_scans[path] += 1
+        return original_iterdir(path)
+
+    checksum_calls: Counter[Path] = Counter()
+    original_md5 = resource_downloader_module.calculate_md5
+
+    def count_md5(path: str | Path) -> str:
+        checksum_calls[Path(path)] += 1
+        return original_md5(path)
+
+    monkeypatch.setattr(Path, "iterdir", count_iterdir)
+    monkeypatch.setattr(resource_downloader_module, "calculate_md5", count_md5)
+
+    pending = downloader._verify_resources(resources, context, concurrency=5)
+
+    assert pending == []
+    assert directory_scans == Counter({parent: 1 for parent in expected_parents})
+    assert checksum_calls == Counter(
+        {
+            context.workspace.raw_resource_path(
+                resource.asset_type.value,
+                resource.path,
+            ): 1
+            for resource in resources
+        }
+    )
+
+
+def test_verify_and_download_does_not_rescan_parent_for_missing_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = RecordingHttpClient()
+    downloader = ResourceDownloader(client, NullLogger())
+    context = _build_context(tmp_path)
+    resources = _build_checked_resources(
+        tmp_path,
+        "Bundle/present.bundle",
+        "Bundle/missing.bundle",
+    )
+    _write_asset_file(context, "Bundle/present.bundle", b"x" * 10)
+    original_iterdir = Path.iterdir
+    directory_scans = 0
+
+    def count_bundle_scans(path: Path):  # type: ignore[no-untyped-def]
+        nonlocal directory_scans
+        if path == context.workspace.raw_bundles:
+            directory_scans += 1
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", count_bundle_scans)
+
+    downloader.verify_and_download(resources, context, concurrency=2)
+
+    assert directory_scans == 1
+    assert (context.workspace.raw_bundles / "missing.bundle").is_file()
+
+
+def test_path_preparation_skips_missing_parents_without_enumeration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
+    context = _build_context(tmp_path)
+    resources = _build_checked_resources(
+        tmp_path,
+        "Media/missing/voice.zip",
+        asset_type=AssetType.media,
+        algorithm="md5",
+    )
+    missing_parent = context.workspace.raw_media / "missing"
+    original_iterdir = Path.iterdir
+
+    def reject_missing_parent(path: Path):  # type: ignore[no-untyped-def]
+        if path == missing_parent:
+            raise AssertionError("missing parents must not be enumerated")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", reject_missing_parent)
+
+    pending = downloader._verify_resources(resources, context, concurrency=2)
+
+    assert list(pending) == list(resources)
+
+
+def test_case_rename_planner_rejects_ambiguous_matches(tmp_path: Path) -> None:
+    parent = tmp_path / "assets"
+    entries = (parent / "voice.zip", parent / "VOICE.ZIP")
+
+    assert (
+        ResourceDownloader._plan_case_renames(
+            parent,
+            entries,
+            {"Voice.zip"},
+        )
+        == ()
+    )
+    assert (
+        ResourceDownloader._plan_case_renames(
+            parent,
+            (parent / "voice.zip",),
+            {"Voice.zip", "VOICE.ZIP"},
+        )
+        == ()
+    )
+    assert (
+        ResourceDownloader._plan_case_renames(
+            parent,
+            entries,
+            {"voice.zip"},
+        )
+        == ()
+    )
+
+
+def test_path_preparation_restores_source_when_case_rename_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
+    context = _build_context(tmp_path)
+    source = _write_asset_file(context, "Table/lower.zip", b"payload")
+    target = source.with_name("Lower.zip")
+    resources = AssetCollection()
+    resources.add(
+        "https://example.com/Table/Lower.zip",
+        "Table/Lower.zip",
+        7,
+        str(calculate_crc(source)),
+        "crc",
+        AssetType.table,
+    )
+    original_rename = Path.rename
+
+    def fail_publication(path: Path, destination: str | Path) -> Path:
+        destination_path = Path(destination)
+        if (
+            path.name.startswith(f".{target.name}.casefix-")
+            and destination_path.name == target.name
+        ):
+            raise OSError("case-only rename failed")
+        return original_rename(path, destination)
+
+    monkeypatch.setattr(Path, "rename", fail_publication)
+
+    downloader._canonicalize_resource_paths(resources, context)
+
+    assert {item.name for item in source.parent.iterdir()} == {source.name}
+
+
+def test_path_preparation_checks_cancellation(tmp_path: Path) -> None:
+    cancellation = CancelDuringPathPreparation(allowed_checks=1)
+    downloader = ResourceDownloader(
+        RecordingHttpClient(),
+        NullLogger(),
+        cancellation=cancellation,
+    )
+    context = _build_context(tmp_path)
+    resources = _build_resources("Bundle/a.bundle", "Media/b.zip")
+
+    with pytest.raises(OperationCancelledError):
+        downloader._canonicalize_resource_paths(resources, context)
+
+
+def test_content_verification_checks_cancellation_after_hashing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cancellation_event = Event()
+    downloader = ResourceDownloader(
+        RecordingHttpClient(),
+        NullLogger(),
+        cancellation=EventCancellation(cancellation_event),
+    )
+    context = _build_context(tmp_path)
+    resources = _build_checked_resources(
+        tmp_path,
+        "Media/one.zip",
+        "Media/two.zip",
+        asset_type=AssetType.media,
+        algorithm="md5",
+    )
+    for resource in resources:
+        _write_asset_file(context, resource.path, b"x" * 10)
+    original_md5 = resource_downloader_module.calculate_md5
+
+    def cancel_after_hash(path: str | Path) -> str:
+        result = original_md5(path)
+        cancellation_event.set()
+        return result
+
+    monkeypatch.setattr(resource_downloader_module, "calculate_md5", cancel_after_hash)
+
+    with pytest.raises(OperationCancelledError):
+        downloader._verify_resources(resources, context, concurrency=2)
+
+
+def test_size_mismatch_does_not_hash_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
+    context = _build_context(tmp_path)
+    asset_path = _write_asset_file(context, "Media/short.zip", b"short")
+    resources = AssetCollection()
+    resources.add(
+        "https://example.com/Media/short.zip",
+        "Media/short.zip",
+        99,
+        "unused",
+        "md5",
+        AssetType.media,
+    )
+
+    def reject_hash(_path: str | Path) -> str:
+        raise AssertionError("size mismatches must not be hashed")
+
+    monkeypatch.setattr(resource_downloader_module, "calculate_md5", reject_hash)
+
+    assert (
+        downloader._get_validation_error(asset_path, resources[0])
+        == "size mismatch (expected 99 bytes, got 5 bytes)"
+    )
+
+
+def test_validation_stats_a_matching_file_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    downloader = ResourceDownloader(RecordingHttpClient(), NullLogger())
+    context = _build_context(tmp_path)
+    payload = b"one stat"
+    asset_path = _write_asset_file(context, "Media/one-stat.zip", payload)
+    resources = AssetCollection()
+    resources.add(
+        "https://example.com/Media/one-stat.zip",
+        "Media/one-stat.zip",
+        len(payload),
+        calculate_md5(asset_path),
+        "md5",
+        AssetType.media,
+    )
+    original_stat = Path.stat
+    stat_calls = 0
+
+    def count_stat(path: Path, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        nonlocal stat_calls
+        if path == asset_path:
+            stat_calls += 1
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", count_stat)
+
+    assert downloader._get_validation_error(asset_path, resources[0]) is None
+    assert stat_calls == 1
 
 
 def test_verify_resource_accepts_crc_hex_strings(tmp_path: Path) -> None:

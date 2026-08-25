@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -16,7 +15,10 @@ from ba_downloader.infrastructure.files.atomic import (
     publish_staged_directory,
     write_json_atomic,
 )
-from ba_downloader.infrastructure.files.checksum import calculate_sha256
+from ba_downloader.infrastructure.files.checksum import (
+    calculate_sha256,
+    calculate_source_fingerprint,
+)
 from ba_downloader.infrastructure.files.lock import wait_for_interprocess_lock
 
 ASSETRIPPER_VERSION = "1.3.14"
@@ -27,7 +29,7 @@ ASSETRIPPER_ARCHIVE_SHA256 = (
 ASSETRIPPER_ARCHIVE_URL = (
     f"https://github.com/AssetRipper/AssetRipper/archive/{ASSETRIPPER_COMMIT}.zip"
 )
-ASSETRIPPER_OVERLAY_VERSION = "9"
+ASSETRIPPER_OVERLAY_SCHEMA_VERSION = 0
 
 
 class AssetRipperSourceError(RuntimeError):
@@ -119,9 +121,9 @@ class AssetRipperSourceResolver:
             raise AssetRipperSourceOverlayError(
                 "AssetRipper source overlay does not match the configured commit."
             )
-        if manifest.get("version") != ASSETRIPPER_OVERLAY_VERSION:
+        if manifest.get("schema_version") != ASSETRIPPER_OVERLAY_SCHEMA_VERSION:
             raise AssetRipperSourceOverlayError(
-                "AssetRipper source overlay version is unsupported."
+                "AssetRipper source overlay schema is unsupported."
             )
         files = manifest.get("files")
         if not isinstance(files, list) or not files:
@@ -129,7 +131,7 @@ class AssetRipperSourceResolver:
                 "AssetRipper source overlay has no replacement files."
             )
 
-        cache_key = self._overlay_cache_key(manifest_path, files)
+        cache_key = self.overlay_hash()
         cache_root = self._overlay_cache_root(context, cache_key)
         marker = cache_root / "overlay.json"
         if self._is_valid_overlay_cache(cache_root, marker, cache_key):
@@ -147,9 +149,9 @@ class AssetRipperSourceResolver:
             shutil.rmtree(staging, ignore_errors=True)
             self._logger.info("Preparing patched AssetRipper source...")
             marker_payload = {
+                "schema_version": ASSETRIPPER_OVERLAY_SCHEMA_VERSION,
                 "source_commit": self._commit,
                 "overlay_key": cache_key,
-                "version": ASSETRIPPER_OVERLAY_VERSION,
             }
             try:
                 shutil.copytree(source_root, staging)
@@ -180,6 +182,7 @@ class AssetRipperSourceResolver:
             return False
         return (
             isinstance(cached, dict)
+            and cached.get("schema_version") == ASSETRIPPER_OVERLAY_SCHEMA_VERSION
             and cached.get("source_commit") == self._commit
             and cached.get("overlay_key") == cache_key
             and self._is_valid_source(cache_root)
@@ -254,32 +257,66 @@ class AssetRipperSourceResolver:
         cache_key: str,
     ) -> Path:
         return context.workspace.tools_cache / (
-            f"AssetRipper-{self._commit[:12]}-overlay-"
-            f"{ASSETRIPPER_OVERLAY_VERSION}-{cache_key[:12]}"
+            f"AssetRipper-{self._commit[:12]}-overlay-{cache_key[:20]}"
         )
 
     @staticmethod
-    def _overlay_cache_key(manifest_path: Path, files: list[object]) -> str:
-        digest = hashlib.sha256()
-        digest.update(manifest_path.read_bytes())
-        for item in files:
-            if isinstance(item, dict):
-                replacement = item.get("replacement")
-                if isinstance(replacement, str):
-                    digest.update(replacement.encode("utf8"))
-                    digest.update(b"\0")
-        return digest.hexdigest()
-
-    @staticmethod
-    def overlay_hash() -> str:
-        manifest_path = Path(__file__).with_name("overlay") / "manifest.json"
+    def overlay_hash(*, content_only: bool = False) -> str:
+        overlay_root = Path(__file__).with_name("overlay")
+        manifest_path = overlay_root / "manifest.json"
         try:
-            content = manifest_path.read_bytes()
-        except OSError as exc:
+            manifest = json.loads(manifest_path.read_text(encoding="utf8"))
+        except (OSError, ValueError) as exc:
             raise AssetRipperSourceOverlayError(
                 "AssetRipper source overlay manifest is unavailable."
             ) from exc
-        return hashlib.sha256(content).hexdigest()
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("schema_version") != ASSETRIPPER_OVERLAY_SCHEMA_VERSION
+            or not isinstance(manifest.get("files"), list)
+        ):
+            raise AssetRipperSourceOverlayError(
+                "AssetRipper source overlay manifest is invalid."
+            )
+        identities = [
+            ("schema", str(ASSETRIPPER_OVERLAY_SCHEMA_VERSION)),
+            ("source-commit", str(manifest.get("source_commit", ""))),
+        ]
+        sources: list[Path] = []
+        for index, item in enumerate(manifest["files"]):
+            if not isinstance(item, dict):
+                raise AssetRipperSourceOverlayError(
+                    "AssetRipper source overlay entry is invalid."
+                )
+            if content_only and item.get("content_affecting") is False:
+                continue
+            path = item.get("path")
+            replacement = item.get("replacement")
+            source_hash = item.get("source_sha256")
+            replacement_hash = item.get("replacement_sha256")
+            if (
+                not isinstance(path, str)
+                or not isinstance(replacement, str)
+                or not isinstance(replacement_hash, str)
+            ):
+                raise AssetRipperSourceOverlayError(
+                    "AssetRipper source overlay entry is incomplete."
+                )
+            prefix = f"entry-{index:04d}"
+            identities.extend(
+                (
+                    (f"{prefix}-path", path),
+                    (f"{prefix}-replacement", replacement),
+                    (f"{prefix}-source", str(source_hash or "")),
+                    (f"{prefix}-declared-replacement", replacement_hash),
+                )
+            )
+            sources.append(overlay_root / replacement)
+        return calculate_source_fingerprint(
+            overlay_root,
+            sources,
+            identities=identities,
+        )
 
     def _download_to_cache(self, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -345,17 +382,14 @@ class AssetRipperSourceResolver:
 
     @staticmethod
     def _is_valid_source(path: Path) -> bool:
-        return (
-            path
-            / "Source"
-            / "AssetRipper.Export.PrimaryContent"
-            / "AssetRipper.Export.PrimaryContent.csproj"
-        ).is_file() and (
-            path
-            / "Source"
-            / "AssetRipper.Export.UnityProjects"
-            / "AssetRipper.Export.UnityProjects.csproj"
-        ).is_file()
+        return all(
+            (path / "Source" / project / f"{project}.csproj").is_file()
+            for project in (
+                "AssetRipper.Export.PrimaryContent",
+                "AssetRipper.Export.Modules.Models",
+                "AssetRipper.Export.Modules.Textures",
+            )
+        )
 
     def _cache_root(self, context: ExecutionContext) -> Path:
         return context.workspace.tools_cache / f"AssetRipper-{self._commit[:12]}"

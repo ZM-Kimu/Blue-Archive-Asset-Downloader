@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from base64 import b64encode
 from collections import defaultdict
+from contextlib import AbstractContextManager
 from io import BytesIO
 from pathlib import Path
 from threading import Lock
@@ -14,6 +15,7 @@ import pytest
 
 import ba_downloader.infrastructure.packages.android_package as package_manager
 from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
+from ba_downloader.domain.ports.progress import ProgressState
 from ba_downloader.infrastructure.logging.console_logger import NullLogger
 from ba_downloader.infrastructure.packages.android_package import (
     PackageArchiveError,
@@ -22,6 +24,29 @@ from ba_downloader.infrastructure.packages.android_package import (
     download_package_file,
     extract_jp_xapk_file,
 )
+
+
+class RecordingPackageProgress(AbstractContextManager["RecordingPackageProgress"]):
+    def __init__(self, initial_state: ProgressState) -> None:
+        self.states = [initial_state]
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def update(self, state: ProgressState) -> None:
+        self.states.append(state)
+
+    def stop(self) -> None:
+        return None
+
+
+class RecordingPackageProgressFactory:
+    def __init__(self) -> None:
+        self.progress: RecordingPackageProgress | None = None
+
+    def create(self, initial_state: ProgressState) -> RecordingPackageProgress:
+        self.progress = RecordingPackageProgress(initial_state)
+        return self.progress
 
 
 def test_package_signature_preview_reads_only_requested_bytes(
@@ -574,16 +599,36 @@ def test_download_package_file_falls_back_when_package_size_is_unknown(
         ),
         download_payload=payload,
     )
+    progress_factory = RecordingPackageProgressFactory()
 
     result = download_package_file(
         client,
         NullLogger(),
         package_url,
         str(tmp_path),
+        progress_factory=progress_factory,
     )
 
     assert Path(result).read_bytes() == payload
     assert client.download_calls == 1
+    assert progress_factory.progress is not None
+    initial, terminal = (
+        progress_factory.progress.states[0],
+        progress_factory.progress.states[-1],
+    )
+    assert initial.overall is not None
+    assert initial.overall.to_wire() == {
+        "completed": 0,
+        "total": 1,
+        "unit": "files",
+    }
+    assert terminal.stage == "complete"
+    assert terminal.overall is not None
+    assert terminal.overall.to_wire() == {
+        "completed": 1,
+        "total": 1,
+        "unit": "files",
+    }
 
 
 def test_download_package_file_removes_invalid_multipart_package_and_cleans_parts(

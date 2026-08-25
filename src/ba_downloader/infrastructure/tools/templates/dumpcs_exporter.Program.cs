@@ -295,7 +295,7 @@ internal static class Program
         var options = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(
             outputPath,
-            JsonSerializer.Serialize(new { version = 1, formatters }, options),
+            JsonSerializer.Serialize(new { version = 0, formatters }, options),
             new UTF8Encoding(false));
     }
 
@@ -325,7 +325,7 @@ internal static class Program
         var options = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(
             outputPath,
-            JsonSerializer.Serialize(new { version = 1, targets }, options),
+            JsonSerializer.Serialize(new { version = 0, targets }, options),
             new UTF8Encoding(false));
     }
 

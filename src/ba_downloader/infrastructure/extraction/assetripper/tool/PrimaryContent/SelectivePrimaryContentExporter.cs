@@ -3,12 +3,15 @@ using System.Security.Cryptography;
 using System.Text;
 using AssetRipper.Assets;
 using AssetRipper.Assets.Bundles;
+using AssetRipper.Export;
 using AssetRipper.Export.Configuration;
+using AssetRipper.Export.PrimaryContent;
 using AssetRipper.Export.PrimaryContent.Audio;
 using AssetRipper.Export.PrimaryContent.Models;
 using AssetRipper.Export.PrimaryContent.Textures;
 using AssetRipper.Import.Configuration;
 using AssetRipper.Import.Logging;
+using AssetRipper.IO.Files;
 using AssetRipper.Processing;
 using AssetRipper.Processing.Prefabs;
 using AssetRipper.SourceGenerated.Classes.ClassID_1;
@@ -19,15 +22,18 @@ using AssetRipper.SourceGenerated.Classes.ClassID_3;
 using AssetRipper.SourceGenerated.Classes.ClassID_43;
 using AssetRipper.SourceGenerated.Classes.ClassID_49;
 using AssetRipper.SourceGenerated.Classes.ClassID_83;
+using AssetRipper.SourceGenerated.Classes.ClassID_89;
 using AssetRipper.SourceGenerated.Classes.ClassID_128;
 using AssetRipper.SourceGenerated.Classes.ClassID_213;
+using Baad.AssetRipper.Models;
 
-namespace AssetRipper.Export.PrimaryContent;
+namespace Baad.AssetRipper.PrimaryContent;
 
 public sealed record SelectiveExportResult(
 	IReadOnlyList<string> ResolvedTargetIds,
 	IReadOnlyList<string> ExportedTargetIds,
 	IReadOnlyList<SelectiveExportAsset> Assets,
+	IReadOnlyList<SelectiveExportReuse> ReusedAssets,
 	IReadOnlyList<SelectiveExportFailure> Failures
 );
 
@@ -51,6 +57,11 @@ public sealed record SelectiveExportFailure(
 	string Error
 );
 
+public sealed record SelectiveExportReuse(
+	string StableId,
+	IReadOnlyList<string> SourceTargetIds
+);
+
 internal sealed record ExportDescriptor(
 	ExportCollectionBase Collection,
 	string StableId,
@@ -67,28 +78,31 @@ internal sealed record ExportDescriptor(
 
 internal sealed record PlannedDescriptor(ExportDescriptor Descriptor, PlannedExport Plan);
 
-public sealed class PrimaryContentExporter
+public sealed class SelectivePrimaryContentExporter
 {
 	private readonly ObjectHandlerStack<IContentExtractor> exporters = new();
 
-	private PrimaryContentExporter()
+	private SelectivePrimaryContentExporter()
 	{
 	}
 
 	public void RegisterHandler<T>(IContentExtractor handler, bool allowInheritance = true) where T : IUnityObjectBase =>
 		exporters.OverrideHandler(typeof(T), handler, allowInheritance);
 
-	public static PrimaryContentExporter CreateDefault(GameData gameData, FullConfiguration settings)
+	public static SelectivePrimaryContentExporter CreateDefault(
+		GameData gameData,
+		FullConfiguration settings)
 	{
-		PrimaryContentExporter exporter = new();
-		exporter.RegisterDefaultHandlers();
+		SelectivePrimaryContentExporter exporter = new();
+		exporter.RegisterDefaultHandlers(gameData);
 		return exporter;
 	}
 
-	private void RegisterDefaultHandlers()
+	private void RegisterDefaultHandlers(GameData gameData)
 	{
 		RegisterHandler<IUnityObjectBase>(EmptyContentExtractor.Instance);
-		GlbModelExporter modelExporter = new();
+		PlayableGlbModelExporter modelExporter = new(
+			new PlayableGlbAnimationExporter(gameData.AssemblyManager));
 		RegisterHandler<GameObjectHierarchyObject>(modelExporter);
 		RegisterHandler<IGameObject>(modelExporter);
 		RegisterHandler<IComponent>(modelExporter);
@@ -98,6 +112,7 @@ public sealed class PrimaryContentExporter
 		RegisterHandler<IFont>(BinaryAssetContentExtractor.Instance);
 		RegisterHandler<IAudioClip>(new AudioContentExtractor());
 		RegisterHandler<ITexture2D>(new TextureExporter(ImageExportFormat.Png));
+		RegisterHandler<ICubemap>(EmptyContentExtractor.Instance);
 		RegisterHandler<ISprite>(new SpritePngExporter());
 	}
 
@@ -106,13 +121,16 @@ public sealed class PrimaryContentExporter
 		FullConfiguration settings,
 		FileSystem fileSystem,
 		IReadOnlySet<string> targetIds,
-		int concurrency)
+		int concurrency,
+		IReadOnlyDictionary<string, SelectiveExportAsset> exportedAssets,
+		Action<string, string, bool, int, int>? progress = null)
 	{
 		if (concurrency <= 0)
 		{
 			throw new ArgumentOutOfRangeException(nameof(concurrency));
 		}
 		HashSet<string> handledEmptyTargetIds = new(StringComparer.Ordinal);
+		List<SelectiveExportReuse> reusedAssets = [];
 		List<ExportCollectionBase> collections = CreateCollections(
 			fileCollection,
 			targetIds,
@@ -122,14 +140,19 @@ public sealed class PrimaryContentExporter
 			settings,
 			fileSystem,
 			targetIds,
-			handledEmptyTargetIds);
+			handledEmptyTargetIds,
+			exportedAssets,
+			reusedAssets);
+		ExportTrackingFileSystem trackingFileSystem = new(fileSystem);
 		return ExportDescriptors(
 			descriptors,
 			settings,
-			fileSystem,
+			trackingFileSystem,
 			handledEmptyTargetIds,
+			reusedAssets,
 			concurrency,
-			AssetProvenanceRegistry.GetResolvedTargetIds(fileCollection));
+			AssetProvenanceRegistry.GetResolvedTargetIds(fileCollection),
+			progress);
 	}
 
 	private static List<ExportDescriptor> CreateDescriptors(
@@ -137,7 +160,9 @@ public sealed class PrimaryContentExporter
 		FullConfiguration settings,
 		FileSystem fileSystem,
 		IReadOnlySet<string> targetIds,
-		HashSet<string> handledEmptyTargetIds)
+		HashSet<string> handledEmptyTargetIds,
+		IReadOnlyDictionary<string, SelectiveExportAsset> exportedAssets,
+		List<SelectiveExportReuse> reusedAssets)
 	{
 		Dictionary<string, ExportDescriptor> descriptors = new(StringComparer.Ordinal);
 		foreach (ExportCollectionBase collection in collections)
@@ -163,6 +188,18 @@ public sealed class PrimaryContentExporter
 			string identity = $"{normalizedCollection}\n{primary.ClassID}\n{primary.PathID}";
 			string stableId = Convert.ToHexString(
 				SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant()[..20];
+			if (exportedAssets.TryGetValue(stableId, out SelectiveExportAsset? exported))
+			{
+				if (
+					exported.NormalizedCollection != normalizedCollection
+					|| exported.ClassId != primary.ClassID
+					|| exported.PathId != primary.PathID)
+				{
+					throw new InvalidDataException($"Stable asset ID collision: {stableId}");
+				}
+				reusedAssets.Add(new SelectiveExportReuse(stableId, sourceTargetIds));
+				continue;
+			}
 			string readableName = primary.GetBestName();
 			if (string.IsNullOrWhiteSpace(readableName))
 			{
@@ -211,10 +248,12 @@ public sealed class PrimaryContentExporter
 	private static SelectiveExportResult ExportDescriptors(
 		IReadOnlyList<ExportDescriptor> descriptors,
 		FullConfiguration settings,
-		FileSystem fileSystem,
+		ExportTrackingFileSystem fileSystem,
 		HashSet<string> handledEmptyTargetIds,
+		IReadOnlyList<SelectiveExportReuse> reusedAssets,
 		int requestedConcurrency,
-		IReadOnlyList<string> resolvedTargetIds)
+		IReadOnlyList<string> resolvedTargetIds,
+		Action<string, string, bool, int, int>? progress)
 	{
 		List<PlannedDescriptor> planned = new(descriptors.Count);
 		foreach (ExportDescriptor descriptor in descriptors)
@@ -235,6 +274,12 @@ public sealed class PrimaryContentExporter
 			},
 			item =>
 			{
+				progress?.Invoke(
+					item.Descriptor.StableId,
+					item.Descriptor.ReadableName,
+					true,
+					Volatile.Read(ref completed),
+					planned.Count);
 				try
 				{
 					if (!item.Descriptor.Collection.ExportPlanned(
@@ -244,7 +289,7 @@ public sealed class PrimaryContentExporter
 					{
 						throw new InvalidDataException("The content extractor returned failure.");
 					}
-					assets.Add(ToExportedAsset(item, settings.ExportRootPath));
+					assets.Add(ToExportedAsset(item, settings.ExportRootPath, fileSystem));
 				}
 				catch (Exception exception) when (exception is not OutOfMemoryException)
 				{
@@ -257,9 +302,12 @@ public sealed class PrimaryContentExporter
 				finally
 				{
 					int current = Interlocked.Increment(ref completed);
-					Logger.Info(
-						LogCategory.ExportProgress,
-						$"({current}/{planned.Count}) Exporting '{item.Descriptor.ReadableName}'");
+					progress?.Invoke(
+						item.Descriptor.StableId,
+						item.Descriptor.ReadableName,
+						false,
+						current,
+						planned.Count);
 				}
 			});
 
@@ -275,29 +323,49 @@ public sealed class PrimaryContentExporter
 		{
 			exportedTargetIds.UnionWith(asset.SourceTargetIds);
 		}
+		foreach (SelectiveExportReuse reuse in reusedAssets)
+		{
+			exportedTargetIds.UnionWith(reuse.SourceTargetIds);
+		}
 		return new SelectiveExportResult(
 			resolvedTargetIds.Order(StringComparer.Ordinal).ToArray(),
 			exportedTargetIds.Order(StringComparer.Ordinal).ToArray(),
 			orderedAssets,
+			reusedAssets,
 			orderedFailures);
 	}
 
-	private static SelectiveExportAsset ToExportedAsset(PlannedDescriptor item, string outputRoot)
+	private static SelectiveExportAsset ToExportedAsset(
+		PlannedDescriptor item,
+		string outputRoot,
+		ExportTrackingFileSystem fileSystem)
 	{
-		FileInfo info = new(item.Plan.FilePath);
+		string normalizedFilePath = Path.GetFullPath(item.Plan.FilePath);
+		FileInfo info = new(normalizedFilePath);
 		if (!info.Exists || info.Length == 0)
 		{
 			throw new InvalidDataException("Asset export produced an empty file.");
 		}
 		string relativePath = Path.GetRelativePath(outputRoot, info.FullName).Replace('\\', '/');
-		if (Path.IsPathRooted(relativePath) || relativePath.StartsWith("../", StringComparison.Ordinal))
+		if (
+			Path.IsPathRooted(relativePath)
+			|| relativePath == ".."
+			|| relativePath.StartsWith("../", StringComparison.Ordinal))
 		{
 			throw new InvalidDataException("Asset output escaped its export root.");
 		}
-		using FileStream stream = info.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
-		string sha256 = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+		if (!fileSystem.TryGetMetadata(
+			normalizedFilePath,
+			out ExportedFileMetadata metadata))
+		{
+			throw new InvalidDataException("Asset export did not register file metadata.");
+		}
 		long mtimeNs = (info.LastWriteTimeUtc.Ticks - DateTime.UnixEpoch.Ticks) * 100;
-		SelectiveExportFile file = new(relativePath, info.Length, mtimeNs, sha256);
+		if (metadata.Size != info.Length || metadata.MtimeNs != mtimeNs)
+		{
+			throw new InvalidDataException("Asset export metadata does not match the output file.");
+		}
+		SelectiveExportFile file = new(relativePath, metadata.Size, metadata.MtimeNs, metadata.Sha256);
 		ExportDescriptor descriptor = item.Descriptor;
 		return new SelectiveExportAsset(
 			descriptor.StableId,

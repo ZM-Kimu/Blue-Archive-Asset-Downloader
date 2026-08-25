@@ -26,7 +26,7 @@ Extractable file types:
 ## Requirements
 
 - Windows/Linux
-- Python UV environment manager or Python 3.11 and later
+- [Python UV environment manager](https://github.com/astral-sh/uv) or Python 3.11 and later
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
 
 ## Prerequisites
@@ -101,19 +101,19 @@ See the [HTTP API documentation](http-api.md) for the detailed protocol.
 
 **`*`**: **required option**
 
-| Parameter | Commands | Description | Default | Example |
-| --- | --- | --- | --- | --- |
-| **`--region`**`*` | `assets *`, `index build` | **Server region**: `cn`, `gl`, or `jp` | None | `--region jp` |
-| `--workspace` | `assets *`, `index build` | Workspace root | Current directory | `--workspace D:\BAAD` |
-| `--platform` | `assets *`, `index build` | `windows`, `android`, or `ios` (JP only) | `android` | `--platform windows` |
-| `--proxy` | `assets *`, `index build` | HTTP proxy URL | None | `--proxy http://127.0.0.1:8080` |
-| `--max-retries` | `assets *`, `index build` | Maximum retries after request failures | `5` | `--max-retries 3` |
-| `--sqlcipher-key` | `assets *`, `index build` | 64-hex-digit SQLCipher raw key override | Fetched automatically | `--sqlcipher-key <64hex>` |
-| `--concurrency` | `assets *`, `index build` | Concurrent worker count | `30` | `--concurrency 50` |
-| `--resources` | `assets *` | Comma-separated `table`, `media`, and `bundle` | All | `--resources table,media` |
-| `--filter` | `assets *` | Resource or character filter; repeatable | None | `--filter "name~伊吹"` |
-| `--host` | `server start` | HTTP API bind address | `0.0.0.0` | `--host 127.0.0.1` |
-| `--port` | `server start` | HTTP API port | First available port from `9230` through `9239` | `--port 9230` |
+| Parameter         | Commands                  | Description                                    | Default                                         | Example                         |
+| ----------------- | ------------------------- | ---------------------------------------------- | ----------------------------------------------- | ------------------------------- |
+| **`--region`**`*` | `assets *`, `index build` | **Server region**: `cn`, `gl`, or `jp`         | None                                            | `--region jp`                   |
+| `--workspace`     | `assets *`, `index build` | Workspace root                                 | Current directory                               | `--workspace D:\BAAD`           |
+| `--platform`      | `assets *`, `index build` | `windows`, `android`, or `ios` (JP only)       | `android`                                       | `--platform windows`            |
+| `--proxy`         | `assets *`, `index build` | HTTP proxy URL                                 | None                                            | `--proxy http://127.0.0.1:8080` |
+| `--max-retries`   | `assets *`, `index build` | Maximum retries after request failures         | `5`                                             | `--max-retries 3`               |
+| `--sqlcipher-key` | `assets *`, `index build` | SQLCipher raw ![key](kei_icon.png)             | (mysterious)                                    | `--sqlcipher-key <64hex>`       |
+| `--concurrency`   | `assets *`, `index build` | Concurrent worker count                        | `30`                                            | `--concurrency 50`              |
+| `--resources`     | `assets *`                | Comma-separated `table`, `media`, and `bundle` | All                                             | `--resources table,media`       |
+| `--filter`        | `assets *`                | Resource or character filter; repeatable       | None                                            | `--filter "name~伊吹"`          |
+| `--host`          | `server start`            | HTTP API bind address                          | `0.0.0.0`                                       | `--host 127.0.0.1`              |
+| `--port`          | `server start`            | HTTP API port                                  | First available port from `9230` through `9239` | `--port 9230`                   |
 
 The CLI supports only these long options. Append `--help` to a concrete command to see the exact parameters for the installed version.
 
@@ -142,12 +142,12 @@ Available fields:
 - Examples:
   > japan
   >```sh
-  >ba-downloader assets sync --region jp --filter "name~プラナ,伊吹"
+  >ba-downloader assets sync --region jp --filter "name~プラナ,生徒会長"
   >```
 
   > japan with conditions (both conditions must match)
   >```sh
-  >ba-downloader assets sync --region jp --filter "cv=小倉唯" --filter "height=153"
+  >ba-downloader assets sync --region jp --filter "school=Trinity" --filter "height=151"
   >```
 
   > global
@@ -184,12 +184,11 @@ ba-downloader assets download --region jp --platform windows
 
 ## Notes
 
-- `--platform` only applies to JP and selects the JP resource platform.
 - GL and JP APK files come from APKPure. After the Play Store updates, APKPure may need some time to synchronize the version.
 - Resource catalogs may be unavailable during server maintenance windows.
 - Some regions may require a proxy server to download game resources from specific servers.
-- Bundle extraction is based on [AssetRipper](https://github.com/AssetRipper/AssetRipper). See the [third-party notices](../THIRD_PARTY_NOTICES.md) for its license.
 - Extraction methods change often, so interfaces may change frequently. Directly calling internal methods is not recommended.
+- Reserve at least `50GB` of free storage for a full `asset sync` in any region.
 
 ## TODO
 
@@ -211,13 +210,19 @@ Some content is based on:
 - [Blue-Archive---Asset-Downloader](https://github.com/K0lb3/Blue-Archive---Asset-Downloader)
 - [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL)
 
+This project uses the following C# dependencies:
+
+- [AssetRipper](https://github.com/AssetRipper/AssetRipper)
+- [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL)
+- [SharpZipLib](https://github.com/icsharpcode/SharpZipLib)
+
 This project uses the [MIT License](../LICENSE).
 
 ## Disclaimer
 
-This repository is for learning and demonstration purposes only and does not host any actual resources. All content downloaded through this project should be used only for legal and legitimate purposes. The developers are not liable for any direct or indirect loss, damage, legal liability, or other consequence arising from use of this project. Users use this project at their own risk and must comply with all relevant laws and regulations. If anyone uses this project for unauthorized or illegal activities, the developers bear no responsibility. Users are responsible for their own actions and should understand the risks involved in using this project.
+This project is intended solely for educational and demonstrative purposes and does not provide any actual resources. Please note that all content downloaded through this project should only be used for legal and legitimate purposes. The developers are not liable for any direct or indirect loss, damage, legal liability, or other consequences that may arise from the use of this project. Users assume all risks associated with the use of this project and must ensure compliance with all relevant laws and regulations. If anyone uses this project for any unauthorized or illegal activities, the developers bear no responsibility. Users are responsible for their own actions and should understand the risks involved in using this project.
 
-“蔚蓝档案” is a registered trademark of Shanghai Xingxiao Network Technology Co., Ltd. All rights reserved.
+“蔚蓝档案”是上海星啸网络科技有限公司的注册商标，版权所有。
 
 「ブルーアーカイブ」は株式会社Yostarの登録商標です。著作権はすべて保有されています。
 

@@ -38,43 +38,88 @@ from ba_downloader.infrastructure.extraction.assetripper.events import (
 )
 from ba_downloader.infrastructure.extraction.assetripper.source import (
     ASSETRIPPER_COMMIT,
-    ASSETRIPPER_OVERLAY_VERSION,
     AssetRipperSourceResolver,
 )
 from ba_downloader.infrastructure.files.atomic import (
     publish_staged_directory,
     write_json_atomic,
 )
+from ba_downloader.infrastructure.files.build_cache import (
+    validate_build_manifest,
+    write_build_manifest,
+)
+from ba_downloader.infrastructure.files.checksum import calculate_source_fingerprint
 from ba_downloader.infrastructure.files.lock import wait_for_interprocess_lock
 
-ASSETRIPPER_EXPORTER_WRAPPER_VERSION = "15"
-ASSETRIPPER_RUNTIME_INSPECTOR_WRAPPER_VERSION = "1"
-ASSETRIPPER_DEPENDENCY_SCANNER_VERSION = "2"
+ASSETRIPPER_EXPORTED_CONTENT_PROFILE = "readable-playable"
 
 
 def assetripper_exporter_cache_key() -> str:
-    return (
-        f"{ASSETRIPPER_COMMIT}\n"
-        f"overlay-version={ASSETRIPPER_OVERLAY_VERSION}\n"
-        f"overlay-hash={AssetRipperSourceResolver.overlay_hash()}\n"
-        f"wrapper-version={ASSETRIPPER_EXPORTER_WRAPPER_VERSION}"
+    root = _assetripper_tool_root()
+    sources = (
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.suffix in {".cs", ".csproj"}
+        and "runtime_inspector" not in path.relative_to(root).parts
+    )
+    return calculate_source_fingerprint(
+        root,
+        sources,
+        identities=(
+            ("assetripper-commit", ASSETRIPPER_COMMIT),
+            ("overlay", AssetRipperSourceResolver.overlay_hash()),
+        ),
+    )
+
+
+def assetripper_exported_content_fingerprint() -> str:
+    root = _assetripper_tool_root()
+    sources = [
+        root / "ContentProfile.cs",
+        *(
+            path
+            for directory in (root / "PrimaryContent", root / "Models")
+            for path in directory.rglob("*.cs")
+        ),
+    ]
+    return calculate_source_fingerprint(
+        root,
+        sources,
+        identities=(
+            ("assetripper-commit", ASSETRIPPER_COMMIT),
+            (
+                "content-overlay",
+                AssetRipperSourceResolver.overlay_hash(content_only=True),
+            ),
+            ("profile", ASSETRIPPER_EXPORTED_CONTENT_PROFILE),
+        ),
     )
 
 
 def assetripper_runtime_inspector_cache_key() -> str:
-    return (
-        f"{ASSETRIPPER_COMMIT}\n"
-        f"overlay-version={ASSETRIPPER_OVERLAY_VERSION}\n"
-        f"overlay-hash={AssetRipperSourceResolver.overlay_hash()}\n"
-        f"runtime-inspector-version={ASSETRIPPER_RUNTIME_INSPECTOR_WRAPPER_VERSION}"
+    root = _assetripper_tool_root() / "runtime_inspector"
+    sources = (
+        path
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix in {".cs", ".csproj"}
+    )
+    return calculate_source_fingerprint(
+        root,
+        sources,
+        identities=(
+            ("assetripper-commit", ASSETRIPPER_COMMIT),
+            ("overlay", AssetRipperSourceResolver.overlay_hash()),
+        ),
     )
 
 
 def assetripper_dependency_scan_cache_key() -> str:
-    return (
-        f"{ASSETRIPPER_COMMIT}\n"
-        f"scanner-version={ASSETRIPPER_DEPENDENCY_SCANNER_VERSION}"
-    )
+    return assetripper_exporter_cache_key()
+
+
+def _assetripper_tool_root() -> Path:
+    return Path(__file__).with_name("tool")
 
 
 class _AssetRipperOutputObserver(ProcessOutputObserverPort):
@@ -234,9 +279,14 @@ class _AssetRipperTool:
         request: dict[str, object],
         event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
         request_inputs: list[object] | None = None,
+        *,
+        inputs_validated: bool = False,
     ) -> tuple[ProcessResult, dict[str, object]]:
         normalized_inputs = sorted(
-            (path.resolve(strict=True) for path in inputs),
+            (
+                path if inputs_validated else path.resolve(strict=True)
+                for path in inputs
+            ),
             key=lambda path: str(path).casefold(),
         )
         if not normalized_inputs:
@@ -251,6 +301,7 @@ class _AssetRipperTool:
         request_path = job_root / "request.json"
         result_path = job_root / "result.json"
         request["inputs"] = request_inputs or [str(path) for path in normalized_inputs]
+        request["schema_version"] = 0
         write_json_atomic(
             request_path,
             request,
@@ -330,13 +381,15 @@ class _AssetRipperTool:
                         f"{self.build_spec.display_name} build failed: "
                         f"{self._process_error(result.stderr or result.stdout)}"
                     )
-                write_json_atomic(
-                    staging / "build.json",
-                    {"cache_key": cache_key},
-                    sort_keys=True,
-                )
-                (staging / "source-commit.txt").write_text(
-                    f"{cache_key}\n", encoding="ascii"
+                stem = Path(self.build_spec.assembly_name).stem
+                write_build_manifest(
+                    staging,
+                    cache_key,
+                    required=(
+                        self.build_spec.assembly_name,
+                        f"{stem}.deps.json",
+                        f"{stem}.runtimeconfig.json",
+                    ),
                 )
                 if not self._is_valid_tool_cache(staging, cache_key):
                     raise AssetRipperToolError(
@@ -351,25 +404,14 @@ class _AssetRipperTool:
     def _is_valid_tool_cache(self, build_root: Path, cache_key: str) -> bool:
         assembly = Path(self.build_spec.assembly_name)
         stem = assembly.stem
-        required = (
-            build_root / assembly,
-            build_root / f"{stem}.deps.json",
-            build_root / f"{stem}.runtimeconfig.json",
-        )
-        marker = build_root / "source-commit.txt"
-        try:
-            marker_value = marker.read_text(encoding="utf8").strip()
-            dependencies = json.loads(required[1].read_text(encoding="utf8"))
-            runtime_config = json.loads(required[2].read_text(encoding="utf8"))
-        except OSError:
-            return False
-        except ValueError:
-            return False
-        return (
-            marker_value == cache_key
-            and all(path.is_file() and path.stat().st_size > 0 for path in required)
-            and isinstance(dependencies, dict)
-            and isinstance(runtime_config, dict)
+        return validate_build_manifest(
+            build_root,
+            cache_key,
+            required=(
+                self.build_spec.assembly_name,
+                f"{stem}.deps.json",
+                f"{stem}.runtimeconfig.json",
+            ),
         )
 
     @staticmethod
@@ -380,8 +422,10 @@ class _AssetRipperTool:
             raise AssetRipperToolError(
                 "AssetRipper exporter did not produce a valid result."
             ) from exc
-        if not isinstance(payload, dict) or not isinstance(
-            payload.get("succeeded"), bool
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != 0
+            or not isinstance(payload.get("succeeded"), bool)
         ):
             raise AssetRipperToolError("AssetRipper result schema is invalid.")
         return payload
@@ -737,40 +781,55 @@ class AssetRipperBatchExporter(_AssetRipperTool):
         ):
             raise ValueError("AssetRipper export group IDs must be unique.")
 
-        normalized_groups = [
-            AssetRipperExportGroup(
-                group.group_id,
-                tuple(
-                    sorted(
-                        group.inputs,
-                        key=lambda item: str(item.path.resolve(strict=True)).casefold(),
-                    )
-                ),
-            )
-            for group in groups
-        ]
         by_node_id: dict[str, AssetRipperExportInput] = {}
-        for group in normalized_groups:
+        normalized_groups: list[AssetRipperExportGroup] = []
+        for group in groups:
+            normalized_group_inputs: list[AssetRipperExportInput] = []
             for item in group.inputs:
                 existing = by_node_id.get(item.node_id)
-                if existing is not None and existing.path.resolve(
-                    strict=True
-                ) != item.path.resolve(strict=True):
-                    raise ValueError(
-                        "AssetRipper grouped input paths must be stable by node ID."
+                if existing is None:
+                    path = item.path.resolve(strict=True)
+                    if not path.is_file():
+                        raise FileNotFoundError(path)
+                    normalized = AssetRipperExportInput(
+                        path,
+                        item.node_id,
+                        item.target,
                     )
-                by_node_id[item.node_id] = AssetRipperExportInput(
-                    item.path,
-                    item.node_id,
-                    item.target or (existing.target if existing is not None else False),
+                    by_node_id[item.node_id] = normalized
+                else:
+                    if (
+                        item.path != existing.path
+                        and item.path.absolute() != existing.path
+                    ):
+                        raise ValueError(
+                            "AssetRipper grouped input paths must be stable by node ID."
+                        )
+                    normalized = AssetRipperExportInput(
+                        existing.path,
+                        item.node_id,
+                        item.target or existing.target,
+                    )
+                    by_node_id[item.node_id] = normalized
+                normalized_group_inputs.append(normalized)
+            normalized_groups.append(
+                AssetRipperExportGroup(
+                    group.group_id,
+                    tuple(
+                        sorted(
+                            normalized_group_inputs,
+                            key=lambda item: str(item.path).casefold(),
+                        )
+                    ),
                 )
+            )
         flattened = sorted(
             by_node_id.values(),
-            key=lambda item: str(item.path.resolve(strict=True)).casefold(),
+            key=lambda item: str(item.path).casefold(),
         )
         request_inputs: list[object] = [
             {
-                "path": str(item.path.resolve(strict=True)),
+                "path": str(item.path),
                 "node_id": item.node_id,
                 "target": item.target,
             }
@@ -796,6 +855,7 @@ class AssetRipperBatchExporter(_AssetRipperTool):
             },
             event_callback,
             request_inputs,
+            inputs_validated=True,
         )
         result = self._read_export_result(payload)
         if not process_result.succeeded or not result["succeeded"]:

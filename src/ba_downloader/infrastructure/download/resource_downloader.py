@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterator
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -24,8 +25,12 @@ from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelle
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import (
+    ProgressMeasure,
     ProgressReporterFactoryPort,
     ProgressReporterPort,
+    ProgressStage,
+    ProgressState,
+    ProgressWorkers,
 )
 from ba_downloader.infrastructure.download.adaptive import (
     AdaptiveDownloadState,
@@ -35,9 +40,11 @@ from ba_downloader.infrastructure.download.adaptive import (
 )
 from ba_downloader.infrastructure.download.loop import (
     DownloadLoopContext,
+    DownloadProgress,
     ResourceDownloadLoop,
 )
 from ba_downloader.infrastructure.files.checksum import calculate_crc, calculate_md5
+from ba_downloader.infrastructure.files.size import format_file_size
 from ba_downloader.infrastructure.packages import (
     ZipEntry,
     extract_zip_entry,
@@ -142,18 +149,55 @@ class ResourceDownloader(ResourceDownloaderPort):
         context: ExecutionContext,
         concurrency: int,
     ) -> list[AssetRecord]:
+        self._canonicalize_resource_paths(resources, context)
         if len(resources) == 1:
             stop_event = Event()
+            resource_name = Path(resources[0].path).name
+            initial = ProgressState(
+                "Assets",
+                "verifying",
+                overall=ProgressMeasure(0, 1, "files"),
+                item=resource_name,
+                pending=0,
+            )
             with (
                 self._install_interrupt_handler(stop_event),
-                self._progress_factory.create(
-                    1,
-                    "Verifying assets...",
-                ) as progress,
+                self._progress_factory.create(initial) as progress,
             ):
-                resource, verified = self._verify_resource(resources[0], context)
-                progress.set_description(f"Verifying {Path(resource.path).name}")
-                progress.advance()
+                try:
+                    resource, verified = self._verify_resource(resources[0], context)
+                except OperationCancelledError:
+                    progress.update(
+                        ProgressState(
+                            "Assets",
+                            "cancelled",
+                            overall=ProgressMeasure(0, 1, "files"),
+                            item=resource_name,
+                            pending=0,
+                        )
+                    )
+                    raise
+                except BaseException:
+                    progress.update(
+                        ProgressState(
+                            "Assets",
+                            "failed",
+                            overall=ProgressMeasure(0, 1, "files"),
+                            item=resource_name,
+                            pending=0,
+                            failures=1,
+                        )
+                    )
+                    raise
+                progress.update(
+                    ProgressState(
+                        "Assets",
+                        "cancelled" if stop_event.is_set() else "complete",
+                        overall=ProgressMeasure(1, 1, "files"),
+                        item=Path(resource.path).name,
+                        pending=0 if verified else 1,
+                    )
+                )
             if stop_event.is_set():
                 raise OperationCancelledError("Download cancelled by user.")
             return [] if verified else [resource]
@@ -164,22 +208,57 @@ class ResourceDownloader(ResourceDownloaderPort):
         executor = ThreadPoolExecutor(max_workers=workers)
 
         try:
+            initial = ProgressState(
+                "Assets",
+                "verifying",
+                overall=ProgressMeasure(0, len(resources), "files"),
+                item=Path(resources[0].path).name,
+                pending=0,
+            )
             with (
                 self._install_interrupt_handler(stop_event),
-                self._progress_factory.create(
-                    len(resources),
-                    "Verifying assets...",
-                ) as progress,
+                self._progress_factory.create(initial) as progress,
             ):
+                completed = 0
                 pending_futures = {
-                    executor.submit(self._verify_resource, resource, context)
+                    executor.submit(self._verify_resource, resource, context): resource
                     for resource in resources
                 }
-                self._drain_verification_futures(
-                    pending_futures,
-                    stop_event,
-                    progress,
-                    pending,
+                try:
+                    completed = self._drain_verification_futures(
+                        pending_futures,
+                        stop_event,
+                        progress,
+                        pending,
+                    )
+                except OperationCancelledError:
+                    progress.update(
+                        self._verification_terminal_state(
+                            "cancelled",
+                            completed,
+                            len(resources),
+                            pending,
+                        )
+                    )
+                    raise
+                except BaseException:
+                    progress.update(
+                        self._verification_terminal_state(
+                            "failed",
+                            completed,
+                            len(resources),
+                            pending,
+                            failures=1,
+                        )
+                    )
+                    raise
+                progress.update(
+                    self._verification_terminal_state(
+                        "cancelled" if stop_event.is_set() else "complete",
+                        completed,
+                        len(resources),
+                        pending,
+                    )
                 )
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
@@ -207,31 +286,61 @@ class ResourceDownloader(ResourceDownloaderPort):
         failed_resources: list[AssetRecord] = []
 
         try:
+            initial = ProgressState(
+                "Assets",
+                "downloading",
+                overall=ProgressMeasure(
+                    0,
+                    progress_total,
+                    "bytes" if download_mode else "files",
+                ),
+                current=ProgressMeasure(0, len(resources), "files"),
+                item=Path(resources[0].path).name,
+                workers=ProgressWorkers(
+                    min(state.target_concurrency, len(resources)),
+                    state.upper_bound,
+                ),
+            )
             with (
                 self._install_interrupt_handler(stop_event),
-                self._progress_factory.create(
-                    progress_total,
-                    "Downloading assets...",
-                    download_mode=download_mode,
-                ) as progress,
+                self._progress_factory.create(initial) as progress,
             ):
+                tracker = DownloadProgress(
+                    progress,
+                    total=progress_total,
+                    download_mode=download_mode,
+                )
                 loop_context = DownloadLoopContext(
-                    progress=progress,
+                    progress=tracker,
                     context=context,
                     progress_lock=progress_lock,
                     download_mode=download_mode,
                     executor=executor,
                     progress_callback=(
-                        self._build_progress_callback(progress, progress_lock)
+                        self._build_progress_callback(tracker, progress_lock)
                         if download_mode
                         else None
                     ),
                 )
-                failed_resources = self._download_loop.run(
-                    resources=resources,
-                    loop_context=loop_context,
-                    adaptive_state=state,
-                    stop_event=stop_event,
+                try:
+                    failed_resources = self._download_loop.run(
+                        resources=resources,
+                        loop_context=loop_context,
+                        adaptive_state=state,
+                        stop_event=stop_event,
+                    )
+                except OperationCancelledError:
+                    tracker.finish("cancelled")
+                    raise
+                except BaseException:
+                    tracker.finish("failed")
+                    raise
+                tracker.finish(
+                    "cancelled"
+                    if stop_event.is_set()
+                    else "failed"
+                    if failed_resources
+                    else "complete"
                 )
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
@@ -267,7 +376,7 @@ class ResourceDownloader(ResourceDownloaderPort):
 
     @staticmethod
     def _build_progress_callback(
-        progress: ProgressReporterPort,
+        progress: DownloadProgress,
         progress_lock: Lock,
     ) -> Callable[[int], None]:
         def advance_progress(amount: int) -> None:
@@ -292,30 +401,74 @@ class ResourceDownloader(ResourceDownloaderPort):
 
     def _drain_verification_futures(
         self,
-        pending_futures: set[Future[tuple[AssetRecord, bool]]],
+        pending_futures: dict[Future[tuple[AssetRecord, bool]], AssetRecord],
         stop_event: Event,
         progress: ProgressReporterPort,
         pending: list[AssetRecord],
-    ) -> None:
+    ) -> int:
+        completed = 0
+        total = len(pending_futures)
         while pending_futures:
             if self._cancellation.is_cancelled():
                 stop_event.set()
-            done_futures, pending_futures = wait(
-                pending_futures,
+            done_futures, _ = wait(
+                set(pending_futures),
                 timeout=self.POLL_INTERVAL_SECONDS,
                 return_when=FIRST_COMPLETED,
             )
             if stop_event.is_set():
-                cancel_pending_futures(pending_futures)
+                cancel_pending_futures(set(pending_futures) - done_futures)
 
-            for future in done_futures:
+            completed_entries = [
+                (future, pending_futures.pop(future)) for future in done_futures
+            ]
+            for future, _resource in completed_entries:
                 if future.cancelled():
                     continue
-                resource_item, verified = future.result()
-                progress.set_description(f"Verifying {Path(resource_item.path).name}")
-                progress.advance()
+                try:
+                    resource_item, verified = future.result()
+                except BaseException:
+                    progress.update(
+                        self._verification_terminal_state(
+                            "failed",
+                            completed,
+                            total,
+                            pending,
+                            failures=1,
+                        )
+                    )
+                    raise
+                completed += 1
                 if not verified:
                     pending.append(resource_item)
+                oldest = next(iter(pending_futures.values()), None)
+                progress.update(
+                    ProgressState(
+                        "Assets",
+                        "verifying",
+                        overall=ProgressMeasure(completed, total, "files"),
+                        item=Path(oldest.path).name if oldest is not None else None,
+                        pending=len(pending),
+                    )
+                )
+        return completed
+
+    @staticmethod
+    def _verification_terminal_state(
+        stage: ProgressStage,
+        completed: int,
+        total: int,
+        pending: list[AssetRecord],
+        *,
+        failures: int = 0,
+    ) -> ProgressState:
+        return ProgressState(
+            "Assets",
+            stage,
+            overall=ProgressMeasure(min(completed, total), total, "files"),
+            pending=len(pending),
+            failures=failures,
+        )
 
     def _create_adaptive_download_state(
         self,
@@ -350,9 +503,6 @@ class ResourceDownloader(ResourceDownloaderPort):
             resource.asset_type.value,
             resource.path,
         )
-        asset_path = self._canonicalize_existing_case_path(asset_path)
-        if not asset_path.exists():
-            return resource, False
         result = self._get_validation_error(asset_path, resource) is None
         self._cancellation.raise_if_cancelled()
         return resource, result
@@ -360,25 +510,29 @@ class ResourceDownloader(ResourceDownloaderPort):
     def _get_validation_error(
         self, asset_path: Path, resource: AssetRecord
     ) -> str | None:
-        if not asset_path.exists():
+        try:
+            actual_size = asset_path.stat().st_size
+        except FileNotFoundError:
             return "downloaded file is missing"
 
         if self._is_apk_entry_resource(resource):
             zip_entry = self._resolve_apk_zip_entry(resource)
-            actual_size = asset_path.stat().st_size
             if actual_size != zip_entry.uncompressed_size:
                 return (
                     "size mismatch "
-                    f"(expected {zip_entry.uncompressed_size} bytes, got {actual_size} bytes)"
+                    f"(expected {format_file_size(zip_entry.uncompressed_size)}, "
+                    f"got {format_file_size(actual_size)})"
                 )
             actual_crc = calculate_crc(str(asset_path))
             if actual_crc != zip_entry.crc32:
                 return "checksum mismatch for crc"
             return None
 
-        actual_size = asset_path.stat().st_size
         if actual_size != resource.size:
-            return f"size mismatch (expected {resource.size} bytes, got {actual_size} bytes)"
+            return (
+                f"size mismatch (expected {format_file_size(resource.size)}, "
+                f"got {format_file_size(actual_size)})"
+            )
 
         if not self._matches_checksum(asset_path, resource.checksum):
             return f"checksum mismatch for {resource.checksum.algorithm}"
@@ -444,7 +598,6 @@ class ResourceDownloader(ResourceDownloaderPort):
             resource.path,
         )
         asset_path.parent.mkdir(parents=True, exist_ok=True)
-        asset_path = self._canonicalize_existing_case_path(asset_path)
         if self._is_apk_entry_resource(resource):
             zip_entry = self._resolve_apk_zip_entry(resource)
             extract_zip_entry(
@@ -473,44 +626,70 @@ class ResourceDownloader(ResourceDownloaderPort):
         self._cancellation.raise_if_cancelled()
         return resource
 
-    @classmethod
-    def _canonicalize_existing_case_path(cls, asset_path: Path) -> Path:
-        parent = asset_path.parent
-        if not parent.is_dir():
-            return asset_path
+    def _canonicalize_resource_paths(
+        self,
+        resources: Iterable[AssetRecord],
+        context: ExecutionContext,
+    ) -> None:
+        expected_by_parent: dict[Path, set[str]] = defaultdict(set)
+        for resource in resources:
+            self._cancellation.raise_if_cancelled()
+            asset_path = context.workspace.raw_resource_path(
+                resource.asset_type.value,
+                resource.path,
+            )
+            expected_by_parent[asset_path.parent].add(asset_path.name)
 
-        try:
-            entries = list(parent.iterdir())
-        except OSError:
-            return asset_path
+        for parent, expected_names in expected_by_parent.items():
+            self._cancellation.raise_if_cancelled()
+            if not parent.is_dir():
+                continue
+            try:
+                entries = tuple(parent.iterdir())
+            except OSError:
+                continue
+            for source, target in self._plan_case_renames(
+                parent,
+                entries,
+                expected_names,
+            ):
+                self._cancellation.raise_if_cancelled()
+                cls = type(self)
+                temp_path = cls._case_rename_temp_path(target)
+                if temp_path is None:
+                    continue
+                try:
+                    source.rename(temp_path)
+                    temp_path.rename(target)
+                except OSError:
+                    with suppress(OSError):
+                        if temp_path.exists():
+                            temp_path.rename(source)
 
+    @staticmethod
+    def _plan_case_renames(
+        parent: Path,
+        entries: Sequence[Path],
+        expected_names: set[str],
+    ) -> tuple[tuple[Path, Path], ...]:
+        exact_names = {entry.name for entry in entries}
+        entries_by_folded_name: dict[str, list[Path]] = defaultdict(list)
         for entry in entries:
-            if entry.name == asset_path.name:
-                return asset_path
+            entries_by_folded_name[entry.name.casefold()].append(entry)
+        expected_fold_counts = Counter(name.casefold() for name in expected_names)
 
-        matched_entry = next(
-            (
-                entry
-                for entry in entries
-                if entry.name.casefold() == asset_path.name.casefold()
-            ),
-            None,
-        )
-        if matched_entry is None:
-            return asset_path
-
-        temp_path = cls._case_rename_temp_path(asset_path)
-        if temp_path is None:
-            return asset_path
-        try:
-            matched_entry.rename(temp_path)
-            temp_path.rename(asset_path)
-        except OSError:
-            with suppress(OSError):
-                if temp_path.exists():
-                    temp_path.rename(matched_entry)
-            return asset_path
-        return asset_path
+        renames: list[tuple[Path, Path]] = []
+        for expected_name in sorted(
+            expected_names, key=lambda value: (value.casefold(), value)
+        ):
+            if expected_name in exact_names:
+                continue
+            folded_name = expected_name.casefold()
+            matches = entries_by_folded_name.get(folded_name, ())
+            if expected_fold_counts[folded_name] != 1 or len(matches) != 1:
+                continue
+            renames.append((matches[0], parent / expected_name))
+        return tuple(renames)
 
     @staticmethod
     def _case_rename_temp_path(asset_path: Path) -> Path | None:

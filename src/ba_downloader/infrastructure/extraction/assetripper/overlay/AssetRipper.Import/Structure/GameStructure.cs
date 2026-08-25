@@ -19,7 +19,7 @@ public sealed class GameStructure : IDisposable
 	public IAssemblyManager AssemblyManager { get; set; }
 	public FileSystem FileSystem { get; }
 
-	private GameStructure(List<string> paths, FileSystem fileSystem, CoreConfiguration configuration, IGameLoadProgress? progress)
+	private GameStructure(List<string> paths, FileSystem fileSystem, CoreConfiguration configuration)
 	{
 		Logger.SendStatusChange("loading_step_detect_platform");
 		FileSystem = fileSystem;
@@ -37,7 +37,7 @@ public sealed class GameStructure : IDisposable
 
 		Logger.SendStatusChange("loading_step_begin_scheme_processing");
 
-		InitializeGameCollection(configuration.ImportSettings.DefaultVersion, configuration.ImportSettings.TargetVersion, progress);
+		InitializeGameCollection(configuration.ImportSettings.DefaultVersion, configuration.ImportSettings.TargetVersion);
 
 		if (!FileCollection.HasAnyAssetCollections())
 		{
@@ -49,15 +49,15 @@ public sealed class GameStructure : IDisposable
 
 	public string? Name => PlatformStructure?.Name ?? MixedStructure?.Name;
 
-	public static GameStructure Load(IEnumerable<string> paths, FileSystem fileSystem, CoreConfiguration configuration, IGameLoadProgress? progress = null)
+	public static GameStructure Load(IEnumerable<string> paths, FileSystem fileSystem, CoreConfiguration configuration)
 	{
-		List<string> toProcess = ZipExtractor.Process(paths, fileSystem, progress);
+		List<string> toProcess = ZipExtractor.Process(paths, fileSystem);
 		if (toProcess.Count == 0)
 		{
 			throw new ArgumentException("Game files not found", nameof(paths));
 		}
 
-		return new GameStructure(toProcess, fileSystem, configuration, progress);
+		return new GameStructure(toProcess, fileSystem, configuration);
 	}
 
 	public static GameStructure LoadPrimaryContent(
@@ -91,8 +91,7 @@ public sealed class GameStructure : IDisposable
 			null,
 			fileSystem,
 			configuration.ImportSettings.DefaultVersion,
-			configuration.ImportSettings.TargetVersion,
-			progress);
+			configuration.ImportSettings.TargetVersion);
 		FileCollection = GameBundle.FromPathsParallel(
 			paths,
 			assetFactory,
@@ -103,7 +102,7 @@ public sealed class GameStructure : IDisposable
 	}
 
 	[MemberNotNull(nameof(FileCollection))]
-	private void InitializeGameCollection(UnityVersion defaultVersion, UnityVersion targetVersion, IGameLoadProgress? progress)
+	private void InitializeGameCollection(UnityVersion defaultVersion, UnityVersion targetVersion)
 	{
 		Logger.SendStatusChange("loading_step_create_file_collection");
 
@@ -123,7 +122,7 @@ public sealed class GameStructure : IDisposable
 			filePaths,
 			assetFactory,
 			FileSystem,
-			new GameInitializer(PlatformStructure, MixedStructure, FileSystem, defaultVersion, targetVersion, progress));
+			new GameInitializer(PlatformStructure, MixedStructure, FileSystem, defaultVersion, targetVersion));
 	}
 
 	[MemberNotNull(nameof(AssemblyManager))]

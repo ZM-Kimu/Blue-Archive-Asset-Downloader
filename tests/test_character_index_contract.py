@@ -32,7 +32,7 @@ def test_character_index_store_writes_entries_schema(
 
     assert index_path == context.workspace.character_index.resolve()
     assert json.loads(index_path.read_text(encoding="utf8")) == {
-        "schema_version": 1,
+        "schema_version": 0,
         "metadata": {
             "region": "jp",
             "platform": "android",
@@ -96,7 +96,7 @@ def test_character_index_store_semantically_validates_every_entry(
     index_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 0,
                 "metadata": {
                     "region": "jp",
                     "platform": "android",

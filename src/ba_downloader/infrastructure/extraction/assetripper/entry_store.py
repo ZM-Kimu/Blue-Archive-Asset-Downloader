@@ -16,13 +16,15 @@ from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
 from ba_downloader.infrastructure.extraction.assetripper.events import (
     AssetRipperProcessEvent,
 )
+from ba_downloader.infrastructure.files.size import format_file_size
 
-_ENTRY_CACHE_SCHEMA_VERSION = 2
+_ENTRY_CACHE_SCHEMA_VERSION = 0
 
 
 def bundle_entry_cache_identity(entry: BundleEntryInput) -> dict[str, object]:
     checksum = entry.archive.checksum
     return {
+        "cache_schema": _ENTRY_CACHE_SCHEMA_VERSION,
         "archive_id": entry.archive.archive_id,
         "archive_checksum": (
             {"algorithm": checksum.algorithm, "value": checksum.value}
@@ -180,6 +182,6 @@ class BundleEntryStore:
         if usage.free < required_bytes:
             raise BundleEntryStoreSpaceError(
                 "Insufficient disk space for the AssetRipper entry cache: "
-                f"requires {required_bytes} new bytes, but only "
-                f"{usage.free} bytes are available."
+                f"requires {format_file_size(required_bytes)} of new data, but only "
+                f"{format_file_size(usage.free)} is available."
             )

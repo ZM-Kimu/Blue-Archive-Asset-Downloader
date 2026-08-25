@@ -17,7 +17,12 @@ from ba_downloader.domain.exceptions import NetworkError, OperationCancelledErro
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort, TransportKind, get_header
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
+from ba_downloader.domain.ports.progress import (
+    ProgressMeasure,
+    ProgressReporterFactoryPort,
+    ProgressState,
+)
+from ba_downloader.infrastructure.files.size import format_file_size
 from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 
 
@@ -87,39 +92,109 @@ def download_package_file(
             return destination
 
     logger.info(f"Downloading package {metadata.file_name}...")
+    initial_progress = ProgressState(
+        "Package",
+        "downloading",
+        overall=(
+            ProgressMeasure(0, content_length, "bytes")
+            if content_length
+            else ProgressMeasure(0, 1, "files")
+        ),
+        item=metadata.file_name,
+    )
     with (progress_factory or NullProgressReporterFactory()).create(
-        content_length,
-        f"Downloading {metadata.file_name}",
-        download_mode=True,
+        initial_progress
     ) as progress:
-        if _should_use_multipart_download(
-            http_client,
-            package_url,
-            expected_size=content_length,
-            transport=transport,
-            headers=headers,
-        ):
-            return _download_package_with_parts(
+        completed = 0
+        progress_lock = Lock()
+
+        def report_download(amount: int) -> None:
+            nonlocal completed
+            with progress_lock:
+                completed = min(completed + amount, content_length)
+                progress.update(
+                    ProgressState(
+                        "Package",
+                        "downloading",
+                        overall=ProgressMeasure(completed, content_length, "bytes"),
+                        item=metadata.file_name,
+                    )
+                )
+
+        try:
+            if _should_use_multipart_download(
                 http_client,
                 package_url,
-                destination,
                 expected_size=content_length,
                 transport=transport,
                 headers=headers,
-                progress_callback=progress.advance,
-                cancellation=active_cancellation,
+            ):
+                result_path = _download_package_with_parts(
+                    http_client,
+                    package_url,
+                    destination,
+                    expected_size=content_length,
+                    transport=transport,
+                    headers=headers,
+                    progress_callback=report_download,
+                    cancellation=active_cancellation,
+                )
+            else:
+                download_result = http_client.download_to_file(
+                    package_url,
+                    destination,
+                    headers=headers,
+                    transport=transport,
+                    progress_callback=report_download if content_length else None,
+                )
+                active_cancellation.raise_if_cancelled()
+                _validate_package_file(
+                    download_result.path,
+                    expected_size=content_length,
+                )
+                result_path = download_result.path
+        except OperationCancelledError:
+            progress.update(
+                ProgressState(
+                    "Package",
+                    "cancelled",
+                    overall=(
+                        ProgressMeasure(completed, content_length, "bytes")
+                        if content_length
+                        else ProgressMeasure(0, 1, "files")
+                    ),
+                    item=metadata.file_name,
+                )
             )
-
-        download_result = http_client.download_to_file(
-            package_url,
-            destination,
-            headers=headers,
-            transport=transport,
-            progress_callback=progress.advance if content_length else None,
+            raise
+        except BaseException:
+            progress.update(
+                ProgressState(
+                    "Package",
+                    "failed",
+                    overall=(
+                        ProgressMeasure(completed, content_length, "bytes")
+                        if content_length
+                        else ProgressMeasure(0, 1, "files")
+                    ),
+                    item=metadata.file_name,
+                    failures=1,
+                )
+            )
+            raise
+        progress.update(
+            ProgressState(
+                "Package",
+                "complete",
+                overall=(
+                    ProgressMeasure(content_length, content_length, "bytes")
+                    if content_length
+                    else ProgressMeasure(1, 1, "files")
+                ),
+                item=metadata.file_name,
+            )
         )
-        active_cancellation.raise_if_cancelled()
-        _validate_package_file(download_result.path, expected_size=content_length)
-        return download_result.path
+        return result_path
 
 
 def extract_xapk_file(
@@ -526,8 +601,9 @@ def _download_package_part(
             )
             if len(response.content) != part.size:
                 raise PackageArchiveError(
-                    f"Package part {part.index} returned {len(response.content)} bytes, "
-                    f"expected {part.size} bytes."
+                    f"Package part {part.index} returned "
+                    f"{format_file_size(len(response.content))}, expected "
+                    f"{format_file_size(part.size)}."
                 )
             part.path.write_bytes(response.content)
             cancellation.raise_if_cancelled()
@@ -593,8 +669,9 @@ def _assemble_package_file(parts: list[PackagePart], destination_path: Path) -> 
             actual_size = part.path.stat().st_size
             if actual_size != part.size:
                 raise PackageArchiveError(
-                    f"Package part {part.index} has size {actual_size} bytes, "
-                    f"expected {part.size} bytes."
+                    f"Package part {part.index} has size "
+                    f"{format_file_size(actual_size)}, expected "
+                    f"{format_file_size(part.size)}."
                 )
             with part.path.open("rb") as part_handle:
                 shutil.copyfileobj(part_handle, destination_handle)
@@ -654,10 +731,10 @@ def _build_package_error_message(
     details = [
         f"Package archive validation failed for {package_path}.",
         f"Reason: {reason}.",
-        f"Actual size: {actual_size} bytes.",
+        f"Actual size: {format_file_size(actual_size)}.",
     ]
     if expected_size:
-        details.append(f"Expected size: {expected_size} bytes.")
+        details.append(f"Expected size: {format_file_size(expected_size)}.")
     if signature:
         details.append(f"Signature: {signature}.")
     return " ".join(details)

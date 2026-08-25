@@ -15,8 +15,9 @@
   <ItemGroup>
     <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.Assets\AssetRipper.Assets.csproj" />
     <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.Export\AssetRipper.Export.csproj" />
+    <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.Export.Modules.Models\AssetRipper.Export.Modules.Models.csproj" />
+    <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.Export.Modules.Textures\AssetRipper.Export.Modules.Textures.csproj" />
     <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.Export.PrimaryContent\AssetRipper.Export.PrimaryContent.csproj" />
-    <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.Export.UnityProjects\AssetRipper.Export.UnityProjects.csproj" />
     <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.Import\AssetRipper.Import.csproj" />
     <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.IO.Files\AssetRipper.IO.Files.csproj" />
     <ProjectReference Include="$(AssetRipperSource)\Source\AssetRipper.Processing\AssetRipper.Processing.csproj" />

@@ -2,14 +2,25 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import ClassVar
 
-from ba_downloader.domain.exceptions import ProcessExecutionError
+from ba_downloader.domain.exceptions import (
+    OperationCancelledError,
+    ProcessExecutionError,
+)
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.process import ProcessCommand, ProcessRunnerPort
+from ba_downloader.domain.ports.progress import (
+    ProgressMeasure,
+    ProgressReporterFactoryPort,
+    ProgressReporterPort,
+    ProgressState,
+)
+from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
     CnMetadataRecoveryError,
     CnMetadataRecoveryPipeline,
@@ -32,6 +43,12 @@ class CnMetadataRecoveryDumpError(RuntimeError):
 class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
     RECOVERY_FOLDER = "MetadataRecovery"
     FINAL_METADATA_NAME = "global-metadata.standard-v29.dat"
+    _RECOVERY_STAGE_LABELS: ClassVar[dict[str, str]] = {
+        "parse": "Parsing protected metadata",
+        "infer": "Inferring runtime registrations",
+        "rebuild": "Rebuilding standard metadata",
+        "validate": "Validating recovered metadata",
+    }
 
     def __init__(
         self,
@@ -42,6 +59,7 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
         recovery_pipeline: CnMetadataRecoveryPipeline | None = None,
         cancellation: CancellationPort | None = None,
         process_runner: ProcessRunnerPort | None = None,
+        progress_factory: ProgressReporterFactoryPort | None = None,
     ) -> None:
         active_cancellation = cancellation or NeverCancelled()
         super().__init__(
@@ -54,6 +72,7 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
         self.recovery_pipeline = recovery_pipeline or CnMetadataRecoveryPipeline(
             cancellation=active_cancellation
         )
+        self.progress_factory = progress_factory or NullProgressReporterFactory()
 
     def dump(
         self,
@@ -82,24 +101,64 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
             )
 
         recovery_dir = runtime_assets.root_dir.parent / self.RECOVERY_FOLDER
-        try:
-            self.logger.info("Starting CN metadata recovery.")
-            recovery_result = self.recovery_pipeline.run(
-                protected_metadata=metadata_path.read_bytes(),
-                binary_path=binary_path,
+        with self.progress_factory.create(
+            ProgressState(
+                "Package",
+                "processing",
+                overall=ProgressMeasure(0, 4, "stages"),
+                item=self._RECOVERY_STAGE_LABELS["parse"],
             )
-        except CnMetadataRecoveryError as exc:
-            raise CnMetadataRecoveryDumpError(
-                "Failed to recover CN metadata. "
-                f"Step: {exc.step}. Input: {metadata_path}. "
-                f"Binary: {binary_path}. "
-                f"Output: {recovery_dir / self.FINAL_METADATA_NAME}. {exc}"
-            ) from exc
-
-        final_metadata_path = self._write_final_metadata(
-            recovery_dir,
-            recovery_result.standard_v29_metadata,
-        )
+        ) as progress:
+            try:
+                self.logger.info("Starting CN metadata recovery.")
+                recovery_result = self.recovery_pipeline.run(
+                    protected_metadata=metadata_path.read_bytes(),
+                    binary_path=binary_path,
+                    progress_callback=lambda stage, completed, total: (
+                        self._report_recovery_progress(
+                            progress, stage, completed, total
+                        )
+                    ),
+                )
+                final_metadata_path = self._write_final_metadata(
+                    recovery_dir,
+                    recovery_result.standard_v29_metadata,
+                )
+                progress.update(
+                    ProgressState(
+                        "Package",
+                        "complete",
+                        overall=ProgressMeasure(4, 4, "stages"),
+                    )
+                )
+            except OperationCancelledError:
+                progress.update(ProgressState("Package", "cancelled"))
+                raise
+            except CnMetadataRecoveryError as exc:
+                progress.update(
+                    ProgressState(
+                        "Package",
+                        "failed",
+                        message="CN metadata recovery failed",
+                        failures=1,
+                    )
+                )
+                raise CnMetadataRecoveryDumpError(
+                    "Failed to recover CN metadata. "
+                    f"Step: {exc.step}. Input: {metadata_path}. "
+                    f"Binary: {binary_path}. "
+                    f"Output: {recovery_dir / self.FINAL_METADATA_NAME}. {exc}"
+                ) from exc
+            except BaseException:
+                progress.update(
+                    ProgressState(
+                        "Package",
+                        "failed",
+                        message="CN metadata recovery failed",
+                        failures=1,
+                    )
+                )
+                raise
         self.logger.info("Recovered CN metadata successfully.")
 
         cpp2il_root = self.source_resolver.resolve(context)
@@ -145,6 +204,22 @@ class CnMetadataRecoveryDumpBackend(Cpp2IlDumpCsBackend):
             ) from exc
 
         self.logger.info("Dumped CN metadata recovery il2cpp binary file successfully.")
+
+    def _report_recovery_progress(
+        self,
+        progress: ProgressReporterPort,
+        stage: str,
+        completed: int,
+        total: int,
+    ) -> None:
+        progress.update(
+            ProgressState(
+                "Package",
+                "processing",
+                overall=ProgressMeasure(completed, total, "stages"),
+                item=self._RECOVERY_STAGE_LABELS.get(stage, stage),
+            )
+        )
 
     @classmethod
     def _write_final_metadata(cls, recovery_dir: Path, metadata: bytes) -> Path:

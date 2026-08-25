@@ -25,7 +25,7 @@ from ba_downloader.infrastructure.regions.cn.provider import (
     CNRegionProvider,
     CNRuntimeAssetPreparer,
 )
-from support import RecordingLogger
+from support import RecordingLogger, RecordingProgressFactory
 from support.fixtures import build_execution_context
 
 
@@ -203,8 +203,13 @@ def test_cn_runtime_asset_preparer_extracts_runtime_assets_without_full_download
     )
     client = RangeHttpClient(archive_bytes)
     logger = RecordingLogger()
+    progress_factory = RecordingProgressFactory()
     context = _build_context(tmp_path)
-    preparer = CNRuntimeAssetPreparer(client, logger)
+    preparer = CNRuntimeAssetPreparer(
+        client,
+        logger,
+        progress_factory=progress_factory,
+    )
 
     monkeypatch.setattr(
         CNRegionProvider,
@@ -222,6 +227,15 @@ def test_cn_runtime_asset_preparer_extracts_runtime_assets_without_full_download
     assert all(
         call["method"] == "HEAD" or "Range" in call["headers"] for call in client.calls
     )
+    states = progress_factory.reporters[0].states
+    assert states[0].stage == "scanning"
+    assert [state.stage for state in states if state.stage == "extracting"]
+    assert states[-2].stage == "publishing"
+    assert states[-1].stage == "complete"
+    assert states[-1].overall is not None
+    assert states[-1].overall.completed == len(b"metadatabinaryUnity 2021.3.45f1")
+    assert states[-1].current is not None
+    assert states[-1].current.completed == 3
 
 
 def test_cn_runtime_asset_preparer_raises_when_metadata_entry_is_missing(

@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, TypeVar
 
 from ba_downloader.domain.exceptions import OperationCancelledError
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
+from ba_downloader.infrastructure.files.checksum import calculate_source_fingerprint
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.codegen_registration import (
+    RelocatedElf,
     apply_codegen_module_order,
 )
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.default_values import (
@@ -34,8 +36,17 @@ from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.validato
     validate_standard_metadata,
 )
 
-RECOVERY_TOOL_VERSION = "cn-metadata-recovery-v3"
 PhaseResult = TypeVar("PhaseResult")
+RecoveryProgressCallback = Callable[[str, int, int], None]
+
+
+def recovery_tool_fingerprint() -> str:
+    root = Path(__file__).resolve().parent
+    return calculate_source_fingerprint(
+        root,
+        root.rglob("*.py"),
+        identities=(("tool", "cn-metadata-recovery"),),
+    )
 
 
 class _PhaseFailure(RuntimeError):
@@ -51,6 +62,11 @@ class CnMetadataParseResult:
     binary_path: Path
     restored_metadata: bytes
     standardized_metadata: bytes
+    relocated_elf: RelocatedElf | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,11 +147,13 @@ def parse_cn_metadata(
         raise ValueError("CN metadata source view must be read-only.")
     restored, _restore_summary = restore_runtime_metadata_view(source_metadata)
     standardized, _standardize_summary = standardize_custom_layout(restored)
+    relocated_elf = RelocatedElf(binary_path)
     return CnMetadataParseResult(
         source_metadata,
         binary_path,
         restored,
         standardized,
+        relocated_elf,
     )
 
 
@@ -143,11 +161,13 @@ def infer_cn_metadata(parsed: CnMetadataParseResult) -> CnMetadataInferResult:
     reordered, _order_summary = apply_codegen_module_order(
         parsed.binary_path,
         parsed.standardized_metadata,
+        relocated_elf=parsed.relocated_elf,
     )
     parameters = resolve_cn_metadata_recovery_parameters(
         parsed.restored_metadata,
         reordered,
         parsed.binary_path,
+        relocated_elf=parsed.relocated_elf,
     )
     return CnMetadataInferResult(parsed, reordered, parameters)
 
@@ -159,6 +179,7 @@ def rebuild_cn_metadata(inferred: CnMetadataInferResult) -> CnMetadataRebuildRes
         parsed.binary_path,
         inferred.reordered_metadata,
         parameters.metadata_registration_va,
+        relocated_elf=parsed.relocated_elf,
     )
     restored_attributes, _attribute_summary = restore_pre29_attribute_sections(
         parsed.restored_metadata,
@@ -168,6 +189,7 @@ def rebuild_cn_metadata(inferred: CnMetadataInferResult) -> CnMetadataRebuildRes
         tail_offset=parameters.tail_offset,
         blob_start=parameters.blob_start,
         exported_types_offset=parameters.exported_types_offset,
+        relocated_elf=parsed.relocated_elf,
     )
     standard_v29, _rebuild_summary = build_standard_v29_metadata(
         parsed.restored_metadata,
@@ -176,6 +198,7 @@ def rebuild_cn_metadata(inferred: CnMetadataInferResult) -> CnMetadataRebuildRes
         parameters.metadata_registration_va,
         tail_offset=parameters.tail_offset,
         blob_start=parameters.blob_start,
+        relocated_elf=parsed.relocated_elf,
     )
     return CnMetadataRebuildResult(inferred, standard_v29, len(standard_v29))
 
@@ -188,6 +211,7 @@ def validate_cn_metadata(
         rebuilt.standard_v29_metadata,
         binary=rebuilt.inferred.parsed.binary_path,
         metadata_registration_va=parameters.metadata_registration_va,
+        relocated_elf=rebuilt.inferred.parsed.relocated_elf,
     )
     summary = dict(report.get("summary", {}))
     if not summary.get("valid") or summary.get("warningCount", 0):
@@ -220,6 +244,7 @@ class CnMetadataRecoveryPipeline:
         *,
         protected_metadata: bytes,
         binary_path: Path,
+        progress_callback: RecoveryProgressCallback | None = None,
     ) -> CnMetadataRecoveryResult:
         self.cancellation.raise_if_cancelled()
         diagnostics = self._input_diagnostics(protected_metadata, binary_path)
@@ -239,15 +264,20 @@ class CnMetadataRecoveryPipeline:
         source = memoryview(protected_metadata).toreadonly()
         parameters: CnMetadataRecoveryParameters | None = None
         try:
+            self._report_progress(progress_callback, "parse", 0)
             parsed = self._run_phase(
                 "parse", lambda: self.parse_phase(source, binary_path)
             )
+            self._report_progress(progress_callback, "infer", 1)
             inferred = self._run_phase("infer", lambda: self.infer_phase(parsed))
             parameters = inferred.parameters
+            self._report_progress(progress_callback, "rebuild", 2)
             rebuilt = self._run_phase("rebuild", lambda: self.rebuild_phase(inferred))
+            self._report_progress(progress_callback, "validate", 3)
             validated = self._run_phase(
                 "validate", lambda: self.validate_phase(rebuilt)
             )
+            self._report_progress(progress_callback, "validate", 4)
         except OperationCancelledError:
             raise
         except CnMetadataRecoveryError as exc:
@@ -274,6 +304,15 @@ class CnMetadataRecoveryPipeline:
             validated.validation_summary,
         )
 
+    @staticmethod
+    def _report_progress(
+        callback: RecoveryProgressCallback | None,
+        stage: str,
+        completed: int,
+    ) -> None:
+        if callback is not None:
+            callback(stage, completed, 4)
+
     def _run_phase(
         self,
         stage: str,
@@ -295,7 +334,7 @@ class CnMetadataRecoveryPipeline:
         binary_path: Path,
     ) -> dict[str, object]:
         diagnostics: dict[str, object] = {
-            "tool_version": RECOVERY_TOOL_VERSION,
+            "tool_fingerprint": recovery_tool_fingerprint(),
             "metadata_size": len(protected_metadata),
             "metadata_sha256": hashlib.sha256(protected_metadata).hexdigest(),
         }

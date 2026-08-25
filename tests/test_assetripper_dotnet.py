@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -118,6 +119,39 @@ def test_assetripper_tools_build_against_validated_overlay(tmp_path: Path) -> No
     assert inspector_output.stat().st_size > 0
     assert exporter_output.is_file()
     assert exporter_output.stat().st_size > 0
+
+    probe_source = repository / "tests/dotnet/AssetRipperOverlayProbe"
+    probe_project = tmp_path / "overlay-probe"
+    shutil.copytree(probe_source, probe_project)
+    probe_output = tmp_path / "overlay-probe-output"
+    probe_build = tmp_path / "overlay-probe-build"
+    subprocess.run(
+        [
+            "dotnet",
+            "build",
+            str(probe_project / "AssetRipperOverlayProbe.csproj"),
+            "--configuration",
+            "Release",
+            "--disable-build-servers",
+            f"--property:AssetRipperSource={patched_source}",
+            "--property:BaadToolSource="
+            f"{repository / 'src' / 'ba_downloader' / 'infrastructure' / 'extraction' / 'assetripper' / 'tool'}",
+            f"--property:OutputPath={probe_build}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf8",
+        errors="replace",
+    )
+    subprocess.run(
+        ["dotnet", str(probe_build / "AssetRipperOverlayProbe.dll"), str(probe_output)],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf8",
+        errors="replace",
+    )
 
     archive_path = tmp_path / "bundle.zip"
     payload = b"bundle-entry"

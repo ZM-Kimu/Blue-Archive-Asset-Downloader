@@ -7,11 +7,23 @@ from typing import Any
 
 import pytest
 
-from ba_downloader.api.jobs import BundleJobConflictError, JobManager
-from ba_downloader.application.contracts import ApplicationCommand, AssetsExtractCommand
+from ba_downloader.api.jobs import (
+    BundleJobConflictError,
+    JobManager,
+    MediaJobConflictError,
+)
+from ba_downloader.application.contracts import (
+    ApplicationCommand,
+    AssetOperationOptions,
+    AssetsExtractCommand,
+)
+from ba_downloader.domain.models.asset_type_selection import ResourceTypeSelection
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.assetripper.bundles import (
     bundle_extraction_lock_path,
+)
+from ba_downloader.infrastructure.extraction.media.exporter import (
+    media_extraction_lock_path,
 )
 from ba_downloader.infrastructure.files.lock import InterprocessFileLock
 from support.fixtures import build_execution_context
@@ -76,6 +88,14 @@ def _command() -> ApplicationCommand:
     return AssetsExtractCommand()
 
 
+def _media_command() -> ApplicationCommand:
+    return AssetsExtractCommand(
+        AssetOperationOptions(
+            resources=ResourceTypeSelection.from_values(("media",)),
+        )
+    )
+
+
 def test_job_manager_executes_spawned_job(tmp_path: Path) -> None:
     manager = JobManager(process_target=successful_worker)
     manager.start()
@@ -138,6 +158,28 @@ def test_external_bundle_lock_is_rejected_before_queueing(tmp_path: Path) -> Non
         pytest.raises(BundleJobConflictError),
     ):
         manager.submit(_command(), context, "context-1")
+
+
+def test_queued_media_job_is_rejected_before_queueing(tmp_path: Path) -> None:
+    manager = JobManager(process_target=successful_worker)
+    context = _context(tmp_path)
+    manager.submit(_media_command(), context, "context-1")
+
+    with pytest.raises(MediaJobConflictError):
+        manager.submit(_media_command(), context, "context-1")
+
+
+def test_external_media_lock_is_rejected_before_queueing(tmp_path: Path) -> None:
+    manager = JobManager(process_target=successful_worker)
+    context = _context(tmp_path)
+
+    with (
+        InterprocessFileLock(
+            media_extraction_lock_path(context), operation="external media extraction"
+        ),
+        pytest.raises(MediaJobConflictError),
+    ):
+        manager.submit(_media_command(), context, "context-1")
 
 
 def test_job_manager_reports_worker_exit_without_terminal_message(

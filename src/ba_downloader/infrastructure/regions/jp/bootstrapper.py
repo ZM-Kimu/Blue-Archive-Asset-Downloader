@@ -58,7 +58,7 @@ class _MissingRuntimeMetadataInspector:
 
 
 class JPBootstrapper:
-    METADATA_CACHE_SCHEMA_VERSION = 2
+    METADATA_CACHE_SCHEMA_VERSION = 0
 
     def __init__(
         self,

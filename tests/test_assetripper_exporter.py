@@ -24,6 +24,10 @@ from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
 )
 from ba_downloader.infrastructure.extraction.assetripper.events import (
     EVENT_VERSION,
+    AssetRipperAssetLifecycleEvent,
+    AssetRipperGroupCompletedEvent,
+    AssetRipperGroupContext,
+    AssetRipperGroupStartedEvent,
     AssetRipperHeartbeatEvent,
     AssetRipperLogEvent,
     AssetRipperPhaseEvent,
@@ -32,14 +36,13 @@ from ba_downloader.infrastructure.extraction.assetripper.events import (
     parse_assetripper_event,
 )
 from ba_downloader.infrastructure.extraction.assetripper.exporter import (
-    ASSETRIPPER_EXPORTER_WRAPPER_VERSION,
-    ASSETRIPPER_RUNTIME_INSPECTOR_WRAPPER_VERSION,
     AssetRipperBatchExporter,
     AssetRipperDependencyScanner,
     AssetRipperExportError,
     AssetRipperExportGroup,
     AssetRipperExportInput,
     AssetRipperRuntimeMetadataInspector,
+    assetripper_exported_content_fingerprint,
     assetripper_exporter_cache_key,
     assetripper_runtime_inspector_cache_key,
 )
@@ -96,6 +99,7 @@ class FakeProcessRunner:
         result_path = Path(command.argv[-1])
         request = json.loads(Path(command.argv[-2]).read_text(encoding="utf8"))
         self.requests.append(request)
+        assert request["schema_version"] == 0
         input_sort_keys = [
             item["path"] if isinstance(item, dict) else item
             for item in request["inputs"]
@@ -105,6 +109,7 @@ class FakeProcessRunner:
             result_path.write_text(
                 json.dumps(
                     {
+                        "schema_version": 0,
                         "succeeded": True,
                         "error": None,
                         "game_main_config_base64": base64.b64encode(
@@ -129,6 +134,7 @@ class FakeProcessRunner:
             result_path.write_text(
                 json.dumps(
                     {
+                        "schema_version": 0,
                         "succeeded": True,
                         "error": None,
                         "scans": [
@@ -219,6 +225,7 @@ class FakeProcessRunner:
         result_path.write_text(
             json.dumps(
                 {
+                    "schema_version": 0,
                     "succeeded": self.export_succeeds,
                     "error": None if self.export_succeeds else "Invalid bundle",
                     "files": (
@@ -266,11 +273,14 @@ def _write_source_archive(path: Path) -> bytes:
             "AssetRipper.Export.PrimaryContent.csproj",
             "<Project />",
         )
-        archive.writestr(
-            "source/Source/AssetRipper.Export.UnityProjects/"
-            "AssetRipper.Export.UnityProjects.csproj",
-            "<Project />",
-        )
+        for project in (
+            "AssetRipper.Export.Modules.Models",
+            "AssetRipper.Export.Modules.Textures",
+        ):
+            archive.writestr(
+                f"source/Source/{project}/{project}.csproj",
+                "<Project />",
+            )
     return path.read_bytes()
 
 
@@ -284,8 +294,10 @@ def test_source_resolver_prefers_valid_submodule(tmp_path: Path) -> None:
     for relative_project in (
         "Source/AssetRipper.Export.PrimaryContent/"
         "AssetRipper.Export.PrimaryContent.csproj",
-        "Source/AssetRipper.Export.UnityProjects/"
-        "AssetRipper.Export.UnityProjects.csproj",
+        "Source/AssetRipper.Export.Modules.Models/"
+        "AssetRipper.Export.Modules.Models.csproj",
+        "Source/AssetRipper.Export.Modules.Textures/"
+        "AssetRipper.Export.Modules.Textures.csproj",
     ):
         project = source / relative_project
         project.parent.mkdir(parents=True, exist_ok=True)
@@ -340,115 +352,25 @@ def test_source_resolver_applies_shared_versioned_overlay(tmp_path: Path) -> Non
     assert (
         patched / "Source" / "AssetRipper.Assets" / "Bundles" / "GameLoadProgress.cs"
     ).is_file()
-    assert (patched / "overlay.json").is_file()
-    guid_table = (
-        patched
-        / "Source"
-        / "AssetRipper.Processing"
-        / "AudioMixers"
-        / "GuidIndexTable.cs"
-    ).read_text(encoding="utf8")
-    processor = (
-        patched
-        / "Source"
-        / "AssetRipper.Processing"
-        / "AudioMixers"
-        / "AudioMixerProcessor.cs"
-    ).read_text(encoding="utf8")
-
-    assert "UnityGuid.NewGuid()" not in guid_table
-    assert "UnityGuid.NewGuid()" not in processor
-    assert "UnityGuid.Md5Hash" in guid_table
-    assert "mixer.Collection.Name" in processor
-    assert "mixer.PathID" in processor
-    collection = (
-        patched
-        / "Source"
-        / "AssetRipper.Export.PrimaryContent"
-        / "Models"
-        / "GlbPrefabModelExportCollection.cs"
-    ).read_text(encoding="utf8")
-
-    assert "GetStableDirectoryName" not in collection
-    assert "UnityGuid" not in collection
-    registry = (
+    assert (
         patched
         / "Source"
         / "AssetRipper.Assets"
         / "Bundles"
-        / "AssetProvenanceRegistry.cs"
-    ).read_text(encoding="utf8")
-    exporter = (
-        patched
-        / "Source"
-        / "AssetRipper.Export.PrimaryContent"
-        / "PrimaryContentExporter.cs"
-    ).read_text(encoding="utf8")
-
-    assert "RegisterInput" in registry
-    assert "RegisterCollection" in registry
-    assert "RegisterDerived" in registry
-    assert "ResolveProvenance" in registry
-    assert "ExportSelective" in exporter
-    assert "handledEmptyTargetIds" in exporter
-    assert "collection is EmptyExportCollection" in exporter
-    assert "JsonContentExtractor" not in exporter
-    assert "IMonoScript" not in exporter
-    assert "IVideoClip" not in exporter
-    assert "INavMeshData" not in exporter
-    assert "ITerrainData" not in exporter
-    assert "RegisterHandler<ITexture2D>" in exporter
-    assert "RegisterHandler<ISprite>" in exporter
-    assert "RegisterHandler<IAudioClip>" in exporter
-    assert "RegisterHandler<IFont>" in exporter
-    assert "RegisterHandler<ITextAsset>" in exporter
-    assert "RegisterHandler<IMesh>" in exporter
-    handler = (
-        patched / "Source" / "AssetRipper.Export.UnityProjects" / "ExportHandler.cs"
-    ).read_text(encoding="utf8")
-    processor_section = handler.split("GetProcessors()", 1)[1].split(
-        "public void Export", 1
-    )[0]
-    assert processor_section.count("yield return new ") == 6
-    for processor_name in (
-        "SceneDefinitionProcessor",
-        "OriginalPathProcessor",
-        "MainAssetProcessor",
-        "EditorFormatProcessor",
-        "PrefabProcessor",
-        "SpriteProcessor",
-    ):
-        assert f"new {processor_name}" in processor_section
-    assert "AnimatorControllerProcessor" not in processor_section
-    assert "AudioMixerProcessor" not in processor_section
-    assert "LightingDataProcessor" not in processor_section
-    assert "ScriptableObjectProcessor" not in processor_section
-    sprite_exporter = (
-        patched
-        / "Source"
-        / "AssetRipper.Export.PrimaryContent"
-        / "Textures"
-        / "SpritePngExporter.cs"
-    ).read_text(encoding="utf8")
-    assert "SpriteConverter.TryConvertToBitmap" in sprite_exporter
-    assert 'ExportExtension => "png"' in sprite_exporter
+        / "GameBundle.FromPathsParallel.cs"
+    ).is_file()
+    assert (patched / "overlay.json").is_file()
 
 
 def test_batch_exporter_builds_once_and_reads_typed_result(tmp_path: Path) -> None:
     source = tmp_path / "source"
     (source / "Source" / "AssetRipper.Export.PrimaryContent").mkdir(parents=True)
-    (source / "Source" / "AssetRipper.Export.UnityProjects").mkdir(parents=True)
-    for project in (
+    (
         source
         / "Source"
         / "AssetRipper.Export.PrimaryContent"
-        / "AssetRipper.Export.PrimaryContent.csproj",
-        source
-        / "Source"
-        / "AssetRipper.Export.UnityProjects"
-        / "AssetRipper.Export.UnityProjects.csproj",
-    ):
-        project.write_text("<Project />", encoding="utf8")
+        / "AssetRipper.Export.PrimaryContent.csproj"
+    ).write_text("<Project />", encoding="utf8")
     resolver = type("Resolver", (), {"resolve_patched": lambda self, context: source})()
     runner = FakeProcessRunner()
     exporter = AssetRipperBatchExporter(
@@ -532,6 +454,7 @@ def test_batch_exporter_sends_targeted_inputs_and_reads_coverage(
 
 
 def test_grouped_export_reuses_dependency_in_one_process_request(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     source = type("Resolver", (), {"resolve_patched": lambda self, context: tmp_path})()
@@ -546,6 +469,15 @@ def test_grouped_export_reuses_dependency_in_one_process_request(
     second = tmp_path / "second.bundle"
     for path in (dependency, first, second):
         path.write_bytes(path.name.encode())
+    resolved_inputs: list[Path] = []
+    real_resolve = Path.resolve
+
+    def record_input_resolution(path: Path, *args: object, **kwargs: object) -> Path:
+        if path in {dependency, first, second}:
+            resolved_inputs.append(path)
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", record_input_resolution)
 
     result = exporter.export_grouped(
         _context(tmp_path),
@@ -591,6 +523,7 @@ def test_grouped_export_reuses_dependency_in_one_process_request(
     assert (
         sum(item["node_id"] == "archive::dependency" for item in request["inputs"]) == 1
     )
+    assert sorted(resolved_inputs) == sorted((dependency, first, second))
     assert result.requested_target_ids == (
         "archive::first",
         "archive::second",
@@ -663,6 +596,32 @@ def test_assetripper_event_parser_reads_processing_heartbeat() -> None:
     assert heartbeat == AssetRipperHeartbeatEvent("processing")
 
 
+def test_assetripper_event_parser_reads_group_and_asset_lifecycle() -> None:
+    context = AssetRipperGroupContext("group-08", 8, 52)
+    started = parse_assetripper_event(
+        f'BAAD_ASSETRIPPER_EVENT {{"version":{EVENT_VERSION},'
+        '"kind":"group_started","group_id":"group-08",'
+        '"group_index":8,"group_total":52}'
+    )
+    asset = parse_assetripper_event(
+        f'BAAD_ASSETRIPPER_EVENT {{"version":{EVENT_VERSION},'
+        '"kind":"asset_started","stable_id":"stable-1",'
+        '"item":"Cafe_CH0347","current":312,"total":647,'
+        '"group_id":"group-08","group_index":8,"group_total":52}'
+    )
+    completed = parse_assetripper_event(
+        f'BAAD_ASSETRIPPER_EVENT {{"version":{EVENT_VERSION},'
+        '"kind":"group_completed","group_id":"group-08",'
+        '"group_index":8,"group_total":52}'
+    )
+
+    assert started == AssetRipperGroupStartedEvent(context)
+    assert asset == AssetRipperAssetLifecycleEvent(
+        "started", "stable-1", "Cafe_CH0347", 312, 647, context
+    )
+    assert completed == AssetRipperGroupCompletedEvent(context)
+
+
 def test_assetripper_event_parser_reads_dependency_scan_progress() -> None:
     event = parse_assetripper_event(
         f'BAAD_ASSETRIPPER_EVENT {{"version":{EVENT_VERSION},'
@@ -700,8 +659,6 @@ def test_packaged_exporter_preserves_runtime_contracts() -> None:
     assert 'EventWriter.WritePhase("exporting");' in program
     assert "WriteHeartbeat" in program
     assert "ProcessWithHeartbeat" in program
-    assert "handler.Load(" in program
-    assert "handler.Process(" in program
     assert "WriteProcessorProgress" in program
     assert '"materialize_bundle_entries"' in program
     assert "LoadAndProcess" not in program
@@ -720,7 +677,7 @@ def test_packaged_exporter_preserves_runtime_contracts() -> None:
     assert "ExportedTargetIds" in program
 
 
-def test_legacy_exporter_cache_marker_does_not_invalidate_fingerprinted_cache(
+def test_unrelated_old_cache_marker_does_not_invalidate_content_cache(
     tmp_path: Path,
 ) -> None:
     source = type("Resolver", (), {"resolve_patched": lambda self, context: tmp_path})()
@@ -740,8 +697,57 @@ def test_legacy_exporter_cache_marker_does_not_invalidate_fingerprinted_cache(
     marker.write_text(f"{ASSETRIPPER_COMMIT}\n", encoding="ascii")
     exporter.export(context, [_export_input(bundle)], tmp_path / "second")
 
-    assert ASSETRIPPER_EXPORTER_WRAPPER_VERSION != "1"
     assert [command.argv[1] for command in runner.commands].count("build") == 1
+
+
+def test_tool_and_content_fingerprints_track_only_relevant_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    tool_root = tmp_path / "tool"
+    (tool_root / "PrimaryContent").mkdir(parents=True)
+    (tool_root / "Models").mkdir()
+    (tool_root / "runtime_inspector").mkdir()
+    (tool_root / "AssetRipperExporter.csproj").write_text(
+        "<Project />", encoding="utf8"
+    )
+    profile_source = tool_root / "ContentProfile.cs"
+    profile_source.write_text("profile-one", encoding="utf8")
+    (tool_root / "PrimaryContent" / "Exporter.cs").write_text(
+        "content", encoding="utf8"
+    )
+    (tool_root / "Models" / "Model.cs").write_text("model", encoding="utf8")
+    progress_source = tool_root / "Program.cs"
+    progress_source.write_text("progress-one", encoding="utf8")
+    inspector_source = tool_root / "runtime_inspector" / "Inspector.cs"
+    inspector_source.write_text("inspector-one", encoding="utf8")
+    (tool_root / "runtime_inspector" / "AssetRipperRuntimeInspector.csproj").write_text(
+        "<Project />", encoding="utf8"
+    )
+    monkeypatch.setattr(exporter_module, "_assetripper_tool_root", lambda: tool_root)
+
+    content = assetripper_exported_content_fingerprint()
+    tool = assetripper_exporter_cache_key()
+    inspector = assetripper_runtime_inspector_cache_key()
+
+    progress_source.write_text("progress-two", encoding="utf8")
+
+    assert assetripper_exporter_cache_key() != tool
+    assert assetripper_exported_content_fingerprint() == content
+    assert assetripper_runtime_inspector_cache_key() == inspector
+
+    progress_tool = assetripper_exporter_cache_key()
+    profile_source.write_text("profile-two", encoding="utf8")
+    assert assetripper_exporter_cache_key() != progress_tool
+    assert assetripper_exported_content_fingerprint() != content
+    assert assetripper_runtime_inspector_cache_key() == inspector
+
+    content_tool = assetripper_exporter_cache_key()
+    content_fingerprint = assetripper_exported_content_fingerprint()
+    inspector_source.write_text("inspector-two", encoding="utf8")
+    assert assetripper_exporter_cache_key() == content_tool
+    assert assetripper_exported_content_fingerprint() == content_fingerprint
+    assert assetripper_runtime_inspector_cache_key() != inspector
 
 
 def test_batch_exporter_reports_structured_failure(tmp_path: Path) -> None:
@@ -793,6 +799,7 @@ def test_runtime_metadata_inspector_reads_typed_result(tmp_path: Path) -> None:
     assert metadata.game_main_config == b"encrypted-config"
     assert metadata.bundle_version == "1.2.3"
     assert runner.requests[-1] == {
+        "schema_version": 0,
         "inputs": [str(data_root.resolve())],
         "operation": "inspect_jp_runtime",
     }
@@ -865,23 +872,6 @@ def test_runtime_inspector_and_exporter_use_independent_caches(
         == 1
     )
     assert assetripper_runtime_inspector_cache_key() != assetripper_exporter_cache_key()
-    assert ASSETRIPPER_RUNTIME_INSPECTOR_WRAPPER_VERSION == "1"
-
-    runner.commands.clear()
-    monkeypatch.setattr(
-        exporter_module,
-        "ASSETRIPPER_RUNTIME_INSPECTOR_WRAPPER_VERSION",
-        "changed",
-    )
-    inspector.inspect(context, data_root)
-    exporter.export(context, [_export_input(bundle)], tmp_path / "output-2")
-
-    rebuild_projects = [
-        Path(next(value for value in command.argv if value.endswith(".csproj"))).name
-        for command in runner.commands
-        if "build" in command.argv
-    ]
-    assert rebuild_projects == ["AssetRipperRuntimeInspector.csproj"]
 
 
 def test_runtime_inspector_project_excludes_full_export_dependencies() -> None:

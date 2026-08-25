@@ -9,7 +9,7 @@ from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.files.atomic import write_json_atomic
 
-INDEX_SCHEMA_VERSION = 1
+INDEX_SCHEMA_VERSION = 0
 INDEX_RELATIVE_PATH = Path("indexes", "characters.json")
 
 

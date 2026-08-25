@@ -311,11 +311,23 @@ def resolve_metadata_registration_va(
     type_definition_count: int,
 ) -> int:
     candidates: list[_MetadataRegistrationCandidate] = []
+    type_count_field_offset = 6 * 8
     for segment in elf.loads:
         if segment.flags & 1:
             continue
         end = min(segment.oend, len(elf.data) - 16 * 8)
-        for offset in range(segment.offset, end, 8):
+        type_count_start = segment.offset + type_count_field_offset
+        candidate_count = max((end - segment.offset + 7) // 8, 0)
+        type_count_end = type_count_start + candidate_count * 8
+        type_count_payload = memoryview(elf.data)[type_count_start:type_count_end]
+        for index, (type_count,) in enumerate(
+            struct.iter_unpack("<Q", type_count_payload)
+        ):
+            if not (
+                type_definition_count <= type_count <= _MAX_METADATA_REGISTRATION_COUNT
+            ):
+                continue
+            offset = segment.offset + index * 8
             candidate = _score_metadata_registration_candidate(
                 elf,
                 offset,
@@ -372,13 +384,15 @@ def resolve_cn_metadata_recovery_parameters(
     restored_metadata: bytes,
     standard_metadata: bytes,
     binary_path: Path,
+    *,
+    relocated_elf: RelocatedElf | None = None,
 ) -> CnMetadataRecoveryParameters:
     target, sections = section_map(standard_metadata)
     if target != "27.2":
         raise ValueError(f"expected v27.2 metadata before CN recovery, got {target}")
 
     tail_offset = resolve_hidden_tail_offset(restored_metadata)
-    elf = RelocatedElf(binary_path)
+    elf = relocated_elf or RelocatedElf(binary_path)
     metadata_registration_va = resolve_metadata_registration_va(
         elf,
         sections["typeDefinitions"].size // 0x58,

@@ -6,10 +6,7 @@ from pathlib import Path
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
 from ba_downloader.domain.models.schema import SchemaPurpose
-from ba_downloader.infrastructure.schema.snapshots import (
-    SCHEMA_TOOL_VERSIONS,
-    SchemaSnapshotStore,
-)
+from ba_downloader.infrastructure.schema.snapshots import SchemaSnapshotStore
 from support.fixtures import build_execution_context
 
 
@@ -61,7 +58,7 @@ def test_schema_snapshot_publishes_typed_manifest_and_current_pointer(
 
     pointer = json.loads(store.current_pointer(context).read_text(encoding="utf8"))
     assert pointer == {
-        "schema_version": 2,
+        "schema_version": 0,
         "snapshot_id": fingerprint,
         "purpose": "full",
     }
@@ -84,19 +81,16 @@ def test_schema_snapshot_cache_invalidates_when_runtime_input_changes(
     assert first != second
 
 
-def test_schema_snapshot_cache_invalidates_previous_memorypack_layouts(
+def test_schema_snapshot_cache_invalidates_changed_generator_fingerprint(
     tmp_path: Path,
 ) -> None:
     context = _context(tmp_path)
     runtime = _runtime(tmp_path)
-    previous_versions = {
-        **SCHEMA_TOOL_VERSIONS,
-        "memorypack_generator": "1",
-        "schema_workflow": "1",
-    }
+    previous_fingerprints = dict(SchemaSnapshotStore().tool_fingerprints)
+    previous_fingerprints["memorypack_generator"] = "0" * 64
 
     current = SchemaSnapshotStore().fingerprint(context, runtime)
-    previous = SchemaSnapshotStore(tool_versions=previous_versions).fingerprint(
+    previous = SchemaSnapshotStore(tool_fingerprints=previous_fingerprints).fingerprint(
         context,
         runtime,
     )

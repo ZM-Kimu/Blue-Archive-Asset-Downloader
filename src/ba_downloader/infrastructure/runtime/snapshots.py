@@ -19,7 +19,7 @@ from ba_downloader.infrastructure.files.atomic import (
 from ba_downloader.infrastructure.files.checksum import calculate_sha256
 
 MANIFEST_NAME = "manifest.json"
-MANIFEST_SCHEMA_VERSION = 2
+MANIFEST_SCHEMA_VERSION = 0
 RUNTIME_DIR_NAME = "Runtime"
 STAGING_DIR_NAME = ".staging"
 VERSION_MANIFEST_NAME = "version.json"
@@ -198,7 +198,7 @@ class RuntimeSnapshotStore:
         ):
             raise ValueError("Runtime manifest roles or files are invalid.")
         if context.region == "jp":
-            if provenance.get("type") != "jp_mftl_v1":
+            if provenance.get("type") != "jp_mftl":
                 raise ValueError("JP runtime manifest lacks MFTL provenance.")
             if "encrypted_binary" in roles:
                 raise ValueError(

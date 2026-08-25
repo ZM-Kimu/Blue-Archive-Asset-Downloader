@@ -1,9 +1,12 @@
+using System.Diagnostics.CodeAnalysis;
 using AssetRipper.Assets;
 using AssetRipper.Export.Configuration;
 using AssetRipper.Export.Modules.Textures;
+using AssetRipper.Export.PrimaryContent;
+using AssetRipper.IO.Files;
 using AssetRipper.SourceGenerated.Classes.ClassID_213;
 
-namespace AssetRipper.Export.PrimaryContent.Textures;
+namespace Baad.AssetRipper.PrimaryContent;
 
 public sealed class SpritePngExporter : IContentExtractor
 {

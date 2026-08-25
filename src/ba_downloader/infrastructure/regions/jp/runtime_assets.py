@@ -634,7 +634,7 @@ class JPRuntimeAssetPreparer(RuntimeAssetPreparerPort):
                 globalgamemanagers_name=self.GLOBALGAMEMANAGERS_NAME,
                 file_roles=file_roles,
                 provenance={
-                    "type": "jp_mftl_v1",
+                    "type": "jp_mftl",
                     "parent": {
                         "name": runtime_payload.path.name,
                         "size": runtime_payload.path.stat().st_size,

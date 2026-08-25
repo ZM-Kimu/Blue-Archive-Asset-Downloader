@@ -8,6 +8,7 @@ from ba_downloader.api.jobs import (
     BundleJobConflictError,
     JobQueueFullError,
     JobStateError,
+    MediaJobConflictError,
 )
 from ba_downloader.api.models import (
     JobCreateRequest,
@@ -87,6 +88,13 @@ def create_router(services: ApiServices) -> APIRouter:
                 409,
                 "BUNDLE_EXTRACTION_CONFLICT",
                 "Bundle extraction is already active",
+                str(exc),
+            ) from exc
+        except MediaJobConflictError as exc:
+            raise ApiProblem(
+                409,
+                "MEDIA_EXTRACTION_CONFLICT",
+                "Media extraction is already active",
                 str(exc),
             ) from exc
         except JobStateError as exc:

@@ -5,16 +5,30 @@ from pathlib import Path
 import pytest
 
 from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.domain.ports.progress import ProgressState
 from ba_downloader.infrastructure.extraction.errors import (
     ExtractionFailureError,
 )
 from ba_downloader.infrastructure.extraction.process_table_runner import (
     ProcessTableExtractionRunner,
+    TableExtractionEvent,
+    TableExtractionRunState,
 )
 from ba_downloader.infrastructure.extraction.table.profiles import (
     TableExtractionProfile,
 )
 from support import RecordingLogger, build_execution_context
+
+
+class RecordingTableProgress:
+    def __init__(self) -> None:
+        self.states: list[ProgressState] = []
+
+    def update(self, state: ProgressState) -> None:
+        self.states.append(state)
+
+    def stop(self) -> None:
+        return None
 
 
 def _failing_table_profile(
@@ -70,3 +84,31 @@ def test_process_table_runner_preserves_business_failure_after_worker_cleanup(
         runner.run(["broken.zip"], context, concurrency=2)
 
     assert logger.by_level("error")
+
+
+def test_table_progress_tracks_the_oldest_active_file(tmp_path: Path) -> None:
+    logger = RecordingLogger()
+    runner = ProcessTableExtractionRunner(
+        logger,
+        poll_interval_seconds=0.001,
+        interrupt_grace_seconds=2.0,
+    )
+    state = TableExtractionRunState([], set(), 2, {})
+    progress = RecordingTableProgress()
+    older = str(tmp_path / "older.zip")
+    newer = str(tmp_path / "newer.zip")
+
+    runner._handle_event(TableExtractionEvent("started", older), progress, state)
+    runner._handle_event(TableExtractionEvent("started", newer), progress, state)
+    runner._handle_event(
+        TableExtractionEvent("progress", newer, "newer step"),
+        progress,
+        state,
+    )
+
+    assert progress.states[-1].item == "older.zip"
+
+    runner._handle_event(TableExtractionEvent("done", older), progress, state)
+
+    assert progress.states[-1].item == "newer.zip"
+    assert progress.states[-1].message == "newer step"

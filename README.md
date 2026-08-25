@@ -26,7 +26,7 @@
 ## 环境要求
 
 - Windows/Linux
-- Python UV 环境管理器 或 Python 3.11 及更高版本
+- [Python UV 环境管理器](https://github.com/astral-sh/uv) 或 Python 3.11 及更高版本
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
 
 ## 先决条件
@@ -105,7 +105,7 @@ ba-downloader server start --host 127.0.0.1
 | `--platform`      | `assets *`、`index build` | `windows`、`android`、`ios`（仅 JP 生效） | `android`                       | `--platform windows`            |
 | `--proxy`         | `assets *`、`index build` | HTTP 代理地址                             | 无                              | `--proxy http://127.0.0.1:8080` |
 | `--max-retries`   | `assets *`、`index build` | 请求失败后的最大重试次数                  | `5`                             | `--max-retries 3`               |
-| `--sqlcipher-key` | `assets *`、`index build` | 64 位十六进制 SQLCipher raw key 覆盖值    | 自动获取                        | `--sqlcipher-key <64hex>`       |
+| `--sqlcipher-key` | `assets *`、`index build` | SQLCipher raw ![key](docs/kei_icon.png)   | （神必）                        | `--sqlcipher-key <64hex>`       |
 | `--concurrency`   | `assets *`、`index build` | 并发 worker 数                            | `30`                            | `--concurrency 50`              |
 | `--resources`     | `assets *`                | 逗号分隔的 `table`、`media`、`bundle`     | 全部                            | `--resources table,media`       |
 | `--filter`        | `assets *`                | 资源或角色过滤条件，可以重复              | 无                              | `--filter "name~伊吹"`          |
@@ -136,12 +136,12 @@ CLI 仅支持以上长参数。运行具体命令并附加 `--help` 可查看当
 - 示例：
   > japan
   >```sh
-  >ba-downloader assets sync --region jp --filter "name~プラナ,伊吹"
+  >ba-downloader assets sync --region jp --filter "name~プラナ,生徒会長"
   >```
 
   > japan with conditions（两个条件必须同时满足）
   >```sh
-  >ba-downloader assets sync --region jp --filter "cv=小倉唯" --filter "height=153"
+  >ba-downloader assets sync --region jp --filter "school=Trinity" --filter "height=151"
   >```
 
   > global
@@ -163,7 +163,6 @@ CLI 仅支持以上长参数。运行具体命令并附加 `--help` 可查看当
 
 ## 默认输出
 `--workspace` 默认为当前目录，输出固定存放在 `<workspace>/<region>/<platform>/`：
-
 - `raw/{tables,media,bundles}`: 存储经由 Catalog 下载的文件。
 - `extracted`: 存储已提取的 Bundle、Media、Table、schema 与 dumps。
 - `indexes/characters.json`: 角色信息索引，可通过 `ba-downloader index build --region <region>` 全量生成。
@@ -176,12 +175,11 @@ ba-downloader assets download --region jp --platform windows
 ```
 
 ## 使用须知
-- `--platform` 仅对 JP 生效，用于指定 JP 平台的资源。
 - JP/GL的APK文件来自于APKPure，在PlayStore已经更新后，APKPure可能需要一些时间来同步版本。
 - 当各服务器处于维护时间时，可能会无法获取资源目录。
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
-- Bundle 文件的提取基于[AssetRipper](https://github.com/AssetRipper/AssetRipper)，许可证参见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 - 由于各类接口频繁变动，不建议直接调用内部方法。
+- 在进行全量 `asset sync` 时，各区服建议预留 `50GB` 的可用存储空间。
 
 ## TODO
 - `v3.1.0`
@@ -198,6 +196,12 @@ Blue Archive Asset Downloader v3.0.0
 部分内容参照自：
 - [Blue-Archive---Asset-Downloader](https://github.com/K0lb3/Blue-Archive---Asset-Downloader)
 - [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL)
+
+使用了以下 C# 依赖：
+- [AssetRipper](https://github.com/AssetRipper/AssetRipper)
+- [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL)
+- [SharpZipLib](https://github.com/icsharpcode/SharpZipLib)
+
 
 本项目采用 [MIT 许可证](LICENSE)。
 

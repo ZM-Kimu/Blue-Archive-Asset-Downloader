@@ -28,6 +28,7 @@ def test_default_region_gateway_definitions_build_core_factories() -> None:
         dumper = profile.runtime.dump_backend(
             http_client,
             logger,
+            None,
             NeverCancelled(),
         )
 

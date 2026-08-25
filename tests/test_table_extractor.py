@@ -205,7 +205,7 @@ def _write_stage_save_data_sidecar(extract_dir: Path) -> None:
     _write_memorypack_formatter_sidecar(
         extract_dir,
         {
-            "version": 1,
+            "version": 0,
             "formatters": [
                 {
                     "target_type": "MX.Logic.Battles.StageSaveData.StageSaveData",
@@ -222,7 +222,7 @@ def _write_logic_effect_sidecar(extract_dir: Path) -> None:
     _write_memorypack_formatter_sidecar(
         extract_dir,
         {
-            "version": 1,
+            "version": 0,
             "formatters": [
                 {
                     "target_type": "MX.GameData.DAO.Battle.LogicEffectDAO",
@@ -443,7 +443,7 @@ def test_extract_db_file_decodes_cn_memorypack_blob_with_formatter_sidecar(
     _write_memorypack_formatter_sidecar(
         context.workspace.extracted,
         {
-            "version": 1,
+            "version": 0,
             "formatters": [
                 {
                     "target_type": "MX.GameData.DAO.Battle.SkillLogicDAO",
@@ -501,7 +501,7 @@ def test_extract_db_file_prefers_full_skill_visual_formatter_sidecar(
     _write_memorypack_formatter_sidecar(
         context.workspace.extracted,
         {
-            "version": 1,
+            "version": 0,
             "formatters": [
                 {
                     "target_type": "MX.AppData.DAO.Battle.SkillVisualDAO",
@@ -931,7 +931,7 @@ def test_gl_extract_table_decodes_catalog_and_preserves_hash(tmp_path: Path) -> 
     _write_memorypack_formatter_sidecar(
         context.workspace.extracted,
         {
-            "version": 1,
+            "version": 0,
             "formatters": [
                 {
                     "target_type": "TableCatalog",

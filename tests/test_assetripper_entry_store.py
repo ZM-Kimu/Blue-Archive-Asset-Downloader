@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
 
+import ba_downloader.infrastructure.extraction.assetripper.entry_store as entry_store_module
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
@@ -13,6 +16,7 @@ from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
 )
 from ba_downloader.infrastructure.extraction.assetripper.entry_store import (
     BundleEntryStore,
+    BundleEntryStoreSpaceError,
     bundle_entry_cache_identity,
 )
 from ba_downloader.infrastructure.files.atomic import write_json_atomic
@@ -45,7 +49,7 @@ class RecordingMaterializer:
             write_json_atomic(
                 destination.with_suffix(f"{destination.suffix}.json"),
                 {
-                    "schema_version": 2,
+                    "schema_version": 0,
                     "identity": bundle_entry_cache_identity(entry),
                     "mtime_ns": stat.st_mtime_ns,
                 },
@@ -107,6 +111,30 @@ def test_entry_store_rebuilds_corrupted_cache_entry(tmp_path: Path) -> None:
     assert materializer.calls == 2
 
 
+def test_entry_store_keeps_pre_baseline_cache_at_its_old_identity_path(
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "cache"
+    materializer = RecordingMaterializer()
+    store = BundleEntryStore(cache_root, materializer=materializer)
+    context = build_execution_context(tmp_path)
+    entry = _entry(tmp_path)
+    old_identity = bundle_entry_cache_identity(entry)
+    old_identity.pop("cache_schema")
+    old_key = hashlib.sha256(
+        json.dumps(old_identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    old_path = cache_root / old_key[:2] / old_key / "asset.bundle"
+    old_path.parent.mkdir(parents=True)
+    old_path.write_bytes(b"old-cache")
+
+    resolved = store.resolve_many(context, (entry,), concurrency=1)[0]
+
+    assert resolved.path != old_path
+    assert resolved.path.read_bytes() == b"bundle-data"
+    assert old_path.read_bytes() == b"old-cache"
+
+
 @pytest.mark.parametrize(
     "entry_path",
     [r"..\..\outside.bundle", "unsafe:name.bundle"],
@@ -137,3 +165,24 @@ def test_entry_store_rejects_platform_unsafe_entry_names(
             (entry,),
             concurrency=1,
         )
+
+
+def test_entry_store_space_error_uses_readable_file_sizes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store = BundleEntryStore(
+        tmp_path / "cache",
+        materializer=RecordingMaterializer(),
+    )
+    monkeypatch.setattr(
+        entry_store_module.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=3_074_179_072),
+    )
+
+    with pytest.raises(
+        BundleEntryStoreSpaceError,
+        match=("requires 6\\.9 GB of new data, but only 3\\.1 GB is available"),
+    ):
+        store._ensure_space(6_938_257_280)

@@ -6,6 +6,7 @@ from threading import Event
 
 import pytest
 
+import ba_downloader.infrastructure.tools.cn_metadata_recovery.pipeline as recovery_pipeline_module
 from ba_downloader.domain.exceptions import OperationCancelledError
 from ba_downloader.domain.ports.execution import EventCancellation
 from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
@@ -15,6 +16,7 @@ from ba_downloader.infrastructure.tools.cn_metadata_recovery import (
 )
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.codegen_registration import (
     LoadSegment,
+    find_code_registration,
     resolve_module_names,
 )
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.parameters import (
@@ -56,6 +58,9 @@ class FakeRelocatedElf:
 
     def read_u64_offset(self, offset: int) -> int:
         return struct.unpack_from("<Q", self.data, offset)[0]
+
+    def is_mapped_va(self, va: int) -> bool:
+        return self.va_to_offset(va) is not None
 
 
 def test_standard_v29_assembly_precomputes_one_output_buffer() -> None:
@@ -276,6 +281,39 @@ def test_cn_metadata_recovery_metadata_registration_scan_rejects_ambiguous_candi
         resolve_metadata_registration_va(FakeRelocatedElf(bytes(data)), 6)
 
 
+def test_cn_metadata_recovery_finds_aligned_code_registration() -> None:
+    data = bytearray(0x1000)
+    module_count = 2
+    registration_offset = 0x100
+    modules_array_offset = 0x300
+    module_offsets = (0x400, 0x500)
+    struct.pack_into(
+        "<QQ",
+        data,
+        registration_offset + 13 * 8,
+        module_count,
+        0x1000 + modules_array_offset,
+    )
+    struct.pack_into(
+        "<QQ",
+        data,
+        modules_array_offset,
+        *(0x1000 + offset for offset in module_offsets),
+    )
+    for index, module_offset in enumerate(module_offsets, start=1):
+        values = [0] * 18
+        values[1] = index
+        values[2] = 0x1000 + 0x700
+        struct.pack_into("<18Q", data, module_offset, *values)
+    data[0x801:0x809] = struct.pack("<Q", module_count)
+    elf = FakeRelocatedElf(bytes(data))
+
+    code_registration_va, modules_array_va = find_code_registration(elf, module_count)
+
+    assert code_registration_va == 0x1000 + registration_offset
+    assert modules_array_va == 0x1000 + modules_array_offset
+
+
 def test_cn_metadata_recovery_rejects_stale_manual_codegen_module_name() -> None:
     metadata = FakeCodegenMetadata(
         {
@@ -320,6 +358,7 @@ def test_cn_metadata_recovery_resolves_cn_3_0_2_ambiguous_codegen_modules() -> N
 
 def test_cn_metadata_recovery_pipeline_runs_immutable_phases(tmp_path: Path) -> None:
     calls: list[str] = []
+    progress_events: list[tuple[str, int, int]] = []
     parameters = CnMetadataRecoveryParameters(
         tail_offset=0x100,
         metadata_registration_va=0x200,
@@ -359,6 +398,9 @@ def test_cn_metadata_recovery_pipeline_runs_immutable_phases(tmp_path: Path) -> 
     result = pipeline.run(
         protected_metadata=b"protected",
         binary_path=binary_path,
+        progress_callback=lambda stage, completed, total: progress_events.append(
+            (stage, completed, total)
+        ),
     )
 
     assert isinstance(result, CnMetadataRecoveryResult)
@@ -369,7 +411,110 @@ def test_cn_metadata_recovery_pipeline_runs_immutable_phases(tmp_path: Path) -> 
         "errorCount": 0,
         "warningCount": 0,
     }
+    assert progress_events == [
+        ("parse", 0, 4),
+        ("infer", 1, 4),
+        ("rebuild", 2, 4),
+        ("validate", 3, 4),
+        ("validate", 4, 4),
+    ]
     assert sorted(path.name for path in tmp_path.iterdir()) == ["libil2cpp.so"]
+
+
+def test_cn_metadata_recovery_pipeline_reuses_one_relocated_elf(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    binary_path = tmp_path / "libil2cpp.so"
+    binary_path.write_bytes(b"binary")
+    relocated_elf = object()
+    constructed: list[Path] = []
+    consumers: list[object | None] = []
+    parameters = CnMetadataRecoveryParameters(
+        tail_offset=1,
+        metadata_registration_va=2,
+        exported_types_offset=3,
+        blob_start=4,
+    )
+
+    def create_elf(path: Path) -> object:
+        constructed.append(path)
+        return relocated_elf
+
+    def capture_elf(value: object | None) -> None:
+        consumers.append(value)
+
+    monkeypatch.setattr(recovery_pipeline_module, "RelocatedElf", create_elf)
+    monkeypatch.setattr(
+        recovery_pipeline_module,
+        "restore_runtime_metadata_view",
+        lambda _source: (b"restored", {}),
+    )
+    monkeypatch.setattr(
+        recovery_pipeline_module,
+        "standardize_custom_layout",
+        lambda _metadata: (b"standardized", {}),
+    )
+
+    def reorder(
+        _binary: Path,
+        _metadata: bytes,
+        *,
+        relocated_elf: object | None = None,
+    ) -> tuple[bytes, dict[str, object]]:
+        capture_elf(relocated_elf)
+        return b"reordered", {}
+
+    def resolve(
+        _restored: bytes,
+        _standardized: bytes,
+        _binary: Path,
+        *,
+        relocated_elf: object | None = None,
+    ) -> CnMetadataRecoveryParameters:
+        capture_elf(relocated_elf)
+        return parameters
+
+    def transform(*_args: object, **kwargs: object) -> tuple[bytes, dict[str, object]]:
+        capture_elf(kwargs.get("relocated_elf"))
+        return b"transformed", {}
+
+    def validate(
+        _metadata: bytes,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        capture_elf(kwargs.get("relocated_elf"))
+        return {"summary": {"valid": True, "warningCount": 0}}
+
+    monkeypatch.setattr(recovery_pipeline_module, "apply_codegen_module_order", reorder)
+    monkeypatch.setattr(
+        recovery_pipeline_module,
+        "resolve_cn_metadata_recovery_parameters",
+        resolve,
+    )
+    monkeypatch.setattr(recovery_pipeline_module, "sanitize_default_values", transform)
+    monkeypatch.setattr(
+        recovery_pipeline_module,
+        "restore_pre29_attribute_sections",
+        transform,
+    )
+    monkeypatch.setattr(
+        recovery_pipeline_module,
+        "build_standard_v29_metadata",
+        transform,
+    )
+    monkeypatch.setattr(
+        recovery_pipeline_module, "validate_standard_metadata", validate
+    )
+
+    result = CnMetadataRecoveryPipeline().run(
+        protected_metadata=b"protected",
+        binary_path=binary_path,
+    )
+
+    assert result.standard_v29_metadata == b"transformed"
+    assert constructed == [binary_path]
+    assert consumers == [relocated_elf] * 6
 
 
 def test_cn_metadata_recovery_pipeline_reports_failed_phase(

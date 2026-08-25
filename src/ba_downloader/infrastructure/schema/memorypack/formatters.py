@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+SIDECAR_VERSION = 0
+
 
 @dataclass(frozen=True, slots=True)
 class MemoryPackFormatterMemberDescriptor:
@@ -53,6 +55,10 @@ class MemoryPackFormatterRegistry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MemoryPackFormatterRegistry:
+        if data.get("version") != SIDECAR_VERSION:
+            raise ValueError(
+                f"MemoryPack formatter sidecar version must be {SIDECAR_VERSION}."
+            )
         raw_formatters = data.get("formatters", [])
         if isinstance(raw_formatters, dict):
             items = [

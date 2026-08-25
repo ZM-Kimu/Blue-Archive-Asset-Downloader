@@ -9,7 +9,7 @@ class DatabaseSourceIdentity:
     release: str
     size: int
     checksum: str
-    exporter_version: str = ""
+    exporter_fingerprint: str = ""
     key_id: str = ""
 
 

@@ -249,14 +249,12 @@ def test_planner_rejects_missing_or_duplicate_scan_records(tmp_path: Path) -> No
         raise AssertionError("duplicate scan record was accepted")
 
 
-def test_dependency_scan_cache_key_is_independent_from_export_overlay() -> None:
+def test_dependency_scan_cache_key_uses_exporter_build_fingerprint() -> None:
     scan_key = assetripper_dependency_scan_cache_key()
     export_key = assetripper_exporter_cache_key()
 
-    assert "scanner-version=" in scan_key
-    assert "overlay-hash=" not in scan_key
-    assert "wrapper-version=" not in scan_key
-    assert scan_key != export_key
+    assert scan_key == export_key
+    assert len(scan_key) == 64
 
 
 def test_planner_keeps_dependency_cycle_in_one_component(tmp_path: Path) -> None:
@@ -306,20 +304,24 @@ def test_scan_cache_uses_catalog_checksum_identity(tmp_path: Path) -> None:
     assert cache.load(touched, tool_key="tool-v2") is None
 
 
-def test_scan_cache_invalidates_legacy_exporter_key(
+def test_scan_cache_rejects_a_different_content_fingerprint(
     tmp_path: Path,
 ) -> None:
     archive = _archive(tmp_path, "legacy.zip")
     cache = BundleDependencyScanCache(tmp_path / "cache")
     scan = _scan(archive.archive_id)
-    commit = "a" * 40
-    legacy_key = (
-        f"{commit}\noverlay-version=4\noverlay-hash={'b' * 64}\nwrapper-version=6"
-    )
-    scanner_key = f"{commit}\nscanner-version=1"
-    cache.store(archive, scan, tool_key=legacy_key)
+    old_key = "a" * 64
+    current_key = "b" * 64
+    cache.store(archive, scan, tool_key=old_key)
+    old_path = cache.path_for(archive, tool_key=old_key)
+    assert cache.load(archive, tool_key=current_key) is None
+    cache.store(archive, scan, tool_key=current_key)
+    current_path = cache.path_for(archive, tool_key=current_key)
 
-    assert cache.load(archive, tool_key=scanner_key) is None
+    assert cache.load(archive, tool_key=current_key) == scan
+    assert old_path != current_path
+    assert old_path.is_file()
+    assert current_path.is_file()
 
 
 def test_scan_cache_invalidates_local_input_changes(tmp_path: Path) -> None:
@@ -340,7 +342,7 @@ def test_scan_cache_invalidates_local_input_changes(tmp_path: Path) -> None:
 def test_scan_cache_ignores_malformed_payload(tmp_path: Path) -> None:
     archive = _archive(tmp_path, "local.zip")
     cache = BundleDependencyScanCache(tmp_path / "cache")
-    cache_path = cache.path_for(archive)
+    cache_path = cache.path_for(archive, tool_key="tool-v1")
     cache_path.parent.mkdir(parents=True)
     cache_path.write_text("not-json", encoding="utf8")
 

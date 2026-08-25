@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypedDict
 from uuid import uuid4
 
-from ba_downloader.domain.exceptions import ExternalToolError, ProcessExecutionError
+from ba_downloader.domain.exceptions import (
+    ExternalToolError,
+    OperationCancelledError,
+    ProcessExecutionError,
+)
 from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.process import (
     ProcessCommand,
@@ -20,12 +24,17 @@ from ba_downloader.domain.ports.process import (
     ProcessRunnerPort,
 )
 from ba_downloader.domain.ports.progress import (
+    ProgressMeasure,
     ProgressReporterFactoryPort,
     ProgressReporterPort,
+    ProgressStage,
+    ProgressState,
+    ProgressWorkers,
 )
 from ba_downloader.infrastructure.extraction.errors import (
     ExtractionFailure,
     ExtractionFailureError,
+    MediaExtractionError,
 )
 from ba_downloader.infrastructure.extraction.media.source import (
     SHARPZIPLIB_COMMIT,
@@ -37,12 +46,33 @@ from ba_downloader.infrastructure.files.atomic import (
     publish_staged_directory,
     write_json_atomic,
 )
-from ba_downloader.infrastructure.files.checksum import calculate_sha256
+from ba_downloader.infrastructure.files.build_cache import (
+    validate_build_manifest,
+    write_build_manifest,
+)
+from ba_downloader.infrastructure.files.checksum import calculate_source_fingerprint
+from ba_downloader.infrastructure.files.lock import (
+    InterprocessFileLock,
+    InterprocessLockBusyError,
+    wait_for_interprocess_lock,
+)
 from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 from ba_downloader.infrastructure.schema.crypto import zip_password
 
-MEDIA_EXTRACTOR_SCHEMA_VERSION = 1
-MEDIA_EXTRACTOR_WRAPPER_VERSION = "1"
+MEDIA_EXTRACTOR_SCHEMA_VERSION = 0
+_MEDIA_TOOL_REQUIRED_ARTIFACTS = (
+    "MediaArchiveExtractor.dll",
+    "ICSharpCode.SharpZipLib.dll",
+    "MediaArchiveExtractor.runtimeconfig.json",
+    "MediaArchiveExtractor.deps.json",
+)
+
+
+def media_extraction_lock_path(context: ExecutionContext) -> Path:
+    return (
+        context.workspace.locks
+        / f"media-extraction-{context.region}-{context.platform}.lock"
+    )
 
 
 class MediaArchiveExtractorError(ExternalToolError):
@@ -67,8 +97,13 @@ class _ArchiveResultPayload(TypedDict):
 
 
 class _MediaProgressObserver(ProcessOutputObserverPort):
-    def __init__(self, progress: ProgressReporterPort) -> None:
+    def __init__(
+        self,
+        progress: ProgressReporterPort,
+        initial_state: ProgressState,
+    ) -> None:
         self._progress = progress
+        self._state = initial_state
 
     def on_output(self, output: ProcessOutputLine) -> None:
         if output.stream != "stdout":
@@ -87,19 +122,72 @@ class _MediaProgressObserver(ProcessOutputObserverPort):
         total_archives = _event_count(payload, "total_archives")
         completed_members = _event_count(payload, "completed_members")
         total_members = _event_count(payload, "total_members")
+        active_workers = _event_count(payload, "active_workers")
+        worker_limit = _event_count(payload, "worker_limit")
+        failed_archives = _event_count(payload, "failed_archives")
         if (
             completed_archives is None
             or total_archives is None
             or completed_members is None
             or total_members is None
+            or active_workers is None
+            or worker_limit is None
+            or failed_archives is None
         ):
             return
-        self._progress.set_total(total_archives)
-        self._progress.set_completed(min(completed_archives, total_archives))
-        self._progress.set_status(f"{completed_archives}/{total_archives} archives")
-        self._progress.set_secondary_status(
-            f"{completed_members}/{total_members} members"
+        workers = (
+            ProgressWorkers(min(active_workers, worker_limit), worker_limit)
+            if worker_limit > 0
+            else None
         )
+        previous_overall = self._state.overall
+        previous_current = self._state.current
+        if (
+            previous_overall is not None
+            and previous_overall.total == total_archives
+            and previous_overall.unit == "archives"
+        ):
+            completed_archives = max(
+                completed_archives,
+                previous_overall.completed,
+            )
+        if (
+            previous_current is not None
+            and previous_current.total == total_members
+            and previous_current.unit == "members"
+        ):
+            completed_members = max(completed_members, previous_current.completed)
+        self._state = ProgressState(
+            "Media",
+            "extracting",
+            overall=ProgressMeasure(
+                min(completed_archives, total_archives),
+                total_archives,
+                "archives",
+            ),
+            current=ProgressMeasure(
+                min(completed_members, total_members),
+                total_members,
+                "members",
+            ),
+            workers=workers,
+            failures=max(failed_archives, self._state.failures),
+        )
+        self._progress.update(self._state)
+
+    def finish(self, stage: ProgressStage, *, failed: bool = False) -> None:
+        failures = max(self._state.failures, 1) if failed else self._state.failures
+        self._state = replace(
+            self._state,
+            stage=stage,
+            workers=(
+                ProgressWorkers(0, self._state.workers.limit)
+                if self._state.workers is not None
+                else None
+            ),
+            failures=failures,
+        )
+        self._progress.update(self._state)
 
 
 class MediaArchiveExtractor:
@@ -110,12 +198,14 @@ class MediaArchiveExtractor:
         *,
         source_resolver: SharpZipLibSourcePort,
         progress_factory: ProgressReporterFactoryPort | None = None,
+        cancellation: CancellationPort | None = None,
         repository_root: Path | None = None,
     ) -> None:
         self._process_runner = process_runner
         self._logger = logger
         self._source_resolver = source_resolver
         self._progress_factory = progress_factory or NullProgressReporterFactory()
+        self._cancellation = cancellation or NeverCancelled()
         self._repository_root = repository_root or Path(__file__).resolve().parents[5]
 
     def prepare(self, context: ExecutionContext) -> Path:
@@ -131,6 +221,32 @@ class MediaArchiveExtractor:
         requests = self._build_archive_requests(archives)
         if not requests:
             return
+
+        lock = InterprocessFileLock(
+            media_extraction_lock_path(context),
+            operation="media extraction",
+        )
+        try:
+            lock.__enter__()
+        except InterprocessLockBusyError as exc:
+            raise MediaExtractionError(str(exc)) from exc
+        except OSError as exc:
+            raise MediaExtractionError(
+                f"Media extraction lock is unavailable: {exc}"
+            ) from exc
+        try:
+            self._extract_locked(context, requests, concurrency=concurrency)
+        finally:
+            lock.__exit__(None, None, None)
+
+    def _extract_locked(
+        self,
+        context: ExecutionContext,
+        requests: list[_ArchiveRequest],
+        *,
+        concurrency: int,
+    ) -> None:
+        self._cancellation.raise_if_cancelled()
 
         tool_dll = self._ensure_tool(context)
         job_root = (
@@ -165,46 +281,72 @@ class MediaArchiveExtractor:
                 ("dotnet", str(tool_dll), str(request_path), str(result_path)),
                 cwd=job_root,
             )
-            with self._progress_factory.create(
-                len(requests),
-                "Extracting media...",
-                extract_mode=True,
-            ) as progress:
-                observer = _MediaProgressObserver(progress)
-                process_result = self._run_tool(command, observer)
-            payload = self._read_result(result_path, process_result)
-            try:
-                results = self._validate_archive_results(
-                    payload,
-                    requests,
-                    staging_root,
-                )
-            except OSError as exc:
-                raise MediaArchiveExtractorError(
-                    "Media archive extractor returned missing or unsafe staging data."
-                ) from exc
-            self._publish_results(context, requests, results)
+            initial = ProgressState(
+                "Media",
+                "extracting",
+                overall=ProgressMeasure(0, len(requests), "archives"),
+            )
+            with self._progress_factory.create(initial) as progress:
+                observer = _MediaProgressObserver(progress, initial)
+                try:
+                    process_result = self._run_tool(command, observer)
+                    payload = self._read_result(result_path, process_result)
+                    try:
+                        results = self._validate_archive_results(
+                            payload,
+                            requests,
+                            staging_root,
+                        )
+                    except OSError as exc:
+                        raise MediaArchiveExtractorError(
+                            "Media archive extractor returned missing or unsafe staging data."
+                        ) from exc
+                    self._publish_results(context, requests, results)
+                except OperationCancelledError:
+                    observer.finish("cancelled")
+                    raise
+                except BaseException:
+                    observer.finish("failed", failed=True)
+                    raise
+                observer.finish("complete")
         finally:
             shutil.rmtree(job_root, ignore_errors=True)
 
     def _ensure_tool(self, context: ExecutionContext) -> Path:
         fingerprint = media_extractor_cache_fingerprint()
         cache_root = context.workspace.tools_cache / "media-extractor" / fingerprint
+        if self._is_valid_tool_cache(cache_root, fingerprint):
+            return cache_root / "MediaArchiveExtractor.dll"
+
+        lock_path = (
+            context.workspace.locks / f"media-extractor-build-{fingerprint[:20]}.lock"
+        )
+        try:
+            with wait_for_interprocess_lock(
+                lock_path,
+                operation="media extractor build",
+                cancellation_check=self._cancellation.raise_if_cancelled,
+            ):
+                if self._is_valid_tool_cache(cache_root, fingerprint):
+                    return cache_root / "MediaArchiveExtractor.dll"
+                return self._build_tool(context, cache_root, fingerprint)
+        except MediaArchiveExtractorError:
+            raise
+        except OSError as exc:
+            raise MediaArchiveExtractorError(
+                f"Media archive extractor requires a writable tool lock: {exc}"
+            ) from exc
+
+    def _build_tool(
+        self,
+        context: ExecutionContext,
+        cache_root: Path,
+        fingerprint: str,
+    ) -> Path:
         tool_dll = cache_root / "MediaArchiveExtractor.dll"
         dependency = cache_root / "ICSharpCode.SharpZipLib.dll"
         runtime_config = cache_root / "MediaArchiveExtractor.runtimeconfig.json"
         dependency_manifest = cache_root / "MediaArchiveExtractor.deps.json"
-        marker = cache_root / "fingerprint.txt"
-        if (
-            tool_dll.is_file()
-            and dependency.is_file()
-            and runtime_config.is_file()
-            and dependency_manifest.is_file()
-            and marker.is_file()
-            and marker.read_text(encoding="ascii").strip() == fingerprint
-        ):
-            return tool_dll
-
         cache_root.parent.mkdir(parents=True, exist_ok=True)
         build_root = cache_root.with_name(f".{fingerprint}.staging-{uuid4().hex}")
         artifacts_root = cache_root.with_name(f".{fingerprint}.artifacts-{uuid4().hex}")
@@ -243,7 +385,15 @@ class MediaArchiveExtractor:
                     "Media archive extractor build failed: "
                     f"{_process_error(result.stderr or result.stdout)}"
                 )
-            (build_root / marker.name).write_text(f"{fingerprint}\n", encoding="ascii")
+            write_build_manifest(
+                build_root,
+                fingerprint,
+                required=_MEDIA_TOOL_REQUIRED_ARTIFACTS,
+            )
+            if not self._is_valid_tool_cache(build_root, fingerprint):
+                raise MediaArchiveExtractorError(
+                    "Media archive extractor build produced invalid runtime artifacts."
+                )
             publish_staged_directory(build_root, cache_root)
         except ProcessExecutionError as exc:
             raise MediaArchiveExtractorError(
@@ -259,6 +409,14 @@ class MediaArchiveExtractor:
             shutil.rmtree(build_root, ignore_errors=True)
             shutil.rmtree(artifacts_root, ignore_errors=True)
         return tool_dll
+
+    @staticmethod
+    def _is_valid_tool_cache(cache_root: Path, fingerprint: str) -> bool:
+        return validate_build_manifest(
+            cache_root,
+            fingerprint,
+            required=_MEDIA_TOOL_REQUIRED_ARTIFACTS,
+        )
 
     @staticmethod
     def _build_archive_requests(archives: list[Path]) -> list[_ArchiveRequest]:
@@ -432,19 +590,22 @@ class MediaArchiveExtractor:
 
 
 def media_extractor_cache_fingerprint() -> str:
-    digest = hashlib.sha256()
-    digest.update(f"schema={MEDIA_EXTRACTOR_SCHEMA_VERSION}\n".encode("ascii"))
-    digest.update(f"wrapper={MEDIA_EXTRACTOR_WRAPPER_VERSION}\n".encode("ascii"))
-    digest.update(f"sharpziplib={SHARPZIPLIB_VERSION}\n".encode("ascii"))
-    digest.update(f"sharpziplib-commit={SHARPZIPLIB_COMMIT}\n".encode("ascii"))
-    digest.update(
-        f"sharpziplib-source={SHARPZIPLIB_SOURCE_TREE_SHA256}\n".encode("ascii")
+    root = _media_tool_root()
+    sources = (
+        path
+        for path in root.glob("*")
+        if path.is_file() and path.suffix in {".cs", ".csproj"}
     )
-    for source in sorted(_media_tool_root().glob("*"), key=lambda path: path.name):
-        if source.is_file() and source.suffix in {".cs", ".csproj"}:
-            digest.update(source.name.encode("utf8"))
-            digest.update(calculate_sha256(source).encode("ascii"))
-    return digest.hexdigest()
+    return calculate_source_fingerprint(
+        root,
+        sources,
+        identities=(
+            ("protocol-schema", str(MEDIA_EXTRACTOR_SCHEMA_VERSION)),
+            ("sharpziplib-version", SHARPZIPLIB_VERSION),
+            ("sharpziplib-commit", SHARPZIPLIB_COMMIT),
+            ("sharpziplib-source", SHARPZIPLIB_SOURCE_TREE_SHA256),
+        ),
+    )
 
 
 def _media_tool_root() -> Path:

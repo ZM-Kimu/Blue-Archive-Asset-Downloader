@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
@@ -9,7 +10,10 @@ from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import (
     ProgressReporterFactoryPort,
     ProgressReporterPort,
+    ProgressState,
+    preserve_terminal_progress,
 )
+from ba_downloader.domain.services.progress_timing import ProgressTimingEstimator
 
 
 def utc_now() -> str:
@@ -77,95 +81,48 @@ def build_secret_redactions(
 class QueueProgressReporter(ProgressReporterPort):
     _MIN_EMIT_INTERVAL = 0.05
 
-    def __init__(self, queue: Any, total: int, description: str) -> None:
+    def __init__(
+        self,
+        queue: Any,
+        initial_state: ProgressState,
+        *,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
         self._queue = queue
-        self._total = total
-        self._completed = 0
-        self._description = description
-        self._stage = "operation"
-        self._unit = "items"
-        self._status = ""
-        self._secondary_status = ""
+        self._state = initial_state
+        self._timing = ProgressTimingEstimator(clock=clock)
         self._last_emit = 0.0
-        self._pending: dict[str, object] | None = None
+        self._pending = False
 
     def __enter__(self) -> QueueProgressReporter:
+        self._timing.start(self._state)
         self._emit()
         return self
 
     def __exit__(self, *_: object) -> None:
         self.stop()
 
-    def advance(self, amount: int = 1) -> None:
-        self._completed += amount
-        self._emit()
-
-    def set_total(self, total: int) -> None:
-        self._total = total
-        self._emit()
-
-    def set_description(self, description: str) -> None:
-        self._description = description
-        self._emit()
-
-    def set_status(self, status: str) -> None:
-        self._status = status
-        self._emit()
-
-    def set_secondary_status(self, status: str) -> None:
-        self._secondary_status = status
-        self._emit()
-
-    def set_progress(
-        self,
-        completed: int,
-        total: int,
-        *,
-        stage: str,
-        unit: str,
-        status: str = "",
-        secondary_status: str = "",
-    ) -> None:
-        self._completed = completed
-        self._total = total
-        self._stage = stage
-        self._unit = unit
-        self._status = status
-        self._secondary_status = secondary_status
-        self._emit()
-
-    def set_failed_status(self, status: str) -> None:
-        self._status = status
-        self._emit(force=True)
-
-    def set_completed(self, completed: int) -> None:
-        self._completed = completed
+    def update(self, state: ProgressState) -> None:
+        self._state = preserve_terminal_progress(self._state, state)
+        self._timing.observe(self._state)
         self._emit()
 
     def stop(self) -> None:
-        if self._pending is not None:
+        if self._pending:
             self._emit(force=True)
 
     def _emit(self, *, force: bool = False) -> None:
-        payload: dict[str, object] = {
-            "completed": self._completed,
-            "total": self._total,
-            "stage": self._stage,
-            "unit": self._unit,
-            "status": self._status,
-            "secondary_status": self._secondary_status,
-        }
+        payload = self._state.to_wire()
+        payload["timing"] = self._timing.snapshot(self._state).to_wire()
         now = monotonic()
         if (
             not force
             and self._last_emit
             and now - self._last_emit < self._MIN_EMIT_INTERVAL
         ):
-            self._pending = payload
+            self._pending = True
             return
-        if self._pending is not None:
-            payload = self._pending | payload
-            self._pending = None
+        self._pending = False
         self._last_emit = now
         self._queue.put(
             {"type": "progress", "timestamp": utc_now(), "payload": payload}
@@ -178,11 +135,6 @@ class QueueProgressReporterFactory(ProgressReporterFactoryPort):
 
     def create(
         self,
-        total: int,
-        description: str,
-        *,
-        download_mode: bool = False,
-        extract_mode: bool = False,
+        initial_state: ProgressState,
     ) -> QueueProgressReporter:
-        _ = (download_mode, extract_mode)
-        return QueueProgressReporter(self._queue, total, description)
+        return QueueProgressReporter(self._queue, initial_state)

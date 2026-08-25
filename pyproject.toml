@@ -53,6 +53,7 @@ packages = ["src/ba_downloader"]
 [tool.hatch.build.targets.wheel.force-include]
 "THIRD_PARTY_NOTICES.md" = "THIRD_PARTY_NOTICES.md"
 "licenses/AssetRipper-GPL-3.0.txt" = "licenses/AssetRipper-GPL-3.0.txt"
+"licenses/Cpp2IL-MIT.txt" = "licenses/Cpp2IL-MIT.txt"
 "licenses/SharpZipLib-MIT.txt" = "licenses/SharpZipLib-MIT.txt"
 
 [tool.hatch.build.targets.sdist]

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import os
 import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from functools import partial
 from pathlib import Path, PurePosixPath
+from time import monotonic
 from typing import Protocol
 from uuid import uuid4
 
@@ -19,8 +20,12 @@ from ba_downloader.domain.ports.execution import (
 )
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import (
+    ProgressGroup,
+    ProgressMeasure,
     ProgressReporterFactoryPort,
     ProgressReporterPort,
+    ProgressStage,
+    ProgressState,
 )
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
@@ -40,7 +45,11 @@ from ba_downloader.infrastructure.extraction.assetripper.entry_store import (
 )
 from ba_downloader.infrastructure.extraction.assetripper.events import (
     SERIALIZE_REFERENCE_UNSUPPORTED_MESSAGE,
+    AssetRipperAssetLifecycleEvent,
     AssetRipperEntryCacheProgressEvent,
+    AssetRipperGroupCompletedEvent,
+    AssetRipperGroupContext,
+    AssetRipperGroupStartedEvent,
     AssetRipperHeartbeatEvent,
     AssetRipperLogEvent,
     AssetRipperPhaseEvent,
@@ -57,7 +66,7 @@ from ba_downloader.infrastructure.extraction.assetripper.exporter import (
     AssetRipperExportResult,
     AssetRipperToolError,
     assetripper_dependency_scan_cache_key,
-    assetripper_exporter_cache_key,
+    assetripper_exported_content_fingerprint,
 )
 from ba_downloader.infrastructure.extraction.assetripper.source import (
     AssetRipperSourceError,
@@ -71,11 +80,12 @@ from ba_downloader.infrastructure.files.lock import (
 )
 from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 
-_BUNDLE_MANIFEST_SCHEMA_VERSION = 10
-_BUNDLE_LAYOUT = "assetripper-readable-v1"
-_PROCESSING_PROFILE = "readable-fast-v1"
-_TRANSACTION_SCHEMA_VERSION = 1
+_BUNDLE_MANIFEST_SCHEMA_VERSION = 0
+_BUNDLE_LAYOUT = "assetripper-readable"
+_PROCESSING_PROFILE = "readable-playable"
+_TRANSACTION_SCHEMA_VERSION = 0
 _STREAM_GROUP_TARGET_ENTRY_LIMIT = 512
+_STREAM_GROUPING_PROFILE = "dependency-topology"
 
 
 def bundle_extraction_lock_path(context: ExecutionContext) -> Path:
@@ -150,6 +160,138 @@ class _AssetRipperLogAggregator:
             )
 
 
+class _BundleProgressTracker:
+    _LABEL = "Bundles"
+
+    def __init__(
+        self,
+        progress: ProgressReporterPort,
+        logs: _AssetRipperLogAggregator,
+        *,
+        total_groups: int,
+        clock: Callable[[], float],
+    ) -> None:
+        self._progress = progress
+        self._logs = logs
+        self._total = total_groups
+        self._clock = clock
+        self._completed = 0
+        self._started_at: dict[int, float] = {}
+        self._durations: list[float] = []
+        self._active_assets: dict[str, tuple[int, str]] = {}
+        self._asset_sequence = 0
+        self._group: AssetRipperGroupContext | None = None
+        self._current: ProgressMeasure | None = None
+        self._item: str | None = None
+        self._stage = "loading"
+        self._failures = 0
+
+    def handle(self, event: AssetRipperProcessEvent) -> None:
+        if isinstance(event, AssetRipperLogEvent):
+            self._logs.handle(event)
+            return
+        if isinstance(event, AssetRipperGroupStartedEvent):
+            self._group = event.group
+            self._started_at.setdefault(event.group.index, self._clock())
+            self._active_assets.clear()
+            self._emit("loading", group=event.group)
+            return
+        if isinstance(event, AssetRipperGroupCompletedEvent):
+            started = self._started_at.pop(event.group.index, None)
+            if started is not None:
+                self._durations.append(max(self._clock() - started, 0.0))
+            self._completed = max(self._completed, min(event.group.index, self._total))
+            self._active_assets.clear()
+            self._emit("exporting", group=event.group)
+            return
+        group = getattr(event, "group", None) or self._group
+        if isinstance(event, AssetRipperAssetLifecycleEvent):
+            if event.lifecycle == "started":
+                self._asset_sequence += 1
+                self._active_assets.setdefault(
+                    event.stable_id, (self._asset_sequence, event.item)
+                )
+            else:
+                self._active_assets.pop(event.stable_id, None)
+            oldest = min(self._active_assets.values(), default=None)
+            self._emit(
+                "exporting",
+                current=ProgressMeasure(event.current, event.total, "assets"),
+                group=event.group,
+                item=oldest[1] if oldest is not None else None,
+            )
+        elif isinstance(event, AssetRipperProcessorProgressEvent):
+            self._emit(
+                "processing",
+                current=ProgressMeasure(event.current, event.total, "processors"),
+                group=group,
+                item=event.processor.removesuffix("Processor"),
+            )
+        elif isinstance(event, AssetRipperProgressEvent):
+            self._emit(
+                event.phase,
+                current=ProgressMeasure(
+                    event.current,
+                    event.total,
+                    "assets" if event.phase == "exporting" else "inputs",
+                ),
+                group=group,
+            )
+        elif isinstance(event, AssetRipperHeartbeatEvent):
+            self._emit(
+                "processing", current=self._current, group=group, item=self._item
+            )
+        elif isinstance(event, AssetRipperPhaseEvent):
+            self._emit(event.phase, group=group)
+
+    def finish_stage(
+        self,
+        stage: ProgressStage,
+        *,
+        failures: int | None = None,
+    ) -> None:
+        self._completed = self._total
+        if failures is not None:
+            self._failures = failures
+        self._emit(stage, group=None, eta=False)
+
+    def _emit(
+        self,
+        stage: ProgressStage,
+        *,
+        current: ProgressMeasure | None = None,
+        group: AssetRipperGroupContext | None = None,
+        item: str | None = None,
+        eta: bool = True,
+    ) -> None:
+        self._stage = stage
+        self._current = current
+        self._group = group
+        self._item = item
+        eta_seconds = None
+        if eta and self._durations and self._completed < self._total:
+            eta_seconds = (sum(self._durations) / len(self._durations)) * (
+                self._total - self._completed
+            )
+        progress_group = (
+            ProgressGroup(group.group_id, group.index, group.total)
+            if group is not None
+            else None
+        )
+        self._progress.update(
+            ProgressState(
+                self._LABEL,
+                stage,
+                overall=ProgressMeasure(self._completed, self._total, "groups"),
+                current=current,
+                group=progress_group,
+                item=item,
+                failures=self._failures,
+                eta_seconds=eta_seconds,
+            )
+        )
+
+
 class AssetRipperBundleWorkflow:
     def __init__(
         self,
@@ -159,12 +301,14 @@ class AssetRipperBundleWorkflow:
         *,
         progress_factory: ProgressReporterFactoryPort | None = None,
         cancellation: CancellationPort | None = None,
+        clock: Callable[[], float] = monotonic,
     ) -> None:
         self._exporter = exporter
         self._dependency_scanner = dependency_scanner
         self._logger = logger
         self._progress_factory = progress_factory or NullProgressReporterFactory()
         self._cancellation = cancellation or NeverCancelled()
+        self._clock = clock
 
     def run(
         self,
@@ -223,23 +367,31 @@ class AssetRipperBundleWorkflow:
             return BundleExtractionReport()
         manifest = self._load_manifest(output_root / "manifest.json", context)
         run_fingerprint = self._run_fingerprint(context, archives, filtered=filtered)
-        warm = self._load_warm_report(output_root, manifest, run_fingerprint)
+        warm = self._load_warm_report(
+            output_root,
+            manifest,
+            run_fingerprint,
+        )
         if warm is not None:
             return warm
 
         warnings: list[str] = []
         with self._progress_factory.create(
-            len(archives),
-            "Extracting bundles...",
-            extract_mode=True,
+            ProgressState(
+                "Bundles",
+                "scanning",
+                current=ProgressMeasure(0, len(archives), "archives"),
+                message="Scanning dependencies",
+            )
         ) as progress:
             try:
-                progress.set_progress(
-                    0,
-                    len(archives),
-                    stage="scanning",
-                    unit="archives",
-                    secondary_status="Scanning dependencies",
+                progress.update(
+                    ProgressState(
+                        "Bundles",
+                        "scanning",
+                        current=ProgressMeasure(0, len(archives), "archives"),
+                        message="Scanning dependencies",
+                    )
                 )
                 scans = self._dependency_scanner.scan(
                     context,
@@ -257,12 +409,13 @@ class AssetRipperBundleWorkflow:
                     )
 
                 entries = self._unique_entries(prepared.executable.entries)
-                progress.set_progress(
-                    0,
-                    len(entries),
-                    stage="cache_fill",
-                    unit="entries",
-                    secondary_status="Preparing entry cache",
+                progress.update(
+                    ProgressState(
+                        "Bundles",
+                        "cache_fill",
+                        current=ProgressMeasure(0, len(entries), "entries"),
+                        message="Preparing entry cache",
+                    )
                 )
                 store = BundleEntryStore(
                     bundle_entry_store_root(context),
@@ -285,7 +438,7 @@ class AssetRipperBundleWorkflow:
                 job_root = output_root.parent / f".bundles-staging-{uuid4().hex}"
                 job_root.mkdir(parents=True)
                 try:
-                    result, batches = self._export_streamed(
+                    result, batches, aggregate, tracker = self._export_streamed(
                         context,
                         prepared.executable,
                         resolved_by_node,
@@ -293,8 +446,14 @@ class AssetRipperBundleWorkflow:
                         progress,
                         concurrency=concurrency,
                     )
+                    tracker.finish_stage("validating")
+                    self._validate_result(aggregate, result, job_root)
                     merged_assets, collection_failures = self._merge_results(
                         [result], job_root
+                    )
+                    tracker.finish_stage(
+                        "validating",
+                        failures=len(collection_failures),
                     )
                     if collection_failures:
                         warnings.append(
@@ -335,26 +494,32 @@ class AssetRipperBundleWorkflow:
                         publish_assets,
                         filtered=filtered,
                     )
+                    tracker.finish_stage("publishing")
                     self._publish_directory_transaction(
                         output_root,
                         publish_root,
                         new_manifest,
                     )
+                    tracker.finish_stage("complete")
                 finally:
                     shutil.rmtree(job_root, ignore_errors=True)
-                progress.set_progress(
-                    len(batches),
-                    len(batches),
-                    stage="exporting",
-                    unit="batches",
-                    status=f"{len(batches)}/{len(batches)} groups",
-                    secondary_status="Bundle extraction complete",
-                )
             except OperationCancelledError:
-                progress.set_failed_status("Bundle extraction cancelled")
+                progress.update(
+                    ProgressState(
+                        "Bundles",
+                        "cancelled",
+                        message="Bundle extraction cancelled",
+                    )
+                )
                 raise
             except BaseException:
-                progress.set_failed_status("Bundle extraction failed")
+                progress.update(
+                    ProgressState(
+                        "Bundles",
+                        "failed",
+                        message="Bundle extraction failed",
+                    )
+                )
                 raise
 
         return BundleExtractionReport(
@@ -381,7 +546,12 @@ class AssetRipperBundleWorkflow:
         progress: ProgressReporterPort,
         *,
         concurrency: int,
-    ) -> tuple[AssetRipperExportResult, tuple[BundleExportBatch, ...]]:
+    ) -> tuple[
+        AssetRipperExportResult,
+        tuple[BundleExportBatch, ...],
+        BundleExportBatch,
+        _BundleProgressTracker,
+    ]:
         batches = self._stream_batches(plan)
         groups: list[AssetRipperExportGroup] = []
         for batch in batches:
@@ -401,34 +571,32 @@ class AssetRipperBundleWorkflow:
             )
         aggregate = self._batch_for_targets(plan, plan.components, batch_id="stream")
         log_aggregator = _AssetRipperLogAggregator(self._logger)
+        tracker = _BundleProgressTracker(
+            progress,
+            log_aggregator,
+            total_groups=len(groups),
+            clock=self._clock,
+        )
         try:
             self._cancellation.raise_if_cancelled()
-            progress.set_progress(
-                0,
-                len(groups),
-                stage="loading",
-                unit="groups",
-                status=f"0/{len(groups)} groups",
-                secondary_status="Loading bundle groups",
+            progress.update(
+                ProgressState(
+                    "Bundles",
+                    "loading",
+                    overall=ProgressMeasure(0, len(groups), "groups"),
+                    message="Loading bundle groups",
+                )
             )
             result = self._exporter.export_grouped(
                 context,
                 groups,
                 job_root,
                 concurrency=concurrency,
-                event_callback=partial(
-                    self._handle_export_event,
-                    progress,
-                    batch=aggregate,
-                    completed_batches=0,
-                    total_batches=len(groups),
-                    logs=log_aggregator,
-                ),
+                event_callback=tracker.handle,
             )
-            self._validate_result(aggregate, result, job_root)
         finally:
             log_aggregator.flush()
-        return result, batches
+        return result, batches, aggregate, tracker
 
     def _validate_result(
         self,
@@ -594,7 +762,7 @@ class AssetRipperBundleWorkflow:
             "platform": context.platform,
             "resource_version": context.resource_version,
             "profile": _PROCESSING_PROFILE,
-            "tool_fingerprint": assetripper_exporter_cache_key(),
+            "content_fingerprint": assetripper_exported_content_fingerprint(),
             "run_fingerprint": run_fingerprint,
             "status": status,
             "assets": records,
@@ -625,7 +793,7 @@ class AssetRipperBundleWorkflow:
         if source_assets is None:
             source_assets = job_root / "Assets"
             source_assets.mkdir()
-        if not filtered or old_manifest.get("schema_version") != 10:
+        if not filtered or old_manifest.get("_replace_incompatible_output") is True:
             return source_assets
 
         self._validate_complete_inventory(output_root, old_manifest)
@@ -803,8 +971,14 @@ class AssetRipperBundleWorkflow:
             raise BundleExtractionError(
                 "The bundle manifest is unreadable or corrupted; existing output was left unchanged."
             ) from exc
-        if isinstance(payload, dict) and payload.get("schema_version") == 9:
-            return self._empty_manifest(context)
+        if (
+            isinstance(payload, dict)
+            and isinstance(payload.get("schema_version"), int)
+            and payload.get("schema_version") != _BUNDLE_MANIFEST_SCHEMA_VERSION
+        ):
+            manifest = self._empty_manifest(context)
+            manifest["_replace_incompatible_output"] = True
+            return manifest
         if (
             not isinstance(payload, dict)
             or payload.get("schema_version") != _BUNDLE_MANIFEST_SCHEMA_VERSION
@@ -844,8 +1018,9 @@ class AssetRipperBundleWorkflow:
         if (
             manifest.get("schema_version") != _BUNDLE_MANIFEST_SCHEMA_VERSION
             or manifest.get("run_fingerprint") != fingerprint
+            or manifest.get("content_fingerprint")
+            != assetripper_exported_content_fingerprint()
             or manifest.get("status") != "complete"
-            or manifest.get("tool_fingerprint") != assetripper_exporter_cache_key()
             or manifest.get("profile") != _PROCESSING_PROFILE
         ):
             return None
@@ -966,10 +1141,14 @@ class AssetRipperBundleWorkflow:
             "schema": _BUNDLE_MANIFEST_SCHEMA_VERSION,
             "layout": _BUNDLE_LAYOUT,
             "profile": _PROCESSING_PROFILE,
+            "grouping": {
+                "profile": _STREAM_GROUPING_PROFILE,
+                "target_entry_limit": _STREAM_GROUP_TARGET_ENTRY_LIMIT,
+            },
             "mode": "filtered" if filtered else "full",
             "resource_version": context.resource_version,
             "dependency_scanner": assetripper_dependency_scan_cache_key(),
-            "exporter": assetripper_exporter_cache_key(),
+            "exported_content": assetripper_exported_content_fingerprint(),
             "inputs": [
                 {
                     "archive_id": item.archive_id,
@@ -1000,7 +1179,7 @@ class AssetRipperBundleWorkflow:
             "platform": context.platform,
             "resource_version": context.resource_version,
             "profile": _PROCESSING_PROFILE,
-            "tool_fingerprint": assetripper_exporter_cache_key(),
+            "content_fingerprint": assetripper_exported_content_fingerprint(),
             "run_fingerprint": "",
             "status": "partial",
             "assets": {},
@@ -1112,10 +1291,35 @@ class AssetRipperBundleWorkflow:
     ) -> tuple[BundleExportBatch, ...]:
         if target_entry_limit <= 0:
             raise ValueError("Bundle stream group target limit must be positive.")
-        ordered = sorted(
-            plan.components,
-            key=lambda item: min(entry.node_id.casefold() for entry in item.entries),
+        dependency_first = self._topological_components(plan)
+        candidates = (
+            self._group_components(
+                plan,
+                dependency_first,
+                target_entry_limit=target_entry_limit,
+            ),
+            self._group_components(
+                plan,
+                tuple(reversed(dependency_first)),
+                target_entry_limit=target_entry_limit,
+            ),
         )
+        return min(
+            candidates,
+            key=lambda batches: (
+                sum(batch.total_bytes for batch in batches),
+                sum(len(batch.entries) for batch in batches),
+                tuple(batch.target_node_ids for batch in batches),
+            ),
+        )
+
+    def _group_components(
+        self,
+        plan: BundleDependencyPlan,
+        ordered: Sequence[BundleComponent],
+        *,
+        target_entry_limit: int,
+    ) -> tuple[BundleExportBatch, ...]:
         target_groups: list[list[BundleComponent]] = []
         current: list[BundleComponent] = []
         current_entries = 0
@@ -1139,6 +1343,59 @@ class AssetRipperBundleWorkflow:
             )
             for index, targets in enumerate(target_groups, start=1)
         )
+
+    def _topological_components(
+        self,
+        plan: BundleDependencyPlan,
+    ) -> tuple[BundleComponent, ...]:
+        by_id = {component.component_id: component for component in plan.components}
+        if len(by_id) != len(plan.components):
+            raise ValueError("Bundle dependency plan contains duplicate components.")
+        component_keys = {
+            component.component_id: min(
+                entry.node_id.casefold() for entry in component.entries
+            )
+            for component in plan.components
+        }
+        dependent_ids: dict[str, list[str]] = {
+            component_id: [] for component_id in by_id
+        }
+        pending_dependencies: dict[str, int] = {}
+        for component in plan.components:
+            self._cancellation.raise_if_cancelled()
+            dependencies = component.dependency_component_ids
+            if any(dependency not in by_id for dependency in dependencies):
+                raise ValueError(
+                    "Bundle dependency plan references an unknown component."
+                )
+            pending_dependencies[component.component_id] = len(dependencies)
+            for dependency in dependencies:
+                dependent_ids[dependency].append(component.component_id)
+
+        ready: list[tuple[str, str]] = [
+            (component_keys[component_id], component_id)
+            for component_id, count in pending_dependencies.items()
+            if count == 0
+        ]
+        heapq.heapify(ready)
+        ordered: list[BundleComponent] = []
+        while ready:
+            self._cancellation.raise_if_cancelled()
+            _, component_id = heapq.heappop(ready)
+            ordered.append(by_id[component_id])
+            for dependent_id in sorted(
+                dependent_ids[component_id],
+                key=lambda item: (component_keys[item], item),
+            ):
+                pending_dependencies[dependent_id] -= 1
+                if pending_dependencies[dependent_id] == 0:
+                    heapq.heappush(
+                        ready,
+                        (component_keys[dependent_id], dependent_id),
+                    )
+        if len(ordered) != len(plan.components):
+            raise ValueError("Bundle dependency component graph is cyclic.")
+        return tuple(ordered)
 
     @staticmethod
     def _unique_entries(
@@ -1185,12 +1442,13 @@ class AssetRipperBundleWorkflow:
         event: AssetRipperProcessEvent,
     ) -> None:
         if isinstance(event, AssetRipperScanProgressEvent):
-            progress.set_progress(
-                event.current,
-                event.total,
-                stage="scanning",
-                unit="archives",
-                secondary_status=event.archive_id,
+            progress.update(
+                ProgressState(
+                    "Bundles",
+                    "scanning",
+                    current=ProgressMeasure(event.current, event.total, "archives"),
+                    item=event.archive_id,
+                )
             )
 
     @staticmethod
@@ -1199,64 +1457,13 @@ class AssetRipperBundleWorkflow:
         event: AssetRipperProcessEvent,
     ) -> None:
         if isinstance(event, AssetRipperEntryCacheProgressEvent):
-            progress.set_progress(
-                event.current,
-                event.total,
-                stage="cache_fill",
-                unit="entries",
-                secondary_status=event.node_id,
-            )
-
-    @staticmethod
-    def _handle_export_event(
-        progress: ProgressReporterPort,
-        event: AssetRipperProcessEvent,
-        batch: BundleExportBatch,
-        completed_batches: int,
-        total_batches: int,
-        logs: _AssetRipperLogAggregator,
-    ) -> None:
-        status = f"{completed_batches}/{total_batches} batches"
-        prefix = f"{batch.batch_id}: "
-        if isinstance(event, AssetRipperLogEvent):
-            logs.handle(event)
-        elif isinstance(event, AssetRipperProcessorProgressEvent):
-            progress.set_progress(
-                event.current,
-                event.total,
-                stage="processing",
-                unit="processors",
-                status=status,
-                secondary_status=(
-                    f"{prefix}{event.processor.removesuffix('Processor')}"
-                ),
-            )
-        elif isinstance(event, AssetRipperProgressEvent):
-            progress.set_progress(
-                event.current,
-                event.total,
-                stage=event.phase,
-                unit="assets" if event.phase == "exporting" else "inputs",
-                status=status,
-                secondary_status=f"{prefix}{event.stage}",
-            )
-        elif isinstance(event, AssetRipperHeartbeatEvent):
-            progress.set_progress(
-                0,
-                1,
-                stage="processing",
-                unit="processors",
-                status=status,
-                secondary_status=f"{prefix}Processing",
-            )
-        elif isinstance(event, AssetRipperPhaseEvent):
-            progress.set_progress(
-                0,
-                1,
-                stage=event.phase,
-                unit="assets" if event.phase == "exporting" else "inputs",
-                status=status,
-                secondary_status=f"{prefix}{event.phase.title()}",
+            progress.update(
+                ProgressState(
+                    "Bundles",
+                    "cache_fill",
+                    current=ProgressMeasure(event.current, event.total, "entries"),
+                    item=event.node_id,
+                )
             )
 
     @staticmethod

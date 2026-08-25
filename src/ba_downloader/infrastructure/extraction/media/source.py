@@ -14,6 +14,7 @@ from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.files.atomic import publish_staged_directory
 from ba_downloader.infrastructure.files.checksum import calculate_sha256
+from ba_downloader.infrastructure.files.lock import wait_for_interprocess_lock
 
 SHARPZIPLIB_VERSION = "1.4.2"
 SHARPZIPLIB_COMMIT = "33f64eb0f28cdd2b084cb822fcc224c7c5aba553"
@@ -70,6 +71,34 @@ class SharpZipLibSourceResolver:
         cache_root = self._cache_root(context)
         if self._is_verified_source(cache_root):
             return cache_root
+
+        lock_path = (
+            context.workspace.locks / "sharpziplib-source-"
+            f"{self._commit[:12]}-{self._source_tree_sha256[:8]}.lock"
+        )
+        try:
+            with wait_for_interprocess_lock(
+                lock_path,
+                operation="SharpZipLib source preparation",
+                cancellation_check=self._cancellation.raise_if_cancelled,
+            ):
+                if self._is_verified_source(submodule):
+                    return submodule
+                if self._is_verified_source(cache_root):
+                    return cache_root
+                return self._resolve_fallback(context, cache_root)
+        except SharpZipLibSourceError:
+            raise
+        except OSError as exc:
+            raise SharpZipLibSourceError(
+                f"SharpZipLib source lock is unavailable: {exc}"
+            ) from exc
+
+    def _resolve_fallback(
+        self,
+        context: ExecutionContext,
+        cache_root: Path,
+    ) -> Path:
 
         self._logger.warn(
             "SharpZipLib source is missing. Downloading fallback source package..."

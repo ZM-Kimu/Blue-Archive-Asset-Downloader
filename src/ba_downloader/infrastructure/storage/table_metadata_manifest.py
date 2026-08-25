@@ -12,7 +12,7 @@ from ba_downloader.infrastructure.files.atomic import write_json_atomic
 
 
 class JpTableMetadataManifestStore:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 0
 
     def manifest_path(self, context: ExecutionContext) -> Path:
         return (

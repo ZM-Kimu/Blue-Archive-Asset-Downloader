@@ -470,7 +470,7 @@ class TablePayloadCodecAdapter:
             temporary_payload.write_bytes(payload)
             temporary_payload.replace(payload_path)
         evidence = {
-            "schema_version": 1,
+            "schema_version": 0,
             "database": db_name,
             "table": table_name,
             "column": column_name,

@@ -5,6 +5,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from ba_downloader.api.app import create_app
+from ba_downloader.infrastructure.extraction.media.exporter import (
+    media_extraction_lock_path,
+)
+from ba_downloader.infrastructure.files.lock import InterprocessFileLock
+from support.fixtures import build_execution_context
 
 
 def _create_context(client: TestClient, **changes: object) -> dict[str, object]:
@@ -55,6 +60,31 @@ def test_typed_job_submission() -> None:
 
     assert created.status_code == 202
     assert created.json()["operation"] == "extract"
+
+
+def test_media_extraction_conflict_uses_http_409_wire(tmp_path: Path) -> None:
+    execution_context = build_execution_context(
+        tmp_path,
+        region="cn",
+        version="",
+    )
+    with TestClient(create_app(port=9230)) as client:
+        context = _create_context(client, workspace=str(tmp_path))
+        with InterprocessFileLock(
+            media_extraction_lock_path(execution_context),
+            operation="external media extraction",
+        ):
+            response = client.post(
+                "/api/v1/jobs",
+                json={
+                    "operation": "assets.extract",
+                    "context_id": context["id"],
+                    "resources": ["media"],
+                },
+            )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "MEDIA_EXTRACTION_CONFLICT"
 
 
 def test_openapi_exposes_unique_explicit_operation_ids() -> None:

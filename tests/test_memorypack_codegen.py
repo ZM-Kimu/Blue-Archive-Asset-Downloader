@@ -46,6 +46,11 @@ public class TableBundle : MemoryPack.IMemoryPackable<TableBundle>, MemoryPack.I
 """
 
 
+def test_memorypack_formatter_registry_rejects_nonzero_sidecar_version() -> None:
+    with pytest.raises(ValueError):
+        MemoryPackFormatterRegistry.from_dict({"version": 1, "formatters": []})
+
+
 JP_MEMORYPACK_SAMPLE = """
 // Namespace: MX.Logic.Battles
 public class GroundCommandCameraShake : MX.Logic.Battles.GroundCommand, MemoryPack.IMemoryPackable`1<GroundCommandCameraShake>, MemoryPack.IMemoryPackFormatterRegister // TypeDefIndex: 4006 Token: 0x02000FA6
@@ -667,7 +672,7 @@ def test_memorypack_reader_decodes_formatter_union_payload(
     sidecar_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "formatters": [
                     {
                         "target_type": "Sample.Base",
@@ -733,7 +738,7 @@ def test_memorypack_formatter_registry_parses_extended_layout_metadata(
     sidecar_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "formatters": [
                     {
                         "target_type": "Sample.Base",
@@ -787,7 +792,7 @@ def test_memorypack_reader_decodes_formatter_object_header_and_byte_union_tag(
     sidecar_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "formatters": [
                     {
                         "target_type": "Sample.Base",
@@ -838,7 +843,7 @@ def test_memorypack_reader_decodes_formatter_special_wire_types(
     sidecar_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "formatters": [
                     {
                         "target_type": "Sample.Root",
@@ -933,7 +938,7 @@ def test_memorypack_reader_decodes_null_formatter_union(
     sidecar_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "formatters": [
                     {
                         "target_type": "Sample.Base",
@@ -1009,7 +1014,7 @@ public class GroundCommandSetLimitBreakGauge : MX.Logic.Battles.GroundCommand, M
     sidecar_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "formatters": [
                     {
                         "target_type": "MX.GameData.DAO.Battle.LogicEffectDAO",
@@ -1094,7 +1099,7 @@ public class Child : Sample.Root, MemoryPack.IMemoryPackable`1<Sample.Child>, Me
     sidecar_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "formatters": [
                     {
                         "target_type": "Sample.Root",
@@ -1156,7 +1161,7 @@ public class Child : Sample.Root, MemoryPack.IMemoryPackable`1<Sample.Child>, Me
     sidecar_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "formatters": [
                     {
                         "target_type": "Sample.Root",
@@ -1189,7 +1194,7 @@ def test_memorypack_reader_decodes_formatter_collection(
     sidecar_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "formatters": [
                     {
                         "target_type": "Sample.EntityCollection",
@@ -1264,7 +1269,7 @@ public class DamageEffectDAO : MX.GameData.DAO.Battle.LogicEffectDAO, MemoryPack
     union_attrs_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "targets": [
                     {
                         "full_name": "MX.GameData.DAO.Battle.LogicEffectDAO",
@@ -1309,7 +1314,7 @@ def test_memorypack_reader_rejects_unconsumed_formatter_payload(
     sidecar_path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 0,
                 "formatters": [
                     {
                         "target_type": "Sample.Value",

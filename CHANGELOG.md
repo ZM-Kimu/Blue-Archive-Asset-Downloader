@@ -17,9 +17,9 @@
 - publish bundle content with human-readable AssetRipper paths under
   `extracted/bundles/Assets` and a compact identity manifest; schema 9 output
   is not migrated
-- replace API-specific AssetRipper loading and processing fields with the
-  unified `completed`, `total`, `stage`, `unit`, `status`, and
-  `secondary_status` progress contract
+- replace the flat API progress fields with schema 0 nested `overall`,
+  `current`, `group`, `item`, `workers`, and shared timing state for every
+  workflow
 
 ### Features
 - add typed resource and character filters with AND/OR composition
@@ -31,6 +31,9 @@
   conflict suffixes, and transactional bundle directory publication
 
 ### Performance
+- index each raw resource directory once before checksum verification and use
+  native file-digest or memory-mapped checksum paths to avoid quadratic scans
+  and Python-level hash loops
 - discover JP encrypted IL2CPP containers by validated MFTL structure rather
   than package filenames and stream their decryption and decompression
 - cache verified JP runtime inspection, minimal character-index schema, and
@@ -40,15 +43,19 @@
 - avoid retaining downloaded JP packages and encrypted parent containers after
   successful runtime publication
 - materialize bundle entry-cache misses through one parallel .NET operation,
-  stream stable dependency groups through one persistent AssetRipper process,
-  release each group before loading the next, and export collections in parallel
+  order stable groups by dependency topology through one persistent AssetRipper
+  process, release each group before loading the next, and export collections in
+  parallel
 - replace linear sibling scans with indexed collection and streamed-resource
   resolution, and load independent cached bundle payloads concurrently
 - restrict bundle output to PNG textures and sprites, audio, fonts, text,
   mesh GLB, scene GLB, and prefab GLB while avoiding generic JSON processing
-- reserve deterministic human-readable paths before parallel export and return
-  file hashes directly from .NET so Python does not enumerate and re-hash cold
-  output
+- reserve deterministic human-readable paths before parallel export, reuse
+  stable assets across groups, and compute hashes while writing sequential
+  output so neither .NET nor Python re-reads the full cold output
+- embed referenced Transform, Humanoid bone, skin, and BlendShape animation in
+  the corresponding GLB while replacing global AnimationClip path recovery with
+  hierarchy-scoped conversion
 
 ### Fixes
 - merge scenario aliases into existing character records so names such as
@@ -64,12 +71,19 @@
 - remove bundle memory preflight and multi-worker scheduling, preserve catalog
   checksum identities, and report real loading/processor/asset stage progress
   on the single extraction task
-- publish bundle manifest schema 10 once per run with exact output inventory,
+- publish the bundle manifest once per run with exact output inventory,
   filtered accumulation, three-phase directory rollback, and no per-asset
   revision or batch checkpoint data
 - serialize shared AssetRipper source/tool publication across processes and
   translate expected lock, capacity, scanner, build, and protocol failures into
   user-level extraction errors
+- report bundle completion and ETA from fully completed groups while preserving
+  local loading, processor, and asset progress on the single CLI task
+- render every CLI workflow through one responsive `[Task] Stage` progress
+  layout with truthful primary units, elapsed time, ETA, activity, and health
+  fields
+- separate AssetRipper build and exported-content fingerprints; migrate fully
+  verified schema 10 manifests to schema 11 without rebuilding published assets
 
 ### Internal Changes
 - require Python 3.11 or later and replace advisory pylint checks with Ruff

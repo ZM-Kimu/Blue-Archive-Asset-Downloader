@@ -46,6 +46,13 @@ public class SingleExportCollection<T> : ExportCollectionBase where T : IUnityOb
 
 	public override bool Contains(IUnityObjectBase asset) => Asset.AssetInfo == asset.AssetInfo;
 
+	/// <summary>
+	///
+	/// </summary>
+	/// <param name="filePath">The full path to the exported asset destination</param>
+	/// <param name="dirPath">The full path to the project export directory</param>
+	/// <param name="fileSystem">The file system used for export.</param>
+	/// <returns>True if export was successful, false otherwise</returns>
 	protected virtual bool ExportInner(string filePath, string dirPath, FileSystem fileSystem) =>
 		ContentExtractor.Export(Asset, filePath, fileSystem);
 

@@ -110,10 +110,17 @@ static void WriteResult(string resultPath, InspectionResult result)
     File.Move(temporaryPath, resultPath, true);
 }
 
-internal sealed record InspectionRequest(string Operation, List<string> Inputs)
+internal sealed record InspectionRequest(
+    int? SchemaVersion,
+    string Operation,
+    List<string> Inputs)
 {
     public void Validate()
     {
+        if (SchemaVersion is not 0)
+        {
+            throw new InvalidDataException("Runtime inspection request schema is invalid.");
+        }
         if (Operation != "inspect_jp_runtime")
         {
             throw new InvalidDataException(
@@ -140,7 +147,8 @@ internal sealed record InspectionResult(
     bool Succeeded,
     string? Error,
     string? GameMainConfigBase64,
-    string? BundleVersion
+    string? BundleVersion,
+    int SchemaVersion = 0
 );
 
 internal static class JsonOptions
