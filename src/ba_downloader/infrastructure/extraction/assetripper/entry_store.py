@@ -16,6 +16,8 @@ from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
 from ba_downloader.infrastructure.extraction.assetripper.events import (
     AssetRipperProcessEvent,
 )
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
+from ba_downloader.infrastructure.files.checksum import calculate_sha256
 from ba_downloader.infrastructure.files.size import format_file_size
 
 _ENTRY_CACHE_SCHEMA_VERSION = 0
@@ -121,6 +123,11 @@ class BundleEntryStore:
             for index, entry in misses:
                 destination = destination_by_node[entry.node_id]
                 marker = destination.with_suffix(f"{destination.suffix}.json")
+                if written_by_node.get(entry.node_id) != entry.size:
+                    raise RuntimeError(
+                        f"Bundle entry cache wrote an unexpected size: {entry.node_id}"
+                    )
+                self._write_marker(destination, marker, entry)
                 if not self._is_valid_hit(destination, marker, entry):
                     raise RuntimeError(
                         f"Bundle entry cache did not publish a valid entry: {entry.node_id}"
@@ -158,8 +165,8 @@ class BundleEntryStore:
 
     _path_for = path_for
 
-    @staticmethod
     def _is_valid_hit(
+        self,
         destination: Path,
         marker: Path,
         entry: BundleEntryInput,
@@ -169,12 +176,46 @@ class BundleEntryStore:
             stat = destination.stat()
         except (OSError, ValueError):
             return False
-        return (
-            isinstance(payload, dict)
-            and payload.get("schema_version") == _ENTRY_CACHE_SCHEMA_VERSION
-            and payload.get("identity") == bundle_entry_cache_identity(entry)
-            and payload.get("mtime_ns") == stat.st_mtime_ns
-            and stat.st_size == entry.size
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != _ENTRY_CACHE_SCHEMA_VERSION
+            or payload.get("identity") != bundle_entry_cache_identity(entry)
+            or stat.st_size != entry.size
+        ):
+            return False
+        if payload.get("mtime_ns") == stat.st_mtime_ns:
+            return True
+        try:
+            actual_sha256 = calculate_sha256(
+                destination,
+                on_chunk=self._cancellation.raise_if_cancelled,
+            )
+        except OSError:
+            return False
+        if actual_sha256 != entry.sha256.lower():
+            return False
+        self._write_marker(destination, marker, entry)
+        return True
+
+    @staticmethod
+    def _write_marker(
+        destination: Path,
+        marker: Path,
+        entry: BundleEntryInput,
+    ) -> None:
+        stat = destination.stat()
+        if stat.st_size != entry.size:
+            raise RuntimeError(
+                f"Bundle entry cache wrote an unexpected size: {entry.node_id}"
+            )
+        write_json_atomic(
+            marker,
+            {
+                "schema_version": _ENTRY_CACHE_SCHEMA_VERSION,
+                "identity": bundle_entry_cache_identity(entry),
+                "mtime_ns": stat.st_mtime_ns,
+            },
+            sort_keys=True,
         )
 
     def _ensure_space(self, required_bytes: int) -> None:

@@ -88,12 +88,17 @@
 ### Internal Changes
 - require Python 3.11 or later and replace advisory pylint checks with Ruff
   formatting, Ruff linting, mypy, and import-linter gates
+- upgrade AssetRipper to 2.0.0 and Cpp2IL to the latest development revision,
+  migrate the IL2CPP exporter to the context API, and update generated asset
+  interfaces used by animated GLB export
 - lazily load generated schema types and keep character-index schema generation
   separate from the canonical full-schema workspace
 - preserve third-party attribution and license metadata in source and wheel
   distributions
 
 ### Security
+- upgrade AssetRipper's SharpCompress dependency from vulnerable 0.47.4 to
+  0.50.4, resolving GHSA-6c8g-7p36-r338
 - document that the local API intentionally uses plaintext HTTP, has no
   authentication, allows every Origin, and must run only on trusted networks
 

@@ -298,7 +298,7 @@ class RecordingExporter:
             file = AssetRipperExportedFile(
                 relative.replace("\\", "/"),
                 len(payload),
-                stat.st_mtime_ns,
+                stat.st_mtime_ns - 74,
             )
             assets.append(
                 AssetRipperExportedAsset(

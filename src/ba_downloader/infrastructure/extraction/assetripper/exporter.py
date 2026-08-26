@@ -327,6 +327,8 @@ class _AssetRipperTool:
                     exc.stdout,
                     exc.stderr,
                 )
+            if not result_path.is_file() and not process_result.succeeded:
+                self._raise_missing_result(process_result)
             result = self._read_payload(result_path)
             return process_result, result
         finally:
@@ -427,6 +429,20 @@ class _AssetRipperTool:
         ):
             raise AssetRipperToolError("AssetRipper result schema is invalid.")
         return payload
+
+    @staticmethod
+    def _raise_missing_result(result: ProcessResult) -> None:
+        if result.returncode in {-9, 137}:
+            raise AssetRipperOutOfMemoryError(
+                "AssetRipper was killed by the operating system (SIGKILL). "
+                "Available memory and swap were likely exhausted.",
+                kind="out_of_memory",
+            )
+        detail = _AssetRipperTool._process_error(result.stderr or result.stdout)
+        raise AssetRipperToolError(
+            "AssetRipper exited without producing a result "
+            f"(status {result.returncode}): {detail}"
+        )
 
     @staticmethod
     def _read_export_result(payload: dict[str, object]) -> _ExportResultPayload:

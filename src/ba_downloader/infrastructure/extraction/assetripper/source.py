@@ -18,8 +18,8 @@ from ba_downloader.infrastructure.files.atomic import (
 from ba_downloader.infrastructure.files.checksum import calculate_source_fingerprint
 from ba_downloader.infrastructure.files.lock import wait_for_interprocess_lock
 
-ASSETRIPPER_VERSION = "1.3.14"
-ASSETRIPPER_COMMIT = "7534ed93857d1ef4464bab6e3c7a13777529f94d"
+ASSETRIPPER_VERSION = "2.0.0"
+ASSETRIPPER_COMMIT = "1ac666f47d8e9dedf96afb0b914c70d7656151ea"
 ASSETRIPPER_ARCHIVE_URL = (
     f"https://github.com/AssetRipper/AssetRipper/archive/{ASSETRIPPER_COMMIT}.zip"
 )

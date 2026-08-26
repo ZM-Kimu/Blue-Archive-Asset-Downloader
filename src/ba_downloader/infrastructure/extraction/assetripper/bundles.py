@@ -61,6 +61,7 @@ from ba_downloader.infrastructure.extraction.assetripper.events import (
 from ba_downloader.infrastructure.extraction.assetripper.exporter import (
     AssetRipperCollectionFailure,
     AssetRipperExportedAsset,
+    AssetRipperExportedFile,
     AssetRipperExportGroup,
     AssetRipperExportInput,
     AssetRipperExportResult,
@@ -450,7 +451,7 @@ class AssetRipperBundleWorkflow:
                         concurrency=concurrency,
                     )
                     tracker.finish_stage("validating")
-                    self._validate_result(aggregate, result, job_root)
+                    result = self._validate_result(aggregate, result, job_root)
                     merged_assets, collection_failures = self._merge_results(
                         [result], job_root
                     )
@@ -606,7 +607,7 @@ class AssetRipperBundleWorkflow:
         batch: BundleExportBatch,
         result: AssetRipperExportResult,
         staging_root: Path,
-    ) -> None:
+    ) -> AssetRipperExportResult:
         expected = set(batch.target_node_ids)
         if set(result.requested_target_ids) != expected:
             raise AssetRipperToolError(
@@ -616,7 +617,9 @@ class AssetRipperBundleWorkflow:
             raise AssetRipperToolError(
                 "AssetRipper result contains unexpected target coverage."
             )
+        normalized_assets: list[AssetRipperExportedAsset] = []
         for asset in result.assets:
+            normalized_files: list[AssetRipperExportedFile] = []
             for item in asset.files:
                 path = self._safe_child(staging_root, item.path)
                 if not PurePosixPath(item.path).parts[0].casefold() == "assets":
@@ -629,10 +632,13 @@ class AssetRipperBundleWorkflow:
                     raise AssetRipperToolError(
                         "AssetRipper did not publish a declared output file."
                     ) from exc
-                if stat.st_size != item.size or stat.st_mtime_ns != item.mtime_ns:
+                if stat.st_size != item.size:
                     raise AssetRipperToolError(
                         "AssetRipper output metadata changed before publication."
                     )
+                normalized_files.append(replace(item, mtime_ns=stat.st_mtime_ns))
+            normalized_assets.append(replace(asset, files=tuple(normalized_files)))
+        return replace(result, assets=tuple(normalized_assets))
 
     def _merge_results(
         self,

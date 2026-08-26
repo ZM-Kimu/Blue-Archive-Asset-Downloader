@@ -111,7 +111,7 @@ public sealed class SelectivePrimaryContentExporter
 		RegisterHandler<ITextAsset>(BinaryAssetContentExtractor.Instance);
 		RegisterHandler<IFont>(BinaryAssetContentExtractor.Instance);
 		RegisterHandler<IAudioClip>(new AudioContentExtractor());
-		RegisterHandler<ITexture2D>(new TextureExporter(ImageExportFormat.Png));
+		RegisterHandler<ITexture2D>(new TextureExporter(ImageExportFormat.Png, false));
 		RegisterHandler<ICubemap>(EmptyContentExtractor.Instance);
 		RegisterHandler<ISprite>(new SpritePngExporter());
 	}

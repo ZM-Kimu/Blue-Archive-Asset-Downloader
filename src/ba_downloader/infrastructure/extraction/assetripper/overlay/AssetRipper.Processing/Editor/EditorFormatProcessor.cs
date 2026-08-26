@@ -17,6 +17,7 @@ using AssetRipper.SourceGenerated.Classes.ClassID_196;
 using AssetRipper.SourceGenerated.Classes.ClassID_218;
 using AssetRipper.SourceGenerated.Classes.ClassID_25;
 using AssetRipper.SourceGenerated.Classes.ClassID_30;
+using AssetRipper.SourceGenerated.Classes.ClassID_310;
 using AssetRipper.SourceGenerated.Classes.ClassID_320;
 using AssetRipper.SourceGenerated.Classes.ClassID_4;
 using AssetRipper.SourceGenerated.Classes.ClassID_43;
@@ -191,6 +192,9 @@ public class EditorFormatProcessor : IAssetProcessor
 				break;
 			case ILightingSettings lightingSettings:
 				lightingSettings.ConvertToEditorFormat();
+				break;
+			case IUnityConnectSettings unityConnectSettings:
+				unityConnectSettings.ConvertToEditorFormat();
 				break;
 		}
 	}

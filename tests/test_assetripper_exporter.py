@@ -41,6 +41,7 @@ from ba_downloader.infrastructure.extraction.assetripper.exporter import (
     AssetRipperExportError,
     AssetRipperExportGroup,
     AssetRipperExportInput,
+    AssetRipperOutOfMemoryError,
     AssetRipperRuntimeMetadataInspector,
     assetripper_exported_content_fingerprint,
     assetripper_exporter_cache_key,
@@ -70,11 +71,13 @@ class FakeProcessRunner:
         *,
         export_succeeds: bool = True,
         exported_files: bool = True,
+        exit_without_result: int | None = None,
     ) -> None:
         self.commands: list[ProcessCommand] = []
         self.requests: list[dict[str, object]] = []
         self.export_succeeds = export_succeeds
         self.exported_files = exported_files
+        self.exit_without_result = exit_without_result
 
     def run(
         self,
@@ -105,6 +108,8 @@ class FakeProcessRunner:
             for item in request["inputs"]
         ]
         assert input_sort_keys == sorted(input_sort_keys, key=str.casefold)
+        if self.exit_without_result is not None:
+            return ProcessResult(command, self.exit_without_result, "", "")
         if request["operation"] == "inspect_jp_runtime":
             result_path.write_text(
                 json.dumps(
@@ -759,6 +764,26 @@ def test_batch_exporter_reports_structured_failure(tmp_path: Path) -> None:
     bundle.write_bytes(b"bad")
 
     with pytest.raises(AssetRipperExportError):
+        exporter.export(_context(tmp_path), [_export_input(bundle)], tmp_path / "out")
+
+
+def test_batch_exporter_reports_sigkill_as_probable_out_of_memory(
+    tmp_path: Path,
+) -> None:
+    source = type("Resolver", (), {"resolve_patched": lambda self, context: tmp_path})()
+    runner = FakeProcessRunner(exit_without_result=-9)
+    exporter = AssetRipperBatchExporter(
+        source,  # type: ignore[arg-type]
+        runner,
+        repository_root=tmp_path,
+    )
+    bundle = tmp_path / "large.bundle"
+    bundle.write_bytes(b"large")
+
+    with pytest.raises(
+        AssetRipperOutOfMemoryError,
+        match="Available memory and swap were likely exhausted",
+    ):
         exporter.export(_context(tmp_path), [_export_input(bundle)], tmp_path / "out")
 
 

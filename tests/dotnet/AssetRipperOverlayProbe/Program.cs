@@ -84,7 +84,7 @@ static void AssertPlayableGlb(string path)
 	renderer.RootBoneP = spineTransform;
 	renderer.Bones.AddNew().SetAsset(collection, spineTransform);
 	renderer.Bones.AddNew().SetAsset(collection, auxiliaryTransform);
-	renderer.BlendShapeWeights.Add(25.0f);
+	renderer.BlendShapeWeights!.Add(25.0f);
 	renderer.BlendShapeWeights.Add(50.0f);
 	ConfigureMesh(mesh);
 	animator.GameObjectP = root;
@@ -245,7 +245,7 @@ static void AssertPlayableGlb(string path)
 			avatar.Avatar.Human.Data.HumanBoneIndex.Add(humanBone == 7 ? 0 : -1);
 		}
 		avatar.Avatar.HumanSkeletonIndexArray.Add(0);
-		var skeleton = avatar.Avatar.AvatarSkeleton.Data;
+		var skeleton = avatar.Avatar.AvatarSkeleton!.Data;
 		var node = skeleton.Node.AddNew();
 		node.AxesId = 0;
 		node.ParentId = -1;
@@ -253,15 +253,21 @@ static void AssertPlayableGlb(string path)
 		var axes = skeleton.AxesArray.AddNew();
 		axes.PreQ.W = 1.0f;
 		axes.PostQ.W = 1.0f;
-		axes.Sgn_Vector3Float_5_5.X = 1.0f;
-		axes.Sgn_Vector3Float_5_5.Y = 1.0f;
-		axes.Sgn_Vector3Float_5_5.Z = 1.0f;
-		axes.Limit.Min_Vector3Float_5_5.X = -30.0f;
-		axes.Limit.Min_Vector3Float_5_5.Y = -30.0f;
-		axes.Limit.Min_Vector3Float_5_5.Z = -30.0f;
-		axes.Limit.Max_Vector3Float_5_5.X = 30.0f;
-		axes.Limit.Max_Vector3Float_5_5.Y = 30.0f;
-		axes.Limit.Max_Vector3Float_5_5.Z = 30.0f;
+		var sign = axes.Sgn_Vector3Float
+			?? throw new InvalidOperationException("Avatar axes sign is unavailable.");
+		sign.X = 1.0f;
+		sign.Y = 1.0f;
+		sign.Z = 1.0f;
+		var minimum = axes.Limit.Min_Vector3Float
+			?? throw new InvalidOperationException("Avatar minimum limit is unavailable.");
+		minimum.X = -30.0f;
+		minimum.Y = -30.0f;
+		minimum.Z = -30.0f;
+		var maximum = axes.Limit.Max_Vector3Float
+			?? throw new InvalidOperationException("Avatar maximum limit is unavailable.");
+		maximum.X = 30.0f;
+		maximum.Y = 30.0f;
+		maximum.Z = 30.0f;
 		avatar.TOS.Add(spineHash, "AnimatedRoot/Spine");
 	}
 
@@ -318,7 +324,7 @@ static void AssertPlayableGlb(string path)
 			[Matrix4x4.Identity, Matrix4x4.Identity],
 			indices,
 			subMeshes));
-		var channel = mesh.Shapes.Channels.AddNew();
+		var channel = mesh.Shapes!.Channels.AddNew();
 		channel.SetValues("Smile", 0, 1);
 		var secondChannel = mesh.Shapes.Channels.AddNew();
 		secondChannel.SetValues("Blink", 1, 1);

@@ -180,6 +180,7 @@ ba-downloader assets download --region jp --platform windows
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
 - 由于各类接口频繁变动，不建议直接调用内部方法。
 - 在进行全量 `asset sync` 时，各区服建议预留 `50GB` 的可用存储空间。
+- 在进行 Bundle 提取时，主机内存应不小于 8GB、分页内存不小于12GB。
 
 ## TODO
 - `v3.1.0`

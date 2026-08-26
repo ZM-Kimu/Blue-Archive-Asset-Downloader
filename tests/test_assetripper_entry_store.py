@@ -45,13 +45,11 @@ class RecordingMaterializer:
             with ZipFile(entry.archive.path) as archive:
                 payload = archive.read(entry.entry_path)
             destination.write_bytes(payload)
-            stat = destination.stat()
             write_json_atomic(
                 destination.with_suffix(f"{destination.suffix}.json"),
                 {
                     "schema_version": 0,
                     "identity": bundle_entry_cache_identity(entry),
-                    "mtime_ns": stat.st_mtime_ns,
                 },
                 sort_keys=True,
             )
@@ -103,6 +101,68 @@ def test_entry_store_rebuilds_corrupted_cache_entry(tmp_path: Path) -> None:
     entry = _entry(tmp_path)
     cached = store.resolve_many(context, (entry,), concurrency=1)[0]
     cached.path.write_bytes(b"corrupt")
+
+    rebuilt = store.resolve_many(context, (entry,), concurrency=1)[0]
+
+    assert rebuilt.hit is False
+    assert rebuilt.path.read_bytes() == b"bundle-data"
+    assert materializer.calls == 2
+
+
+def test_entry_store_revalidates_content_when_timestamp_representation_changes(
+    tmp_path: Path,
+) -> None:
+    materializer = RecordingMaterializer()
+    store = BundleEntryStore(tmp_path / "cache", materializer=materializer)
+    context = build_execution_context(tmp_path)
+    entry = _entry(tmp_path)
+    cached = store.resolve_many(context, (entry,), concurrency=1)[0]
+    marker_path = cached.path.with_suffix(f"{cached.path.suffix}.json")
+    marker = json.loads(marker_path.read_text(encoding="utf8"))
+    marker["mtime_ns"] = cached.path.stat().st_mtime_ns - 2_000_000_000
+    write_json_atomic(marker_path, marker, sort_keys=True)
+
+    resolved = store.resolve_many(context, (entry,), concurrency=1)[0]
+    refreshed = json.loads(marker_path.read_text(encoding="utf8"))
+
+    assert resolved.hit is True
+    assert materializer.calls == 1
+    assert refreshed["mtime_ns"] == cached.path.stat().st_mtime_ns
+
+
+def test_entry_store_does_not_hash_a_newly_materialized_entry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    materializer = RecordingMaterializer()
+    store = BundleEntryStore(tmp_path / "cache", materializer=materializer)
+    entry = _entry(tmp_path)
+
+    monkeypatch.setattr(
+        entry_store_module,
+        "calculate_sha256",
+        lambda *_args, **_kwargs: pytest.fail("new cache content was rehashed"),
+    )
+
+    resolved = store.resolve_many(
+        build_execution_context(tmp_path),
+        (entry,),
+        concurrency=1,
+    )[0]
+
+    assert resolved.hit is False
+    assert materializer.calls == 1
+
+
+def test_entry_store_rebuilds_same_size_content_with_changed_metadata(
+    tmp_path: Path,
+) -> None:
+    materializer = RecordingMaterializer()
+    store = BundleEntryStore(tmp_path / "cache", materializer=materializer)
+    context = build_execution_context(tmp_path)
+    entry = _entry(tmp_path)
+    cached = store.resolve_many(context, (entry,), concurrency=1)[0]
+    cached.path.write_bytes(b"tamper-data")
 
     rebuilt = store.resolve_many(context, (entry,), concurrency=1)[0]
 

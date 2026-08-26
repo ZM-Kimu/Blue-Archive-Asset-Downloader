@@ -416,7 +416,12 @@ internal static class HumanoidAnimationBaker
 		Dictionary<int, (ITransform, IAxes)> result = [];
 		var constant = avatar.Avatar;
 		var human = constant.Human.Data;
-		var skeleton = constant.AvatarSkeleton.Data;
+		var avatarSkeleton = constant.AvatarSkeleton;
+		if (avatarSkeleton is null)
+		{
+			return result;
+		}
+		var skeleton = avatarSkeleton.Data;
 		for (int humanBone = 0; humanBone < human.HumanBoneIndex.Count; humanBone++)
 		{
 			int humanNode = human.HumanBoneIndex[humanBone];
@@ -620,42 +625,30 @@ internal static class HumanoidAnimationBaker
 	private static Vector3 GetMinimum(IAxes axes)
 	{
 		var limit = axes.Limit;
-		if (limit.Has_Min_Vector3Float_5_5())
+		if (limit.Has_Min_Vector3Float())
 		{
-			return ToVector3(limit.Min_Vector3Float_5_5);
+			return ToVector3(limit.Min_Vector3Float);
 		}
-		if (limit.Has_Min_Vector3Float_5_4())
-		{
-			return ToVector3(limit.Min_Vector3Float_5_4);
-		}
-		return ToVector3(limit.Min_Vector4Float_4);
+		return ToVector3(limit.Min_Vector4Float);
 	}
 
 	private static Vector3 GetMaximum(IAxes axes)
 	{
 		var limit = axes.Limit;
-		if (limit.Has_Max_Vector3Float_5_5())
+		if (limit.Has_Max_Vector3Float())
 		{
-			return ToVector3(limit.Max_Vector3Float_5_5);
+			return ToVector3(limit.Max_Vector3Float);
 		}
-		if (limit.Has_Max_Vector3Float_5_4())
-		{
-			return ToVector3(limit.Max_Vector3Float_5_4);
-		}
-		return ToVector3(limit.Max_Vector4Float_4);
+		return ToVector3(limit.Max_Vector4Float);
 	}
 
 	private static Vector3 GetSign(IAxes axes)
 	{
-		if (axes.Has_Sgn_Vector3Float_5_5())
+		if (axes.Has_Sgn_Vector3Float())
 		{
-			return ToVector3(axes.Sgn_Vector3Float_5_5);
+			return ToVector3(axes.Sgn_Vector3Float);
 		}
-		if (axes.Has_Sgn_Vector3Float_5_4())
-		{
-			return ToVector3(axes.Sgn_Vector3Float_5_4);
-		}
-		return ToVector3(axes.Sgn_Vector4Float_4);
+		return ToVector3(axes.Sgn_Vector4Float);
 	}
 
 	private static Vector3 ToVector3(IVector3Float value) =>

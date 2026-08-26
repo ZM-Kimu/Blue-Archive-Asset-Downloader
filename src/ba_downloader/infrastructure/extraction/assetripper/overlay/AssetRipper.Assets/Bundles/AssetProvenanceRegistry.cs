@@ -12,7 +12,10 @@ public readonly record struct AssetProvenanceInput(
 
 public static class AssetProvenanceRegistry
 {
-	private static readonly ConcurrentDictionary<string, AssetProvenanceInput> Inputs = new(StringComparer.OrdinalIgnoreCase);
+	private static readonly StringComparer PathComparer = OperatingSystem.IsWindows()
+		? StringComparer.OrdinalIgnoreCase
+		: StringComparer.Ordinal;
+	private static readonly ConcurrentDictionary<string, AssetProvenanceInput> Inputs = new(PathComparer);
 	private static readonly ConcurrentDictionary<FileBase, AssetProvenanceInput> Files = new(ReferenceEqualityComparer.Instance);
 	private static readonly ConcurrentDictionary<AssetCollection, HashSet<string>> Collections = new(ReferenceEqualityComparer.Instance);
 	private static readonly ConcurrentDictionary<IUnityObjectBase, HashSet<string>> DerivedAssets = new(ReferenceEqualityComparer.Instance);

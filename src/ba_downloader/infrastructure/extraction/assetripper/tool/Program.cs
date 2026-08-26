@@ -85,6 +85,7 @@ catch (Exception exception)
             [],
             IsOutOfMemory(exception) ? "out_of_memory" : "export_failure",
             null,
+            [],
             []
         )
     );
@@ -649,18 +650,21 @@ static ExportResult MaterializeBundleEntries(ExportRequest request)
     string cacheRoot = Path.GetFullPath(request.OutputDirectory);
     Directory.CreateDirectory(cacheRoot);
     List<MaterializeEntryInput> inputs = request.GetMaterializeInputs();
+    StringComparer pathComparer = OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
     ConcurrentBag<MaterializedEntryResult> results = [];
     int completed = 0;
     int archiveCount = inputs
         .Select(item => item.Path)
-        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Distinct(pathComparer)
         .Count();
     int concurrency = Math.Min(
         Math.Max(1, request.Concurrency ?? 1),
         Math.Min(Environment.ProcessorCount, archiveCount)
     );
     Parallel.ForEach(
-        inputs.GroupBy(item => item.Path, StringComparer.OrdinalIgnoreCase),
+        inputs.GroupBy(item => item.Path, pathComparer),
         new ParallelOptions { MaxDegreeOfParallelism = concurrency },
         group =>
         {
@@ -766,9 +770,6 @@ static MaterializedEntryResult MaterializeEntry(
             throw new InvalidDataException($"Bundle entry changed after dependency scanning: {input.NodeId}");
         }
         File.Move(temporary, destination, true);
-        long mtimeNs = (
-            File.GetLastWriteTimeUtc(destination).Ticks - DateTime.UnixEpoch.Ticks
-        ) * 100;
         string marker = destination + ".json";
         markerTemporary = marker + $".{Guid.NewGuid():N}.tmp";
         File.WriteAllText(
@@ -778,7 +779,6 @@ static MaterializedEntryResult MaterializeEntry(
                 {
                     schema_version = 0,
                     identity = input.MarkerIdentity,
-                    mtime_ns = mtimeNs,
                 },
                 JsonOptions.Default
             )
@@ -904,7 +904,10 @@ internal sealed record ExportRequest(
             {
                 throw new InvalidDataException("Bundle entry cache node IDs must be unique.");
             }
-            if (materializeInputs.Select(input => input.Destination).Distinct(StringComparer.OrdinalIgnoreCase).Count() != materializeInputs.Count)
+            StringComparer pathComparer = OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal;
+            if (materializeInputs.Select(input => input.Destination).Distinct(pathComparer).Count() != materializeInputs.Count)
             {
                 throw new InvalidDataException("Bundle entry cache destinations must be unique.");
             }

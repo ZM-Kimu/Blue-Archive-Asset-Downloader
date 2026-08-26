@@ -14,16 +14,16 @@ public abstract class ExportCollectionBase
 	public virtual bool ExportPlanned(PlannedExport planned, string projectDirectory, FileSystem fileSystem) =>
 		throw new NotSupportedException($"{GetType().Name} does not support planned export.");
 
-	protected void ExportAsset(IUnityObjectBase asset, string path, string name, FileSystem fileSystem)
+	protected void ExportAsset(IUnityObjectBase asset, string directory, string name, FileSystem fileSystem)
 	{
-		if (!fileSystem.Directory.Exists(path))
+		if (!fileSystem.Directory.Exists(directory))
 		{
-			fileSystem.Directory.Create(path);
+			fileSystem.Directory.Create(directory);
 		}
 
 		string fullName = $"{name}.{ExportExtension}";
-		string uniqueName = fileSystem.GetUniqueName(path, fullName, FileSystem.MaxFileNameLength);
-		string filePath = fileSystem.Path.Join(path, uniqueName);
+		string uniqueName = fileSystem.GetUniqueName(directory, fullName, FileSystem.MaxFileNameLength);
+		string filePath = fileSystem.Path.Join(directory, uniqueName);
 		ContentExtractor.Export(asset, filePath, fileSystem);
 	}
 

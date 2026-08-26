@@ -9,6 +9,8 @@ using LibCpp2IL.Metadata;
 
 internal static class Program
 {
+    private static LibCpp2IlContext Context { get; set; } = null!;
+
     private static int Main(string[] args)
     {
         try
@@ -30,10 +32,11 @@ internal static class Program
             if (options.EnableCnMetadataRecoveryShim)
                 RegisterCnMetadataRecoveryShim();
 
-            if (!LibCpp2IlMain.LoadFromFile(options.BinaryPath, options.MetadataPath, unityVersion))
-                throw new InvalidOperationException("Failed to load IL2CPP binary and metadata.");
-
-            var metadata = LibCpp2IlMain.TheMetadata ?? throw new InvalidOperationException("Metadata not initialized.");
+            Context = LibCpp2IlContextBuilder.BuildFromFiles(
+                options.BinaryPath,
+                options.MetadataPath,
+                unityVersion);
+            var metadata = Context.Metadata;
             var outputPath = Path.GetFullPath(options.OutputPath);
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
@@ -496,10 +499,10 @@ internal static class Program
     private static object ReadCustomAttributeEnum(BinaryReader reader)
     {
         var enumTypeIndex = ReadCompressedInt(reader.BaseStream);
-        if (enumTypeIndex < 0 || LibCpp2IlMain.Binary is null)
+        if (enumTypeIndex < 0)
             throw new InvalidDataException("Custom attribute enum type index is invalid.");
 
-        var enumType = LibCpp2IlMain.Binary.GetType(
+        var enumType = Context.Binary.GetType(
             Il2CppVariableWidthIndex<Il2CppType>.MakeTemporaryForFixedWidthUsage(enumTypeIndex));
         return ReadCustomAttributePrimitiveValue(
             reader,
@@ -538,9 +541,9 @@ internal static class Program
     private static string ReadCustomAttributeTypeName(Stream stream)
     {
         var typeIndex = ReadCompressedInt(stream);
-        if (typeIndex < 0 || LibCpp2IlMain.Binary is null)
+        if (typeIndex < 0)
             return "";
-        var type = LibCpp2IlMain.Binary.GetType(
+        var type = Context.Binary.GetType(
             Il2CppVariableWidthIndex<Il2CppType>.MakeTemporaryForFixedWidthUsage(typeIndex));
         return CleanTypeName(type.CoerceToUnderlyingTypeDefinition().FullName ?? "");
     }
