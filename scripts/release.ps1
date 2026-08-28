@@ -181,7 +181,7 @@ function Get-ProjectVersion {
 
 function Get-ReadmeVersion {
     $content = Read-Utf8File (Join-Path (Get-RepoRoot) "README.md")
-    $match = [regex]::Match($content, '(?m)^Blue Archive Asset Downloader v([^\r\n]+)\.\s*$')
+    $match = [regex]::Match($content, '(?m)^Blue Archive Asset Downloader v([^\r\n]+)\s*$')
     if (-not $match.Success) {
         throw "Unable to locate the README version marker."
     }
@@ -226,7 +226,7 @@ function Set-ReadmeVersion {
 
     $path = Join-Path (Get-RepoRoot) "README.md"
     $content = Read-Utf8File $path
-    $currentVersion = [regex]::Match($content, '(?m)^Blue Archive Asset Downloader v([^\r\n]+)\.\s*$')
+    $currentVersion = [regex]::Match($content, '(?m)^Blue Archive Asset Downloader v([^\r\n]+)\s*$')
     if ($currentVersion.Success -and $currentVersion.Groups[1].Value -eq $NewVersion) {
         if ($DryRun) {
             Write-Host "[dry-run] README version already matches $NewVersion" -ForegroundColor Cyan
@@ -234,7 +234,7 @@ function Set-ReadmeVersion {
         return
     }
 
-    $updated = $content -creplace '(?m)^Blue Archive Asset Downloader v[^\r\n]+\.\s*$', "Blue Archive Asset Downloader v$NewVersion."
+    $updated = $content -creplace '(?m)^Blue Archive Asset Downloader v[^\r\n]+\s*$', "Blue Archive Asset Downloader v$NewVersion"
 
     if ($updated -eq $content) {
         throw "Unable to update the README version marker."

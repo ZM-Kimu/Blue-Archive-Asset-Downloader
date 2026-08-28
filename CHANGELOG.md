@@ -1,6 +1,10 @@
 # Changelog
 
-## v3.0.0 - Unreleased
+## Unreleased
+
+- No unreleased changes recorded.
+
+## v3.0.0 - 2026-08-28
 
 ### Breaking Changes
 - replace the legacy flat CLI with `assets sync`, `assets download`,
@@ -15,8 +19,8 @@
 - publish versioned runtime and schema snapshots; incompatible internal caches
   are discarded instead of migrated
 - publish bundle content with human-readable AssetRipper paths under
-  `extracted/bundles/Assets` and a compact identity manifest; schema 9 output
-  is not migrated
+  `extracted/bundles/Assets` and a compact identity manifest; incompatible
+  pre-v3 output is not migrated
 - replace the flat API progress fields with schema 0 nested `overall`,
   `current`, `group`, `item`, `workers`, and shared timing state for every
   workflow
@@ -84,8 +88,9 @@
 - render every CLI workflow through one responsive `[Task] Stage` progress
   layout with truthful primary units, elapsed time, ETA, activity, and health
   fields
-- separate AssetRipper build and exported-content fingerprints; migrate fully
-  verified schema 10 manifests to schema 11 without rebuilding published assets
+- separate AssetRipper build and exported-content fingerprints; accept only
+  current schema 0 manifests and discard incompatible cached state instead of
+  migrating it
 
 ### Internal Changes
 - require Python 3.11 or later and replace advisory pylint checks with Ruff
