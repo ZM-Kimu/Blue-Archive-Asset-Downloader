@@ -1,6 +1,13 @@
 repos:
   - repo: local
     hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+        stages: [pre-commit]
+
       - id: ruff
         name: ruff lint
         entry: uv run ruff check
@@ -8,14 +15,6 @@ repos:
         types: [python]
         stages: [pre-commit]
 
-  - repo: https://github.com/psf/black
-    rev: 24.10.0
-    hooks:
-      - id: black
-        language_version: python3
-
-  - repo: local
-    hooks:
       - id: compileall
         name: compileall preflight
         entry: python -m compileall src tests scripts
@@ -37,9 +36,9 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
-      - id: pylint
-        name: pylint quality checks
-        entry: uv run pylint --rcfile .pylintrc src/ba_downloader scripts
+      - id: import-linter
+        name: architecture boundaries
+        entry: uv run lint-imports
         language: system
         pass_filenames: false
         stages: [pre-push]

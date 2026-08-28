@@ -3,23 +3,23 @@ from __future__ import annotations
 from typing import Protocol
 
 from ba_downloader.domain.models.asset import AssetCollection
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 
 
 class CatalogMetadataPolicy(Protocol):
     def on_catalog_loaded(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection,
     ) -> None: ...
 
     def resolve_existing_table_resources(
         self,
-        context: RuntimeContext,
-    ) -> tuple[RuntimeContext, AssetCollection | None]: ...
+        context: ExecutionContext,
+    ) -> tuple[ExecutionContext, AssetCollection | None]: ...
 
 
 class TableMetadataManifestPort(Protocol):
-    def load(self, context: RuntimeContext) -> AssetCollection | None: ...
+    def load(self, context: ExecutionContext) -> AssetCollection | None: ...
 
-    def write(self, context: RuntimeContext, resources: AssetCollection) -> None: ...
+    def write(self, context: ExecutionContext, resources: AssetCollection) -> None: ...

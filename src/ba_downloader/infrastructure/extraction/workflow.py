@@ -1,24 +1,34 @@
 from __future__ import annotations
 
-import multiprocessing
 import os
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from multiprocessing import Queue, freeze_support
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from queue import Empty
-from threading import Event
-from typing import Any
+from typing import Protocol
 
-from ba_downloader.domain.models.asset import AssetCollection, AssetType
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.asset import AssetCollection, AssetType, ChecksumSpec
+from ba_downloader.domain.models.bundle import BundleHandler
+from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.domain.models.extraction import ExtractionReport
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.extract import AssetExtractionPort
 from ba_downloader.domain.ports.logging import LoggerPort
-from ba_downloader.infrastructure.extraction.bundle.exporter import (
-    BundleExtractor,
-    BundleLogEvent,
+from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
+from ba_downloader.infrastructure.download.bundle_members import (
+    extract_local_bundle_member,
+    find_exact_entry,
+    member_cache_path,
+    read_local_zip_entries,
 )
-from ba_downloader.infrastructure.extraction.media.exporter import MediaExtractor
+from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
+    BundleArchiveInput,
+)
+from ba_downloader.infrastructure.extraction.bundles import (
+    BundleExtractionReport,
+)
+from ba_downloader.infrastructure.extraction.errors import BundleExtractionError
+from ba_downloader.infrastructure.extraction.media.exporter import (
+    MediaArchiveExtractor,
+)
 from ba_downloader.infrastructure.extraction.process_table_runner import (
     ProcessTableExtractionRunner,
     TableProfileFactory,
@@ -26,16 +36,19 @@ from ba_downloader.infrastructure.extraction.process_table_runner import (
 from ba_downloader.infrastructure.extraction.table.profiles import (
     build_default_table_profile_for_context,
 )
-from ba_downloader.infrastructure.extraction.threaded_runner import (
-    ExtractionFailureError,
-    ThreadedExtractionRunner,
-)
-from ba_downloader.infrastructure.progress.rich_progress import RichProgressReporter
-from ba_downloader.infrastructure.runtime.interrupts import (
-    CancellationFeedbackState,
-    emit_cancellation_feedback,
-    install_interrupt_handler,
-)
+from ba_downloader.infrastructure.files.checksum import calculate_crc
+from ba_downloader.infrastructure.progress import NullProgressReporterFactory
+
+
+class _BundleWorkflow(Protocol):
+    def run(
+        self,
+        context: ExecutionContext,
+        inputs: Sequence[Path | BundleArchiveInput],
+        *,
+        concurrency: int,
+        filtered: bool = False,
+    ) -> BundleExtractionReport: ...
 
 
 class AssetExtractionWorkflow(AssetExtractionPort):
@@ -48,146 +61,117 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         *,
         table_profile_factory: TableProfileFactory = build_default_table_profile_for_context,
         force_exit: Callable[[int], None] | None = None,
+        progress_factory: ProgressReporterFactoryPort | None = None,
+        cancellation: CancellationPort | None = None,
+        bundle_workflow: _BundleWorkflow | None = None,
+        unitypy_bundle_workflow: _BundleWorkflow | None = None,
+        media_extractor: MediaArchiveExtractor | None = None,
     ) -> None:
         self.logger = logger
         self._force_exit = force_exit or os._exit
         self._table_profile_factory = table_profile_factory
-        self._threaded_runner = ThreadedExtractionRunner(
-            logger,
-            poll_interval_seconds=self.POLL_INTERVAL_SECONDS,
-            interrupt_grace_seconds=self.INTERRUPT_GRACE_SECONDS,
-            force_exit=self._force_exit,
-        )
+        self._progress_factory = progress_factory or NullProgressReporterFactory()
+        self._cancellation = cancellation or NeverCancelled()
+        self._bundle_workflow = bundle_workflow
+        self._unitypy_bundle_workflow = unitypy_bundle_workflow
+        self._media_extractor = media_extractor
         self._process_table_runner = ProcessTableExtractionRunner(
             logger,
             poll_interval_seconds=self.POLL_INTERVAL_SECONDS,
             interrupt_grace_seconds=self.INTERRUPT_GRACE_SECONDS,
             table_profile_factory=self._table_profile_factory,
             force_exit=self._force_exit,
+            progress_factory=self._progress_factory,
+            cancellation=self._cancellation,
         )
 
     def extract_bundles(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None = None,
-    ) -> None:
-        bundles = [
-            str(bundle_path)
-            for bundle_path in self._resolve_bundle_files(context, resources)
-        ]
+        *,
+        concurrency: int,
+        filtered: bool = False,
+        handler: BundleHandler = BundleHandler.assetripper,
+    ) -> ExtractionReport:
+        self._cancellation.raise_if_cancelled()
+        bundles = self._resolve_bundle_inputs(context, resources)
         if not bundles:
-            return
+            return ExtractionReport()
 
-        freeze_support()
-        queue: multiprocessing.queues.Queue[str] = Queue()
-        log_event_queue: multiprocessing.queues.Queue[BundleLogEvent] = Queue()
-        error_count = multiprocessing.Value("i", 0)
-        for bundle in bundles:
-            queue.put(bundle)
-
-        stop_event = Event()
-        processes = self._build_bundle_processes(
-            queue,
+        workflow: _BundleWorkflow | None
+        if handler is BundleHandler.assetripper:
+            workflow = self._bundle_workflow
+        elif handler is BundleHandler.unitypy:
+            workflow = self._unitypy_bundle_workflow
+        else:
+            raise ValueError(f"Unsupported bundle handler '{handler}'.")
+        if workflow is None:
+            raise RuntimeError(f"{handler.value} bundle workflow is not configured.")
+        report = workflow.run(
             context,
-            len(bundles),
-            error_count,
-            log_event_queue,
+            bundles,
+            concurrency=concurrency,
+            filtered=filtered,
         )
-
-        try:
-            failure_count = 0
-            with (
-                self._install_interrupt_handler(
-                    stop_event,
-                    on_interrupt=lambda: self._stop_bundle_processes(processes),
-                ),
-                RichProgressReporter(
-                    len(bundles),
-                    "Extracting bundles...",
-                    extract_mode=True,
-                ) as progress,
-            ):
-                self._start_bundle_processes(processes)
-                failure_count = self._monitor_bundle_extraction(
-                    queue=queue,
-                    bundles=bundles,
-                    processes=processes,
-                    progress=progress,
-                    stop_event=stop_event,
-                    error_count=error_count,
-                    log_events=log_event_queue,
-                )
-        finally:
-            if stop_event.is_set():
-                self._stop_bundle_processes(processes)
-            for process in processes:
-                process.join(timeout=self.POLL_INTERVAL_SECONDS)
-            self._drain_bundle_log_events(log_event_queue)
-            self._finalize_bundle_queue(queue, cancelled=stop_event.is_set())
-            self._finalize_bundle_queue(
-                log_event_queue,
-                cancelled=stop_event.is_set(),
-            )
-            if stop_event.is_set():
-                raise KeyboardInterrupt()
-            if failure_count:
-                raise ExtractionFailureError.from_count(
-                    "bundle extraction",
-                    failure_count,
-                )
+        return ExtractionReport(report.warnings)
 
     def extract_media(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None = None,
-    ) -> None:
-        files = [
-            str(file_path)
-            for file_path in self._resolve_media_files(context, resources)
-        ]
+        *,
+        concurrency: int,
+    ) -> ExtractionReport:
+        self._cancellation.raise_if_cancelled()
+        files = self._resolve_media_files(context, resources)
         if not files:
-            return
+            return ExtractionReport()
 
-        extractor = MediaExtractor(context)
-        self._threaded_runner.run(
-            files,
+        if self._media_extractor is None:
+            raise RuntimeError("Media archive extractor is not configured.")
+        self._media_extractor.extract(
             context,
-            progress_title="Extracting media...",
-            operation_name="media extraction",
-            task=lambda zip_path, should_stop, progress_callback: extractor.extract_zip(
-                zip_path,
-                should_stop=should_stop,
-                progress_callback=progress_callback,
-            ),
+            files,
+            concurrency=concurrency,
         )
+        return ExtractionReport()
 
     def extract_tables(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None = None,
-    ) -> None:
+        *,
+        concurrency: int,
+    ) -> ExtractionReport:
+        self._cancellation.raise_if_cancelled()
         table_files = [
             table_path.name
             for table_path in self._resolve_table_files(context, resources)
         ]
         if not table_files:
-            return
+            return ExtractionReport()
 
         table_file_metadata = self._resolve_table_file_metadata(context, resources)
-        Path(context.extract_dir, "Table").mkdir(parents=True, exist_ok=True)
+        context.workspace.extracted_table_semantic.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
         if table_file_metadata:
             self._process_table_runner.run(
                 table_files,
                 context,
+                concurrency=concurrency,
                 metadata_by_file=table_file_metadata,
             )
-            return
+            return ExtractionReport()
 
-        self._process_table_runner.run(table_files, context)
+        self._process_table_runner.run(table_files, context, concurrency=concurrency)
+        return ExtractionReport()
 
     def _resolve_bundle_files(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None,
     ) -> list[Path]:
         if resources is not None:
@@ -197,7 +181,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 AssetType.bundle,
             )
 
-        bundle_folder = Path(context.raw_dir) / "Bundle"
+        bundle_folder = context.workspace.raw_bundles
         if not bundle_folder.exists():
             return []
         return [
@@ -206,9 +190,80 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             if bundle.is_file()
         ]
 
+    def _resolve_bundle_inputs(
+        self,
+        context: ExecutionContext,
+        resources: AssetCollection | None,
+    ) -> list[BundleArchiveInput]:
+        if resources is None:
+            return [
+                BundleArchiveInput.from_path(path)
+                for path in self._resolve_bundle_files(context, None)
+            ]
+        result: list[BundleArchiveInput] = []
+        seen_paths: set[Path] = set()
+        missing_members: list[str] = []
+        for resource in resources:
+            if resource.asset_type is not AssetType.bundle:
+                continue
+            if resource.selected_member_paths:
+                archive_path = context.workspace.raw_resource_path(
+                    resource.asset_type.value,
+                    resource.path,
+                )
+                local_entries = None
+                for member in resource.selected_member_paths:
+                    path = member_cache_path(context, resource, member)
+                    entry = None
+                    if not path.is_file() and archive_path.is_file():
+                        if local_entries is None:
+                            local_entries = read_local_zip_entries(archive_path)
+                        entry = find_exact_entry(local_entries, member)
+                        extract_local_bundle_member(archive_path, entry, path)
+                    if not path.is_file():
+                        missing_members.append(f"{resource.path}::{member}")
+                        continue
+                    if path in seen_paths:
+                        continue
+                    normalized_archive = resource.path.replace("\\", "/")
+                    normalized_member = member.replace("\\", "/")
+                    result.append(
+                        BundleArchiveInput.from_path(
+                            path,
+                            archive_id=f"{normalized_archive}#{normalized_member}",
+                            checksum=ChecksumSpec("crc", str(calculate_crc(path))),
+                        )
+                    )
+                    seen_paths.add(path)
+                continue
+            path = context.workspace.raw_resource_path(
+                resource.asset_type.value,
+                resource.path,
+            )
+            if path in seen_paths or not path.is_file():
+                continue
+            result.append(
+                BundleArchiveInput.from_path(
+                    path,
+                    archive_id=resource.path.replace("\\", "/"),
+                    checksum=resource.checksum,
+                )
+            )
+            seen_paths.add(path)
+        if missing_members:
+            examples = ", ".join(missing_members[:3])
+            suffix = "" if len(missing_members) <= 3 else ", ..."
+            raise BundleExtractionError(
+                "Direct bundle member cache is incomplete: "
+                f"{len(missing_members)} member(s) are missing "
+                f"({examples}{suffix}). Run assets sync or download with the same "
+                "filter first."
+            )
+        return result
+
     def _resolve_media_files(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None,
     ) -> list[Path]:
         if resources is not None:
@@ -222,14 +277,14 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 if file_path.suffix.lower() == ".zip"
             ]
 
-        media_folder = Path(context.raw_dir) / "Media"
+        media_folder = context.workspace.raw_media
         if not media_folder.exists():
             return []
         return list(media_folder.rglob("*.zip"))
 
     def _resolve_table_files(
         self,
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None,
     ) -> list[Path]:
         if resources is not None:
@@ -239,7 +294,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 AssetType.table,
             )
 
-        table_folder = Path(context.raw_dir) / "Table"
+        table_folder = context.workspace.raw_tables
         if not table_folder.exists():
             return []
         return [
@@ -248,17 +303,19 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
     @staticmethod
     def _resolve_existing_resource_files(
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection,
         asset_type: AssetType,
     ) -> list[Path]:
-        raw_dir = Path(context.raw_dir)
         files: list[Path] = []
         seen_paths: set[Path] = set()
         for resource in resources:
             if resource.asset_type is not asset_type:
                 continue
-            file_path = raw_dir / resource.path
+            file_path = context.workspace.raw_resource_path(
+                resource.asset_type.value,
+                resource.path,
+            )
             if file_path in seen_paths or not file_path.is_file():
                 continue
             files.append(file_path)
@@ -267,179 +324,21 @@ class AssetExtractionWorkflow(AssetExtractionPort):
 
     @staticmethod
     def _resolve_table_file_metadata(
-        context: RuntimeContext,
+        context: ExecutionContext,
         resources: AssetCollection | None,
     ) -> dict[str, dict[str, object]]:
         if resources is None:
             return {}
-        raw_dir = Path(context.raw_dir)
         result: dict[str, dict[str, object]] = {}
         for resource in resources:
             if resource.asset_type is not AssetType.table:
                 continue
-            file_path = raw_dir / resource.path
+            file_path = context.workspace.raw_resource_path(
+                resource.asset_type.value,
+                resource.path,
+            )
             if not file_path.is_file():
                 continue
             if resource.metadata:
                 result.setdefault(file_path.name, dict(resource.metadata))
         return result
-
-    @contextmanager
-    def _install_interrupt_handler(
-        self,
-        stop_event: Event,
-        *,
-        on_interrupt: Callable[[], None] | None = None,
-    ) -> Iterator[None]:
-        with install_interrupt_handler(
-            stop_event,
-            self.logger,
-            force_exit=self._force_exit,
-            on_interrupt=on_interrupt,
-        ):
-            yield
-
-    def _build_bundle_processes(
-        self,
-        queue: multiprocessing.queues.Queue[str],
-        context: RuntimeContext,
-        bundle_count: int,
-        error_count: Any,
-        log_events: multiprocessing.queues.Queue[BundleLogEvent],
-    ) -> list[multiprocessing.Process]:
-        process_count = min(
-            max(context.threads, 1),
-            bundle_count,
-            os.cpu_count() or 1,
-        )
-        return [
-            multiprocessing.Process(
-                target=BundleExtractor.multiprocess_extract_worker,
-                args=(
-                    queue,
-                    context,
-                    BundleExtractor.MAIN_EXTRACT_TYPES,
-                    error_count,
-                    log_events,
-                ),
-            )
-            for _ in range(process_count)
-        ]
-
-    @staticmethod
-    def _start_bundle_processes(processes: list[multiprocessing.Process]) -> None:
-        for process in processes:
-            process.start()
-
-    def _monitor_bundle_extraction(
-        self,
-        *,
-        queue: multiprocessing.queues.Queue[str],
-        bundles: list[str],
-        processes: list[multiprocessing.Process],
-        progress: RichProgressReporter,
-        stop_event: Event,
-        error_count: Any,
-        log_events: multiprocessing.queues.Queue[BundleLogEvent],
-    ) -> int:
-        cancellation_state = CancellationFeedbackState()
-        completed_bundles = 0
-        failure_count = 0
-        progress.set_status(f"0/{len(bundles)} bundles")
-        while self._has_pending_bundle_work(queue, processes):
-            self._drain_bundle_log_events(log_events)
-            completed_bundles = max(0, len(bundles) - self._queue_size(queue))
-            progress.set_completed(completed_bundles)
-            progress.set_status(f"{completed_bundles}/{len(bundles)} bundles")
-            if stop_event.is_set():
-                self._stop_bundle_processes(processes)
-                emit_cancellation_feedback(
-                    self.logger,
-                    cancellation_state,
-                    grace_seconds=self.INTERRUPT_GRACE_SECONDS,
-                    cancellation_message="Cancelling bundle extraction...",
-                    still_stopping_message=(
-                        "Extraction is still stopping. Press Ctrl+C again to force exit."
-                    ),
-                    has_pending_work=self._has_live_processes(processes),
-                )
-                if not self._has_live_processes(processes):
-                    break
-
-            stop_event.wait(self.POLL_INTERVAL_SECONDS)
-
-        self._drain_bundle_log_events(log_events)
-        if not stop_event.is_set():
-            progress.set_completed(len(bundles))
-            progress.set_status(f"{len(bundles)}/{len(bundles)} bundles")
-            failure_count = max(0, int(error_count.value))
-            if failure_count:
-                self.logger.warn(
-                    f"Extracted bundles with {failure_count} errors. "
-                    "Check previous log lines for failed bundle paths."
-                )
-            else:
-                self.logger.info("Extracted bundles successfully.")
-        self._drain_bundle_log_events(log_events)
-        return failure_count
-
-    def _drain_bundle_log_events(
-        self,
-        log_events: multiprocessing.queues.Queue[BundleLogEvent],
-    ) -> None:
-        while True:
-            try:
-                event = log_events.get_nowait()
-            except Empty:
-                return
-            if event.level == "info":
-                self.logger.info(event.message)
-            elif event.level == "warn":
-                self.logger.warn(event.message)
-            else:
-                self.logger.error(event.message)
-
-    @staticmethod
-    def _queue_size(queue: multiprocessing.queues.Queue[str]) -> int:
-        try:
-            return queue.qsize()
-        except (NotImplementedError, AttributeError):
-            return 0
-
-    @classmethod
-    def _has_live_processes(cls, processes: list[multiprocessing.Process]) -> bool:
-        return any(process.is_alive() for process in processes)
-
-    @classmethod
-    def _has_pending_bundle_work(
-        cls,
-        queue: multiprocessing.queues.Queue[str],
-        processes: list[multiprocessing.Process],
-    ) -> bool:
-        return cls._queue_size(queue) > 0 or cls._has_live_processes(processes)
-
-    @staticmethod
-    def _stop_bundle_processes(processes: list[multiprocessing.Process]) -> None:
-        for process in processes:
-            if process.is_alive():
-                process.kill()
-
-    @staticmethod
-    def _finalize_bundle_queue(
-        queue: multiprocessing.queues.Queue[Any],
-        *,
-        cancelled: bool,
-    ) -> None:
-        cancel_join_thread = getattr(queue, "cancel_join_thread", None)
-        close = getattr(queue, "close", None)
-        join_thread = getattr(queue, "join_thread", None)
-
-        if cancelled and callable(cancel_join_thread):
-            cancel_join_thread()
-        if callable(close):
-            close()
-        if not cancelled and callable(join_thread):
-            try:
-                join_thread()
-            except (AssertionError, OSError, RuntimeError, ValueError):
-                return

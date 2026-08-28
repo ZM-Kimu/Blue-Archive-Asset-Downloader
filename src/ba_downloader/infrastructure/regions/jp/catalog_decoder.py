@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from ba_downloader.domain.models.asset import BootstrapSession, CatalogSource
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_catalog import DecodedJPCatalog
-from ba_downloader.domain.models.runtime import RuntimeContext
 from ba_downloader.infrastructure.schema.memorypack.cursor import MemoryPackCursor
 from ba_downloader.infrastructure.schema.memorypack.reader import (
     MemoryPackReader,
@@ -54,24 +54,40 @@ class JPCatalogDecoder:
         cls,
         session: BootstrapSession,
         sources: list[CatalogSource],
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> DecodedJPCatalog:
         _ = session
-        memorypack_registry = cls.__load_memorypack_registry(context)
+        memorypack_registry: MemoryPackSchemaRegistry | None = None
         payload = DecodedJPCatalog(tables=[], media=[], bundles=[])
 
         for source in sources:
             if source.name == "table":
-                table_assets = cls.__try_decode_table_catalog_with_memorypack(
-                    source.content,
-                    memorypack_registry,
-                )
-                if table_assets is None:
+                try:
                     table_assets = cls.__decode_table_catalog(
                         cls.CatalogReader(source.content)
                     )
+                except (
+                    EOFError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    AttributeError,
+                ) as built_in_error:
+                    memorypack_registry = cls.__load_memorypack_registry(context)
+                    generated_assets = cls.__try_decode_table_catalog_with_memorypack(
+                        source.content,
+                        memorypack_registry,
+                    )
+                    if generated_assets is None:
+                        raise ValueError(
+                            "JP TableCatalog could not be decoded by the built-in "
+                            "v3 reader or generated schema."
+                        ) from built_in_error
+                    table_assets = generated_assets
                 payload.tables.extend(table_assets)
             elif source.name == "media":
+                if memorypack_registry is None:
+                    memorypack_registry = cls.__load_memorypack_registry(context)
                 media_assets = cls.__try_decode_media_catalog_with_memorypack(
                     source.content,
                     memorypack_registry,
@@ -89,9 +105,9 @@ class JPCatalogDecoder:
     @classmethod
     def __load_memorypack_registry(
         cls,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> MemoryPackSchemaRegistry | None:
-        memorypack_data_dir = Path(context.extract_dir) / "MemoryPackData"
+        memorypack_data_dir = Path(context.workspace.extracted) / "MemoryPackData"
         if not (
             memorypack_data_dir.is_dir()
             and (memorypack_data_dir / "__init__.py").is_file()

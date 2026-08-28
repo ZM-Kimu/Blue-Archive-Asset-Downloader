@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ba_downloader.infrastructure.schema.memorypack.formatters import SIDECAR_VERSION
 from ba_downloader.infrastructure.schema.memorypack.parser import MemoryPackCSParser
 from ba_downloader.infrastructure.schema.memorypack.registry import (
     MemoryPackSchemaRegistry,
@@ -14,7 +15,6 @@ from ba_downloader.infrastructure.schema.memorypack.schema_reader import (
     schema_members,
 )
 
-SIDECAR_VERSION = 1
 UNION_ATTR_SIDECAR_NAME = "memorypack_union_attrs.json"
 
 
@@ -97,7 +97,7 @@ class SupplementalMemoryPackFormatterBuilder:
         if not self.sidecar_path.is_file():
             return {"version": SIDECAR_VERSION, "formatters": []}
         payload = json.loads(self.sidecar_path.read_text(encoding="utf8"))
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or payload.get("version") != SIDECAR_VERSION:
             return {"version": SIDECAR_VERSION, "formatters": []}
         return payload
 
@@ -126,7 +126,11 @@ class SupplementalMemoryPackFormatterBuilder:
             return False
 
         payload = json.loads(self.union_attr_path.read_text(encoding="utf8"))
-        targets = payload.get("targets", []) if isinstance(payload, dict) else []
+        targets = (
+            payload.get("targets", [])
+            if isinstance(payload, dict) and payload.get("version") == SIDECAR_VERSION
+            else []
+        )
         changed = False
         for target in targets:
             if not isinstance(target, dict):

@@ -1,6 +1,5 @@
 """Schema and table crypto helpers."""
 
-import math
 import time
 from base64 import b64decode, b64encode
 from binascii import Error as BinasciiError
@@ -195,47 +194,9 @@ class MersenneTwister:
         """Generates a random number on [0, 0x7FFFFFFF]-interval."""
         return self.genrand_int32() >> 1
 
-    def next_int(self, min_value: int = 0, max_value: int | None = None) -> int:
-        """Generates a random integer between min_value and max_value."""
-        if max_value is None:
-            return self.genrand_int31()
-        if min_value > max_value:
-            raise ValueError("min_value must be less than or equal to max_value")
-        return math.floor(
-            (max_value - min_value + 1) * self.genrand_real1() + min_value
-        )
-
-    def genrand_real1(self) -> float:
-        """Generates a random floating point number on [0,1]-interval."""
-        return self.genrand_int32() * (1.0 / 4294967295.0)
-
-    def genrand_real2(self) -> float:
-        """Generates a random floating point number on [0,1)-interval."""
-        return self.genrand_int32() * (1.0 / 4294967296.0)
-
-    def genrand_real3(self) -> float:
-        """Generates a random floating point number on (0,1)-interval."""
-        return (self.genrand_int32() + 0.5) * (1.0 / 4294967296.0)
-
     def next_bytes(self, length: int) -> bytes:
         """Generates random bytes."""
         return b"".join(
             self.genrand_int31().to_bytes(4, "little", signed=False)
             for _ in range(0, length, 4)
         )[:length]
-
-    def next_float(self, include_one: bool = False) -> float:
-        """Generates a random floating-point number."""
-        if include_one:
-            return self.genrand_real1()
-        return self.genrand_real2()
-
-    def next_double(self, include_one: bool = False) -> float:
-        """Generates a random double number."""
-        return self.genrand_real1() if include_one else self.genrand_real2()
-
-    def next_53bit_res(self) -> float:
-        """Generates a random number with 53-bit resolution."""
-        a = self.genrand_int32() >> 5
-        b = self.genrand_int32() >> 6
-        return (a * 67108864.0 + b) * (1.0 / 9007199254740992.0)

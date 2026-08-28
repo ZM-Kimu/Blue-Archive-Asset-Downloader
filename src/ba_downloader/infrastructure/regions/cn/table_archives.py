@@ -17,6 +17,9 @@ from ba_downloader.infrastructure.regions.cn_gl_table_archives import (
     is_numeric_stage_archive,
     is_script_test_archive,
 )
+from ba_downloader.infrastructure.regions.ground_table_archives import (
+    is_mgs_logic_ground_archive,
+)
 
 
 def classify_cn_table_archive(file_name: str) -> TableArchiveRoute:
@@ -35,6 +38,7 @@ def classify_cn_table_archive(file_name: str) -> TableArchiveRoute:
         or is_ground_tool_archive(lower_name)
         or is_script_test_archive(archive_name)
         or is_numeric_stage_archive(lower_name)
+        or is_mgs_logic_ground_archive(archive_name)
     ):
         return TableArchiveRoute(ROUTE_RAW)
 

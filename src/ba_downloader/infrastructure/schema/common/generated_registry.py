@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import sys
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from importlib import import_module, invalidate_caches, util
 from pathlib import Path
@@ -26,8 +27,8 @@ _GENERATED_SCHEMA_LOAD_LOCK = RLock()
 
 @dataclass(frozen=True, slots=True)
 class GeneratedSchemaRegistry:
-    types: dict[str, type[Any]]
-    enums: dict[str, type[Any]]
+    types: Mapping[str, type[Any]]
+    enums: Mapping[str, type[Any]]
     package_name: str
 
     @classmethod
@@ -39,10 +40,13 @@ class GeneratedSchemaRegistry:
         enum_registry_name: str,
         package_prefix: str,
         registry_values_are_module_names: bool = False,
+        cache_identity: str | None = None,
     ) -> GeneratedSchemaRegistry:
         package_path = Path(package_dir)
         with _GENERATED_SCHEMA_LOAD_LOCK:
-            content_digest = _generated_schema_content_digest(package_path)
+            content_digest = cache_identity or _generated_schema_content_digest(
+                package_path
+            )
             cache_key = _GeneratedSchemaCacheKey(
                 package_dir=str(package_path.resolve()),
                 content_digest=content_digest,
@@ -75,14 +79,14 @@ class GeneratedSchemaRegistry:
                 )
 
             if registry_values_are_module_names:
-                types = {
-                    key: load_generated_symbol(package_name, module_name)
-                    for key, module_name in raw_types.items()
-                }
-                enums = {
-                    key: load_generated_symbol(package_name, module_name)
-                    for key, module_name in raw_enums.items()
-                }
+                types: Mapping[str, type[Any]] = _LazyGeneratedSymbolMap(
+                    package_name,
+                    raw_types,
+                )
+                enums: Mapping[str, type[Any]] = _LazyGeneratedSymbolMap(
+                    package_name,
+                    raw_enums,
+                )
             else:
                 types = dict(raw_types)
                 enums = dict(raw_enums)
@@ -121,6 +125,35 @@ _GENERATED_SCHEMA_REGISTRY_CACHE: dict[
     _GeneratedSchemaCacheKey,
     GeneratedSchemaRegistry,
 ] = {}
+
+
+class _LazyGeneratedSymbolMap(Mapping[str, type[Any]]):
+    def __init__(self, package_name: str, modules: dict[object, object]) -> None:
+        if not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in modules.items()
+        ):
+            raise TypeError("Generated lazy registry values must be module names.")
+        self._package_name = package_name
+        self._modules = {str(key): str(value) for key, value in modules.items()}
+        self._loaded: dict[str, type[Any]] = {}
+
+    def __getitem__(self, key: str) -> type[Any]:
+        if key not in self._loaded:
+            module_name = self._modules[key]
+            symbol = load_generated_symbol(self._package_name, module_name)
+            if not isinstance(symbol, type):
+                raise TypeError(
+                    f"Generated schema symbol is not a type: {module_name}."
+                )
+            self._loaded[key] = symbol
+        return self._loaded[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._modules)
+
+    def __len__(self) -> int:
+        return len(self._modules)
 
 
 def load_generated_registry_module(
@@ -180,7 +213,12 @@ def _load_generated_registry_module(
     if module is None:
         module = util.module_from_spec(spec)
         sys.modules[package_name] = module
-        spec.loader.exec_module(module)
+        previous_bytecode_setting = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.dont_write_bytecode = previous_bytecode_setting
 
     return import_module(f"{package_name}._registry")
 

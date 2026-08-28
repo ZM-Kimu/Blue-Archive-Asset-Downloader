@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal, overload
 
 ChecksumAlgorithm = Literal["crc", "md5"]
 
 
-class AssetType(str, Enum):
+class AssetType(StrEnum):
     table = "table"
     media = "media"
     bundle = "bundle"
@@ -28,6 +28,12 @@ class AssetRecord:
     checksum: ChecksumSpec
     asset_type: AssetType
     metadata: dict[str, Any] = field(default_factory=dict)
+    member_paths: tuple[str, ...] = ()
+    selected_member_paths: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.selected_member_paths == ():
+            raise ValueError("Selected bundle member paths must not be empty.")
 
 
 class AssetCollection:
@@ -69,6 +75,8 @@ class AssetCollection:
         algorithm: ChecksumAlgorithm,
         asset_type: AssetType,
         metadata: dict[str, Any] | None = None,
+        member_paths: Iterable[str] = (),
+        selected_member_paths: Iterable[str] | None = None,
     ) -> None:
         self.assets.append(
             AssetRecord(
@@ -78,6 +86,12 @@ class AssetCollection:
                 checksum=ChecksumSpec(algorithm=algorithm, value=str(checksum)),
                 asset_type=asset_type,
                 metadata=dict(metadata or {}),
+                member_paths=tuple(member_paths),
+                selected_member_paths=(
+                    None
+                    if selected_member_paths is None
+                    else tuple(selected_member_paths)
+                ),
             )
         )
 

@@ -1,9 +1,0 @@
-rich
-httpx
-curl-cffi
-tenacity
-UnityPy==1.24.2
-xxhash
-pycryptodome
-flatbuffers
-pykakasi

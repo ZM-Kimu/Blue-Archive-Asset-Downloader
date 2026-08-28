@@ -8,6 +8,7 @@ from typing import Any
 
 from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.ports.http import DownloadResult, get_header
+from ba_downloader.infrastructure.files.size import format_file_size
 
 CONTENT_RANGE_PATTERN = re.compile(r"bytes (\d+)-(\d+)/(\d+)")
 
@@ -90,7 +91,8 @@ class DownloadResumeSession:
                         ):
                             raise NetworkError(
                                 "incomplete response body "
-                                f"(expected complete file, got {self.safe_file_size(part_path)} bytes)"
+                                "(expected complete file, got "
+                                f"{format_file_size(self.safe_file_size(part_path))})"
                             )
 
                         part_path.replace(self.destination)
@@ -224,7 +226,8 @@ class DownloadResumeSession:
             if bytes_written != expected_bytes:
                 raise NetworkError(
                     "incomplete response body "
-                    f"(expected {expected_bytes} bytes, got {bytes_written} bytes)"
+                    f"(expected {format_file_size(expected_bytes)}, "
+                    f"got {format_file_size(bytes_written)})"
                 )
             return part_size == total_size
 
@@ -246,7 +249,8 @@ class DownloadResumeSession:
         if expected_bytes != bytes_written:
             raise NetworkError(
                 "incomplete response body "
-                f"(expected {expected_bytes} bytes, got {bytes_written} bytes)"
+                f"(expected {format_file_size(expected_bytes)}, "
+                f"got {format_file_size(bytes_written)})"
             )
 
         return True

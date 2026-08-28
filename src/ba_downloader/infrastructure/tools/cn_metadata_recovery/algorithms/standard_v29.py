@@ -136,8 +136,12 @@ def convert_default_values_to_v29(
     v27_sections: dict[str, Section],
     binary: Path,
     metadata_registration_va: int,
+    *,
+    relocated_elf: RelocatedElf | None = None,
 ) -> tuple[dict[str, bytes], dict[str, Any]]:
-    type_table = BinaryTypeTable(RelocatedElf(binary), metadata_registration_va)
+    type_table = BinaryTypeTable(
+        relocated_elf or RelocatedElf(binary), metadata_registration_va
+    )
     tuple_sections = {
         name: (section.offset, section.size) for name, section in v27_sections.items()
     }
@@ -220,10 +224,13 @@ def extract_attribute_data(
     tail_offset: int,
     blob_start: int,
     target_count: int,
+    relocated_elf: RelocatedElf | None = None,
 ) -> tuple[bytes, bytes, dict[str, Any]]:
     tail = source_metadata[tail_offset:]
     metadata_types = MetadataTypeInfo(v27_metadata)
-    binary_types = BinaryTypes(RelocatedElf(binary), metadata_registration_va)
+    binary_types = BinaryTypes(
+        relocated_elf or RelocatedElf(binary), metadata_registration_va
+    )
 
     pos = blob_start
     totals = {"attributes": 0, "ctor_args": 0, "fields": 0, "props": 0}
@@ -297,6 +304,32 @@ def extract_attribute_data(
     return attribute_data, attribute_data_range, report
 
 
+def assemble_standard_v29_sections(
+    sections: dict[str, bytes],
+) -> tuple[bytes, dict[str, dict[str, Any]]]:
+    layout: list[tuple[int, bytes]] = []
+    emitted: dict[str, dict[str, Any]] = {}
+    cursor = 0x100
+    for name in HEADER_V29:
+        data = sections.get(name, b"")
+        if data:
+            cursor += (-cursor) & 3
+            offset = cursor
+            cursor += len(data)
+        else:
+            offset = 0
+        layout.append((offset, data))
+        emitted[name] = {"offset": f"0x{offset:X}", "size": len(data)}
+
+    output = bytearray(cursor)
+    struct.pack_into("<II", output, 0, 0xFAB11BAF, 29)
+    for index, (offset, data) in enumerate(layout):
+        struct.pack_into("<II", output, 8 + index * 8, offset, len(data))
+        if data:
+            output[offset : offset + len(data)] = data
+    return bytes(output), emitted
+
+
 def build_standard_v29_metadata(
     source_metadata: bytes,
     v27_metadata: bytes,
@@ -305,6 +338,7 @@ def build_standard_v29_metadata(
     *,
     tail_offset: int = 0x01C9B1DC,
     blob_start: int = 0x870,
+    relocated_elf: RelocatedElf | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     v27_sections = read_v27_sections(v27_metadata)
     target_count = count_custom_attribute_targets(v27_metadata, v27_sections)
@@ -316,6 +350,7 @@ def build_standard_v29_metadata(
         tail_offset=tail_offset,
         blob_start=blob_start,
         target_count=target_count,
+        relocated_elf=relocated_elf,
     )
 
     default_replacements, default_report = convert_default_values_to_v29(
@@ -323,6 +358,7 @@ def build_standard_v29_metadata(
         v27_sections,
         binary,
         metadata_registration_va,
+        relocated_elf=relocated_elf,
     )
 
     replacements = {
@@ -330,38 +366,24 @@ def build_standard_v29_metadata(
         "attributeData": attribute_data,
         "attributeDataRange": attribute_data_range,
     }
-    out = bytearray(0x100)
-    struct.pack_into("<II", out, 0, 0xFAB11BAF, 29)
-    cursor = 0x100
-    emitted: dict[str, dict[str, Any]] = {}
-    for index, name in enumerate(HEADER_V29):
-        if name in replacements:
-            data = replacements[name]
-        elif name in HEADER_V27_2:
-            data = section_bytes(v27_metadata, v27_sections[name])
-        else:
-            data = b""
-
-        if data:
-            padding = (-cursor) & 3
-            if padding:
-                out += b"\0" * padding
-                cursor += padding
-            offset = cursor
-            out += data
-            cursor += len(data)
-        else:
-            offset = 0
-        struct.pack_into("<II", out, 8 + index * 8, offset, len(data))
-        emitted[name] = {"offset": f"0x{offset:X}", "size": len(data)}
-
-    candidate = bytes(out)
+    section_payloads = {
+        name: (
+            replacements[name]
+            if name in replacements
+            else section_bytes(v27_metadata, v27_sections[name])
+            if name in HEADER_V27_2
+            else b""
+        )
+        for name in HEADER_V29
+    }
+    candidate, emitted = assemble_standard_v29_sections(section_payloads)
     report = {
         "source_sha256": sha256_hex(source_metadata),
         "v27_metadata_sha256": sha256_hex(v27_metadata),
         "output_sha256": sha256_hex(candidate),
         "output_size": len(candidate),
         "declared_version": 29,
+        "allocation_strategy": "precomputed-single-buffer",
         "attributeData": attribute_report,
         "defaultValues": default_report,
         "emitted_sections": emitted,

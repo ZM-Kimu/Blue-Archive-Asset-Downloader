@@ -9,13 +9,55 @@ on:
       - main
 
 jobs:
-  validate:
+  quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install dependencies
+        run: uv sync --group dev --extra api
+
+      - name: Compile sources
+        run: python -m compileall src scripts
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Run lint checks
+        run: uv run ruff check .
+
+      - name: Run type checks
+        run: uv run mypy
+
+      - name: Check architecture boundaries
+        run: uv run lint-imports
+
+      - name: Build .NET extraction tools
+        run: uv run pytest -q -m dotnet
+
+  tests:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version:
-          - "3.10"
           - "3.11"
           - "3.12"
           - "3.13"
@@ -31,10 +73,28 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install dependencies
+        run: uv sync --group dev --extra api
+
+      - name: Run full test suite
+        run: uv run pytest -q -m "not dotnet and not windows"
+
+  windows-cancellation:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
-          dotnet-version: 10.0.x
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -42,18 +102,5 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
-      - name: Compile sources
-        run: python -m compileall src tests
-
-      - name: Run lint checks
-        run: uv run ruff check .
-
-      - name: Run type checks
-        run: uv run mypy
-
-      - name: Run pylint advisory checks
-        continue-on-error: true
-        run: uv run pylint --rcfile .pylintrc src/ba_downloader scripts
-
-      - name: Run tests
-        run: uv run pytest -q
+      - name: Run Windows cancellation tests
+        run: uv run pytest -q -m windows

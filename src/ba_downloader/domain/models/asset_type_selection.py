@@ -40,6 +40,3 @@ class ResourceTypeSelection:
             asset_type if isinstance(asset_type, AssetType) else AssetType(asset_type)
         )
         return normalized in self.types
-
-    def as_strings(self) -> tuple[str, ...]:
-        return tuple(asset_type.value for asset_type in self.types)

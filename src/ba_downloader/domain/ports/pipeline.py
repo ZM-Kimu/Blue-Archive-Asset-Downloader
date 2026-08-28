@@ -6,21 +6,21 @@ from ba_downloader.domain.models.asset import (
     CatalogSource,
     ResolvedRelease,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 
 TDecodedCo = TypeVar("TDecodedCo", covariant=True)
 TDecodedContra = TypeVar("TDecodedContra", contravariant=True)
 
 
 class ReleaseResolver(Protocol):
-    def resolve(self, context: RuntimeContext) -> ResolvedRelease: ...
+    def resolve(self, context: ExecutionContext) -> ResolvedRelease: ...
 
 
 class SessionBootstrapper(Protocol):
     def bootstrap(
         self,
         release: ResolvedRelease,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> BootstrapSession: ...
 
 
@@ -28,7 +28,7 @@ class CatalogSourceProvider(Protocol):
     def fetch(
         self,
         session: BootstrapSession,
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> list[CatalogSource]: ...
 
 
@@ -37,7 +37,7 @@ class CatalogDecoder(Protocol, Generic[TDecodedCo]):
         self,
         session: BootstrapSession,
         sources: list[CatalogSource],
-        context: RuntimeContext,
+        context: ExecutionContext,
     ) -> TDecodedCo: ...
 
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
+from functools import lru_cache
 
 from ba_downloader.domain.models.character import CharacterIndexEntry
 
 
+@lru_cache(maxsize=8192)
 def normalize_lookup_token(value: str) -> str:
     return "".join(character for character in value.casefold() if character.isalnum())
 
@@ -120,25 +122,38 @@ class ScenarioMatchIndex:
         self.prefix_index: dict[str, list[tuple[str, CharacterIndexEntry]]] = (
             defaultdict(list)
         )
+        self._name_tokens: dict[int, set[str]] = defaultdict(set)
+        self._exact_tokens: dict[int, set[str]] = defaultdict(set)
+        self._prefix_tokens: dict[int, set[tuple[str, str]]] = defaultdict(set)
         for character in characters:
             self.add_character(character)
 
     def add_character(self, character: CharacterIndexEntry) -> None:
-        for token in normalize_lookup_tokens(set(character.names or [])):
+        character_id = character.character_id
+        name_tokens = normalize_lookup_tokens(set(character.names or []))
+        for token in name_tokens - self._name_tokens[character_id]:
             self.name_index[token].append(character)
+        self._name_tokens[character_id].update(name_tokens)
 
         aliases = set(character.file_aliases or set())
         exact_references = aliases.union(collect_dev_exact_aliases(character.dev_name))
-        for token in normalize_lookup_tokens(exact_references):
+        exact_tokens = normalize_lookup_tokens(exact_references)
+        for token in exact_tokens - self._exact_tokens[character_id]:
             self.exact_index[token].append(character)
+        self._exact_tokens[character_id].update(exact_tokens)
 
         prefix_references = aliases.union(
             collect_dev_prefix_aliases(character.dev_name)
         )
         for reference in prefix_references:
             token = normalize_lookup_token(reference)
-            if len(token) >= 3:
+            registration = (token, reference)
+            if (
+                len(token) >= 3
+                and registration not in self._prefix_tokens[character_id]
+            ):
                 self.prefix_index[token].append((reference, character))
+                self._prefix_tokens[character_id].add(registration)
 
     def match(
         self,
@@ -146,15 +161,22 @@ class ScenarioMatchIndex:
         file_candidates: set[str],
     ) -> CharacterIndexEntry | None:
         normalized_scenario_names = normalize_lookup_tokens(scenario_names)
-        candidate_groups = (
+        matched = select_best_scenario_candidate(
             self._match_names(normalized_scenario_names),
-            self._match_exact_files(file_candidates),
-            self._match_prefix_files(file_candidates),
+            file_candidates,
         )
-        for candidates in candidate_groups:
-            if matched := select_best_scenario_candidate(candidates, file_candidates):
-                return matched
-        return None
+        if matched is not None:
+            return matched
+        matched = select_best_scenario_candidate(
+            self._match_exact_files(file_candidates),
+            file_candidates,
+        )
+        if matched is not None:
+            return matched
+        return select_best_scenario_candidate(
+            self._match_prefix_files(file_candidates),
+            file_candidates,
+        )
 
     def _match_names(
         self, normalized_scenario_names: set[str]

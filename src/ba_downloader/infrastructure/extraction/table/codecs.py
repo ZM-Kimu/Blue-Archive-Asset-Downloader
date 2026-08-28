@@ -6,6 +6,7 @@ import struct
 from dataclasses import make_dataclass
 from pathlib import Path
 from typing import Annotated, Any, cast
+from uuid import uuid4
 
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.table.models import (
@@ -19,6 +20,7 @@ from ba_downloader.infrastructure.extraction.table.payload_router import (
     FlatBufferTablePayloadRouter,
     TablePayloadRouter,
 )
+from ba_downloader.infrastructure.files.atomic import write_json_atomic
 from ba_downloader.infrastructure.schema.common.generated_registry import (
     GeneratedSchemaRegistry,
 )
@@ -51,6 +53,8 @@ class TablePayloadCodecAdapter:
         memorypack_formatter_path: str | None = None,
         payload_router: TablePayloadRouter | None = None,
         preserved_archive_entries: frozenset[str] = frozenset(),
+        memorypack_diagnostics_dir: Path | None = None,
+        schema_cache_identity: str | None = None,
     ) -> None:
         self.flatbuffer_data_dir = flatbuffer_data_dir
         self.memorypack_data_dir = memorypack_data_dir or str(
@@ -66,6 +70,8 @@ class TablePayloadCodecAdapter:
         self.preserved_archive_entries = {
             Path(file_name).name.lower() for file_name in preserved_archive_entries
         }
+        self.memorypack_diagnostics_dir = memorypack_diagnostics_dir
+        self.schema_cache_identity = schema_cache_identity
         self.lower_schema_registry: dict[str, Any] = {}
         self.flatbuffer_exporter: FlatBufferExporter
         self.memorypack_schema_registry = MemoryPackSchemaRegistry(types={}, enums={})
@@ -91,6 +97,7 @@ class TablePayloadCodecAdapter:
                 type_registry_name="FLATBUFFER_TYPES",
                 enum_registry_name="FLATBUFFER_ENUMS",
                 package_prefix="ba_downloader_generated_flatbufferdata",
+                cache_identity=self.schema_cache_identity,
             )
         except FileNotFoundError as exc:
             message = str(exc)
@@ -388,8 +395,9 @@ class TablePayloadCodecAdapter:
                     pass
 
         if allow_partial:
+            reader = MemoryPackReader(value)
             try:
-                result = MemoryPackReader(value).read_cn_table_dao_partial(
+                result = reader.read_cn_table_dao_partial(
                     root_type,
                     self.memorypack_schema_registry,
                 )
@@ -401,6 +409,15 @@ class TablePayloadCodecAdapter:
                     column_name,
                     root_type,
                     message,
+                )
+                self._write_memorypack_diagnostic(
+                    db_name,
+                    table_name,
+                    column_name,
+                    root_type,
+                    value,
+                    error=exc,
+                    failure_offset=reader.offset,
                 )
                 return self.memorypack_raw_fallback(value, root_type, error=str(exc))
 
@@ -414,7 +431,62 @@ class TablePayloadCodecAdapter:
             root_type,
             message,
         )
+        self._write_memorypack_diagnostic(
+            db_name,
+            table_name,
+            column_name,
+            root_type,
+            value,
+            error=ValueError(message),
+            failure_offset=0,
+        )
         return self.memorypack_raw_fallback(value, root_type)
+
+    def _write_memorypack_diagnostic(
+        self,
+        db_name: str,
+        table_name: str,
+        column_name: str,
+        root_type: str,
+        payload: bytes,
+        *,
+        error: Exception,
+        failure_offset: int,
+    ) -> None:
+        output_dir = self.memorypack_diagnostics_dir
+        if output_dir is None:
+            return
+        digest = hashlib.sha256(payload).hexdigest()
+        identity = hashlib.sha256(
+            f"{db_name}\0{table_name}\0{column_name}\0{root_type}\0{digest}".encode()
+        ).hexdigest()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        payload_path = output_dir / f"{identity}.bin"
+        diagnostic_path = output_dir / f"{identity}.json"
+        if not payload_path.exists():
+            temporary_payload = payload_path.with_name(
+                f".{payload_path.name}.{uuid4().hex}.tmp"
+            )
+            temporary_payload.write_bytes(payload)
+            temporary_payload.replace(payload_path)
+        evidence = {
+            "schema_version": 0,
+            "database": db_name,
+            "table": table_name,
+            "column": column_name,
+            "root_type": root_type,
+            "payload_size": len(payload),
+            "payload_sha256": digest,
+            "failure_offset": min(max(failure_offset, 0), len(payload)),
+            "exception_type": error.__class__.__name__,
+            "message": str(error),
+        }
+        write_json_atomic(
+            diagnostic_path,
+            evidence,
+            indent=2,
+            sort_keys=True,
+        )
 
     def warn_memorypack_database_value_once(
         self,

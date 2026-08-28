@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass as make_dataclass
 from dataclasses import fields, is_dataclass
 from enum import IntEnum
@@ -445,8 +445,8 @@ class FlatBufferReader:
 class FlatBufferExporter:
     def __init__(
         self,
-        type_registry: dict[str, type[Any]],
-        enum_registry: dict[str, type[IntEnum]] | None = None,
+        type_registry: Mapping[str, type[Any]],
+        enum_registry: Mapping[str, type[IntEnum]] | None = None,
     ) -> None:
         self.type_registry = type_registry
         self.enum_registry = enum_registry or {}
@@ -454,10 +454,6 @@ class FlatBufferExporter:
             key.rsplit(".", maxsplit=1)[-1].lower(): value
             for key, value in type_registry.items()
         }
-
-    def resolve_schema(self, file_name: str) -> type[Any] | None:
-        stem = file_name.removesuffix(".bytes")
-        return self.lower_type_registry.get(stem.lower())
 
     def export_payload(
         self,

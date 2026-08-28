@@ -4,7 +4,7 @@ import struct
 from pathlib import Path
 from typing import Any
 
-from .attribute_blob import BlobReader
+from .codegen_registration import RelocatedElf
 from .standard_metadata import (
     HEADER_V27_2 as STANDARD_HEADER_ORDER_V27_2,
 )
@@ -308,22 +308,6 @@ def parse_type_byval_indices(metadata: bytes) -> list[int]:
     return byval
 
 
-def parse_blob_constructors(
-    data: bytes, offset: int, method_count: int
-) -> tuple[int, list[int]]:
-    reader = BlobReader(data, offset)
-    attribute_count = reader.compressed_uint()
-    if attribute_count <= 0 or attribute_count > 4096:
-        raise ValueError(
-            f"attribute count out of range at 0x{offset:X}: {attribute_count}"
-        )
-    constructors = [reader.u32_unaligned() for _ in range(attribute_count)]
-    bad = [value for value in constructors if value >= method_count]
-    if bad:
-        raise ValueError(f"constructor index out of range at 0x{offset:X}: {bad[:4]}")
-    return attribute_count, constructors
-
-
 def restore_pre29_attribute_sections(
     source: bytes,
     metadata: bytes,
@@ -333,15 +317,17 @@ def restore_pre29_attribute_sections(
     tail_offset: int = 0x01C9B1DC,
     blob_start: int = 0x870,
     exported_types_offset: int = 0x2177D0,
+    relocated_elf: RelocatedElf | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     from .attribute_blob import BinaryTypes, MetadataTypeInfo, parse_attribute_blob
-    from .codegen_registration import RelocatedElf
 
     ranges_by_name = parse_source_image_custom_ranges(source)
     target_count = sum(count for _start, count in ranges_by_name.values())
     tail = source[tail_offset:]
     metadata_types = MetadataTypeInfo(metadata)
-    binary_types = BinaryTypes(RelocatedElf(binary), metadata_registration_va)
+    binary_types = BinaryTypes(
+        relocated_elf or RelocatedElf(binary), metadata_registration_va
+    )
     declaring_types = parse_method_declaring_types(metadata)
     byval_indices = parse_type_byval_indices(metadata)
 

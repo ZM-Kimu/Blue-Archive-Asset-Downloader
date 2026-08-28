@@ -104,12 +104,6 @@ class RelocatedElf:
     def is_mapped_va(self, va: int) -> bool:
         return self.va_to_offset(va) is not None
 
-    def read_u64_va(self, va: int) -> int | None:
-        offset = self.va_to_offset(va)
-        if offset is None or offset + 8 > len(self.data):
-            return None
-        return struct.unpack_from("<Q", self.data, offset)[0]
-
     def read_u64_offset(self, offset: int) -> int:
         return struct.unpack_from("<Q", self.data, offset)[0]
 
@@ -247,8 +241,7 @@ class StandardMetadata:
         old_assembly_rows = [
             bytes(
                 self.data[
-                    assemblies_section.offset
-                    + i * 0x40 : assemblies_section.offset
+                    assemblies_section.offset + i * 0x40 : assemblies_section.offset
                     + (i + 1) * 0x40
                 ]
             )
@@ -371,27 +364,31 @@ def score_module_array(image: RelocatedElf, array_va: int, module_count: int) ->
 
 def find_code_registration(image: RelocatedElf, module_count: int) -> tuple[int, int]:
     candidates: list[tuple[int, int, int]] = []
+    module_count_bytes = struct.pack("<Q", module_count)
     for segment in image.loads:
         if segment.flags & 1:
             continue
         end = min(segment.oend, len(image.data) - 16)
-        for offset in range(segment.offset, end, 8):
-            if image.read_u64_offset(offset) != module_count:
+        offset = image.data.find(module_count_bytes, segment.offset, end)
+        while offset >= 0:
+            if (offset - segment.offset) % 8:
+                offset = image.data.find(module_count_bytes, offset + 1, end)
                 continue
             array_va = image.read_u64_offset(offset + 8)
             array_offset = image.va_to_offset(array_va)
             if array_offset is None or array_offset + module_count * 8 > len(
                 image.data
             ):
+                offset = image.data.find(module_count_bytes, offset + 1, end)
                 continue
             start_offset = offset - 13 * 8
-            if start_offset < 0:
-                continue
-            start_va = image.offset_to_va(start_offset)
-            if start_va is not None:
-                score = score_module_array(image, array_va, module_count)
-                if score:
-                    candidates.append((score, start_va, array_va))
+            if start_offset >= 0:
+                start_va = image.offset_to_va(start_offset)
+                if start_va is not None:
+                    score = score_module_array(image, array_va, module_count)
+                    if score:
+                        candidates.append((score, start_va, array_va))
+            offset = image.data.find(module_count_bytes, offset + 1, end)
 
     if not candidates:
         raise ValueError("failed to find a v27.2-shaped Il2CppCodeRegistration")
@@ -489,8 +486,9 @@ def resolve_module_names(
 def _build_report_from_metadata(
     binary: Path,
     metadata: StandardMetadata,
+    relocated_elf: RelocatedElf | None = None,
 ) -> dict[str, Any]:
-    elf_image = RelocatedElf(binary)
+    elf_image = relocated_elf or RelocatedElf(binary)
     code_reg_va, modules_array_va = find_code_registration(
         elf_image, len(metadata.images)
     )
@@ -577,9 +575,11 @@ def _build_report_from_metadata(
 def apply_codegen_module_order(
     binary: Path,
     metadata_bytes: bytes,
+    *,
+    relocated_elf: RelocatedElf | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     metadata = StandardMetadata(metadata_bytes)
-    report = _build_report_from_metadata(binary, metadata)
+    report = _build_report_from_metadata(binary, metadata, relocated_elf)
     if report["unresolved_module_count"]:
         raise ValueError(
             "cannot reorder metadata while codegen module names are unresolved"

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import ClassVar
 from urllib.parse import urlsplit
 
@@ -56,8 +56,7 @@ class ApkPureReleaseClient:
             variants = decode_apkpure_variants(payload)
         except ApkPureProtocolError as exc:
             raise LookupError(
-                f"Unable to parse APKPure package releases for '{package_name}': "
-                f"{exc}"
+                f"Unable to parse APKPure package releases for '{package_name}': {exc}"
             ) from exc
 
         grouped: defaultdict[str, list[ApkPurePackageVariant]] = defaultdict(list)
@@ -171,7 +170,7 @@ class ApkPureReleaseClient:
         if timestamp is None:
             return False, 0.0
         if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
+            timestamp = timestamp.replace(tzinfo=UTC)
         return True, timestamp.timestamp()
 
     @staticmethod

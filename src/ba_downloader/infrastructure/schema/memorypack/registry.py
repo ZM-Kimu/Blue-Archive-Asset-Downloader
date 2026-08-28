@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -12,8 +13,8 @@ from ba_downloader.infrastructure.schema.common.generated_registry import (
 
 @dataclass(frozen=True, slots=True)
 class MemoryPackSchemaRegistry:
-    types: dict[str, type[Any]]
-    enums: dict[str, type[IntEnum]]
+    types: Mapping[str, type[Any]]
+    enums: Mapping[str, type[IntEnum]]
 
     @classmethod
     def from_directory(

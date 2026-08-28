@@ -86,8 +86,9 @@ class FlatBufferCSParser:
             self.data,
             namespace_pattern=self.NAMESPACE_PATTERN,
             header_pattern=self.TYPE_PATTERN,
-            include_header=lambda match, _line: "FlatBuffers.IFlatbufferObject"
-            in match.group("bases"),
+            include_header=lambda match, _line: (
+                "FlatBuffers.IFlatbufferObject" in match.group("bases")
+            ),
         ):
             descriptors.append(
                 self._build_type_descriptor(
@@ -115,12 +116,6 @@ class FlatBufferCSParser:
             )
 
         return descriptors
-
-    def parse_struct(self) -> list[FlatBufferTypeDescriptor]:
-        return self.parse_types()
-
-    def parse_enum(self) -> list[FlatBufferEnumDescriptor]:
-        return self.parse_enums()
 
     def _build_type_descriptor(
         self,

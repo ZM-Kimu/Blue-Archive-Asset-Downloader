@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
-from ba_downloader.domain.models.database import DBTable
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.database import DatabaseSourceIdentity, DBTable
+from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.domain.models.schema import PreparedSchemaSnapshot
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.table.extractor import TableExtractor
 from ba_downloader.infrastructure.extraction.table.models import ProcessedTableArtifact
@@ -14,7 +15,9 @@ from ba_downloader.infrastructure.extraction.table.profiles import (
     build_default_table_profile_for_context,
 )
 
-TableProfileFactory = Callable[[RuntimeContext], TableExtractionProfile]
+TableProfileFactory = Callable[
+    [ExecutionContext, DatabaseSourceIdentity | None], TableExtractionProfile
+]
 
 
 class CharacterTableSource(Protocol):
@@ -44,20 +47,32 @@ class TableExtractorCharacterTableSource:
     @classmethod
     def from_context(
         cls,
-        context: RuntimeContext,
+        context: ExecutionContext,
         logger: LoggerPort | None = None,
         table_profile_factory: TableProfileFactory | None = None,
+        *,
+        schema_snapshot: PreparedSchemaSnapshot | None = None,
+        database_source_identity: DatabaseSourceIdentity | None = None,
     ) -> TableExtractorCharacterTableSource:
         active_table_profile_factory = (
             table_profile_factory or build_default_table_profile_for_context
         )
         return cls(
             TableExtractor(
-                str(Path(context.raw_dir) / "Table"),
-                str(Path(context.temp_dir) / "Table"),
-                str(Path(context.extract_dir) / "FlatBufferData"),
+                str(context.workspace.raw_tables),
+                str(Path(context.workspace.temp_state) / "Table"),
+                str(
+                    schema_snapshot.flatbuffer_path
+                    if schema_snapshot is not None
+                    else context.workspace.flatbuffer_schemas
+                ),
                 logger=logger,
-                table_profile=active_table_profile_factory(context),
+                table_profile=active_table_profile_factory(
+                    context, database_source_identity
+                ),
+                schema_cache_identity=(
+                    schema_snapshot.fingerprint if schema_snapshot is not None else None
+                ),
             )
         )
 
@@ -90,3 +105,10 @@ class TableExtractorCharacterTableSource:
             file_data,
             detect_type=detect_type,
         )
+
+    def process_character_index_tables(
+        self,
+        file_path: str,
+        table_names: list[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        return self._extractor.process_character_index_tables(file_path, table_names)

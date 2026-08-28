@@ -6,11 +6,19 @@ from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Lock
-from typing import Any, Protocol
+from typing import Any
 
 from ba_downloader.domain.exceptions import NetworkError
 from ba_downloader.domain.models.asset import AssetRecord
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
+from ba_downloader.domain.ports.progress import (
+    ProgressMeasure,
+    ProgressReporterPort,
+    ProgressStage,
+    ProgressState,
+    ProgressWorkers,
+)
 from ba_downloader.infrastructure.download.adaptive import (
     AdaptiveDownloadState,
     classify_download_failure,
@@ -23,23 +31,100 @@ from ba_downloader.infrastructure.runtime.interrupts import (
 )
 
 
-class DownloadProgress(Protocol):
-    def advance(self, amount: int = 1) -> None: ...
+class DownloadProgress:
+    def __init__(
+        self,
+        reporter: ProgressReporterPort,
+        *,
+        total: int,
+        download_mode: bool,
+    ) -> None:
+        self._reporter = reporter
+        self._total = total
+        self._download_mode = download_mode
+        self._completed = 0
+        self._item: str | None = None
+        self._session: DownloadSessionState | None = None
+        self._adaptive: AdaptiveDownloadState | None = None
+        self._active_workers = 0
 
-    def set_description(self, description: str) -> None: ...
+    def advance(self, amount: int = 1) -> None:
+        self._completed = max(self._completed + amount, 0)
+        self._total = max(self._total, self._completed)
+        if self._session is not None and self._adaptive is not None:
+            self.emit(self._session, self._adaptive)
 
-    def set_status(self, status: str) -> None: ...
+    def adjust_total(self, amount: int) -> None:
+        self._total = max(self._completed, self._total + amount)
+        if self._session is not None and self._adaptive is not None:
+            self.emit(self._session, self._adaptive)
 
-    def set_secondary_status(self, status: str) -> None: ...
+    def set_item(self, item: str) -> None:
+        self._item = item
 
-    def set_failed_status(self, status: str) -> None: ...
+    def set_active_workers(self, active: int) -> None:
+        self._active_workers = max(active, 0)
+
+    def emit(
+        self,
+        session: DownloadSessionState,
+        state: AdaptiveDownloadState,
+    ) -> None:
+        self._session = session
+        self._adaptive = state
+        completed = self._completed if self._download_mode else session.completed_files
+        unit = "bytes" if self._download_mode else "files"
+        active = min(self._active_workers, state.upper_bound)
+        self._reporter.update(
+            ProgressState(
+                "Assets",
+                "downloading",
+                overall=ProgressMeasure(completed, self._total, unit),
+                current=ProgressMeasure(
+                    session.completed_files, session.total_files, "files"
+                ),
+                item=self._item,
+                workers=ProgressWorkers(active, state.upper_bound),
+                failures=session.failed_files,
+            )
+        )
+
+    def finish(self, stage: ProgressStage) -> None:
+        if self._session is None or self._adaptive is None:
+            return
+        session = self._session
+        state = self._adaptive
+        completed = self._completed if self._download_mode else session.completed_files
+        unit = "bytes" if self._download_mode else "files"
+        active = (
+            0
+            if stage != "downloading"
+            else min(
+                state.target_concurrency,
+                max(session.total_files - session.completed_files, 0),
+            )
+        )
+        self._reporter.update(
+            ProgressState(
+                "Assets",
+                stage,
+                overall=ProgressMeasure(completed, self._total, unit),
+                current=ProgressMeasure(
+                    session.completed_files,
+                    session.total_files,
+                    "files",
+                ),
+                item=self._item,
+                workers=ProgressWorkers(active, state.upper_bound),
+                failures=session.failed_files,
+            )
+        )
 
 
 DownloadFunction = Callable[
-    [AssetRecord, RuntimeContext, Callable[[int], None] | None, Callable[[], bool]],
+    [AssetRecord, ExecutionContext, Callable[[int], None] | None, Callable[[], bool]],
     AssetRecord,
 ]
-SuccessfulDownloadHandler = Callable[[AssetRecord, RuntimeContext], None]
 
 
 @dataclass(slots=True)
@@ -57,7 +142,7 @@ class DownloadSessionState:
 @dataclass(slots=True)
 class DownloadLoopContext:
     progress: DownloadProgress
-    context: RuntimeContext
+    context: ExecutionContext
     progress_lock: Lock
     download_mode: bool
     executor: ThreadPoolExecutor
@@ -70,11 +155,11 @@ class ResourceDownloadLoop:
         *,
         wait_policy: Any,
         download_resource: DownloadFunction,
-        handle_successful_download: SuccessfulDownloadHandler,
+        cancellation: CancellationPort | None = None,
     ) -> None:
         self._wait_policy = wait_policy
         self._download_resource = download_resource
-        self._handle_successful_download = handle_successful_download
+        self._cancellation = cancellation or NeverCancelled()
 
     def run(
         self,
@@ -92,10 +177,13 @@ class ResourceDownloadLoop:
             loop_context.progress,
             session_state,
             adaptive_state,
+            active_workers=0,
         )
         cancellation_state = CancellationFeedbackState()
 
         while pending_resources or future_map:
+            if self._cancellation.is_cancelled():
+                stop_event.set()
             if stop_event.is_set() and not future_map:
                 break
 
@@ -106,6 +194,14 @@ class ResourceDownloadLoop:
                 stop_event,
                 adaptive_state,
             )
+            self._set_oldest_item(loop_context.progress, future_map)
+            with loop_context.progress_lock:
+                self._update_progress_status(
+                    loop_context.progress,
+                    session_state,
+                    adaptive_state,
+                    active_workers=len(future_map),
+                )
             if not future_map:
                 continue
 
@@ -134,10 +230,12 @@ class ResourceDownloadLoop:
                 session_state,
             )
             with loop_context.progress_lock:
+                self._set_oldest_item(loop_context.progress, future_map)
                 self._update_progress_status(
                     loop_context.progress,
                     session_state,
                     adaptive_state,
+                    active_workers=len(future_map),
                 )
 
         return list(session_state.failed_resources or [])
@@ -156,6 +254,7 @@ class ResourceDownloadLoop:
             and pending_resources
         ):
             resource = pending_resources.popleft()
+            loop_context.progress.set_active_workers(len(future_map) + 1)
             future = loop_context.executor.submit(
                 self._download_resource,
                 resource,
@@ -164,7 +263,15 @@ class ResourceDownloadLoop:
                 stop_event.is_set,
             )
             future_map[future] = resource
-            loop_context.progress.set_description(Path(resource.path).name)
+
+    @staticmethod
+    def _set_oldest_item(
+        progress: DownloadProgress,
+        future_map: dict[Future[AssetRecord], AssetRecord],
+    ) -> None:
+        oldest = next(iter(future_map.values()), None)
+        if oldest is not None:
+            progress.set_item(Path(oldest.path).name)
 
     def _collect_results(
         self,
@@ -219,51 +326,23 @@ class ResourceDownloadLoop:
         loop_context: DownloadLoopContext,
         session_state: DownloadSessionState,
     ) -> None:
-        for downloaded_item in successful_downloads:
+        for _downloaded_item in successful_downloads:
             session_state.completed_files += 1
             if not loop_context.download_mode:
                 with loop_context.progress_lock:
                     loop_context.progress.advance()
-            self._handle_successful_download(downloaded_item, loop_context.context)
 
     @staticmethod
     def _update_progress_status(
         progress: DownloadProgress,
         session_state: DownloadSessionState,
         state: AdaptiveDownloadState,
+        *,
+        active_workers: int,
     ) -> None:
-        progress.set_status(
-            _build_download_file_status(
-                session_state.completed_files,
-                session_state.total_files,
-            )
-        )
-        progress.set_secondary_status(
-            _build_download_concurrency_status(session_state.total_files, state)
-        )
-        progress.set_failed_status(
-            _build_download_failed_status(session_state.failed_files)
-        )
+        progress.set_active_workers(active_workers)
+        progress.emit(session_state, state)
 
     @staticmethod
     def _is_cancelled_error(exc: Exception) -> bool:
         return "download cancelled by user" in str(exc).lower()
-
-
-def _build_download_file_status(
-    completed_files: int,
-    total_files: int,
-) -> str:
-    return f"{completed_files}/{total_files} files"
-
-
-def _build_download_concurrency_status(
-    total_files: int,
-    state: AdaptiveDownloadState,
-) -> str:
-    current_concurrency = min(state.target_concurrency, max(total_files, 1))
-    return f"conc. {current_concurrency}/{state.upper_bound}"
-
-
-def _build_download_failed_status(failed_files: int) -> str:
-    return f"failed {failed_files}"

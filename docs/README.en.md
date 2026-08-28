@@ -2,7 +2,7 @@
 
 # Blue Archive Asset Downloader
 
-This project downloads and extracts Blue Archive assets from different servers. It currently supports CN, GL, and JP.
+This project downloads and extracts Blue Archive assets from different servers. It currently supports the China, Global, and Japan servers.
 
 <a href="../README.md">中文</a>
 
@@ -11,13 +11,13 @@ This project downloads and extracts Blue Archive assets from different servers. 
 
 ## Resource Types
 
-Downloadable file types:
+Downloadable file types include:
 
 - Bundle
 - Media
 - Table
 
-Extractable file types:
+Extractable file types include:
 
 - Bundle
 - Media
@@ -26,12 +26,12 @@ Extractable file types:
 ## Requirements
 
 - Windows/Linux
-- Python UV environment manager or Python 3.10 and later
-- [.NET10 SDK (for extracting table data)](https://dotnet.microsoft.com/download)
+- [Python UV environment manager](https://github.com/astral-sh/uv) or Python 3.11 and later
+- [.NET 10 SDK](https://dotnet.microsoft.com/download)
 
 ## Prerequisites
 
-When running from source, use a clone flow with submodules:
+When running from source, cloning with submodules is recommended:
 
 ```shell
 git clone --recurse-submodules https://github.com/ZM-Kimu/Blue-Archive-Asset-Downloader
@@ -39,18 +39,22 @@ cd Blue-Archive-Asset-Downloader
 uv sync
 ```
 
-- If `third_party/Cpp2IL` is missing locally, some dumper flows will try to download the source automatically.
+- If the Cpp2IL, AssetRipper, or SharpZipLib submodule is missing locally, the corresponding workflow will attempt to download and verify its source archive.
 
 Make sure Python is installed, then install the required libraries:
 
 ```shell
 uv sync
+# Or:
+pip install -e .
 ```
 
-Or:
+The optional UnityPy backend is recommended for Bundle extraction on low-memory systems:
 
 ```shell
-pip install -e .
+uv sync --extra unitypy
+# Or:
+pip install -e ".[unitypy]"
 ```
 
 ## Usage
@@ -63,130 +67,143 @@ ba-downloader <subcommand> [options]
 
 Subcommands:
 
-- `ba-downloader sync [options]`: Download and extract all content
-- `ba-downloader download [options]`: Download all content
-- `ba-downloader extract [options]`: Extract downloaded content
-- `ba-downloader character-index build [options]`: Build the character information index
+- `ba-downloader assets sync [options]`: Download and extract content
+- `ba-downloader assets download [options]`: Download content only
+- `ba-downloader assets extract [options]`: Extract downloaded content
+- `ba-downloader index build [options]`: Build the character information index
+- `ba-downloader server start [options]`: Start the local HTTP API
 
-Run the full download and extraction flow with:
+Run the complete download and extraction workflow with:
 
 ```shell
-ba-downloader sync --region jp
+ba-downloader assets sync --region jp
 ```
 
 Or download resources without extracting them:
 
 ```shell
-ba-downloader download --region jp
+ba-downloader assets download --region jp
 ```
 
 You can also use the module entry point:
 
 ```shell
-python -m ba_downloader sync --region jp
+python -m ba_downloader assets sync --region jp
 ```
 
 
+## HTTP API
+
+```shell
+uv sync --extra api
+ba-downloader server start --host 127.0.0.1
+```
+
+See the [HTTP API documentation](http-api.md) for the detailed protocol.
+
 ## **Basic Parameters**
 
-**`*`**: **required option**
+| Parameter            | Commands                  | Description                                      | Default                                         | Example                         |
+| -------------------- | ------------------------- | ------------------------------------------------ | ----------------------------------------------- | ------------------------------- |
+| **`--region`**       | `assets *`, `index build` | **Server region**: `cn`, `gl`, or `jp`           | None                                            | `--region jp`                   |
+| `--workspace`        | `assets *`, `index build` | Workspace root                                   | Current directory                               | `--workspace D:\BAAD`           |
+| `--platform`         | `assets *`, `index build` | `windows`, `android`, or `ios` (JP only)         | `android`                                       | `--platform windows`            |
+| `--proxy`            | `assets *`, `index build` | HTTP proxy URL                                   | None                                            | `--proxy http://127.0.0.1:8080` |
+| `--max-retries`      | `assets *`, `index build` | Maximum retries after a request failure          | `5`                                             | `--max-retries 3`               |
+| `--sqlcipher-key`    | `assets *`, `index build` | SQLCipher raw ![key](kei_icon.png)               | (mysterious)                                    | `--sqlcipher-key <64hex>`       |
+| `--concurrency`      | `assets *`, `index build` | Concurrent worker count                          | `30`                                            | `--concurrency 50`              |
+| `--resources`        | `assets *`                | Comma-separated `table`, `media`, and `bundle`   | All                                             | `--resources table,media`       |
+| `--bundle-handler`   | `assets sync/extract`     | Bundle extractor: `assetripper` or `unitypy`     | `assetripper`                                   | `--bundle-handler unitypy`      |
+| `--filter`           | `assets *`                | Resource or character filter; may be repeated    | None                                            | `--filter "name~伊吹"`          |
+| `--host`             | `server start`            | HTTP API bind address                            | `0.0.0.0`                                       | `--host 127.0.0.1`              |
+| `--port`             | `server start`            | HTTP API port                                    | First available port from `9230` through `9239` | `--port 9230`                   |
 
-| Parameter                  | Short Form | Description                                                                                       | Default             | Example                       |
-| -------------------------- | ---------- | ------------------------------------------------------------------------------------------------- | ------------------- | ----------------------------- |
-| **`--region`**`*`          | `-r`       | **Server region**: `cn` (China), `gl` (Global), `jp` (Japan)                                      | None                | `-r jp`                       |
-| `--threads`                | `-t`       | **Number of concurrent download or extraction workers**                                           | `20`                | `-t 50`                       |
-| `--platform`               | `-p`       | **Resource platform**: `windows`, `android`, `ios` (JP only)                                      | `android`           | `-p windows`                  |
-| `--raw-dir`                | `-rd`      | **Location for raw files**                                                                        | `"RawData"`         | `-rd raw_folder`              |
-| `--extract-dir`            | `-ed`      | **Location for extracted files**                                                                  | `"Extracted"`       | `-ed output_folder`           |
-| `--temp-dir`               | `-td`      | **Location for temporary files**                                                                  | `"Temp"`            | `-td temp_dir`                |
-| `--extract-while-download` | `-ewd`     | **Extract files while downloading** (only available for `sync`; slower and should be used carefully with many resources) | `False`             | `--extract-while-download`    |
-| `--resource-type`          | `-rt`      | **Resource type**: `table`, `media`, `bundle`, `all`                                              | `all`               | `--resource-type media table` |
-| `--proxy`                  | `-px`      | **HTTP proxy**                                                                                    | None (system proxy) | `-px http://127.0.0.1:8080`   |
-| `--max-retries`            | `-mr`      | **Maximum retry count for failed downloads**                                                      | `5`                 | `--max-retries 3`             |
-| `--sqlcipher-key-hex`      | `-kei`     | **SQLCipher raw key**                                                                             | Unspecified         | `-kei <64hex>`                |
-| `--search`                 | `-s`       | **Basic search**, file keywords for searching, downloading, or extracting (`sync`, `download`, and `extract` are supported) | None                | `-s aris shiroko`             |
-| `--advanced-search`        | `-as`      | **Advanced search**, character information terms (requires a .NET environment)                    | None                | `-as yume cv=小倉唯`          |
+The CLI supports only the long options listed above. Run a specific command with `--help` to see the exact parameters supported by the installed version.
 
-`--search` and `--advanced-search` are mutually exclusive. Searches use Any matching. The concrete `school` and `club` enums can be checked in `FlatBufferData`.
+`--filter` uses `<field><operator><candidate>`. `~` performs case-insensitive containment matching, while `=` performs case-insensitive exact matching. Repeated `--filter` options use AND; comma-separated candidates within one filter use OR. `character-id`, `age`, and `height` support only `=` with non-negative integers.
 
-Advanced-search fields:
+When filters are used, dependencies between Bundles are not processed. Therefore, only the key assets for the selected characters are extracted.
 
-- `[*]` **Character name**
+Available fields include:
+
+- `path` **Resource path**
+- `type` **Resource type**
+- `character-id` **Character ID**
+- `name` **Character name**
+- `dev-name` **Developer name**
+- `alias` **File alias**
 - `cv` **Voice actor**
 - `age` **Age**
 - `height` **Height**
 - `birthday` **Birthday**
 - `illustrator` **Illustrator**
-- `school` **School**:
-  - `RedWinter`, `Trinity`, `Gehenna`, `Abydos`, `Millennium`, `Arius` ...
-- `club` **Club**:
-  - `Engineer`, `CleanNClearing`, `KnightsHospitaller`, `IndeGEHENNA`
-  - `FoodService`, `Countermeasure`, `BookClub`, `MatsuriOffice` ...
+- `school` **School**
+- `club` **Club**
 
 ---
 
-#### Different servers support different name search forms. See `<Region>CharacterIndex.json` for details.
+#### Each server supports its own character names and file aliases. See `indexes/characters.json` for the exact contents.
 
 - Examples:
   > japan
   >```sh
-  >ba-downloader sync --region jp -as yume 百合園セイア 호시노
+  >ba-downloader assets sync --region jp --filter "name~arona,プラナ,生徒会長"
   >```
 
-  > japan with conditions (characters matching any condition)
+  > japan with conditions (both conditions must match)
   >```sh
-  >ba-downloader sync --region jp -as cv=小倉唯 height=153 birthday=2/19 illustrator=YutokaMizu school=Arius club=GameDev
+  >ba-downloader assets sync --region jp --filter "school=Trinity" --filter "height=151"
   >```
 
   > global
   >```sh
-  >ba-downloader sync --region gl -as 貝雅特里榭 ยูเมะ mika
+  >ba-downloader assets sync --region gl --filter "name~貝雅特里榭,ยูเมะ,mika"
   >```
 
   > china
   >```sh
-  >ba-downloader sync --region cn -as 伊吹 心奈 黑服
+  >ba-downloader assets sync --region cn --filter "name~伊吹,心奈,切里诺"
   >```
 
-- Basic search:
+- Resource path search:
   > package name only
   >```sh
-  >ba-downloader sync --region jp -s aris ch0070 shiroko
+  >ba-downloader assets sync --region jp --filter "path~aris,ch0070,shiroko"
   >```
 
 
 ## Default Output
 
-- `Temp`: Stores temporary or non-primary files, such as APK files.
-- `RawData`: Stores files downloaded from catalogs, such as Bundle, Media, and Table files.
-- `Extracted`: Stores extracted files, such as Bundle, Media, Table, and Dumps files.
-- `CharacterIndex.json`: Character information index. It can be generated with `ba-downloader character-index build --region <region>`, or generated automatically by adding `-as`.
+`--workspace` defaults to the current directory. Output is always stored under `<workspace>/<region>/<platform>/`:
+
+- `raw/{tables,media,bundles}`: Files downloaded through the Catalog.
+- `extracted`: Extracted Bundles, Media, Tables, schemas, and dumps.
+- `indexes/characters.json`: Character information index, which can be fully generated with `ba-downloader index build --region <region>`.
+- `.state`: Temporary internal runtime data, caches, temporary files, logs, and manifests.
 
 Resource platform example:
 
 ```shell
-ba-downloader download --region jp --platform windows
+ba-downloader assets download --region jp --platform windows
 ```
-
 
 ## Notes
 
-- `--platform` only applies to JP and selects the JP resource platform.
-- GL and JP APK files come from APKPure. After the Play Store updates, APKPure may need some time to synchronize the version.
-- Resource catalogs may be unavailable during server maintenance windows.
-- Some regions may require a proxy server to download game resources from specific servers.
-- Bundle extraction is based on UnityPy. For more detailed results, use [AssetRipper](https://github.com/AssetRipper/AssetRipper) or [AssetStudio](https://github.com/Perfare/AssetStudio).
-- Extraction methods change often, so interfaces may change frequently. Directly calling internal methods is not recommended.
+- JP/GL APK files come from APKPure. After the Play Store is updated, APKPure may need some time to synchronize the version.
+- Resource catalogs may be unavailable while a server is under maintenance.
+- Some regions may require a proxy server to download resources from specific game servers.
+- Because the various interfaces change frequently, directly calling internal methods is not recommended.
+- Reserve `50GB` of free storage for a full `asset sync` in any region.
+- When extracting Bundles with AssetRipper, the host should have at least 8GB of RAM and at least 12GB of pagefile/swap. AssetRipper mode provides more complete asset structures and models with embedded animations.
 
 ## TODO
 
-- `v3.0.0`
-  - New Bundle extractor
-  - Web API/Web UI
+- `v3.1.0`
+  - WebUI
 
 ## About
 
-Blue Archive Asset Downloader v2.3.0.
+Blue Archive Asset Downloader v3.0.0
 
 ✨ Technical support: Codex ✨
 
@@ -199,13 +216,21 @@ Some content is based on:
 - [Blue-Archive---Asset-Downloader](https://github.com/K0lb3/Blue-Archive---Asset-Downloader)
 - [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL)
 
-This project uses the [MIT License](../LICENSE).
+This project uses the following C# dependencies:
+
+- [AssetRipper](https://github.com/AssetRipper/AssetRipper)
+- [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL)
+- [SharpZipLib](https://github.com/icsharpcode/SharpZipLib)
+
+This project is licensed under the [MIT License](../LICENSE).
 
 ## Disclaimer
 
-This repository is for learning and demonstration purposes only and does not host any actual resources. All content downloaded through this project should be used only for legal and legitimate purposes. The developers are not liable for any direct or indirect loss, damage, legal liability, or other consequence arising from use of this project. Users use this project at their own risk and must comply with all relevant laws and regulations. If anyone uses this project for unauthorized or illegal activities, the developers bear no responsibility. Users are responsible for their own actions and should understand the risks involved in using this project.
+This repository is intended solely for learning and demonstration and does not host any actual resources. All content downloaded through this project must be used only for lawful and legitimate purposes. The developers accept no liability for any direct or indirect loss, damage, legal liability, or other consequences arising from use of this project. Users assume all risks associated with its use and must ensure compliance with all applicable laws and regulations. The developers accept no responsibility if this project is used for any unauthorized or illegal activity. Users are responsible for their own actions and should understand the risks associated with using this project.
 
-“蔚蓝档案” is a registered trademark of Shanghai Xingxiao Network Technology Co., Ltd. All rights reserved.
+This project is intended solely for educational and demonstrative purposes and does not provide any actual resources. Please note that all content downloaded through this project should only be used for legal and legitimate purposes. The developers are not liable for any direct or indirect loss, damage, legal liability, or other consequences that may arise from the use of this project. Users assume all risks associated with the use of this project and must ensure compliance with all relevant laws and regulations. If anyone uses this project for any unauthorized or illegal activities, the developers bear no responsibility. Users are responsible for their own actions and should understand the risks involved in using this project.
+
+“蔚蓝档案”是上海星啸网络科技有限公司的注册商标，版权所有。
 
 「ブルーアーカイブ」は株式会社Yostarの登録商標です。著作権はすべて保有されています。
 

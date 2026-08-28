@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+from ba_downloader.domain.models.database import DatabaseSourceIdentity
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region_profile import (
     RegionSettingsPolicy,
     RegionWorkflowPolicy,
     SyncExtractionMode,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.ports.execution import CancellationPort
 from ba_downloader.domain.ports.extract import (
     ExtractionPrerequisitePort,
     SchemaPreparationPort,
 )
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
 from ba_downloader.infrastructure.extraction.character.index_composer import (
     CharacterIndexCompositionProfile,
 )
@@ -47,10 +50,12 @@ from ba_downloader.infrastructure.regions.gl.sqlcipher_key import (
     GlSqlCipherKeyProvider,
 )
 from ba_downloader.infrastructure.regions.gl.table_archives import (
+    classify_gl_table_archive,
+)
+from ba_downloader.infrastructure.regions.ground_table_archives import (
     GROUND_FLATBUFFER_ARCHIVE_ROUTE,
     MGS_LOGIC_GROUND_MIXED_ARCHIVE_ROUTE,
-    build_gl_table_archive_handlers,
-    classify_gl_table_archive,
+    build_semantic_ground_archive_handlers,
 )
 from ba_downloader.infrastructure.storage import SqlCipherDatabaseResolver
 from ba_downloader.infrastructure.tools.dump_backend import Cpp2IlDumpCsBackend
@@ -96,36 +101,51 @@ GL_PRESERVED_ARCHIVE_ENTRIES = frozenset(
 def build_provider(
     http_client: HttpClientPort,
     logger: LoggerPort,
+    progress_factory: ProgressReporterFactoryPort | None = None,
+    cancellation: CancellationPort | None = None,
 ) -> GLRegionProvider:
+    _ = (progress_factory, cancellation)
     return GLRegionProvider(http_client=http_client, logger=logger)
 
 
 def build_runtime_asset_preparer(
     http_client: HttpClientPort,
     logger: LoggerPort,
+    progress_factory: ProgressReporterFactoryPort | None = None,
+    cancellation: CancellationPort | None = None,
 ) -> GLRuntimeAssetPreparer:
-    return GLRuntimeAssetPreparer(http_client=http_client, logger=logger)
+    return GLRuntimeAssetPreparer(
+        http_client=http_client,
+        logger=logger,
+        progress_factory=progress_factory,
+        cancellation=cancellation,
+    )
 
 
 def build_dumper_backend(
     http_client: HttpClientPort,
     logger: LoggerPort,
+    progress_factory: ProgressReporterFactoryPort | None,
+    cancellation: CancellationPort,
 ) -> Cpp2IlDumpCsBackend:
+    _ = progress_factory
     return Cpp2IlDumpCsBackend(
         http_client=http_client,
         logger=logger,
+        cancellation=cancellation,
     )
 
 
 def build_table_extraction_profile(
-    context: RuntimeContext,
+    context: ExecutionContext,
+    database_source_identity: DatabaseSourceIdentity | None = None,
 ) -> TableExtractionProfile:
-    _ = context
+    _ = (context, database_source_identity)
     return TableExtractionProfile(
         archive_registry=TableArchiveRegistry(
             classifier=classify_gl_table_archive,
             enabled_routes=GL_TABLE_ARCHIVE_ROUTES,
-            handler_factory=build_gl_table_archive_handlers,
+            handler_factory=build_semantic_ground_archive_handlers,
         ),
         payload_router=MemoryPackTablePayloadRouter(
             GL_MEMORYPACK_DB_ROOT_TYPES,
@@ -142,14 +162,14 @@ def build_table_extraction_profile(
 
 
 def build_character_index_source_profile(
-    context: RuntimeContext,
+    context: ExecutionContext,
 ) -> CharacterIndexSourceProfile:
     _ = context
     return GlDbCharacterIndexSourceProfile()
 
 
 def build_character_index_composition_profile(
-    context: RuntimeContext,
+    context: ExecutionContext,
 ) -> CharacterIndexCompositionProfile:
     _ = context
     return CharacterIndexCompositionProfile(romanize_japanese_names=False)

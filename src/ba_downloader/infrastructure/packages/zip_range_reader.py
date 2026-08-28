@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import os
+import re
 import struct
 import zlib
+from binascii import crc32
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from ba_downloader.domain.ports.http import HttpClientPort, TransportKind
+from ba_downloader.infrastructure.files.size import format_file_size
 
 EOCD_SIGNATURE = 0x06054B50
 CENTRAL_DIRECTORY_SIGNATURE = 0x02014B50
@@ -35,6 +41,7 @@ class ZipEntry:
     compression_method: int
     file_name_length: int
     extra_field_length: int
+    flags: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,10 +59,12 @@ def read_zip_entries(
     *,
     transport: TransportKind = "default",
     timeout: float = 30.0,
+    file_size: int | None = None,
 ) -> list[ZipEntry]:
-    file_size = _read_content_length(
-        url, http_client, transport=transport, timeout=timeout
-    )
+    if file_size is None:
+        file_size = _read_content_length(
+            url, http_client, transport=transport, timeout=timeout
+        )
     if file_size <= 0:
         raise ZipCentralDirectoryError("ZIP content length must be a positive integer.")
 
@@ -75,14 +84,21 @@ def read_zip_entries(
             "Central directory points outside the ZIP file bounds.",
         )
 
-    central_directory_bytes = _request_range(
-        url,
-        central_directory_offset,
-        central_directory_offset + central_directory_size - 1,
-        http_client,
-        transport=transport,
-        timeout=timeout,
-    )
+    central_directory_end = central_directory_offset + central_directory_size
+    if tail_start <= central_directory_offset and central_directory_end <= file_size:
+        relative_start = central_directory_offset - tail_start
+        central_directory_bytes = tail_bytes[
+            relative_start : relative_start + central_directory_size
+        ]
+    else:
+        central_directory_bytes = _request_range(
+            url,
+            central_directory_offset,
+            central_directory_end - 1,
+            http_client,
+            transport=transport,
+            timeout=timeout,
+        )
     return _parse_central_directory(central_directory_bytes)
 
 
@@ -93,16 +109,17 @@ def find_zip_entry(
     fallback_name: str,
 ) -> ZipEntry:
     normalized_preferred = preferred_path.replace("\\", "/").casefold()
-    exact_match = next(
-        (
-            entry
-            for entry in entries
-            if entry.path.replace("\\", "/").casefold() == normalized_preferred
-        ),
-        None,
-    )
-    if exact_match is not None:
-        return exact_match
+    exact_matches = [
+        entry
+        for entry in entries
+        if entry.path.replace("\\", "/").casefold() == normalized_preferred
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    if len(exact_matches) > 1:
+        raise ZipEntryNotFoundError(
+            f"Multiple ZIP entries matched path {preferred_path!r}."
+        )
 
     normalized_name = fallback_name.casefold()
     basename_matches = [
@@ -130,6 +147,7 @@ def extract_zip_entry(
     *,
     transport: TransportKind = "default",
     timeout: float = 30.0,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> Path:
     destination_path = Path(destination)
     destination_path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +159,7 @@ def extract_zip_entry(
         http_client,
         transport=transport,
         timeout=timeout,
+        progress_callback=progress_callback,
     )
     if len(local_header) != 30:
         raise ZipCentralDirectoryError(
@@ -175,15 +194,29 @@ def extract_zip_entry(
             http_client,
             transport=transport,
             timeout=timeout,
+            progress_callback=progress_callback,
         )
     decompressed = _decompress_entry(entry, compressed_data)
     if len(decompressed) != entry.uncompressed_size:
         raise ZipCentralDirectoryError(
             f"Extracted ZIP entry {entry.path!r} has unexpected size "
-            f"{len(decompressed)} (expected {entry.uncompressed_size}).",
+            f"{format_file_size(len(decompressed))} "
+            f"(expected {format_file_size(entry.uncompressed_size)}).",
+        )
+    actual_crc = crc32(decompressed) & 0xFFFFFFFF
+    if actual_crc != entry.crc32:
+        raise ZipCentralDirectoryError(
+            f"Extracted ZIP entry {entry.path!r} failed CRC validation."
         )
 
-    destination_path.write_bytes(decompressed)
+    temporary_path = destination_path.with_name(
+        f".{destination_path.name}.{uuid4().hex}.tmp"
+    )
+    try:
+        temporary_path.write_bytes(decompressed)
+        os.replace(temporary_path, destination_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return destination_path
 
 
@@ -221,6 +254,7 @@ def _request_range(
     *,
     transport: TransportKind,
     timeout: float,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> bytes:
     if start < 0 or end < start:
         raise ZipCentralDirectoryError(
@@ -233,6 +267,30 @@ def _request_range(
         transport=transport,
         timeout=timeout,
     )
+    if response.status_code != 206:
+        raise UnsupportedZipLayoutError(
+            f"ZIP server did not honor byte range {start}-{end} for {url!r}."
+        )
+    content_range = response.header("Content-Range").strip()
+    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+    if (
+        match is None
+        or int(match.group(1)) != start
+        or int(match.group(2)) != end
+        or int(match.group(3)) <= end
+    ):
+        raise ZipCentralDirectoryError(
+            f"Unexpected Content-Range for ZIP byte range {start}-{end}: "
+            f"{content_range!r}."
+        )
+    expected_length = end - start + 1
+    if len(response.content) != expected_length:
+        raise ZipCentralDirectoryError(
+            f"ZIP byte range {start}-{end} returned {len(response.content)} bytes "
+            f"instead of {expected_length}."
+        )
+    if progress_callback is not None:
+        progress_callback(len(response.content))
     return response.content
 
 
@@ -332,6 +390,7 @@ def _parse_central_directory_record(
             compression_method=record[4],
             file_name_length=record[10],
             extra_field_length=record[11],
+            flags=record[3],
         ),
         comment_end,
     )
@@ -344,6 +403,10 @@ def _decode_file_name(raw_name: bytes, flags: int) -> str:
 
 
 def _decompress_entry(entry: ZipEntry, compressed_data: bytes) -> bytes:
+    if entry.flags & 0x0001:
+        raise UnsupportedZipLayoutError(
+            f"Encrypted ZIP entry {entry.path!r} is not supported."
+        )
     if entry.compression_method == 0:
         return compressed_data
     if entry.compression_method == 8:

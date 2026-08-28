@@ -23,10 +23,6 @@ class TableExtractionProgress:
         return str(exc) == CANCELLED_EXTRACTION_MESSAGE
 
     @staticmethod
-    def is_generated_stop_iteration(exc: RuntimeError) -> bool:
-        return str(exc) == "generator raised StopIteration"
-
-    @staticmethod
     def notify_progress(
         progress_callback: ProgressCallback | None,
         current: int,

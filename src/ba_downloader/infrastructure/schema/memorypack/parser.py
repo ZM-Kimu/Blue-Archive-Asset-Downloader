@@ -25,6 +25,14 @@ from ba_downloader.infrastructure.schema.memorypack.descriptors import (
 
 
 class MemoryPackCSParser:
+    DELEGATE_TYPE_NAMES = frozenset(
+        {
+            "System.Action",
+            "System.Func",
+            "System.Delegate",
+            "System.MulticastDelegate",
+        }
+    )
     KEYED_COLLECTION_GENERIC_NAMES = (
         "System.Collections.ObjectModel.KeyedCollection",
         "KeyedCollection",
@@ -351,6 +359,8 @@ class MemoryPackCSParser:
                 backing_cs_type
             ):
                 continue
+            if cls._is_delegate_type(cs_type):
+                continue
             property_members.append(
                 MemoryPackMemberDescriptor(
                     index=0,
@@ -406,6 +416,8 @@ class MemoryPackCSParser:
                 continue
 
             cs_type = cls._strip_member_type_modifiers(field_match.group("type"))
+            if cls._is_delegate_type(cs_type):
+                continue
             token = field_match.group("token")
             members.append(
                 MemoryPackMemberDescriptor(
@@ -480,6 +492,13 @@ class MemoryPackCSParser:
             cs_type,
             modifiers=MemoryPackCSParser.TYPE_MODIFIERS,
         )
+
+    @classmethod
+    def _is_delegate_type(cls, cs_type: str) -> bool:
+        normalized = cls._normalize_cs_type(cs_type)
+        base_type = normalized.split("<", maxsplit=1)[0]
+        base_type = re.sub(r"`\d+$", "", base_type)
+        return base_type in cls.DELEGATE_TYPE_NAMES
 
     @classmethod
     def _container_inner_python_type(cls, cs_type: str) -> str:

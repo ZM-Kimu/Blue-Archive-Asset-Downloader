@@ -5,9 +5,10 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from os import path
 from pathlib import Path
+from typing import Any
 
 from ba_downloader.domain.models.database import DBTable
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.infrastructure.extraction.table.archives import TableArchiveRouter
 from ba_downloader.infrastructure.extraction.table.codecs import (
@@ -38,6 +39,7 @@ from ba_downloader.infrastructure.extraction.table.raw_archives import (
     RawArchiveExporter,
 )
 from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
+from ba_downloader.infrastructure.schema.snapshots import schema_state_root
 
 __all__ = [
     "FlatBufferExportError",
@@ -60,21 +62,21 @@ class TableExtractor:
         logger: LoggerPort | None = None,
         memorypack_data_dir: str | None = None,
         memorypack_formatter_path: str | None = None,
-        context: RuntimeContext | None = None,
+        context: ExecutionContext | None = None,
         database_path_resolver: DatabasePathResolver | None = None,
         table_profile: TableExtractionProfile | None = None,
+        schema_cache_identity: str | None = None,
     ) -> None:
-        _ = context
         active_profile = table_profile or build_default_table_extraction_profile()
         self.table_file_folder = table_file_folder
         self.extract_folder = extract_folder
         self.flatbuffer_data_dir = flatbuffer_data_dir
         self.memorypack_data_dir = memorypack_data_dir or str(
-            Path(flatbuffer_data_dir).parent / "MemoryPackData"
+            Path(flatbuffer_data_dir).parent / "memorypack"
         )
         self.memorypack_formatter_path = memorypack_formatter_path or str(
-            Path(flatbuffer_data_dir).parent
-            / "Dumps"
+            Path(flatbuffer_data_dir).parent.parent
+            / "dumps"
             / TablePayloadCodecAdapter.MEMORYPACK_FORMATTER_SIDECAR_NAME
         )
         self.logger = logger or ConsoleLogger()
@@ -95,6 +97,12 @@ class TableExtractor:
             memorypack_formatter_path=self.memorypack_formatter_path,
             payload_router=self.payload_router,
             preserved_archive_entries=active_profile.preserved_archive_entries,
+            memorypack_diagnostics_dir=(
+                schema_state_root(context) / "diagnostics" / "memorypack"
+                if context is not None
+                else None
+            ),
+            schema_cache_identity=schema_cache_identity,
         )
         self.database_reader = TableDatabaseReader(
             self.codec_adapter,
@@ -118,15 +126,21 @@ class TableExtractor:
     @classmethod
     def from_context(
         cls,
-        context: RuntimeContext,
+        context: ExecutionContext,
         logger: LoggerPort | None = None,
         table_profile: TableExtractionProfile | None = None,
     ) -> TableExtractor:
         return cls(
-            str(Path(context.raw_dir) / "Table"),
-            str(Path(context.extract_dir) / "Table"),
-            str(Path(context.extract_dir) / "FlatBufferData"),
+            str(context.workspace.raw_tables),
+            str(context.workspace.extracted_table_semantic),
+            str(context.workspace.flatbuffer_schemas),
             logger=logger,
+            memorypack_data_dir=str(context.workspace.memorypack_schemas),
+            memorypack_formatter_path=str(
+                context.workspace.dumps
+                / TablePayloadCodecAdapter.MEMORYPACK_FORMATTER_SIDECAR_NAME
+            ),
+            context=context,
             table_profile=table_profile,
         )
 
@@ -147,6 +161,16 @@ class TableExtractor:
             table_name,
             should_stop=should_stop,
             progress_callback=progress_callback,
+        )
+
+    def process_character_index_tables(
+        self,
+        file_path: str,
+        table_names: list[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        return self.database_reader.process_character_index_tables(
+            file_path,
+            table_names,
         )
 
     def process_zip_file(

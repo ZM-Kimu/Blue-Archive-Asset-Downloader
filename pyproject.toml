@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ba-downloader"
-version = "2.3.0"
+version = "3.0.0"
 description = "Blue Archive multi-region asset downloader and extractor"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Blue Archive Asset Downloader Contributors" }]
 dependencies = [
@@ -15,7 +15,6 @@ dependencies = [
     "httpx",
     "curl-cffi",
     "tenacity",
-    "UnityPy==1.25.0",
     "xxhash",
     "pycryptodome",
     "pyelftools",
@@ -24,20 +23,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-    "black>=24.10.0",
-    "mypy>=1.11.0",
-    "pylint>=3.3.0",
-    "pre-commit>=4.0.0",
-    "pytest>=8.2.0",
-    "ruff>=0.11.0",
+api = [
+    "fastapi>=0.141.1",
+    "uvicorn>=0.30.0",
+]
+unitypy = [
+    "UnityPy==1.25.0",
 ]
 
 [dependency-groups]
 dev = [
-    "black>=24.10.0",
+    "import-linter>=2.3.0",
     "mypy>=1.11.0",
-    "pylint>=3.3.0",
     "pre-commit>=4.0.0",
     "pytest>=8.2.0",
     "ruff>=0.11.0",
@@ -49,16 +46,42 @@ ba-downloader = "ba_downloader.cli.main:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ba_downloader"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"licenses/AssetRipper-GPL-3.0.txt" = "licenses/AssetRipper-GPL-3.0.txt"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE*",
+    "/licenses",
+    "/pyproject.toml",
+    "/uv.lock",
+]
+exclude = [
+    "/third_party",
+    "/tools",
+    "/tests",
+    "/webui",
+    "/.state",
+    "/RawData",
+    "/Extracted",
+    "/dist",
+]
+
 [tool.uv]
 default-groups = ["dev"]
 
-[tool.black]
-line-length = 88
-target-version = ["py310"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "dotnet: builds the production .NET extraction tools",
+    "windows: exercises Windows-specific process and signal behavior",
+]
 
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py311"
 src = ["src", "tests", "scripts"]
 extend-exclude = ["third_party"]
 
@@ -66,7 +89,7 @@ extend-exclude = ["third_party"]
 select = ["E4", "E7", "E9", "F", "B", "I", "RUF", "SIM", "UP"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 files = ["src/ba_downloader", "scripts"]
 exclude = ["^tests/", "^third_party/"]
 ignore_missing_imports = false

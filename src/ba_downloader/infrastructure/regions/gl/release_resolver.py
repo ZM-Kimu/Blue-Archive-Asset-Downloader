@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ba_downloader.domain.models.asset import ResolvedRelease
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.infrastructure.packages.apkpure import (
     ApkPurePackageRelease,
@@ -21,7 +21,7 @@ class GLReleaseResolver:
     def get_latest_release(self) -> ApkPurePackageRelease:
         return self.release_client.get_latest_release()
 
-    def resolve_latest(self, context: RuntimeContext) -> ResolvedRelease:
+    def resolve_latest(self, context: ExecutionContext) -> ResolvedRelease:
         release = self.get_latest_release()
         return ResolvedRelease(
             region=context.region,
@@ -29,7 +29,9 @@ class GLReleaseResolver:
             package_url=release.download_url,
         )
 
-    def resolve_version(self, context: RuntimeContext, version: str) -> ResolvedRelease:
+    def resolve_version(
+        self, context: ExecutionContext, version: str
+    ) -> ResolvedRelease:
         release = self.release_client.get_release(version)
         return ResolvedRelease(
             region=context.region,

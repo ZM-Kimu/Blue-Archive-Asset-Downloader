@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+import hashlib
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeVar
 
+from ba_downloader.domain.exceptions import OperationCancelledError
+from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.codegen_registration import (
+    RelocatedElf,
     apply_codegen_module_order,
 )
 from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.default_values import (
@@ -31,242 +35,301 @@ from ba_downloader.infrastructure.tools.cn_metadata_recovery.algorithms.validato
     validate_standard_metadata,
 )
 
+PhaseResult = TypeVar("PhaseResult")
+RecoveryProgressCallback = Callable[[str, int, int], None]
 
-@dataclass(slots=True)
+
+class _PhaseFailure(RuntimeError):
+    def __init__(self, stage: str, error: Exception) -> None:
+        self.stage = stage
+        self.error = error
+        super().__init__(str(error))
+
+
+@dataclass(frozen=True, slots=True)
+class CnMetadataParseResult:
+    source_metadata: memoryview
+    binary_path: Path
+    restored_metadata: bytes
+    standardized_metadata: bytes
+    relocated_elf: RelocatedElf | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CnMetadataInferResult:
+    parsed: CnMetadataParseResult
+    reordered_metadata: bytes
+    parameters: CnMetadataRecoveryParameters
+
+
+@dataclass(frozen=True, slots=True)
+class CnMetadataRebuildResult:
+    inferred: CnMetadataInferResult
+    standard_v29_metadata: bytes
+    output_size: int
+
+
+@dataclass(frozen=True, slots=True)
+class CnMetadataValidateResult:
+    rebuilt: CnMetadataRebuildResult
+    validation_summary: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
 class CnMetadataRecoveryResult:
     standard_v29_metadata: bytes
     validation_summary: dict[str, object]
 
 
-@dataclass(slots=True)
-class CnMetadataRecoveryState:
-    protected_metadata: bytes
-    binary_path: Path
-    current_metadata: bytes
-    restored_metadata: bytes = b""
-    parameters: CnMetadataRecoveryParameters | None = None
-    standard_v29_metadata: bytes = b""
-    validation_summary: dict[str, object] | None = None
+class ParsePhase(Protocol):
+    def __call__(
+        self,
+        source_metadata: memoryview,
+        binary_path: Path,
+    ) -> CnMetadataParseResult: ...
 
 
-class CnMetadataRecoveryStep(Protocol):
-    def __call__(self, state: CnMetadataRecoveryState) -> None: ...
+class InferPhase(Protocol):
+    def __call__(self, parsed: CnMetadataParseResult) -> CnMetadataInferResult: ...
 
 
-@dataclass(frozen=True, slots=True)
-class CnMetadataRecoveryStepSpec:
-    name: str
-    action: CnMetadataRecoveryStep
+class RebuildPhase(Protocol):
+    def __call__(self, inferred: CnMetadataInferResult) -> CnMetadataRebuildResult: ...
+
+
+class ValidatePhase(Protocol):
+    def __call__(
+        self,
+        rebuilt: CnMetadataRebuildResult,
+    ) -> CnMetadataValidateResult: ...
 
 
 class CnMetadataRecoveryError(RuntimeError):
     def __init__(
         self,
-        step: str,
+        stage: str,
         message: str,
         parameters: CnMetadataRecoveryParameters | None = None,
+        diagnostics: dict[str, object] | None = None,
     ) -> None:
-        self.step = step
+        self.stage = stage
+        self.step = stage
         self.detail = message
         self.parameters = parameters
+        self.diagnostics = diagnostics or {}
         parameter_text = (
             f" Parameters: {parameters.describe()}." if parameters is not None else ""
         )
         super().__init__(
-            f"CN metadata recovery step '{step}' failed: {message}{parameter_text}"
+            f"CN metadata recovery stage '{stage}' failed: {message}{parameter_text}"
         )
 
 
-def _restore_runtime_metadata_view_step(state: CnMetadataRecoveryState) -> None:
-    restored, _summary = restore_runtime_metadata_view(state.current_metadata)
-    state.restored_metadata = restored
-    state.current_metadata = restored
-
-
-def _standardize_custom_layout_step(state: CnMetadataRecoveryState) -> None:
-    standardized, _summary = standardize_custom_layout(state.current_metadata)
-    state.current_metadata = standardized
-
-
-def _apply_codegen_module_order_step(state: CnMetadataRecoveryState) -> None:
-    reordered, _summary = apply_codegen_module_order(
-        state.binary_path,
-        state.current_metadata,
-    )
-    state.current_metadata = reordered
-
-
-def _resolve_dynamic_parameters_step(state: CnMetadataRecoveryState) -> None:
-    state.parameters = resolve_cn_metadata_recovery_parameters(
-        state.restored_metadata,
-        state.current_metadata,
-        state.binary_path,
+def parse_cn_metadata(
+    source_metadata: memoryview,
+    binary_path: Path,
+) -> CnMetadataParseResult:
+    if not source_metadata.readonly:
+        raise ValueError("CN metadata source view must be read-only.")
+    restored, _restore_summary = restore_runtime_metadata_view(source_metadata)
+    standardized, _standardize_summary = standardize_custom_layout(restored)
+    relocated_elf = RelocatedElf(binary_path)
+    return CnMetadataParseResult(
+        source_metadata,
+        binary_path,
+        restored,
+        standardized,
+        relocated_elf,
     )
 
 
-def _require_parameters(
-    state: CnMetadataRecoveryState,
-    step: str,
-) -> CnMetadataRecoveryParameters:
-    if state.parameters is None:
-        raise CnMetadataRecoveryError(
-            step,
-            "dynamic recovery parameters were not resolved",
-        )
-    return state.parameters
+def infer_cn_metadata(parsed: CnMetadataParseResult) -> CnMetadataInferResult:
+    reordered, _order_summary = apply_codegen_module_order(
+        parsed.binary_path,
+        parsed.standardized_metadata,
+        relocated_elf=parsed.relocated_elf,
+    )
+    parameters = resolve_cn_metadata_recovery_parameters(
+        parsed.restored_metadata,
+        reordered,
+        parsed.binary_path,
+        relocated_elf=parsed.relocated_elf,
+    )
+    return CnMetadataInferResult(parsed, reordered, parameters)
 
 
-def _sanitize_default_values_step(state: CnMetadataRecoveryState) -> None:
-    parameters = _require_parameters(state, "sanitize_default_values")
-    sanitized, _summary = sanitize_default_values(
-        state.binary_path,
-        state.current_metadata,
+def rebuild_cn_metadata(inferred: CnMetadataInferResult) -> CnMetadataRebuildResult:
+    parsed = inferred.parsed
+    parameters = inferred.parameters
+    sanitized, _default_summary = sanitize_default_values(
+        parsed.binary_path,
+        inferred.reordered_metadata,
         parameters.metadata_registration_va,
+        relocated_elf=parsed.relocated_elf,
     )
-    state.current_metadata = sanitized
-
-
-def _restore_pre29_attribute_sections_step(state: CnMetadataRecoveryState) -> None:
-    parameters = _require_parameters(state, "restore_pre29_attribute_sections")
-    restored, _summary = restore_pre29_attribute_sections(
-        state.restored_metadata,
-        state.current_metadata,
-        state.binary_path,
+    restored_attributes, _attribute_summary = restore_pre29_attribute_sections(
+        parsed.restored_metadata,
+        sanitized,
+        parsed.binary_path,
         parameters.metadata_registration_va,
         tail_offset=parameters.tail_offset,
         blob_start=parameters.blob_start,
         exported_types_offset=parameters.exported_types_offset,
+        relocated_elf=parsed.relocated_elf,
     )
-    state.current_metadata = restored
-
-
-def _build_standard_v29_metadata_step(state: CnMetadataRecoveryState) -> None:
-    parameters = _require_parameters(state, "build_standard_v29_metadata")
-    standard_v29, _summary = build_standard_v29_metadata(
-        state.restored_metadata,
-        state.current_metadata,
-        state.binary_path,
+    standard_v29, _rebuild_summary = build_standard_v29_metadata(
+        parsed.restored_metadata,
+        restored_attributes,
+        parsed.binary_path,
         parameters.metadata_registration_va,
         tail_offset=parameters.tail_offset,
         blob_start=parameters.blob_start,
+        relocated_elf=parsed.relocated_elf,
     )
-    state.standard_v29_metadata = standard_v29
-    state.current_metadata = standard_v29
+    return CnMetadataRebuildResult(inferred, standard_v29, len(standard_v29))
 
 
-def _validate_standard_v29_metadata_step(state: CnMetadataRecoveryState) -> None:
-    parameters = _require_parameters(state, "validate_standard_v29_metadata")
+def validate_cn_metadata(
+    rebuilt: CnMetadataRebuildResult,
+) -> CnMetadataValidateResult:
+    parameters = rebuilt.inferred.parameters
     report = validate_standard_metadata(
-        state.standard_v29_metadata,
-        binary=state.binary_path,
+        rebuilt.standard_v29_metadata,
+        binary=rebuilt.inferred.parsed.binary_path,
         metadata_registration_va=parameters.metadata_registration_va,
+        relocated_elf=rebuilt.inferred.parsed.relocated_elf,
     )
     summary = dict(report.get("summary", {}))
-    state.validation_summary = summary
     if not summary.get("valid") or summary.get("warningCount", 0):
         raise CnMetadataRecoveryError(
-            "validate_standard_v29_metadata",
+            "validate",
             f"standard v29 metadata validation failed: {summary}",
             parameters,
         )
-
-
-DEFAULT_STEPS: tuple[CnMetadataRecoveryStepSpec, ...] = (
-    CnMetadataRecoveryStepSpec(
-        "restore_runtime_metadata_view",
-        _restore_runtime_metadata_view_step,
-    ),
-    CnMetadataRecoveryStepSpec(
-        "standardize_custom_layout",
-        _standardize_custom_layout_step,
-    ),
-    CnMetadataRecoveryStepSpec(
-        "apply_codegen_module_order",
-        _apply_codegen_module_order_step,
-    ),
-    CnMetadataRecoveryStepSpec(
-        "resolve_dynamic_parameters",
-        _resolve_dynamic_parameters_step,
-    ),
-    CnMetadataRecoveryStepSpec(
-        "sanitize_default_values",
-        _sanitize_default_values_step,
-    ),
-    CnMetadataRecoveryStepSpec(
-        "restore_pre29_attribute_sections",
-        _restore_pre29_attribute_sections_step,
-    ),
-    CnMetadataRecoveryStepSpec(
-        "build_standard_v29_metadata",
-        _build_standard_v29_metadata_step,
-    ),
-    CnMetadataRecoveryStepSpec(
-        "validate_standard_v29_metadata",
-        _validate_standard_v29_metadata_step,
-    ),
-)
+    return CnMetadataValidateResult(rebuilt, summary)
 
 
 class CnMetadataRecoveryPipeline:
     def __init__(
         self,
         *,
-        steps: Sequence[CnMetadataRecoveryStepSpec] | None = None,
+        parse_phase: ParsePhase = parse_cn_metadata,
+        infer_phase: InferPhase = infer_cn_metadata,
+        rebuild_phase: RebuildPhase = rebuild_cn_metadata,
+        validate_phase: ValidatePhase = validate_cn_metadata,
+        cancellation: CancellationPort | None = None,
     ) -> None:
-        self.steps = tuple(steps or DEFAULT_STEPS)
+        self.parse_phase = parse_phase
+        self.infer_phase = infer_phase
+        self.rebuild_phase = rebuild_phase
+        self.validate_phase = validate_phase
+        self.cancellation = cancellation or NeverCancelled()
 
     def run(
         self,
         *,
         protected_metadata: bytes,
         binary_path: Path,
+        progress_callback: RecoveryProgressCallback | None = None,
     ) -> CnMetadataRecoveryResult:
+        self.cancellation.raise_if_cancelled()
+        diagnostics = self._input_diagnostics(protected_metadata, binary_path)
         if not binary_path.is_file():
             raise CnMetadataRecoveryError(
-                "prepare_inputs",
+                "parse",
                 f"CN metadata recovery binary does not exist: {binary_path}",
+                diagnostics=diagnostics,
             )
         if not protected_metadata:
             raise CnMetadataRecoveryError(
-                "prepare_inputs",
+                "parse",
                 "protected metadata input is empty",
+                diagnostics=diagnostics,
             )
 
-        state = CnMetadataRecoveryState(
-            protected_metadata=protected_metadata,
-            binary_path=binary_path,
-            current_metadata=protected_metadata,
-        )
-        for step in self.steps:
-            try:
-                step.action(state)
-            except CnMetadataRecoveryError as exc:
-                if exc.parameters is None and state.parameters is not None:
-                    raise CnMetadataRecoveryError(
-                        exc.step,
-                        exc.detail,
-                        state.parameters,
-                    ) from exc
-                raise
-            except Exception as exc:
-                raise CnMetadataRecoveryError(
-                    step.name,
-                    str(exc) or exc.__class__.__name__,
-                    state.parameters,
-                ) from exc
-
-        if not state.standard_v29_metadata:
-            raise CnMetadataRecoveryError(
-                "build_standard_v29_metadata",
-                "pipeline completed without final standard v29 metadata",
+        source = memoryview(protected_metadata).toreadonly()
+        parameters: CnMetadataRecoveryParameters | None = None
+        try:
+            self._report_progress(progress_callback, "parse", 0)
+            parsed = self._run_phase(
+                "parse", lambda: self.parse_phase(source, binary_path)
             )
-        if not state.validation_summary:
-            raise CnMetadataRecoveryError(
-                "validate_standard_v29_metadata",
-                "pipeline completed without validation summary",
+            self._report_progress(progress_callback, "infer", 1)
+            inferred = self._run_phase("infer", lambda: self.infer_phase(parsed))
+            parameters = inferred.parameters
+            self._report_progress(progress_callback, "rebuild", 2)
+            rebuilt = self._run_phase("rebuild", lambda: self.rebuild_phase(inferred))
+            self._report_progress(progress_callback, "validate", 3)
+            validated = self._run_phase(
+                "validate", lambda: self.validate_phase(rebuilt)
             )
+            self._report_progress(progress_callback, "validate", 4)
+        except OperationCancelledError:
+            raise
+        except CnMetadataRecoveryError as exc:
+            if not exc.diagnostics:
+                exc.diagnostics.update(diagnostics)
+            raise
+        except _PhaseFailure as exc:
+            raise CnMetadataRecoveryError(
+                exc.stage,
+                str(exc.error) or exc.error.__class__.__name__,
+                parameters,
+                diagnostics,
+            ) from exc.error
+        except Exception as exc:
+            raise CnMetadataRecoveryError(
+                "unknown",
+                str(exc) or exc.__class__.__name__,
+                parameters,
+                diagnostics,
+            ) from exc
 
         return CnMetadataRecoveryResult(
-            standard_v29_metadata=state.standard_v29_metadata,
-            validation_summary=state.validation_summary,
+            validated.rebuilt.standard_v29_metadata,
+            validated.validation_summary,
         )
+
+    @staticmethod
+    def _report_progress(
+        callback: RecoveryProgressCallback | None,
+        stage: str,
+        completed: int,
+    ) -> None:
+        if callback is not None:
+            callback(stage, completed, 4)
+
+    def _run_phase(
+        self,
+        stage: str,
+        action: Callable[[], PhaseResult],
+    ) -> PhaseResult:
+        self.cancellation.raise_if_cancelled()
+        try:
+            result = action()
+        except (OperationCancelledError, CnMetadataRecoveryError):
+            raise
+        except Exception as exc:
+            raise _PhaseFailure(stage, exc) from exc
+        self.cancellation.raise_if_cancelled()
+        return result
+
+    @staticmethod
+    def _input_diagnostics(
+        protected_metadata: bytes,
+        binary_path: Path,
+    ) -> dict[str, object]:
+        diagnostics: dict[str, object] = {
+            "metadata_size": len(protected_metadata),
+            "metadata_sha256": hashlib.sha256(protected_metadata).hexdigest(),
+        }
+        if binary_path.is_file():
+            diagnostics["binary_size"] = binary_path.stat().st_size
+            diagnostics["binary_sha256"] = hashlib.sha256(
+                binary_path.read_bytes()
+            ).hexdigest()
+        return diagnostics

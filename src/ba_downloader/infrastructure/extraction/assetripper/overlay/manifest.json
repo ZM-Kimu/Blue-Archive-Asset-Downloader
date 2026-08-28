@@ -1,0 +1,58 @@
+{
+  "schema_version": 0,
+  "files": [
+    {
+      "path": "Source/AssetRipper.Assets/Bundles/GameLoadProgress.cs",
+      "replacement": "AssetRipper.Assets/Bundles/GameLoadProgress.cs",
+      "content_affecting": false
+    },
+    {
+      "path": "Source/AssetRipper.Assets/Bundles/GameBundle.FromPathsParallel.cs",
+      "replacement": "AssetRipper.Assets/Bundles/GameBundle.FromPathsParallel.cs"
+    },
+    {
+      "path": "Source/AssetRipper.Assets/Bundles/BundleLookupIndex.cs",
+      "replacement": "AssetRipper.Assets/Bundles/BundleLookupIndex.cs"
+    },
+    {
+      "path": "Source/AssetRipper.Assets/Bundles/AssetProvenanceRegistry.cs",
+      "replacement": "AssetRipper.Assets/Bundles/AssetProvenanceRegistry.cs"
+    },
+    {
+      "path": "Source/AssetRipper.Assets/Collections/SerializedAssetCollection.cs",
+      "replacement": "AssetRipper.Assets/Collections/SerializedAssetCollection.cs"
+    },
+    {
+      "path": "Source/AssetRipper.Assets/Collections/ProcessedAssetCollection.cs",
+      "replacement": "AssetRipper.Assets/Collections/ProcessedAssetCollection.cs"
+    },
+    {
+      "path": "Source/AssetRipper.Export.PrimaryContent/ExportCollectionBase.cs",
+      "replacement": "AssetRipper.Export.PrimaryContent/ExportCollectionBase.cs"
+    },
+    {
+      "path": "Source/AssetRipper.Export.PrimaryContent/SingleExportCollection.cs",
+      "replacement": "AssetRipper.Export.PrimaryContent/SingleExportCollection.cs"
+    },
+    {
+      "path": "Source/AssetRipper.Import/Structure/GameStructure.cs",
+      "replacement": "AssetRipper.Import/Structure/GameStructure.cs"
+    },
+    {
+      "path": "Source/AssetRipper.Processing/Editor/EditorFormatProcessor.cs",
+      "replacement": "AssetRipper.Processing/Editor/EditorFormatProcessor.cs"
+    },
+    {
+      "path": "Source/AssetRipper.Processing/AnimationClips/PathChecksumCache.cs",
+      "replacement": "AssetRipper.Processing/AnimationClips/PathChecksumCache.cs"
+    },
+    {
+      "path": "Source/AssetRipper.Export.Modules.Models/PlayableGlbLevelBuilder.cs",
+      "replacement": "AssetRipper.Export.Modules.Models/PlayableGlbLevelBuilder.cs"
+    },
+    {
+      "path": "Source/AssetRipper.SourceGenerated.Extensions/StreamedResourceExtensions.cs",
+      "replacement": "AssetRipper.SourceGenerated.Extensions/StreamedResourceExtensions.cs"
+    }
+  ]
+}

@@ -1,327 +1,485 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from contextlib import ExitStack
+from pathlib import Path
 
+from ba_downloader.application.contracts import (
+    ApplicationCommand,
+    AssetsDownloadCommand,
+    AssetsExtractCommand,
+    AssetsSyncCommand,
+    BuildCharacterIndexCommand,
+    CatalogRefreshCommand,
+    OperationOutcome,
+    StorageCleanupCommand,
+)
 from ba_downloader.application.profiles import RegionProfile
+from ba_downloader.application.use_cases.build_character_index import (
+    BuildCharacterIndexUseCase,
+)
+from ba_downloader.application.use_cases.cleanup_storage import CleanupStorageUseCase
+from ba_downloader.application.use_cases.download_assets import DownloadAssetsUseCase
 from ba_downloader.application.use_cases.extract_assets import ExtractAssetsUseCase
 from ba_downloader.application.use_cases.schema_preparation import (
     SchemaPreparationService,
 )
-from ba_downloader.bootstrap.region_profiles import (
-    DEFAULT_REGION_SERVICE_PROFILE_REGISTRY,
-    RegionServiceProfile,
+from ba_downloader.application.use_cases.sync_assets import SyncAssetsUseCase
+from ba_downloader.bootstrap.region_gateways import (
+    DEFAULT_REGION_GATEWAY_REGISTRY,
+    RegionGatewayDefinition,
+    RegionGatewayRegistry,
     build_application_region_profile,
 )
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.bundle import BundleHandler
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.catalog_metadata import TableMetadataManifestPort
 from ba_downloader.domain.ports.character_index import CharacterIndexBuilderPort
 from ba_downloader.domain.ports.download import ResourceDownloaderPort
+from ba_downloader.domain.ports.execution import (
+    ArtifactCollector,
+    ArtifactSinkPort,
+    CancellationPort,
+    NeverCancelled,
+)
 from ba_downloader.domain.ports.extract import SchemaPreparationPort
 from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
+from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
 from ba_downloader.domain.ports.region import RegionProvider
-from ba_downloader.domain.ports.runtime import RuntimeAssetPreparerPort
+from ba_downloader.domain.ports.system import SystemMemoryProbePort
 
-CharacterIndexBuilderFactory = Callable[[RuntimeContext], CharacterIndexBuilderPort]
+CharacterIndexBuilderFactory = Callable[[ExecutionContext], CharacterIndexBuilderPort]
 
-
-@dataclass(frozen=True, slots=True)
-class BaseRuntimeServices:
-    logger: LoggerPort
-    http_client: HttpClientPort
-    provider: RegionProvider
-    service_profile: RegionServiceProfile
+_LOW_MEMORY_BUNDLE_THRESHOLD_BYTES = 8 * 1024**3
 
 
-@dataclass(frozen=True, slots=True)
-class DownloadRuntimeServices(BaseRuntimeServices):
-    downloader: ResourceDownloaderPort
-    workflow_profile: RegionProfile
+class ExecutionScope:
+    def __init__(
+        self,
+        context: ExecutionContext,
+        *,
+        logger: LoggerPort | None = None,
+        progress_factory: ProgressReporterFactoryPort | None = None,
+        cancellation: CancellationPort | None = None,
+        artifacts: ArtifactSinkPort | None = None,
+        gateway_registry: RegionGatewayRegistry = DEFAULT_REGION_GATEWAY_REGISTRY,
+        memory_probe: SystemMemoryProbePort | None = None,
+    ) -> None:
+        self.context = context
+        self._provided_logger = logger
+        self._progress_factory = progress_factory
+        self.cancellation = cancellation or NeverCancelled()
+        self._artifacts = artifacts or ArtifactCollector()
+        self._gateway_registry = gateway_registry
+        self._memory_probe = memory_probe
+        self._resources = ExitStack()
+        self._entered = False
+        self._executed = False
+        self._logger: LoggerPort | None = None
+        self._http_client: HttpClientPort | None = None
+        self._definition: RegionGatewayDefinition | None = None
+        self._provider: RegionProvider | None = None
+        self._schema_preparation: SchemaPreparationPort | None = None
+        self._workflow_profile: RegionProfile | None = None
+        self._downloader: ResourceDownloaderPort | None = None
+        self._extract_service: ExtractAssetsUseCase | None = None
+        self._index_builder_factory: CharacterIndexBuilderFactory | None = None
 
+    @property
+    def logger(self) -> LoggerPort:
+        self._require_active()
+        if self._logger is None:
+            from ba_downloader.infrastructure.logging.console_logger import (
+                ConsoleLogger,
+            )
 
-@dataclass(frozen=True, slots=True)
-class ExtractRuntimeServices(BaseRuntimeServices):
-    extract_service: ExtractAssetsUseCase
-    workflow_profile: RegionProfile
+            self._logger = self._provided_logger or ConsoleLogger()
+        return self._logger
 
+    def __enter__(self) -> ExecutionScope:
+        if self._entered:
+            raise RuntimeError("Execution scope is already active.")
+        self._resources.__enter__()
+        self._entered = True
+        return self
 
-@dataclass(frozen=True, slots=True)
-class SyncRuntimeServices(BaseRuntimeServices):
-    downloader: ResourceDownloaderPort
-    extract_service: ExtractAssetsUseCase
-    schema_preparation: SchemaPreparationPort
-    character_index_builder_factory: CharacterIndexBuilderFactory
-    workflow_profile: RegionProfile
+    def __exit__(self, *_: object) -> None:
+        self._entered = False
+        self._resources.close()
 
-
-@dataclass(frozen=True, slots=True)
-class CharacterIndexRuntimeServices(BaseRuntimeServices):
-    downloader: ResourceDownloaderPort
-    schema_preparation: SchemaPreparationPort
-    character_index_builder_factory: CharacterIndexBuilderFactory
-
-
-def _build_base_services(context: RuntimeContext) -> BaseRuntimeServices:
-    from ba_downloader.infrastructure.http import ResilientHttpClient
-    from ba_downloader.infrastructure.logging.console_logger import ConsoleLogger
-
-    logger = ConsoleLogger()
-    http_client = ResilientHttpClient(
-        proxy_url=context.proxy_url or None,
-        max_retries=context.max_retries,
-    )
-    service_profile = DEFAULT_REGION_SERVICE_PROFILE_REGISTRY.resolve(context.region)
-    provider = service_profile.provider_factory(http_client, logger)
-    return BaseRuntimeServices(
-        logger=logger,
-        http_client=http_client,
-        provider=provider,
-        service_profile=service_profile,
-    )
-
-
-def _build_downloader(
-    http_client: HttpClientPort,
-    logger: LoggerPort,
-    service_profile: RegionServiceProfile,
-    *,
-    enable_immediate_extraction: bool = False,
-) -> ResourceDownloaderPort:
-    from ba_downloader.infrastructure.download import ResourceDownloader
-
-    immediate_extractor = None
-    if enable_immediate_extraction:
-        from ba_downloader.infrastructure.extraction import ImmediateResourceExtractor
-
-        immediate_extractor = ImmediateResourceExtractor(
-            logger,
-            table_profile_factory=service_profile.table_profile_factory,
+    def execute(
+        self,
+        command: ApplicationCommand,
+    ) -> OperationOutcome:
+        self._require_active()
+        if self._executed:
+            raise RuntimeError("Execution scope supports one operation only.")
+        self._executed = True
+        self.cancellation.raise_if_cancelled()
+        preflight_warnings = self._preflight_warnings(command)
+        result = self._dispatch(command)
+        self.cancellation.raise_if_cancelled()
+        self._record_artifacts(command, result.context)
+        return OperationOutcome(
+            context=result.context,
+            artifacts=self._artifacts.snapshot(),
+            catalog=result.catalog,
+            statistics=result.statistics,
+            warnings=preflight_warnings + result.warnings,
         )
 
-    return ResourceDownloader(
-        http_client,
-        logger,
-        immediate_extraction_handler=immediate_extractor,
-    )
+    def _preflight_warnings(
+        self,
+        command: ApplicationCommand,
+    ) -> tuple[str, ...]:
+        if not isinstance(command, AssetsSyncCommand | AssetsExtractCommand):
+            return ()
+        options = command.options
+        if (
+            not options.resources.contains("bundle")
+            or options.bundle_handler is not BundleHandler.assetripper
+        ):
+            return ()
+        if self._memory_probe is None:
+            from ba_downloader.infrastructure.system_memory import SystemMemoryProbe
 
+            self._memory_probe = SystemMemoryProbe()
+        total = self._memory_probe.total_physical_memory()
+        if total is None or total >= _LOW_MEMORY_BUNDLE_THRESHOLD_BYTES:
+            return ()
+        detected = total / 1024**3
+        warning = (
+            "[BUNDLE_LOW_MEMORY] AssetRipper bundle extraction may run out of "
+            f"memory: detected {detected:.1f} GiB of physical RAM; 8 GiB or more "
+            "is recommended. Continue with AssetRipper or use "
+            "--bundle-handler unitypy for reduced low-memory output."
+        )
+        self.logger.warn(warning)
+        return (warning,)
 
-def _build_runtime_asset_preparer(
-    context: RuntimeContext,
-    http_client: HttpClientPort,
-    logger: LoggerPort,
-    service_profile: RegionServiceProfile,
-) -> RuntimeAssetPreparerPort:
-    _ = context
-    return service_profile.runtime_asset_preparer_factory(http_client, logger)
+    def _dispatch(self, command: ApplicationCommand) -> OperationOutcome:
+        context = self.context
+        cancellation = self.cancellation
 
+        if isinstance(command, StorageCleanupCommand):
+            from ba_downloader.infrastructure.storage.cleanup import (
+                BoundedStorageCleanup,
+            )
 
-def _build_schema_preparation(
-    context: RuntimeContext,
-    http_client: HttpClientPort,
-    logger: LoggerPort,
-    service_profile: RegionServiceProfile,
-) -> SchemaPreparationPort:
-    from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
+            deleted = CleanupStorageUseCase(BoundedStorageCleanup(), cancellation).run(
+                context, command.targets
+            )
+            return OperationOutcome(context, statistics=(("deleted", deleted),))
 
-    return SchemaPreparationService(
-        SchemaWorkflow(
-            http_client,
-            logger,
-            dumper_backend_factory=service_profile.dumper_backend_factory,
-        ),
-        _build_runtime_asset_preparer(context, http_client, logger, service_profile),
-    )
+        if isinstance(command, AssetsSyncCommand):
+            sync_result = SyncAssetsUseCase(
+                self.provider(),
+                self.downloader(),
+                self.extract_service(),
+                self.schema_preparation(),
+                self.character_index_builder_factory(),
+                self.logger,
+                workflow_profile=self.workflow_profile(),
+                cancellation=cancellation,
+            ).run(context, command.options)
+            return OperationOutcome(
+                sync_result.context,
+                warnings=sync_result.extraction.warnings,
+            )
 
+        if isinstance(command, AssetsDownloadCommand):
+            active_context = DownloadAssetsUseCase(
+                self.provider(),
+                self.downloader(),
+                workflow_profile=self.workflow_profile(),
+                cancellation=cancellation,
+                character_index_builder_factory=self.character_index_builder_factory(),
+            ).run(context, command.options)
+            return OperationOutcome(active_context)
 
-def _build_character_index_builder_factory(
-    logger: LoggerPort,
-    service_profile: RegionServiceProfile,
-) -> CharacterIndexBuilderFactory:
-    from ba_downloader.infrastructure.extraction.character import CharacterIndexBuilder
+        if isinstance(command, AssetsExtractCommand):
+            extraction = self.extract_service().run(context, command.options)
+            return OperationOutcome(context, warnings=extraction.warnings)
 
-    def character_index_builder_factory(
-        active_context: RuntimeContext,
-    ) -> CharacterIndexBuilderPort:
-        return CharacterIndexBuilder(
-            active_context,
-            logger,
-            table_profile_factory=service_profile.table_profile_factory,
-            character_index_source_profile_factory=(
-                service_profile.character_index_source_profile_factory
+        if isinstance(command, BuildCharacterIndexCommand):
+            active_context = BuildCharacterIndexUseCase(
+                self.provider(),
+                self.downloader(),
+                self.schema_preparation(),
+                self.character_index_builder_factory(),
+                cancellation=cancellation,
+                catalog_metadata=self.workflow_profile().catalog_metadata,
+            ).build(context, concurrency=command.concurrency)
+            return OperationOutcome(active_context)
+
+        if isinstance(command, CatalogRefreshCommand):
+            catalog = self.provider().load_catalog(context)
+            self.workflow_profile().catalog_metadata.on_catalog_loaded(
+                catalog.context,
+                catalog.resources,
+            )
+            return OperationOutcome(catalog.context, catalog=catalog.resources)
+
+        raise LookupError(f"Unsupported command '{type(command).__name__}'.")
+
+    def definition(self) -> RegionGatewayDefinition:
+        self._require_active()
+        if self._definition is None:
+            self._definition = self._gateway_registry.resolve(self.context.region)
+        return self._definition
+
+    def http_client(self) -> HttpClientPort:
+        self._require_active()
+        if self._http_client is None:
+            from ba_downloader.infrastructure.http import ResilientHttpClient
+
+            client = ResilientHttpClient(
+                proxy_url=self.context.proxy_url or None,
+                max_retries=self.context.max_retries,
+                cancellation=self.cancellation,
+            )
+            self._resources.callback(client.close)
+            self._http_client = client
+        return self._http_client
+
+    def provider(self) -> RegionProvider:
+        if self._provider is None:
+            self._provider = self.definition().catalog.provider(
+                self.http_client(),
+                self.logger,
+                self._progress_factory,
+                self.cancellation,
+            )
+        return self._provider
+
+    def schema_preparation(self) -> SchemaPreparationPort:
+        if self._schema_preparation is None:
+            from ba_downloader.infrastructure.schema.workflow import SchemaWorkflow
+
+            definition = self.definition()
+            workflow = SchemaWorkflow(
+                self.http_client(),
+                self.logger,
+                dumper_backend_factory=definition.runtime.dump_backend,
+                cancellation=self.cancellation,
+                progress_factory=self._progress_factory,
+            )
+            preparer = definition.runtime.asset_preparer(
+                self.http_client(),
+                self.logger,
+                self._progress_factory,
+                self.cancellation,
+            )
+            self._schema_preparation = SchemaPreparationService(
+                workflow,
+                preparer,
+                cancellation=self.cancellation,
+            )
+        return self._schema_preparation
+
+    def workflow_profile(self) -> RegionProfile:
+        if self._workflow_profile is None:
+            self._workflow_profile = build_application_region_profile(
+                self.definition(),
+                logger=self.logger,
+                table_metadata_store=self._table_metadata_store(),
+                provider=self.provider(),
+            )
+        return self._workflow_profile
+
+    def downloader(self) -> ResourceDownloaderPort:
+        if self._downloader is not None:
+            return self._downloader
+
+        from ba_downloader.infrastructure.download import ResourceDownloader
+
+        downloader = ResourceDownloader(
+            self.http_client(),
+            self.logger,
+            progress_factory=self._progress_factory,
+            cancellation=self.cancellation,
+        )
+        self._downloader = downloader
+        return downloader
+
+    def character_index_builder_factory(self) -> CharacterIndexBuilderFactory:
+        if self._index_builder_factory is None:
+            from ba_downloader.infrastructure.extraction.character import (
+                CharacterIndexBuilder,
+            )
+
+            definition = self.definition()
+
+            def build(active_context: ExecutionContext) -> CharacterIndexBuilderPort:
+                _ = active_context
+                return CharacterIndexBuilder(
+                    self.logger,
+                    table_profile_factory=definition.tables.extraction_profile,
+                    character_index_source_profile_factory=(
+                        definition.character_index.source_profile
+                    ),
+                    character_index_composition_profile_factory=(
+                        definition.character_index.composition_profile
+                    ),
+                )
+
+            self._index_builder_factory = build
+        return self._index_builder_factory
+
+    def extract_service(self) -> ExtractAssetsUseCase:
+        if self._extract_service is None:
+            from ba_downloader.infrastructure.extraction import AssetExtractionWorkflow
+            from ba_downloader.infrastructure.extraction.assetripper import (
+                AssetRipperBatchExporter,
+                AssetRipperBundleWorkflow,
+                AssetRipperDependencyScanner,
+                AssetRipperSourceResolver,
+                BundleDependencyScanCache,
+                CachedBundleDependencyScanner,
+                dependency_scan_cache_root,
+            )
+            from ba_downloader.infrastructure.extraction.assetripper.exporter import (
+                assetripper_dependency_scan_cache_key,
+            )
+            from ba_downloader.infrastructure.extraction.media.exporter import (
+                MediaArchiveExtractor,
+            )
+            from ba_downloader.infrastructure.extraction.media.source import (
+                SharpZipLibSourceResolver,
+            )
+            from ba_downloader.infrastructure.extraction.unitypy import (
+                UnityPyBundleWorkflow,
+            )
+            from ba_downloader.infrastructure.runtime.process import (
+                CancellableProcessRunner,
+            )
+
+            prerequisite = self.definition().tables.extraction_prerequisite(
+                self.schema_preparation(),
+                self.logger,
+            )
+            process_runner = CancellableProcessRunner(self.cancellation)
+            source_resolver = AssetRipperSourceResolver(
+                self.http_client(),
+                self.logger,
+                cancellation=self.cancellation,
+            )
+            dependency_scanner = CachedBundleDependencyScanner(
+                AssetRipperDependencyScanner(
+                    source_resolver,
+                    process_runner,
+                    logger=self.logger,
+                ),
+                BundleDependencyScanCache(dependency_scan_cache_root(self.context)),
+                tool_key=assetripper_dependency_scan_cache_key(),
+            )
+            self._extract_service = ExtractAssetsUseCase(
+                AssetExtractionWorkflow(
+                    self.logger,
+                    table_profile_factory=(self.definition().tables.extraction_profile),
+                    progress_factory=self._progress_factory,
+                    cancellation=self.cancellation,
+                    media_extractor=MediaArchiveExtractor(
+                        process_runner,
+                        self.logger,
+                        source_resolver=SharpZipLibSourceResolver(
+                            self.http_client(),
+                            self.logger,
+                            cancellation=self.cancellation,
+                        ),
+                        progress_factory=self._progress_factory,
+                        cancellation=self.cancellation,
+                    ),
+                    bundle_workflow=AssetRipperBundleWorkflow(
+                        AssetRipperBatchExporter(
+                            source_resolver,
+                            process_runner,
+                            logger=self.logger,
+                            cancellation=self.cancellation,
+                        ),
+                        dependency_scanner,
+                        self.logger,
+                        progress_factory=self._progress_factory,
+                        cancellation=self.cancellation,
+                    ),
+                    unitypy_bundle_workflow=UnityPyBundleWorkflow(
+                        self.logger,
+                        progress_factory=self._progress_factory,
+                        cancellation=self.cancellation,
+                    ),
+                ),
+                self.logger,
+                provider=self.provider(),
+                character_index_builder_factory=(
+                    self.character_index_builder_factory()
+                ),
+                prerequisite_service=prerequisite,
+                workflow_profile=self.workflow_profile(),
+                cancellation=self.cancellation,
+            )
+        return self._extract_service
+
+    def _record_artifacts(
+        self, command: ApplicationCommand, context: ExecutionContext
+    ) -> None:
+        paths: tuple[tuple[str, Path], ...]
+        if isinstance(command, AssetsSyncCommand):
+            paths = (
+                ("raw", context.workspace.raw),
+                ("extracted", context.workspace.extracted),
+                ("temporary", context.workspace.temp_state),
+            )
+        elif isinstance(command, AssetsDownloadCommand):
+            paths = (("raw", context.workspace.raw),)
+        elif isinstance(command, AssetsExtractCommand):
+            paths = (("extracted", context.workspace.extracted),)
+        elif isinstance(command, BuildCharacterIndexCommand):
+            paths = (
+                ("raw", context.workspace.raw),
+                ("extracted", context.workspace.extracted),
+                ("temporary", context.workspace.temp_state),
+            )
+        else:
+            paths = ()
+        for kind, path in paths:
+            if path.exists():
+                self._artifacts.record(kind, path)
+
+        for kind, path in (
+            ("dump-cs", context.workspace.dumps / "dump.cs"),
+            (
+                "memorypack-formatters",
+                context.workspace.dumps / "memorypack_formatters.json",
             ),
-            character_index_composition_profile_factory=(
-                service_profile.character_index_composition_profile_factory
-            ),
+        ):
+            if path.is_file():
+                self._artifacts.record(kind, path)
+
+        if context.region == "cn" and context.resource_version:
+            recovery_metadata = (
+                context.workspace.runtime_state
+                / context.resource_version
+                / "MetadataRecovery"
+                / "global-metadata.standard-v29.dat"
+            )
+            if recovery_metadata.is_file():
+                self._artifacts.record("cn-recovery-metadata", recovery_metadata)
+
+        if (
+            isinstance(command, (AssetsSyncCommand, BuildCharacterIndexCommand))
+            and context.workspace.character_index.is_file()
+        ):
+            self._artifacts.record("character-index", context.workspace.character_index)
+
+    def _require_active(self) -> None:
+        if not self._entered:
+            raise RuntimeError("Execution scope is not active.")
+
+    @staticmethod
+    def _table_metadata_store() -> TableMetadataManifestPort:
+        from ba_downloader.infrastructure.storage.table_metadata_manifest import (
+            JpTableMetadataManifestStore,
         )
 
-    return character_index_builder_factory
-
-
-def _build_table_metadata_store() -> TableMetadataManifestPort:
-    from ba_downloader.infrastructure.storage.table_metadata_manifest import (
-        JpTableMetadataManifestStore,
-    )
-
-    return JpTableMetadataManifestStore()
-
-
-def _build_extract_service(
-    context: RuntimeContext,
-    base: BaseRuntimeServices,
-    schema_preparation: SchemaPreparationPort,
-    workflow_profile: RegionProfile,
-) -> ExtractAssetsUseCase:
-    from ba_downloader.infrastructure.extraction import AssetExtractionWorkflow
-
-    prerequisite_service = base.service_profile.extraction_prerequisite_factory(
-        schema_preparation,
-        base.logger,
-    )
-
-    _ = context
-    character_index_builder_factory = _build_character_index_builder_factory(
-        base.logger,
-        base.service_profile,
-    )
-    return ExtractAssetsUseCase(
-        AssetExtractionWorkflow(
-            base.logger,
-            table_profile_factory=base.service_profile.table_profile_factory,
-        ),
-        base.logger,
-        provider=base.provider,
-        character_index_builder_factory=character_index_builder_factory,
-        prerequisite_service=prerequisite_service,
-        workflow_profile=workflow_profile,
-    )
-
-
-def build_download_runtime_services(
-    context: RuntimeContext,
-) -> DownloadRuntimeServices:
-    base = _build_base_services(context)
-    workflow_profile = build_application_region_profile(
-        base.service_profile,
-        context,
-        http_client=base.http_client,
-        logger=base.logger,
-        table_metadata_store=_build_table_metadata_store(),
-        provider=base.provider,
-    )
-    return DownloadRuntimeServices(
-        logger=base.logger,
-        http_client=base.http_client,
-        provider=base.provider,
-        service_profile=base.service_profile,
-        downloader=_build_downloader(
-            base.http_client,
-            base.logger,
-            base.service_profile,
-        ),
-        workflow_profile=workflow_profile,
-    )
-
-
-def build_extract_runtime_services(
-    context: RuntimeContext,
-) -> ExtractRuntimeServices:
-    base = _build_base_services(context)
-    schema_preparation = _build_schema_preparation(
-        context,
-        base.http_client,
-        base.logger,
-        base.service_profile,
-    )
-    workflow_profile = build_application_region_profile(
-        base.service_profile,
-        context,
-        http_client=base.http_client,
-        logger=base.logger,
-        table_metadata_store=_build_table_metadata_store(),
-        provider=base.provider,
-    )
-    return ExtractRuntimeServices(
-        logger=base.logger,
-        http_client=base.http_client,
-        provider=base.provider,
-        service_profile=base.service_profile,
-        extract_service=_build_extract_service(
-            context,
-            base,
-            schema_preparation,
-            workflow_profile,
-        ),
-        workflow_profile=workflow_profile,
-    )
-
-
-def build_sync_runtime_services(context: RuntimeContext) -> SyncRuntimeServices:
-    base = _build_base_services(context)
-    schema_preparation = _build_schema_preparation(
-        context,
-        base.http_client,
-        base.logger,
-        base.service_profile,
-    )
-    character_index_builder_factory = _build_character_index_builder_factory(
-        base.logger,
-        base.service_profile,
-    )
-    workflow_profile = build_application_region_profile(
-        base.service_profile,
-        context,
-        http_client=base.http_client,
-        logger=base.logger,
-        table_metadata_store=_build_table_metadata_store(),
-        provider=base.provider,
-    )
-    return SyncRuntimeServices(
-        logger=base.logger,
-        http_client=base.http_client,
-        provider=base.provider,
-        service_profile=base.service_profile,
-        downloader=_build_downloader(
-            base.http_client,
-            base.logger,
-            base.service_profile,
-            enable_immediate_extraction=context.extract_while_download,
-        ),
-        extract_service=_build_extract_service(
-            context,
-            base,
-            schema_preparation,
-            workflow_profile,
-        ),
-        schema_preparation=schema_preparation,
-        character_index_builder_factory=character_index_builder_factory,
-        workflow_profile=workflow_profile,
-    )
-
-
-def build_character_index_runtime_services(
-    context: RuntimeContext,
-) -> CharacterIndexRuntimeServices:
-    base = _build_base_services(context)
-    schema_preparation = _build_schema_preparation(
-        context,
-        base.http_client,
-        base.logger,
-        base.service_profile,
-    )
-    return CharacterIndexRuntimeServices(
-        logger=base.logger,
-        http_client=base.http_client,
-        provider=base.provider,
-        service_profile=base.service_profile,
-        downloader=_build_downloader(
-            base.http_client,
-            base.logger,
-            base.service_profile,
-        ),
-        schema_preparation=schema_preparation,
-        character_index_builder_factory=_build_character_index_builder_factory(
-            base.logger,
-            base.service_profile,
-        ),
-    )
+        return JpTableMetadataManifestStore()

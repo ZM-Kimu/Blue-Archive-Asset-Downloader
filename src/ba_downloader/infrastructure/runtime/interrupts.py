@@ -5,11 +5,32 @@ from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
-from threading import Event, current_thread, main_thread
+from threading import current_thread, main_thread
 from time import monotonic
-from typing import Any
+from typing import Any, Protocol
 
 from ba_downloader.domain.ports.logging import LoggerPort
+
+
+class StopEventPort(Protocol):
+    def is_set(self) -> bool: ...
+
+    def set(self) -> None: ...
+
+    def wait(self, timeout: float | None = None) -> bool: ...
+
+
+@dataclass(slots=True)
+class SignalInterruptState:
+    """Parent-process interrupt state safe for use from a signal handler."""
+
+    interrupted: bool = False
+
+    def is_set(self) -> bool:
+        return self.interrupted
+
+    def set(self) -> None:
+        self.interrupted = True
 
 
 @dataclass(slots=True)
@@ -43,11 +64,11 @@ def build_future_wait_policy(
 
 @contextmanager
 def install_interrupt_handler(
-    stop_event: Event,
+    interrupt_state: SignalInterruptState,
     logger: LoggerPort,
     *,
     force_exit: Callable[[int], None],
-    on_interrupt: Callable[[], None] | None = None,
+    force_on_repeated_interrupt: bool = True,
 ) -> Iterator[None]:
     if current_thread() is not main_thread():
         yield
@@ -60,14 +81,13 @@ def install_interrupt_handler(
         nonlocal interrupt_count
         _ = (signum, frame)
         interrupt_count += 1
-        stop_event.set()
-        if on_interrupt is not None:
-            on_interrupt()
-        if interrupt_count >= 2:
-            logger.error("Force exiting immediately.")
+        if force_on_repeated_interrupt and interrupt_count >= 2:
             force_exit(130)
+            return
+        interrupt_state.set()
 
     try:
+        _ = logger
         signal.signal(signal.SIGINT, handle_interrupt)
         yield
     finally:
@@ -107,7 +127,7 @@ def cancel_pending_futures(pending_futures: Iterable[Future[Any]]) -> None:
 def wait_for_futures_with_cancellation(
     pending_futures: set[Future[Any]],
     *,
-    stop_event: Event,
+    stop_event: StopEventPort,
     logger: LoggerPort,
     cancellation_state: CancellationFeedbackState,
     poll_interval: float,
@@ -137,7 +157,7 @@ def wait_for_futures_with_cancellation(
 
 def wait_for_operation_futures(
     pending_futures: set[Future[Any]],
-    stop_event: Event,
+    stop_event: StopEventPort,
     policy: FutureWaitPolicy,
     cancellation_state: CancellationFeedbackState,
     operation_name: str,

@@ -2,7 +2,112 @@
 
 ## Unreleased
 
-No unreleased changes recorded.
+- No unreleased changes recorded.
+
+## v3.0.0 - 2026-08-28
+
+### Breaking Changes
+- replace the legacy flat CLI with `assets sync`, `assets download`,
+  `assets extract`, `index build`, and `server start`
+- remove short options, custom raw/extracted/temp paths, prefixed output
+  directories, and legacy `<REGION>CharacterIndex.json` discovery
+- isolate output under `<workspace>/<region>/<platform>` and model operations,
+  progress, cancellation, artifacts, and region gateways with immutable typed
+  contracts
+- replace UnityPy bundle extraction with a pinned AssetRipper exporter and
+  validated source overlays
+- publish versioned runtime and schema snapshots; incompatible internal caches
+  are discarded instead of migrated
+- publish bundle content with human-readable AssetRipper paths under
+  `extracted/bundles/Assets` and a compact identity manifest; incompatible
+  pre-v3 output is not migrated
+- replace the flat API progress fields with schema 0 nested `overall`,
+  `current`, `group`, `item`, `workers`, and shared timing state for every
+  workflow
+
+### Features
+- add typed resource and character filters with AND/OR composition
+- add UnityPy as an optional low-memory bundle handler and warn before
+  AssetRipper extraction when detected physical RAM is below 8 GiB
+- add versioned character indexes and full per-invocation index rebuilding
+- add the optional local HTTP API with immutable contexts, single-worker FIFO
+  jobs, SSE events, catalog and CharacterIndex queries, bounded file access,
+  and protected storage cleanup
+- add deterministic AssetRipper dependency scanning, native numeric path
+  conflict suffixes, and transactional bundle directory publication
+
+### Performance
+- index each raw resource directory once before checksum verification and use
+  native file-digest or memory-mapped checksum paths to avoid quadratic scans
+  and Python-level hash loops
+- discover JP encrypted IL2CPP containers by validated MFTL structure rather
+  than package filenames and stream their decryption and decompression
+- cache verified JP runtime inspection, minimal character-index schema, and
+  content-addressed SQLCipher exports by release and tool identity
+- request only TableCatalog for JP index builds and read the three required
+  ExcelDB tables through one SQLite session
+- avoid retaining downloaded JP packages and encrypted parent containers after
+  successful runtime publication
+- materialize bundle entry-cache misses through one parallel .NET operation,
+  order stable groups by dependency topology through one persistent AssetRipper
+  process, release each group before loading the next, and export collections in
+  parallel
+- replace linear sibling scans with indexed collection and streamed-resource
+  resolution, and load independent cached bundle payloads concurrently
+- restrict bundle output to PNG textures and sprites, audio, fonts, text,
+  mesh GLB, scene GLB, and prefab GLB while avoiding generic JSON processing
+- reserve deterministic human-readable paths before parallel export, reuse
+  stable assets across groups, and compute hashes while writing sequential
+  output so neither .NET nor Python re-reads the full cold output
+- embed referenced Transform, Humanoid bone, skin, and BlendShape animation in
+  the corresponding GLB while replacing global AnimationClip path recovery with
+  hierarchy-scoped conversion
+
+### Fixes
+- merge scenario aliases into existing character records so names such as
+  `プラナ` remain searchable
+- keep non-character game entities in the index while stably ordering entries
+  with names or file aliases first
+- reject damaged or ambiguous MFTL containers, incomplete TableCatalog data,
+  partial table decoding, and invalid staged indexes without replacing the last
+  valid output
+- validate HTTP status and response shapes while probing JP catalog roots
+- normalize AssetRipper C# overlays to LF so manifest hashes remain stable on
+  Windows
+- remove bundle memory preflight and multi-worker scheduling, preserve catalog
+  checksum identities, and report real loading/processor/asset stage progress
+  on the single extraction task
+- publish the bundle manifest once per run with exact output inventory,
+  filtered accumulation, three-phase directory rollback, and no per-asset
+  revision or batch checkpoint data
+- serialize shared AssetRipper source/tool publication across processes and
+  translate expected lock, capacity, scanner, build, and protocol failures into
+  user-level extraction errors
+- report bundle completion and ETA from fully completed groups while preserving
+  local loading, processor, and asset progress on the single CLI task
+- render every CLI workflow through one responsive `[Task] Stage` progress
+  layout with truthful primary units, elapsed time, ETA, activity, and health
+  fields
+- separate AssetRipper build and exported-content fingerprints; accept only
+  current schema 0 manifests and discard incompatible cached state instead of
+  migrating it
+
+### Internal Changes
+- require Python 3.11 or later and replace advisory pylint checks with Ruff
+  formatting, Ruff linting, mypy, and import-linter gates
+- upgrade AssetRipper to 2.0.0 and Cpp2IL to the latest development revision,
+  migrate the IL2CPP exporter to the context API, and update generated asset
+  interfaces used by animated GLB export
+- lazily load generated schema types and keep character-index schema generation
+  separate from the canonical full-schema workspace
+- preserve third-party attribution and license metadata in source and wheel
+  distributions
+
+### Security
+- upgrade AssetRipper's SharpCompress dependency from vulnerable 0.47.4 to
+  0.50.4, resolving GHSA-6c8g-7p36-r338
+- document that the local API intentionally uses plaintext HTTP, has no
+  authentication, allows every Origin, and must run only on trusted networks
 
 
 ## v2.3.0 - 2026-07-30

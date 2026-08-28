@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>ICSharpCode.SharpZipLib</AssemblyName>
+    <RootNamespace>ICSharpCode.SharpZipLib</RootNamespace>
+    <Version>1.4.2</Version>
+    <FileVersion>1.4.2.13</FileVersion>
+    <AssemblyVersion>1.4.2.13</AssemblyVersion>
+    <Deterministic>true</Deterministic>
+    <!-- SharpZipLib 1.4.2 predates .NET 10 analyzer annotations. -->
+    <NoWarn>$(NoWarn);SYSLIB0051;SYSLIB0060;CA2022</NoWarn>
+  </PropertyGroup>
+
+  <Target Name="ValidateSharpZipLibSource" BeforeTargets="PrepareForBuild">
+    <Error
+      Condition="'$(SharpZipLibSource)' == '' Or !Exists('$(SharpZipLibSource)/src/ICSharpCode.SharpZipLib/Zip/ZipFile.cs')"
+      Text="SharpZipLibSource must point to a SharpZipLib source tree." />
+  </Target>
+
+  <ItemGroup>
+    <Compile
+      Include="$(SharpZipLibSource)/src/ICSharpCode.SharpZipLib/**/*.cs"
+      Exclude="$(SharpZipLibSource)/src/ICSharpCode.SharpZipLib/bin/**;$(SharpZipLibSource)/src/ICSharpCode.SharpZipLib/obj/**" />
+  </ItemGroup>
+</Project>

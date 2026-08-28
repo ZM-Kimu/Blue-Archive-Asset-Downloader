@@ -3,13 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ba_downloader.domain.models.asset import AssetCollection
-from ba_downloader.domain.models.runtime import RuntimeContext
+from ba_downloader.domain.models.execution import ExecutionContext
 
 
 @dataclass(frozen=True, slots=True)
 class RegionCatalogResult:
     resources: AssetCollection
-    context: RuntimeContext
+    context: ExecutionContext
 
     @property
     def assets(self) -> AssetCollection:
