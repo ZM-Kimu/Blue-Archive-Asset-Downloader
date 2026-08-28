@@ -146,7 +146,7 @@ class CancellableProcessRunner:
             return
         if os.name == "nt":
             try:
-                process.send_signal(signal.CTRL_BREAK_EVENT)
+                process.send_signal(int(vars(signal)["CTRL_BREAK_EVENT"]))
                 process.wait(timeout=self._terminate_grace_seconds)
                 return
             except (OSError, subprocess.TimeoutExpired):

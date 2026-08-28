@@ -52,9 +52,12 @@ class InterprocessFileLock(AbstractContextManager["InterprocessFileLock"]):
             stream.flush()
         stream.seek(0)
         if os.name == "nt":
-            import msvcrt
-
-            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            msvcrt_module = import_module("msvcrt")
+            locking = cast(
+                Callable[[int, int, int], None],
+                msvcrt_module.locking,
+            )
+            locking(stream.fileno(), int(msvcrt_module.LK_NBLCK), 1)
             return
         fcntl_module = import_module("fcntl")
         flock = cast(Callable[[int, int], None], fcntl_module.flock)
@@ -66,9 +69,12 @@ class InterprocessFileLock(AbstractContextManager["InterprocessFileLock"]):
     def _release(stream: BinaryIO) -> None:
         stream.seek(0)
         if os.name == "nt":
-            import msvcrt
-
-            msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            msvcrt_module = import_module("msvcrt")
+            locking = cast(
+                Callable[[int, int, int], None],
+                msvcrt_module.locking,
+            )
+            locking(stream.fileno(), int(msvcrt_module.LK_UNLCK), 1)
             return
         fcntl_module = import_module("fcntl")
         flock = cast(Callable[[int, int], None], fcntl_module.flock)

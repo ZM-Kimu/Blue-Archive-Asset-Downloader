@@ -32,7 +32,8 @@ class SystemMemoryProbe:
     def _windows_total_physical_memory() -> int | None:
         status = _MemoryStatusEx()
         status.length = ctypes.sizeof(_MemoryStatusEx)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        win_dll = vars(ctypes)["WinDLL"]
+        kernel32 = win_dll("kernel32", use_last_error=True)
         query = kernel32.GlobalMemoryStatusEx
         query.argtypes = [ctypes.POINTER(_MemoryStatusEx)]
         query.restype = wintypes.BOOL
