@@ -74,6 +74,10 @@ default-groups = ["dev"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "dotnet: builds the production .NET extraction tools",
+    "windows: exercises Windows-specific process and signal behavior",
+]
 
 [tool.ruff]
 line-length = 88

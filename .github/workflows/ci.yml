@@ -50,12 +50,7 @@ jobs:
         run: uv run lint-imports
 
       - name: Build .NET extraction tools
-        env:
-          BAAD_RUN_DOTNET_BUILD: "1"
-        run: >-
-          uv run pytest -q
-          tests/test_assetripper_dotnet.py
-          tests/test_media_extractor_dotnet.py
+        run: uv run pytest -q -m dotnet
 
   tests:
     runs-on: ubuntu-latest
@@ -85,7 +80,7 @@ jobs:
         run: uv sync --group dev --extra api
 
       - name: Run full test suite
-        run: uv run pytest -q
+        run: uv run pytest -q -m "not dotnet and not windows"
 
   windows-cancellation:
     runs-on: windows-latest
@@ -108,8 +103,4 @@ jobs:
         run: uv sync --group dev
 
       - name: Run Windows cancellation tests
-        run: >-
-          uv run pytest -q
-          tests/test_process_supervisor.py
-          tests/test_process_table_runner.py
-          tests/test_cli_error_handling.py
+        run: uv run pytest -q -m windows

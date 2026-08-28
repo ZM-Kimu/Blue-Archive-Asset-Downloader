@@ -43,8 +43,11 @@ class SchemaWorkflow(SchemaWorkflowPort):
     DUMP_PATH = "Dumps"
     CHARACTER_INDEX_TARGET_TYPES = (
         "CharacterExcel",
+        "CostumeExcel",
         "LocalizeCharProfileExcel",
+        "LocalizeGachaShopExcel",
         "ScenarioCharacterNameExcel",
+        "ShopRecruitExcel",
     )
 
     def __init__(

@@ -120,7 +120,7 @@ CLI 仅支持以上长参数。运行具体命令并附加 `--help` 可查看当
 
 `--filter` 使用 `<字段><操作符><候选值>`：`~` 表示不区分大小写的包含匹配，`=` 表示不区分大小写的精确匹配。重复多个 `--filter` 使用 AND；同一 filter 内以逗号分隔的候选值使用 OR。`character-id`、`age` 与 `height` 只支持 `=` 和非负整数。
 
-在使用筛选条件的情况下，bundle间。的依赖关系不会被处理。因此只会解开所选角色的关键资产。
+在使用过滤的情况下，Bundle 之间的依赖关系不会被处理。因此只会解开所选角色的关键资产。
 
 可用字段包括：
 - `path` **资源路径**
@@ -142,7 +142,7 @@ CLI 仅支持以上长参数。运行具体命令并附加 `--help` 可查看当
 - 示例：
   > japan
   >```sh
-  >ba-downloader assets sync --region jp --filter "name~プラナ,生徒会長"
+  >ba-downloader assets sync --region jp --filter "name~arona,プラナ,生徒会長"
   >```
 
   > japan with conditions（两个条件必须同时满足）
@@ -157,7 +157,7 @@ CLI 仅支持以上长参数。运行具体命令并附加 `--help` 可查看当
 
   > china
   >```sh
-  >ba-downloader assets sync --region cn --filter "name~伊吹,心奈,黑服"
+  >ba-downloader assets sync --region cn --filter "name~伊吹,心奈,切里诺"
   >```
 
 - 资源路径检索：
