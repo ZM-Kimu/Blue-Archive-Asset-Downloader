@@ -18,8 +18,13 @@ from ba_downloader.api.problems import (
 )
 from ba_downloader.api.services import ApiServices
 from ba_downloader.domain.exceptions import ConfigError
-from ba_downloader.domain.models.asset import AssetRecord
+from ba_downloader.domain.models.asset import AssetCollection, AssetRecord
 from ba_downloader.domain.models.asset_filter import AssetFilter
+from ba_downloader.domain.models.bundle import (
+    BundleHandler,
+    bundle_member_cache_resource_path,
+)
+from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.services.asset_filter import (
     RESOURCE_FIELDS,
     AssetFilterService,
@@ -93,9 +98,9 @@ def create_router(services: ApiServices) -> APIRouter:
     def preview_operation(
         context_id: str, body: OperationPreviewRequest
     ) -> dict[str, object]:
-        require_context(services, context_id)
         resources = require_catalog(services, context_id)
-        filtered = ResourceQueryService.filter_type(
+        context_item = require_context(services, context_id)
+        direct = ResourceQueryService.filter_type(
             resources, tuple(body.resources) or ("table", "media", "bundle")
         )
         try:
@@ -106,8 +111,8 @@ def create_router(services: ApiServices) -> APIRouter:
                 for predicate in asset_filter.predicates
             ):
                 entries = services.load_character_index(context_id).entries
-            filtered = AssetFilterService.apply(
-                filtered, asset_filter, character_entries=entries
+            direct = AssetFilterService.apply(
+                direct, asset_filter, character_entries=entries
             )
         except ConfigError as exc:
             raise ApiProblem(
@@ -117,13 +122,58 @@ def create_router(services: ApiServices) -> APIRouter:
             raise ApiProblem(
                 409, "CHARACTER_INDEX_REQUIRED", "Character index is required", str(exc)
             ) from exc
+        handler = BundleHandler(
+            getattr(body, "bundle_handler", BundleHandler.assetripper.value)
+        )
+        missing_direct = AssetCollection()
+        if body.operation == "assets.extract":
+            missing_direct = AssetCollection(
+                resource
+                for resource in direct
+                if not _direct_resource_ready(context_item.context, resource)
+            )
+
+        def measure(items: AssetCollection) -> dict[str, int]:
+            return {
+                "items": len(items),
+                "bytes": sum(max(asset.size, 0) for asset in items),
+            }
+
         return {
-            "items": len(filtered),
-            "bytes": sum(max(asset.size, 0) for asset in filtered),
-            "advanced_search_deferred": bool(body.filters),
+            "operation": body.operation,
+            "bundle_handler": handler.value,
+            "estimate": {
+                "total": measure(direct),
+                "direct": measure(direct),
+                "missing_direct": measure(missing_direct),
+                "target_members": sum(
+                    len(resource.selected_member_paths or ()) for resource in direct
+                ),
+                "ready": not missing_direct,
+            },
         }
 
     return router
+
+
+def _direct_resource_ready(
+    context: ExecutionContext,
+    resource: AssetRecord,
+) -> bool:
+    workspace = context.workspace
+    archive = workspace.raw_resource_path(resource.asset_type.value, resource.path)
+    selection = resource.selected_member_paths
+    if selection is None:
+        return archive.is_file()
+    if archive.is_file():
+        return True
+    return all(
+        workspace.raw_resource_path(
+            resource.asset_type.value,
+            bundle_member_cache_resource_path(resource.path, member),
+        ).is_file()
+        for member in selection
+    )
 
 
 def asset_view(asset_id: int, asset: AssetRecord) -> dict[str, object]:

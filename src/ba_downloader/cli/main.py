@@ -14,9 +14,14 @@ from ba_downloader.application.contracts.commands import (
     BuildCharacterIndexCommand,
 )
 from ba_downloader.bootstrap.container import ExecutionScope
-from ba_downloader.domain.exceptions import BAError, ConfigError
+from ba_downloader.domain.exceptions import (
+    BAError,
+    ConfigError,
+    OperationCancelledError,
+)
 from ba_downloader.domain.models.asset_filter import AssetFilter
 from ba_downloader.domain.models.asset_type_selection import ResourceTypeSelection
+from ba_downloader.domain.models.bundle import BundleHandler
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.region import Platform, Region
 from ba_downloader.domain.models.workspace import WorkspaceLayout
@@ -88,6 +93,16 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         operation = asset_operations.add_parser(name, help=help_text)
         _add_asset_options(operation)
+        if name in {"sync", "extract"}:
+            operation.add_argument(
+                "--bundle-handler",
+                choices=("assetripper", "unitypy"),
+                default="assetripper",
+                help=(
+                    "Bundle extraction backend: assetripper for complete output or "
+                    "unitypy for reduced low-memory output (default: assetripper)."
+                ),
+            )
 
     index = groups.add_parser("index", help="Index operations")
     index_operations = index.add_subparsers(dest="operation", required=True)
@@ -130,6 +145,7 @@ def command_from_namespace(args: argparse.Namespace) -> ApplicationCommand:
         concurrency=args.concurrency,
         resources=ResourceTypeSelection.from_values(resource_values),
         asset_filter=AssetFilter.parse(args.filter),
+        bundle_handler=BundleHandler(getattr(args, "bundle_handler", "assetripper")),
     )
     if args.operation == "sync":
         return AssetsSyncCommand(options)
@@ -184,6 +200,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except KeyboardInterrupt:
         logger.warn("Operation cancelled by user.")
+        return 130
+    except OperationCancelledError as exc:
+        logger.warn(f"[{exc.code.value}] {str(exc) or 'Operation cancelled by user.'}")
         return 130
     except BAError as exc:
         logger.error(f"[{exc.code.value}] {str(exc) or exc.__class__.__name__}")

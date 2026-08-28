@@ -1,5 +1,2 @@
 # Auto detect text files and perform LF normalization
 * text=auto
-
-# AssetRipper overlays are hashed byte-for-byte and must be stable on Windows.
-src/ba_downloader/infrastructure/extraction/assetripper/overlay/**/*.cs text eol=lf

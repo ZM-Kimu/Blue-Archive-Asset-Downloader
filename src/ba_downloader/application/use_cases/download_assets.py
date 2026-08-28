@@ -39,7 +39,8 @@ class DownloadAssetsUseCase:
         self.cancellation.raise_if_cancelled()
         catalog = self.provider.load_catalog(context)
         self.cancellation.raise_if_cancelled()
-        resources = catalog.resources
+        catalog_resources = catalog.resources
+        resources = catalog_resources
         self.workflow_profile.catalog_metadata.on_catalog_loaded(
             catalog.context,
             resources,
@@ -66,9 +67,11 @@ class DownloadAssetsUseCase:
                 options.asset_filter,
                 character_entries=entries,
             )
-        filtered = ResourceQueryService.filter_type(resources, options.resources)
+        direct = ResourceQueryService.filter_type(resources, options.resources)
         self.downloader.verify_and_download(
-            filtered, catalog.context, concurrency=options.concurrency
+            direct,
+            catalog.context,
+            concurrency=options.concurrency,
         )
         self.cancellation.raise_if_cancelled()
         return catalog.context

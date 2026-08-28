@@ -9,6 +9,7 @@ import pytest
 from Crypto.Cipher import AES
 from Crypto.PublicKey import RSA
 
+import ba_downloader.infrastructure.regions.jp.runtime_assets as runtime_assets
 from ba_downloader.bootstrap.region_gateways import (
     DEFAULT_REGION_GATEWAY_REGISTRY,
 )
@@ -60,6 +61,19 @@ def _msgpack_bin(value: bytes) -> bytes:
     return b"\xc4" + bytes([len(value)]) + value
 
 
+def _msgpack_str8(value: str) -> bytes:
+    raw = value.encode("utf-8")
+    return b"\xd9" + bytes([len(raw)]) + raw
+
+
+def _msgpack_bin16(value: bytes) -> bytes:
+    return b"\xc5" + len(value).to_bytes(2, "big") + value
+
+
+def _msgpack_int32(value: int) -> bytes:
+    return b"\xd2" + value.to_bytes(4, "big", signed=True)
+
+
 def _build_tara_payload(unpacked: bytes, rsa_key: RSA.RsaKey) -> bytes:
     filters = [{"id": lzma.FILTER_LZMA1, "dict_size": 4096, "lc": 3, "lp": 0, "pb": 2}]
     compressor = lzma.LZMACompressor(format=lzma.FORMAT_RAW, filters=filters)
@@ -96,7 +110,7 @@ def _build_tara_payload(unpacked: bytes, rsa_key: RSA.RsaKey) -> bytes:
     return bytes(header) + side + encrypted_compressed
 
 
-def _build_mftl_directory(
+def _build_mftl_entry(
     *,
     payload_offset: int,
     payload_size: int,
@@ -106,7 +120,6 @@ def _build_mftl_directory(
 ) -> bytes:
     return b"".join(
         (
-            b"\x91",
             b"\x97",
             _msgpack_str("libil2cpp.so"),
             _msgpack_uint(payload_offset),
@@ -116,6 +129,23 @@ def _build_mftl_directory(
             _msgpack_uint(recorded_size),
             _msgpack_str("fixture"),
         )
+    )
+
+
+def _build_mftl_directory(
+    *,
+    payload_offset: int,
+    payload_size: int,
+    iv: bytes,
+    key: bytes,
+    recorded_size: int,
+) -> bytes:
+    return b"\x91" + _build_mftl_entry(
+        payload_offset=payload_offset,
+        payload_size=payload_size,
+        iv=iv,
+        key=key,
+        recorded_size=recorded_size,
     )
 
 
@@ -164,20 +194,28 @@ def _write_mftl_tara_fixture(path: Path) -> bytes:
     return unpacked
 
 
-def _write_mftl_marker(path: Path) -> None:
+def _write_mftl_marker(
+    path: Path,
+    *,
+    directory: bytes | None = None,
+    footer_reserved: bytes = b"\x00" * 4,
+    include_soname: bool = True,
+) -> None:
     payload_offset = 0x40
     payload = b"\x00" * 16
-    directory = _build_mftl_directory(
-        payload_offset=payload_offset,
-        payload_size=len(payload),
-        iv=b"\x11" * 16,
-        key=b"\x22" * 32,
-        recorded_size=len(payload),
-    )
+    if directory is None:
+        directory = _build_mftl_directory(
+            payload_offset=payload_offset,
+            payload_size=len(payload),
+            iv=b"\x11" * 16,
+            key=b"\x22" * 32,
+            recorded_size=len(payload),
+        )
     prefix = bytearray(b"\x00" * payload_offset)
     prefix[:6] = b"\x7fELF\x02\x01"
     prefix[18:20] = (0xB7).to_bytes(2, "little")
-    prefix[0x20 : 0x20 + len(b"libappsign4a.so")] = b"libappsign4a.so"
+    if include_soname:
+        prefix[0x20 : 0x20 + len(b"libappsign4a.so")] = b"libappsign4a.so"
     directory_offset = payload_offset + len(payload)
     footer = (
         struct.pack(
@@ -189,7 +227,7 @@ def _write_mftl_marker(path: Path) -> None:
             directory_offset,
             len(directory),
         )
-        + b"\x00" * 4
+        + footer_reserved
     )
     path.write_bytes(bytes(prefix) + payload + directory + footer)
 
@@ -198,6 +236,43 @@ def test_jp_encrypted_runtime_extractor_restores_libil2cpp(tmp_path: Path) -> No
     source_path = tmp_path / "librontatre.so"
     expected = _write_mftl_tara_fixture(source_path)
     output_path = tmp_path / "libil2cpp.so"
+
+    JpEncryptedRuntimeExtractor().extract(source_path, output_path)
+
+    assert output_path.read_bytes() == expected
+
+
+def test_jp_encrypted_runtime_extractor_uses_declared_raw_lzma_size(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "no-eos.so"
+    expected = _write_mftl_tara_fixture(source_path)
+    output_path = tmp_path / "libil2cpp.so"
+
+    class BufferedBoundaryDecompressor:
+        def __init__(self, **_: object) -> None:
+            self._remaining = expected + b"\x00\x00"
+            self.eof = False
+            self.needs_input = True
+
+        def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+            if data:
+                self.needs_input = False
+            length = len(self._remaining)
+            if max_length >= 0:
+                length = min(length, max_length)
+            result = self._remaining[:length]
+            self._remaining = self._remaining[length:]
+            if not self._remaining:
+                self.needs_input = True
+            return result
+
+    monkeypatch.setattr(
+        runtime_assets.lzma,
+        "LZMADecompressor",
+        BufferedBoundaryDecompressor,
+    )
 
     JpEncryptedRuntimeExtractor().extract(source_path, output_path)
 
@@ -239,14 +314,82 @@ def test_jp_runtime_payload_locator_rejects_multiple_mftl_candidates(
         locate_jp_runtime_payload(tmp_path)
 
 
-def test_jp_runtime_payload_locator_requires_internal_soname_marker(
+def test_jp_runtime_payload_locator_does_not_require_internal_soname_marker(
     tmp_path: Path,
 ) -> None:
     candidate = tmp_path / "renamed.so"
-    _write_mftl_marker(candidate)
-    candidate.write_bytes(
-        candidate.read_bytes().replace(b"libappsign4a.so", b"noappsign4a.so?")
+    _write_mftl_marker(candidate, include_soname=False)
+
+    payload = locate_jp_runtime_payload(tmp_path)
+
+    assert payload is not None
+    assert payload.path == candidate
+
+
+def test_jp_runtime_payload_locator_ignores_footer_reserved_field(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "reserved-flags.so"
+    _write_mftl_marker(candidate, footer_reserved=b"\x01\x02\x03\x04")
+
+    payload = locate_jp_runtime_payload(tmp_path)
+
+    assert payload is not None
+    assert payload.path == candidate
+
+
+def test_jp_runtime_payload_locator_accepts_extended_msgpack_directory(
+    tmp_path: Path,
+) -> None:
+    payload_offset = 0x40
+    payload_size = 16
+    unrelated_entry = b"".join(
+        (
+            b"\x92",
+            _msgpack_str8("future-resource.bin"),
+            b"\x81",
+            _msgpack_str8("enabled"),
+            b"\xc3",
+        )
     )
+    target_entry = b"".join(
+        (
+            b"\xdc\x00\x08",
+            _msgpack_str8("libil2cpp.so"),
+            _msgpack_int32(payload_offset),
+            _msgpack_int32(payload_size),
+            _msgpack_bin16(b"\x11" * 16),
+            _msgpack_bin16(b"\x22" * 32),
+            _msgpack_int32(999),
+            _msgpack_str8("fixture"),
+            b"\x81",
+            _msgpack_str8("future"),
+            b"\xc0",
+        )
+    )
+    directory = b"\xdc\x00\x02" + unrelated_entry + target_entry
+    candidate = tmp_path / "extended-directory.so"
+    _write_mftl_marker(candidate, directory=directory)
+
+    payload = locate_jp_runtime_payload(tmp_path)
+
+    assert payload is not None
+    assert payload.path == candidate
+    assert payload.container.entry.recorded_size == 999
+
+
+def test_jp_runtime_payload_locator_rejects_duplicate_target_entries(
+    tmp_path: Path,
+) -> None:
+    entry = _build_mftl_entry(
+        payload_offset=0x40,
+        payload_size=16,
+        iv=b"\x11" * 16,
+        key=b"\x22" * 32,
+        recorded_size=16,
+    )
+    candidate = tmp_path / "duplicate-target.so"
+    _write_mftl_marker(candidate, directory=b"\x92" + entry + entry)
 
     with pytest.raises(JpRuntimePayloadError):
         locate_jp_runtime_payload(tmp_path)

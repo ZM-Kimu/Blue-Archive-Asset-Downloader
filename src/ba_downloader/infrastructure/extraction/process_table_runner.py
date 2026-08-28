@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from multiprocessing import freeze_support
 from pathlib import Path
 from queue import Empty
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any
 
 from ba_downloader.domain.exceptions import OperationCancelledError
@@ -33,8 +33,7 @@ from ba_downloader.infrastructure.extraction.table.profiles import (
 )
 from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 from ba_downloader.infrastructure.runtime.interrupts import (
-    CancellationFeedbackState,
-    emit_cancellation_feedback,
+    SignalInterruptState,
     install_interrupt_handler,
 )
 from ba_downloader.infrastructure.runtime.process_supervisor import (
@@ -126,6 +125,8 @@ def table_extraction_process_worker(
 
 
 class ProcessTableExtractionRunner:
+    EVENT_DRAIN_LIMIT = 256
+
     def __init__(
         self,
         logger: LoggerPort,
@@ -169,12 +170,11 @@ class ProcessTableExtractionRunner:
         for _ in range(process_count):
             queue.put(None)
 
-        stop_event = process_context.Event()
+        interrupt_state = SignalInterruptState()
         supervisor = self._build_supervisor(
             queue,
             context,
             events,
-            stop_event,
             process_context,
             process_count,
         )
@@ -188,10 +188,9 @@ class ProcessTableExtractionRunner:
         try:
             with (
                 install_interrupt_handler(
-                    stop_event,
+                    interrupt_state,
                     self.logger,
                     force_exit=self.force_exit,
-                    on_interrupt=lambda: supervisor.stop(0.0),
                 ),
                 self.progress_factory.create(
                     ProgressState(
@@ -209,18 +208,21 @@ class ProcessTableExtractionRunner:
                         files=files,
                         supervisor=supervisor,
                         progress=progress,
-                        stop_event=stop_event,
+                        interrupt_state=interrupt_state,
                         run_state=run_state,
                     )
                 except BaseException:
                     fatal_error = True
                     raise
                 finally:
-                    if stop_event.is_set():
-                        supervisor.stop(self.interrupt_grace_seconds)
-                    terminal_results = supervisor.close(self.interrupt_grace_seconds)
-                    self._drain_terminal_events(events, files, run_state)
-                    if not stop_event.is_set():
+                    cancelled = (
+                        interrupt_state.is_set() or self.cancellation.is_cancelled()
+                    )
+                    terminal_results = supervisor.close(
+                        0.0 if cancelled else self.interrupt_grace_seconds
+                    )
+                    if not cancelled:
+                        self._drain_terminal_events(events, files, run_state)
                         self._record_abandoned_files(files, run_state)
                         for result in terminal_results:
                             if result.status == "failed":
@@ -233,16 +235,17 @@ class ProcessTableExtractionRunner:
                         run_state,
                         stage=(
                             "cancelled"
-                            if stop_event.is_set()
+                            if cancelled
                             else "failed"
                             if fatal_error or run_state.failures
                             else "complete"
                         ),
                     )
         finally:
-            self._finalize_queue(queue, cancelled=stop_event.is_set())
-            self._finalize_queue(events, cancelled=stop_event.is_set())
-            if stop_event.is_set():
+            cancelled = interrupt_state.is_set() or self.cancellation.is_cancelled()
+            self._finalize_queue(queue, cancelled=cancelled)
+            self._finalize_queue(events, cancelled=cancelled)
+            if cancelled:
                 raise OperationCancelledError("Table extraction cancelled by user.")
             if run_state.failures:
                 raise ExtractionFailureError("table extraction", run_state.failures)
@@ -252,7 +255,6 @@ class ProcessTableExtractionRunner:
         queue: multiprocessing.queues.Queue[Any],
         context: ExecutionContext,
         events: multiprocessing.queues.Queue[TableExtractionEvent],
-        stop_event: Any,
         process_context: Any,
         process_count: int,
     ) -> ProcessSupervisor:
@@ -266,7 +268,7 @@ class ProcessTableExtractionRunner:
                         context,
                         events,
                         self.table_profile_factory,
-                        stop_event,
+                        None,
                     ),
                 )
                 for index in range(process_count)
@@ -285,37 +287,29 @@ class ProcessTableExtractionRunner:
         files: list[str],
         supervisor: ProcessSupervisor,
         progress: ProgressReporterPort,
-        stop_event: Any,
+        interrupt_state: SignalInterruptState,
         run_state: TableExtractionRunState,
     ) -> None:
-        cancellation_state = CancellationFeedbackState()
-        cancellation_started: float | None = None
         self._update_progress(progress, run_state)
 
         while supervisor.is_alive:
-            self._drain_events(events, progress, run_state)
+            self._drain_events(
+                events,
+                None,
+                run_state,
+                stop_event=interrupt_state,
+                max_events=self.EVENT_DRAIN_LIMIT,
+            )
             self._update_progress(progress, run_state)
             if self.cancellation.is_cancelled():
-                stop_event.set()
-            if stop_event.is_set():
-                cancellation_started = cancellation_started or monotonic()
-                if monotonic() - cancellation_started >= self.interrupt_grace_seconds:
-                    supervisor.stop(0.0)
-                emit_cancellation_feedback(
-                    self.logger,
-                    cancellation_state,
-                    grace_seconds=self.interrupt_grace_seconds,
-                    cancellation_message="Cancelling table extraction...",
-                    still_stopping_message=(
-                        "Extraction is still stopping. Press Ctrl+C again to force exit."
-                    ),
-                    has_pending_work=supervisor.is_alive,
-                )
-                if not supervisor.is_alive:
-                    break
-            stop_event.wait(self.poll_interval_seconds)
+                interrupt_state.set()
+            if interrupt_state.is_set():
+                supervisor.stop(0.0)
+                break
+            sleep(self.poll_interval_seconds)
 
-        self._drain_events(events, progress, run_state)
+        if not interrupt_state.is_set():
+            self._drain_events(events, progress, run_state)
         self._update_progress(progress, run_state)
 
     def _drain_events(
@@ -323,13 +317,20 @@ class ProcessTableExtractionRunner:
         events: multiprocessing.queues.Queue[TableExtractionEvent],
         progress: ProgressReporterPort | None,
         run_state: TableExtractionRunState,
+        *,
+        stop_event: Any | None = None,
+        max_events: int | None = None,
     ) -> None:
-        while True:
+        handled = 0
+        while max_events is None or handled < max_events:
+            if stop_event is not None and stop_event.is_set():
+                return
             try:
                 event = events.get_nowait()
             except Empty:
                 return
             self._handle_event(event, progress, run_state)
+            handled += 1
 
     def _drain_terminal_events(
         self,
@@ -427,14 +428,9 @@ class ProcessTableExtractionRunner:
     ) -> None:
         cancel_join_thread = getattr(queue, "cancel_join_thread", None)
         close = getattr(queue, "close", None)
-        join_thread = getattr(queue, "join_thread", None)
 
-        if cancelled and callable(cancel_join_thread):
+        _ = cancelled
+        if callable(cancel_join_thread):
             cancel_join_thread()
         if callable(close):
             close()
-        if not cancelled and callable(join_thread):
-            try:
-                join_thread()
-            except (AssertionError, OSError, RuntimeError, ValueError):
-                return

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import signal
 from collections.abc import Callable
 from dataclasses import dataclass
 from time import monotonic
@@ -36,6 +37,10 @@ def _run_worker(
     command: WorkerCommand,
     terminal: Any,
 ) -> None:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    sigbreak = getattr(signal, "SIGBREAK", None)
+    if sigbreak is not None:
+        signal.signal(sigbreak, signal.SIG_IGN)
     try:
         command.target(*command.arguments)
     except BaseException as exc:
@@ -63,6 +68,7 @@ class ProcessSupervisor:
         process_context = context or multiprocessing.get_context("spawn")
         self._handles: list[_WorkerHandle] = []
         self._forced_workers: set[str] = set()
+        self._stop_completed = False
         for command in commands:
             parent, child = process_context.Pipe(duplex=False)
             process = process_context.Process(
@@ -94,23 +100,40 @@ class ProcessSupervisor:
         )
 
     def stop(self, grace_seconds: float) -> None:
-        deadline = monotonic() + max(grace_seconds, 0.0)
-        for handle in self._handles:
+        if self._stop_completed:
+            return
+
+        self._wait_for_workers(max(grace_seconds, 0.0))
+        live_handles = self._live_handles()
+        for handle in live_handles:
+            self._forced_workers.add(handle.command.name)
+            handle.process.terminate()
+        self._wait_for_workers(1.0, live_handles)
+
+        surviving_handles = self._live_handles()
+        for handle in surviving_handles:
+            self._forced_workers.add(handle.command.name)
+            handle.process.kill()
+        self._wait_for_workers(1.0, surviving_handles)
+        self._stop_completed = True
+
+    def _live_handles(self) -> list[_WorkerHandle]:
+        return [handle for handle in self._handles if handle.process.is_alive()]
+
+    def _wait_for_workers(
+        self,
+        timeout: float,
+        handles: list[_WorkerHandle] | None = None,
+    ) -> None:
+        deadline = monotonic() + max(timeout, 0.0)
+        selected_handles = self._handles if handles is None else handles
+        for handle in selected_handles:
             remaining = max(0.0, deadline - monotonic())
             handle.process.join(timeout=remaining)
-        for handle in self._handles:
-            if handle.process.is_alive():
-                self._forced_workers.add(handle.command.name)
-                handle.process.terminate()
-        for handle in self._handles:
-            handle.process.join(timeout=1.0)
-            if handle.process.is_alive():
-                self._forced_workers.add(handle.command.name)
-                handle.process.kill()
-                handle.process.join(timeout=1.0)
 
     def close(self, grace_seconds: float = 1.0) -> tuple[WorkerTerminalResult, ...]:
-        self.stop(grace_seconds)
+        if not self._stop_completed:
+            self.stop(grace_seconds)
         results = self.collect_terminal_results()
         normalized: list[WorkerTerminalResult] = []
         by_name = {result.name: result for result in results}

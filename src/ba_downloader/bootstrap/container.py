@@ -31,6 +31,7 @@ from ba_downloader.bootstrap.region_gateways import (
     RegionGatewayRegistry,
     build_application_region_profile,
 )
+from ba_downloader.domain.models.bundle import BundleHandler
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.catalog_metadata import TableMetadataManifestPort
 from ba_downloader.domain.ports.character_index import CharacterIndexBuilderPort
@@ -46,8 +47,11 @@ from ba_downloader.domain.ports.http import HttpClientPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
 from ba_downloader.domain.ports.region import RegionProvider
+from ba_downloader.domain.ports.system import SystemMemoryProbePort
 
 CharacterIndexBuilderFactory = Callable[[ExecutionContext], CharacterIndexBuilderPort]
+
+_LOW_MEMORY_BUNDLE_THRESHOLD_BYTES = 8 * 1024**3
 
 
 class ExecutionScope:
@@ -60,6 +64,7 @@ class ExecutionScope:
         cancellation: CancellationPort | None = None,
         artifacts: ArtifactSinkPort | None = None,
         gateway_registry: RegionGatewayRegistry = DEFAULT_REGION_GATEWAY_REGISTRY,
+        memory_probe: SystemMemoryProbePort | None = None,
     ) -> None:
         self.context = context
         self._provided_logger = logger
@@ -67,6 +72,7 @@ class ExecutionScope:
         self.cancellation = cancellation or NeverCancelled()
         self._artifacts = artifacts or ArtifactCollector()
         self._gateway_registry = gateway_registry
+        self._memory_probe = memory_probe
         self._resources = ExitStack()
         self._entered = False
         self._executed = False
@@ -111,6 +117,7 @@ class ExecutionScope:
             raise RuntimeError("Execution scope supports one operation only.")
         self._executed = True
         self.cancellation.raise_if_cancelled()
+        preflight_warnings = self._preflight_warnings(command)
         result = self._dispatch(command)
         self.cancellation.raise_if_cancelled()
         self._record_artifacts(command, result.context)
@@ -119,8 +126,37 @@ class ExecutionScope:
             artifacts=self._artifacts.snapshot(),
             catalog=result.catalog,
             statistics=result.statistics,
-            warnings=result.warnings,
+            warnings=preflight_warnings + result.warnings,
         )
+
+    def _preflight_warnings(
+        self,
+        command: ApplicationCommand,
+    ) -> tuple[str, ...]:
+        if not isinstance(command, AssetsSyncCommand | AssetsExtractCommand):
+            return ()
+        options = command.options
+        if (
+            not options.resources.contains("bundle")
+            or options.bundle_handler is not BundleHandler.assetripper
+        ):
+            return ()
+        if self._memory_probe is None:
+            from ba_downloader.infrastructure.system_memory import SystemMemoryProbe
+
+            self._memory_probe = SystemMemoryProbe()
+        total = self._memory_probe.total_physical_memory()
+        if total is None or total >= _LOW_MEMORY_BUNDLE_THRESHOLD_BYTES:
+            return ()
+        detected = total / 1024**3
+        warning = (
+            "[BUNDLE_LOW_MEMORY] AssetRipper bundle extraction may run out of "
+            f"memory: detected {detected:.1f} GiB of physical RAM; 8 GiB or more "
+            "is recommended. Continue with AssetRipper or use "
+            "--bundle-handler unitypy for reduced low-memory output."
+        )
+        self.logger.warn(warning)
+        return (warning,)
 
     def _dispatch(self, command: ApplicationCommand) -> OperationOutcome:
         context = self.context
@@ -312,6 +348,9 @@ class ExecutionScope:
             from ba_downloader.infrastructure.extraction.media.source import (
                 SharpZipLibSourceResolver,
             )
+            from ba_downloader.infrastructure.extraction.unitypy import (
+                UnityPyBundleWorkflow,
+            )
             from ba_downloader.infrastructure.runtime.process import (
                 CancellableProcessRunner,
             )
@@ -360,6 +399,11 @@ class ExecutionScope:
                             cancellation=self.cancellation,
                         ),
                         dependency_scanner,
+                        self.logger,
+                        progress_factory=self._progress_factory,
+                        cancellation=self.cancellation,
+                    ),
+                    unitypy_bundle_workflow=UnityPyBundleWorkflow(
                         self.logger,
                         progress_factory=self._progress_factory,
                         cancellation=self.cancellation,

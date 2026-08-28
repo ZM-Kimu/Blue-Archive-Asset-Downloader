@@ -22,6 +22,7 @@ from ba_downloader.domain.models.asset import (
 )
 from ba_downloader.domain.models.asset_filter import AssetFilter
 from ba_downloader.domain.models.asset_type_selection import ResourceTypeSelection
+from ba_downloader.domain.models.bundle import BundleHandler
 from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.extraction import ExtractionReport
@@ -39,6 +40,7 @@ class RecordingExtractionWorkflow:
         self.calls: list[str] = []
         self.resource_calls: list[list[str] | None] = []
         self.bundle_filter_modes: list[bool] = []
+        self.bundle_handlers: list[BundleHandler] = []
         self.warnings = warnings
 
     @staticmethod
@@ -66,11 +68,13 @@ class RecordingExtractionWorkflow:
         *,
         concurrency: int,
         filtered: bool = False,
+        handler: BundleHandler = BundleHandler.assetripper,
     ) -> ExtractionReport:
         _ = (context, concurrency)
         self.calls.append("extract_bundles")
         self.resource_calls.append(self._resource_paths(resources))
         self.bundle_filter_modes.append(filtered)
+        self.bundle_handlers.append(handler)
         return ExtractionReport(self.warnings)
 
     def extract_media(
@@ -173,11 +177,13 @@ def _build_context(tmp_path: Path) -> ExecutionContext:
 def _options(
     *resources: str,
     filters: tuple[str, ...] = (),
+    bundle_handler: BundleHandler = BundleHandler.assetripper,
 ) -> AssetOperationOptions:
     return AssetOperationOptions(
         concurrency=1,
         resources=ResourceTypeSelection.from_values(resources),
         asset_filter=AssetFilter.parse(filters),
+        bundle_handler=bundle_handler,
     )
 
 
@@ -569,6 +575,97 @@ def test_extract_service_advanced_search_filters_existing_resources(
     assert character_index_builder.verify_calls == 1
     assert extraction_workflow.calls == ["extract_bundles"]
     assert extraction_workflow.resource_calls == [["Bundle/Shiroko.bundle"]]
+
+
+def test_extract_service_character_filter_selects_archive_by_bundle_member(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path)
+    _create_existing_bundle(context, "FullPatch_044.zip")
+    _create_existing_bundle(context, "FullPatch_000.zip")
+    resources = AssetCollection()
+    resources.add(
+        "https://example.invalid/Bundle/FullPatch_044.zip",
+        "Bundle/FullPatch_044.zip",
+        10,
+        "deadbeef",
+        "crc",
+        AssetType.bundle,
+        member_paths=("character-ibuki_original.bundle",),
+    )
+    resources.add(
+        "https://example.invalid/Bundle/FullPatch_000.zip",
+        "Bundle/FullPatch_000.zip",
+        20,
+        "feedface",
+        "crc",
+        AssetType.bundle,
+        member_paths=("shared-dependency.bundle",),
+    )
+    provider = StaticProvider(RegionCatalogResult(resources, context))
+    character_index_builder = DummyCharacterIndexBuilder(
+        index=CharacterIndex(
+            "1.70.436321",
+            [CharacterIndexEntry(77, dev_name="Ibuki", names=["Ibuki"])],
+        )
+    )
+    extraction_workflow = RecordingExtractionWorkflow()
+    logger = RecordingLogger()
+    service = ExtractAssetsUseCase(
+        extraction_workflow,
+        provider=provider,
+        character_index_builder_factory=lambda _context: character_index_builder,
+        logger=logger,
+        workflow_profile=_build_profile(context, provider, logger),
+    )
+
+    service.run(context, _options("bundle", filters=("name=ibuki",)))
+
+    assert extraction_workflow.resource_calls == [["Bundle/FullPatch_044.zip"]]
+
+
+def test_extract_service_does_not_require_assetripper_support_archives(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path)
+    _create_existing_bundle(context, "FullPatch_044.zip")
+    resources = AssetCollection()
+    resources.add(
+        "url/direct",
+        "Bundle/FullPatch_044.zip",
+        10,
+        "1",
+        "crc",
+        AssetType.bundle,
+        member_paths=("character-ibuki.bundle",),
+    )
+    resources.add(
+        "url/support",
+        "Bundle/FullPatch_000.zip",
+        20,
+        "2",
+        "crc",
+        AssetType.bundle,
+    )
+    provider = StaticProvider(RegionCatalogResult(resources, context))
+    extraction_workflow = RecordingExtractionWorkflow()
+    logger = RecordingLogger()
+    service = ExtractAssetsUseCase(
+        extraction_workflow,
+        provider=provider,
+        character_index_builder_factory=lambda _context: DummyCharacterIndexBuilder(
+            index=CharacterIndex(
+                "1",
+                [CharacterIndexEntry(77, dev_name="Ibuki", names=["Ibuki"])],
+            )
+        ),
+        logger=logger,
+        workflow_profile=_build_profile(context, provider, logger),
+    )
+
+    service.run(context, _options("bundle", filters=("name=ibuki",)))
+
+    assert extraction_workflow.resource_calls == [["Bundle/FullPatch_044.zip"]]
 
 
 def test_extract_service_advanced_search_requires_current_index_file(

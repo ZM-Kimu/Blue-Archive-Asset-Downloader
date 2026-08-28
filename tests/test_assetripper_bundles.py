@@ -34,6 +34,7 @@ from ba_downloader.infrastructure.extraction.assetripper.events import (
     AssetRipperGroupCompletedEvent,
     AssetRipperGroupContext,
     AssetRipperGroupStartedEvent,
+    AssetRipperLogEvent,
     AssetRipperProcessEvent,
     AssetRipperProcessorProgressEvent,
     AssetRipperProgressEvent,
@@ -143,6 +144,7 @@ class RecordingExporter:
     def __init__(self, *, readable_name: str | None = None) -> None:
         self.readable_name = readable_name
         self.materialize_calls = 0
+        self.materialized_node_ids: list[tuple[str, ...]] = []
         self.export_calls = 0
         self.prepare_calls = 0
         self.export_concurrency: list[int] = []
@@ -168,6 +170,7 @@ class RecordingExporter:
     ) -> dict[str, int]:
         _ = (context, concurrency)
         self.materialize_calls += 1
+        self.materialized_node_ids.append(tuple(entry.node_id for entry in entries))
         result: dict[str, int] = {}
         for index, entry in enumerate(entries, start=1):
             destination = destinations[entry.node_id]
@@ -410,6 +413,107 @@ def test_full_export_uses_one_process_and_readable_assets_layout(
         and item.current.unit == "processors"
         for item in progress.reporter.updates
     )
+
+
+def test_filtered_export_resolves_dependencies_only_between_direct_members(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    direct_path = _bundle(tmp_path, "direct.zip", b"direct")
+    dependency_path = _bundle(tmp_path, "dependency.zip", b"dependency")
+    archives = (
+        BundleArchiveInput.from_path(
+            direct_path,
+            archive_id="Bundle/FullPatch_044.zip#direct.bundle",
+        ),
+        BundleArchiveInput.from_path(
+            dependency_path,
+            archive_id="Bundle/FullPatch_044.zip#dependency.bundle",
+        ),
+    )
+
+    class DependencyScanner:
+        def scan(
+            self,
+            _context: ExecutionContext,
+            inputs: list[BundleArchiveInput],
+            _event_callback: Callable[[AssetRipperProcessEvent], None] | None = None,
+        ) -> tuple[BundleArchiveScan, ...]:
+            payloads = {
+                "Bundle/FullPatch_044.zip#direct.bundle": (
+                    "direct.bundle",
+                    b"direct",
+                    SerializedFileScan("cab-direct", ("cab-dependency",)),
+                ),
+                "Bundle/FullPatch_044.zip#dependency.bundle": (
+                    "dependency.bundle",
+                    b"dependency",
+                    SerializedFileScan("cab-dependency"),
+                ),
+            }
+            return tuple(
+                BundleArchiveScan(
+                    item.archive_id,
+                    (
+                        BundleEntryScan(
+                            payloads[item.archive_id][0],
+                            hashlib.sha256(payloads[item.archive_id][1]).hexdigest(),
+                            len(payloads[item.archive_id][1]),
+                            serialized_files=(payloads[item.archive_id][2],),
+                        ),
+                    ),
+                )
+                for item in inputs
+            )
+
+    exporter = RecordingExporter()
+    workflow = AssetRipperBundleWorkflow(
+        exporter,
+        DependencyScanner(),  # type: ignore[arg-type]
+        RecordingLogger(),
+    )
+
+    workflow.run(context, archives, concurrency=2, filtered=True)
+
+    materialized = set(exporter.materialized_node_ids[0])
+    assert materialized == {
+        "Bundle/FullPatch_044.zip#direct.bundle::direct.bundle",
+        "Bundle/FullPatch_044.zip#dependency.bundle::dependency.bundle",
+    }
+    manifest = _manifest(context)
+    assert manifest["status"] == "complete"
+    assert len(manifest["assets"]) == 2
+
+
+def test_filtered_log_aggregator_summarizes_missing_dependencies() -> None:
+    logger = RecordingLogger()
+    aggregator = _AssetRipperLogAggregator(logger, filtered=True)
+    first = "Dependency 'archive:/CAB-first/CAB-first' wasn't found"
+    second = "Dependency 'archive:/CAB-second/CAB-second' wasn't found"
+
+    aggregator.handle(AssetRipperLogEvent("warning", "Import", first))
+    aggregator.handle(AssetRipperLogEvent("warning", "Import", second))
+    aggregator.handle(AssetRipperLogEvent("warning", "Import", first))
+    aggregator.handle(AssetRipperLogEvent("warning", "Import", "another warning"))
+    aggregator.flush()
+
+    assert logger.warnings == [
+        "AssetRipper Import: another warning",
+        "AssetRipper Import: 2 unique external dependencies were not found "
+        "(3 reports suppressed); this is expected in filtered bundle extraction "
+        "because only directly selected bundle members are loaded.",
+    ]
+
+
+def test_full_log_aggregator_keeps_missing_dependency_warning() -> None:
+    logger = RecordingLogger()
+    aggregator = _AssetRipperLogAggregator(logger)
+    message = "Dependency 'archive:/CAB-first/CAB-first' wasn't found"
+
+    aggregator.handle(AssetRipperLogEvent("warning", "Import", message))
+    aggregator.flush()
+
+    assert logger.warnings == [f"AssetRipper Import: {message}"]
 
 
 def test_group_progress_uses_completed_groups_for_eta_and_oldest_active_asset() -> None:
@@ -678,6 +782,34 @@ def test_success_replaces_incompatible_lowercase_layout(tmp_path: Path) -> None:
 
     assert not previous.exists()
     assert (context.workspace.extracted_bundles / "Assets/_MX/a.bin").is_file()
+
+
+def test_success_replaces_unitypy_handler_output(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    output_root = context.workspace.extracted_bundles
+    previous = output_root / "Assets/Texture2D/previous.png"
+    previous.parent.mkdir(parents=True)
+    previous.write_bytes(b"old")
+    write_json_atomic(
+        output_root / "manifest.json",
+        {
+            "schema_version": 0,
+            "layout": "unitypy-readable",
+            "assets": {},
+            "failures": [],
+        },
+    )
+
+    _workflow(RecordingExporter(), RecordingScanner()).run(
+        context,
+        [_bundle(tmp_path, "a.zip")],
+        concurrency=1,
+        filtered=True,
+    )
+
+    assert not previous.exists()
+    assert (output_root / "Assets/_MX/a.bin").is_file()
+    assert _manifest(context)["layout"] == "assetripper-readable"
 
 
 def test_first_filtered_run_replaces_nonzero_public_output(tmp_path: Path) -> None:

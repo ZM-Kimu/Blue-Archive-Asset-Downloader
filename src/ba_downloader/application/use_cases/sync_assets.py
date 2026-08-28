@@ -98,11 +98,11 @@ class SyncAssetsUseCase:
         context: ExecutionContext,
         options: AssetOperationOptions,
     ) -> AssetCollection:
-        filtered = ResourceQueryService.filter_type(resources, options.resources)
+        direct = ResourceQueryService.filter_type(resources, options.resources)
         self.downloader.verify_and_download(
-            filtered, context, concurrency=options.concurrency
+            direct, context, concurrency=options.concurrency
         )
-        return filtered
+        return direct
 
     def run(
         self, context: ExecutionContext, options: AssetOperationOptions
@@ -116,7 +116,8 @@ class SyncAssetsUseCase:
         catalog = self.provider.load_catalog(context)
         self.cancellation.raise_if_cancelled()
         active_context = catalog.context
-        resources = catalog.resources
+        catalog_resources = catalog.resources
+        resources = catalog_resources
         self.workflow_profile.catalog_metadata.on_catalog_loaded(
             active_context,
             resources,
@@ -134,7 +135,11 @@ class SyncAssetsUseCase:
                 self.workflow_profile.prepares_schema_for_sync,
             )
 
-        filtered = self._filter_and_download(resources, active_context, options)
+        filtered = self._filter_and_download(
+            resources,
+            active_context,
+            options,
+        )
         self.cancellation.raise_if_cancelled()
         if self.workflow_profile.sync_extraction_mode is SyncExtractionMode.direct:
             extraction = self.extract_service.run(active_context, options, filtered)

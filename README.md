@@ -45,12 +45,16 @@ uv sync
 
 ```shell
 uv sync
+#或者：
+pip install -e .
 ```
 
-或者：
+建议在低内存下使用可选 UnityPy 用以 Bundle 提取：
 
 ```shell
-pip install -e .
+uv sync --extra unitypy
+#或者：
+pip install -e ".[unitypy]"
 ```
 
 ## 使用说明
@@ -97,24 +101,26 @@ ba-downloader server start --host 127.0.0.1
 详细协议见 [HTTP API 文档](docs/http-api.md)。
 
 ## **基本参数**
-**`*`** :**必选的选项**
-| 参数              | 适用命令                  | 说明                                      | 默认值                          | 示例                            |
-| ----------------- | ------------------------- | ----------------------------------------- | ------------------------------- | ------------------------------- |
-| **`--region`**`*` | `assets *`、`index build` | **服务器区域**：`cn`、`gl`、`jp`          | 无                              | `--region jp`                   |
-| `--workspace`     | `assets *`、`index build` | 工作区根目录                              | 当前目录                        | `--workspace D:\BAAD`           |
-| `--platform`      | `assets *`、`index build` | `windows`、`android`、`ios`（仅 JP 生效） | `android`                       | `--platform windows`            |
-| `--proxy`         | `assets *`、`index build` | HTTP 代理地址                             | 无                              | `--proxy http://127.0.0.1:8080` |
-| `--max-retries`   | `assets *`、`index build` | 请求失败后的最大重试次数                  | `5`                             | `--max-retries 3`               |
-| `--sqlcipher-key` | `assets *`、`index build` | SQLCipher raw ![key](docs/kei_icon.png)   | （神必）                        | `--sqlcipher-key <64hex>`       |
-| `--concurrency`   | `assets *`、`index build` | 并发 worker 数                            | `30`                            | `--concurrency 50`              |
-| `--resources`     | `assets *`                | 逗号分隔的 `table`、`media`、`bundle`     | 全部                            | `--resources table,media`       |
-| `--filter`        | `assets *`                | 资源或角色过滤条件，可以重复              | 无                              | `--filter "name~伊吹"`          |
-| `--host`          | `server start`            | HTTP API 监听地址                         | `0.0.0.0`                       | `--host 127.0.0.1`              |
-| `--port`          | `server start`            | HTTP API 端口                             | `9230` 至 `9239` 中首个可用端口 | `--port 9230`                   |
+| 参数               | 适用命令                  | 说明                                      | 默认值                          | 示例                            |
+| ------------------ | ------------------------- | ----------------------------------------- | ------------------------------- | ------------------------------- |
+| **`--region`**     | `assets *`、`index build` | **服务器区域**：`cn`、`gl`、`jp`          | 无                              | `--region jp`                   |
+| `--workspace`      | `assets *`、`index build` | 工作区根目录                              | 当前目录                        | `--workspace D:\BAAD`           |
+| `--platform`       | `assets *`、`index build` | `windows`、`android`、`ios`（仅 JP 生效） | `android`                       | `--platform windows`            |
+| `--proxy`          | `assets *`、`index build` | HTTP 代理地址                             | 无                              | `--proxy http://127.0.0.1:8080` |
+| `--max-retries`    | `assets *`、`index build` | 请求失败后的最大重试次数                  | `5`                             | `--max-retries 3`               |
+| `--sqlcipher-key`  | `assets *`、`index build` | SQLCipher raw ![key](docs/kei_icon.png)   | （神必）                        | `--sqlcipher-key <64hex>`       |
+| `--concurrency`    | `assets *`、`index build` | 并发 worker 数                            | `30`                            | `--concurrency 50`              |
+| `--resources`      | `assets *`                | 逗号分隔的 `table`、`media`、`bundle`     | 全部                            | `--resources table,media`       |
+| `--bundle-handler` | `assets sync/extract`     | Bundle 解包器：`assetripper` 或 `unitypy` | `assetripper`                   | `--bundle-handler unitypy`      |
+| `--filter`         | `assets *`                | 资源或角色过滤条件，可以重复              | 无                              | `--filter "name~伊吹"`          |
+| `--host`           | `server start`            | HTTP API 监听地址                         | `0.0.0.0`                       | `--host 127.0.0.1`              |
+| `--port`           | `server start`            | HTTP API 端口                             | `9230` 至 `9239` 中首个可用端口 | `--port 9230`                   |
 
 CLI 仅支持以上长参数。运行具体命令并附加 `--help` 可查看当前安装版本的准确参数。
 
 `--filter` 使用 `<字段><操作符><候选值>`：`~` 表示不区分大小写的包含匹配，`=` 表示不区分大小写的精确匹配。重复多个 `--filter` 使用 AND；同一 filter 内以逗号分隔的候选值使用 OR。`character-id`、`age` 与 `height` 只支持 `=` 和非负整数。
+
+在使用筛选条件的情况下，bundle间。的依赖关系不会被处理。因此只会解开所选角色的关键资产。
 
 可用字段包括：
 - `path` **资源路径**
@@ -180,7 +186,7 @@ ba-downloader assets download --region jp --platform windows
 - 在某些地区可能需要使用代理服务器以下载特定服务器的游戏资源。
 - 由于各类接口频繁变动，不建议直接调用内部方法。
 - 在进行全量 `asset sync` 时，各区服建议预留 `50GB` 的可用存储空间。
-- 在进行 Bundle 提取时，主机内存应不小于 8GB、分页内存不小于12GB。
+- 在使用 AssetRipper 进行 Bundle 提取时，主机内存应不小于 8GB、分页内存不小于12GB。AssetRipper 模式提供了较为完整的资产结构与具有动画嵌入的模型。
 
 ## TODO
 - `v3.1.0`
@@ -202,7 +208,6 @@ Blue Archive Asset Downloader v3.0.0
 - [AssetRipper](https://github.com/AssetRipper/AssetRipper)
 - [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL)
 - [SharpZipLib](https://github.com/icsharpcode/SharpZipLib)
-
 
 本项目采用 [MIT 许可证](LICENSE)。
 

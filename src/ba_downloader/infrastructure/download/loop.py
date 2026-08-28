@@ -49,7 +49,13 @@ class DownloadProgress:
         self._active_workers = 0
 
     def advance(self, amount: int = 1) -> None:
-        self._completed = min(self._completed + amount, self._total)
+        self._completed = max(self._completed + amount, 0)
+        self._total = max(self._total, self._completed)
+        if self._session is not None and self._adaptive is not None:
+            self.emit(self._session, self._adaptive)
+
+    def adjust_total(self, amount: int) -> None:
+        self._total = max(self._completed, self._total + amount)
         if self._session is not None and self._adaptive is not None:
             self.emit(self._session, self._adaptive)
 

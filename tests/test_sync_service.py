@@ -18,6 +18,7 @@ from ba_downloader.domain.models.asset import (
 )
 from ba_downloader.domain.models.asset_filter import AssetFilter
 from ba_downloader.domain.models.asset_type_selection import ResourceTypeSelection
+from ba_downloader.domain.models.bundle import BundleHandler
 from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.extraction import ExtractionReport
@@ -136,11 +137,13 @@ def _options(
     *,
     resources: tuple[str, ...] = ("bundle",),
     filters: tuple[str, ...] = (),
+    bundle_handler: BundleHandler = BundleHandler.assetripper,
 ) -> AssetOperationOptions:
     return AssetOperationOptions(
         concurrency=1,
         resources=ResourceTypeSelection.from_values(resources),
         asset_filter=AssetFilter.parse(filters),
+        bundle_handler=bundle_handler,
     )
 
 
@@ -326,6 +329,108 @@ def test_jp_sync_advanced_search_uses_character_index_keywords(tmp_path: Path) -
     assert downloader.calls == [["Bundle/Shiroko.bundle"]]
     assert extract_service.calls == ["run_post_download"]
     assert extract_service.resource_calls == [["Bundle/Shiroko.bundle"]]
+
+
+def test_jp_sync_character_filter_selects_archive_by_bundle_member(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path, region="jp")
+    resources = AssetCollection()
+    resources.add(
+        "https://example.invalid/Bundle/FullPatch_044.zip",
+        "Bundle/FullPatch_044.zip",
+        10,
+        "deadbeef",
+        "crc",
+        AssetType.bundle,
+        member_paths=("character-ibuki_original.bundle",),
+    )
+    resources.add(
+        "https://example.invalid/Bundle/FullPatch_000.zip",
+        "Bundle/FullPatch_000.zip",
+        20,
+        "feedface",
+        "crc",
+        AssetType.bundle,
+        member_paths=("shared-dependency.bundle",),
+    )
+    provider = StaticProvider(RegionCatalogResult(resources, context))
+    character_index_builder = DummyCharacterIndexBuilder(
+        index=CharacterIndex(
+            "JP1.0.0",
+            [CharacterIndexEntry(77, dev_name="Ibuki", names=["Ibuki"])],
+        )
+    )
+    downloader = RecordingDownloader()
+    extract_service = RecordingExtractAssetsUseCase()
+    logger = RecordingLogger()
+    service = SyncAssetsUseCase(
+        provider,
+        downloader,
+        extract_service,  # type: ignore[arg-type]
+        RecordingSchemaPreparation(),
+        lambda _context: character_index_builder,
+        logger,
+        workflow_profile=_build_profile(context, provider, logger),
+    )
+
+    service.run(context, _options(filters=("name=ibuki",)))
+
+    assert downloader.calls == [["Bundle/FullPatch_044.zip"]]
+    assert extract_service.resource_calls == [["Bundle/FullPatch_044.zip"]]
+
+
+def test_jp_sync_unitypy_character_filter_downloads_only_direct_archive(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path, region="jp")
+    resources = AssetCollection()
+    resources.add(
+        "url/direct",
+        "Bundle/FullPatch_044.zip",
+        10,
+        "1",
+        "crc",
+        AssetType.bundle,
+        member_paths=("character-ibuki.bundle",),
+    )
+    resources.add(
+        "url/support",
+        "Bundle/FullPatch_000.zip",
+        20,
+        "2",
+        "crc",
+        AssetType.bundle,
+    )
+    provider = StaticProvider(RegionCatalogResult(resources, context))
+    downloader = RecordingDownloader()
+    extract_service = RecordingExtractAssetsUseCase()
+    logger = RecordingLogger()
+    service = SyncAssetsUseCase(
+        provider,
+        downloader,
+        extract_service,  # type: ignore[arg-type]
+        RecordingSchemaPreparation(),
+        lambda _context: DummyCharacterIndexBuilder(
+            index=CharacterIndex(
+                "JP1.0.0",
+                [CharacterIndexEntry(77, dev_name="Ibuki", names=["Ibuki"])],
+            )
+        ),
+        logger,
+        workflow_profile=_build_profile(context, provider, logger),
+    )
+
+    service.run(
+        context,
+        _options(
+            filters=("name=ibuki",),
+            bundle_handler=BundleHandler.unitypy,
+        ),
+    )
+
+    assert downloader.calls == [["Bundle/FullPatch_044.zip"]]
+    assert extract_service.resource_calls == [["Bundle/FullPatch_044.zip"]]
 
 
 def test_cn_sync_advanced_search_uses_character_index_keywords(

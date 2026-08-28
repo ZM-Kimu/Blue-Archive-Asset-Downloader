@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import re
+import signal
 from binascii import crc32
 from collections import Counter
 from contextlib import nullcontext
+from io import BytesIO
 from pathlib import Path
 from threading import Event
+from time import monotonic, sleep
 from typing import Any, ClassVar
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
@@ -15,10 +20,11 @@ from ba_downloader.domain.exceptions import (
     NetworkError,
     OperationCancelledError,
 )
-from ba_downloader.domain.models.asset import AssetCollection, AssetType
+from ba_downloader.domain.models.asset import AssetCollection, AssetRecord, AssetType
+from ba_downloader.domain.models.bundle import bundle_member_cache_resource_path
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import EventCancellation
-from ba_downloader.domain.ports.http import DownloadResult
+from ba_downloader.domain.ports.http import DownloadResult, HttpResponse
 from ba_downloader.domain.ports.progress import ProgressState
 from ba_downloader.infrastructure.download.resource_downloader import ResourceDownloader
 from ba_downloader.infrastructure.files.checksum import calculate_crc, calculate_md5
@@ -84,6 +90,103 @@ class RecordingHttpClient:
 
     def close(self) -> None:
         self.closed += 1
+
+
+class BundleArchiveHttpClient:
+    def __init__(
+        self,
+        archives: dict[str, bytes],
+        *,
+        ignore_ranges: set[str] | None = None,
+    ) -> None:
+        self.archives = archives
+        self.ignore_ranges = ignore_ranges or set()
+        self.head_calls: list[str] = []
+        self.range_calls: list[tuple[str, int, int]] = []
+        self.download_calls: list[str] = []
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json: object | None = None,
+        data: object | None = None,
+        params: dict[str, object] | None = None,
+        transport: str = "default",
+        timeout: float = 10.0,
+    ) -> HttpResponse:
+        _ = (json, data, params, transport, timeout)
+        payload = self.archives[url]
+        if method == "HEAD":
+            self.head_calls.append(url)
+            return HttpResponse(200, {"Content-Length": str(len(payload))}, b"", url)
+        match = re.fullmatch(r"bytes=(\d+)-(\d+)", dict(headers or {}).get("Range", ""))
+        assert match is not None
+        start, end = int(match.group(1)), int(match.group(2))
+        self.range_calls.append((url, start, end))
+        if url in self.ignore_ranges:
+            return HttpResponse(
+                200, {"Content-Length": str(len(payload))}, payload, url
+            )
+        return HttpResponse(
+            206,
+            {"Content-Range": f"bytes {start}-{end}/{len(payload)}"},
+            payload[start : end + 1],
+            url,
+        )
+
+    def download_to_file(
+        self,
+        url: str,
+        destination: str,
+        *,
+        headers: dict[str, str] | None = None,
+        transport: str = "default",
+        timeout: float = 300.0,
+        progress_callback: Any = None,
+        should_stop: Any = None,
+    ) -> DownloadResult:
+        _ = (headers, transport, timeout, should_stop)
+        payload = self.archives[url]
+        self.download_calls.append(url)
+        Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        Path(destination).write_bytes(payload)
+        if progress_callback is not None:
+            progress_callback(len(payload))
+        return DownloadResult(destination, len(payload), 200, {}, url)
+
+    def close(self) -> None:
+        return None
+
+
+def _bundle_zip(entries: dict[str, bytes]) -> bytes:
+    output = BytesIO()
+    with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
+        for path, payload in entries.items():
+            archive.writestr(path, payload)
+    return output.getvalue()
+
+
+def _bundle_archive_resource(
+    url: str,
+    path: str,
+    payload: bytes,
+    *members: str,
+) -> AssetRecord:
+    resources = AssetCollection()
+    resources.add(
+        url,
+        path,
+        len(payload),
+        str(crc32(payload) & 0xFFFFFFFF),
+        "crc",
+        AssetType.bundle,
+        member_paths=members,
+        selected_member_paths=members,
+    )
+    return resources[0]
 
 
 class RecordingProgressReporter:
@@ -206,6 +309,193 @@ def _write_asset_file(context: ExecutionContext, path: str, content: bytes) -> P
     return asset_path
 
 
+def test_jp_bundle_member_download_uses_remote_ranges(tmp_path: Path) -> None:
+    url = "https://example.invalid/FullPatch_044.zip"
+    first = "character-ibuki-prefabs.bundle"
+    second = "character-ibuki-textures.bundle"
+    archive_payload = _bundle_zip({first: b"prefab", second: b"texture"})
+    resource = _bundle_archive_resource(
+        url,
+        "Bundle/FullPatch_044.zip",
+        archive_payload,
+        first,
+        second,
+    )
+    client = BundleArchiveHttpClient({url: archive_payload})
+    context = _build_context(tmp_path)
+
+    ResourceDownloader(client, NullLogger()).verify_and_download(
+        AssetCollection((resource,)),
+        context,
+        concurrency=2,
+    )
+
+    first_path = context.workspace.raw_resource_path(
+        "bundle", bundle_member_cache_resource_path(resource.path, first)
+    )
+    second_path = context.workspace.raw_resource_path(
+        "bundle", bundle_member_cache_resource_path(resource.path, second)
+    )
+    assert first_path.read_bytes() == b"prefab"
+    assert second_path.read_bytes() == b"texture"
+    assert not context.workspace.raw_resource_path("bundle", resource.path).exists()
+    assert client.download_calls == []
+    assert len(client.range_calls) == 5
+
+
+def test_jp_bundle_member_download_falls_back_to_full_archive(
+    tmp_path: Path,
+) -> None:
+    url = "https://example.invalid/FullPatch_044.zip"
+    member = "character-ibuki.bundle"
+    archive_payload = _bundle_zip({member: b"bundle"})
+    resource = _bundle_archive_resource(
+        url,
+        "Bundle/FullPatch_044.zip",
+        archive_payload,
+        member,
+    )
+    client = BundleArchiveHttpClient(
+        {url: archive_payload},
+        ignore_ranges={url},
+    )
+    context = _build_context(tmp_path)
+
+    ResourceDownloader(client, NullLogger()).verify_and_download(
+        AssetCollection((resource,)),
+        context,
+        concurrency=2,
+    )
+
+    archive_path = context.workspace.raw_resource_path("bundle", resource.path)
+    member_path = context.workspace.raw_resource_path(
+        "bundle", bundle_member_cache_resource_path(resource.path, member)
+    )
+    assert archive_path.read_bytes() == archive_payload
+    assert member_path.read_bytes() == b"bundle"
+    assert client.download_calls == [url]
+
+
+def test_jp_bundle_member_download_deduplicates_exact_patch_entries(
+    tmp_path: Path,
+) -> None:
+    first_url = "https://example.invalid/FullPatch_109.zip"
+    second_url = "https://example.invalid/UpdatePatch_v7_004.zip"
+    member = "assets-ibuki-timeline.bundle"
+    member_payload = b"same timeline"
+    first_payload = _bundle_zip({member: member_payload})
+    second_payload = _bundle_zip({member: member_payload})
+    first = _bundle_archive_resource(
+        first_url,
+        "Bundle/FullPatch_109.zip",
+        first_payload,
+        member,
+    )
+    second = _bundle_archive_resource(
+        second_url,
+        "Bundle/UpdatePatch_v7_004.zip",
+        second_payload,
+        member,
+    )
+    client = BundleArchiveHttpClient(
+        {first_url: first_payload, second_url: second_payload}
+    )
+    context = _build_context(tmp_path)
+
+    ResourceDownloader(client, NullLogger()).verify_and_download(
+        AssetCollection((first, second)),
+        context,
+        concurrency=2,
+    )
+
+    first_cache = context.workspace.raw_resource_path(
+        "bundle", bundle_member_cache_resource_path(first.path, member)
+    )
+    second_cache = context.workspace.raw_resource_path(
+        "bundle", bundle_member_cache_resource_path(second.path, member)
+    )
+    assert first_cache.read_bytes() == member_payload
+    assert second_cache.read_bytes() == member_payload
+    assert len(client.range_calls) == 4
+    assert client.download_calls == []
+
+
+def test_jp_bundle_member_download_keeps_distinct_patch_entries(
+    tmp_path: Path,
+) -> None:
+    first_url = "https://example.invalid/FullPatch_109.zip"
+    second_url = "https://example.invalid/UpdatePatch_v7_004.zip"
+    member = "assets-ibuki-timeline.bundle"
+    first_payload = _bundle_zip({member: b"first timeline"})
+    second_payload = _bundle_zip({member: b"other timeline"})
+    first = _bundle_archive_resource(
+        first_url,
+        "Bundle/FullPatch_109.zip",
+        first_payload,
+        member,
+    )
+    second = _bundle_archive_resource(
+        second_url,
+        "Bundle/UpdatePatch_v7_004.zip",
+        second_payload,
+        member,
+    )
+    client = BundleArchiveHttpClient(
+        {first_url: first_payload, second_url: second_payload}
+    )
+    context = _build_context(tmp_path)
+
+    ResourceDownloader(client, NullLogger()).verify_and_download(
+        AssetCollection((first, second)),
+        context,
+        concurrency=2,
+    )
+
+    first_cache = context.workspace.raw_resource_path(
+        "bundle", bundle_member_cache_resource_path(first.path, member)
+    )
+    second_cache = context.workspace.raw_resource_path(
+        "bundle", bundle_member_cache_resource_path(second.path, member)
+    )
+    assert first_cache.read_bytes() == b"first timeline"
+    assert second_cache.read_bytes() == b"other timeline"
+    assert len(client.range_calls) == 6
+    assert client.download_calls == []
+
+
+def test_jp_bundle_member_download_reuses_local_complete_archive(
+    tmp_path: Path,
+) -> None:
+    url = "https://example.invalid/FullPatch_044.zip"
+    member = "character-ibuki.bundle"
+    archive_payload = _bundle_zip({member: b"bundle"})
+    resource = _bundle_archive_resource(
+        url,
+        "Bundle/FullPatch_044.zip",
+        archive_payload,
+        member,
+    )
+    client = BundleArchiveHttpClient({url: archive_payload})
+    context = _build_context(tmp_path)
+    archive_path = context.workspace.raw_resource_path("bundle", resource.path)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    archive_path.write_bytes(archive_payload)
+
+    ResourceDownloader(client, NullLogger()).verify_and_download(
+        AssetCollection((resource,)),
+        context,
+        concurrency=2,
+    )
+
+    member_path = context.workspace.raw_resource_path(
+        "bundle", bundle_member_cache_resource_path(resource.path, member)
+    )
+    assert member_path.read_bytes() == b"bundle"
+    assert client.head_calls == []
+    assert client.range_calls == []
+    assert client.download_calls == []
+
+
 def test_download_resources_tracks_aggregate_bytes(monkeypatch, tmp_path: Path) -> None:
     client = RecordingHttpClient()
     downloader = ResourceDownloader(client, NullLogger())
@@ -244,18 +534,21 @@ def test_download_resources_tracks_aggregate_bytes(monkeypatch, tmp_path: Path) 
     assert callable(client.download_calls[0]["should_stop"])
 
 
-def test_handle_interrupt_closes_client_and_force_exits_on_second_interrupt() -> None:
+def test_download_interrupt_is_dispatched_outside_the_signal_handler() -> None:
     client = RecordingHttpClient()
     exit_codes: list[int] = []
     downloader = ResourceDownloader(client, NullLogger(), force_exit=exit_codes.append)
     stop_event = Event()
 
-    downloader._handle_interrupt(stop_event, 1)
+    with downloader._install_interrupt_handler(stop_event):
+        signal.raise_signal(signal.SIGINT)
+        deadline = monotonic() + 1.0
+        while not stop_event.is_set() and monotonic() < deadline:
+            sleep(0.01)
+
     assert stop_event.is_set()
     assert client.closed == 1
-    downloader._handle_interrupt(stop_event, 2)
-    assert client.closed == 2
-    assert exit_codes == [130]
+    assert exit_codes == []
 
 
 @pytest.mark.parametrize(

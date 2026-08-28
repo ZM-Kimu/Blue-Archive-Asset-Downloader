@@ -10,10 +10,15 @@ from concurrent.futures import (
     wait,
 )
 from contextlib import contextmanager, suppress
+from dataclasses import replace
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 
-from ba_downloader.domain.exceptions import DownloadError, OperationCancelledError
+from ba_downloader.domain.exceptions import (
+    DownloadError,
+    NetworkError,
+    OperationCancelledError,
+)
 from ba_downloader.domain.models.asset import (
     AssetCollection,
     AssetRecord,
@@ -38,6 +43,14 @@ from ba_downloader.infrastructure.download.adaptive import (
     decrease_target_concurrency,
     record_download_success,
 )
+from ba_downloader.infrastructure.download.bundle_members import (
+    BUNDLE_MEMBER_SOURCE,
+    build_member_download_plan,
+    extract_local_bundle_member,
+    is_bundle_member_selection,
+    materialize_member_alias,
+    read_local_zip_entries,
+)
 from ba_downloader.infrastructure.download.loop import (
     DownloadLoopContext,
     DownloadProgress,
@@ -51,14 +64,33 @@ from ba_downloader.infrastructure.packages import (
     find_zip_entry,
     read_zip_entries,
 )
+from ba_downloader.infrastructure.packages.zip_range_reader import (
+    UnsupportedZipLayoutError,
+    ZipCentralDirectoryError,
+)
 from ba_downloader.infrastructure.progress import NullProgressReporterFactory
 from ba_downloader.infrastructure.runtime.interrupts import (
+    SignalInterruptState,
     build_future_wait_policy,
     cancel_pending_futures,
     install_interrupt_handler,
 )
 
 _AdaptiveDownloadState = AdaptiveDownloadState
+
+
+class _TrackedDownloadProgress:
+    def __init__(self, progress: DownloadProgress, lock: Lock) -> None:
+        self._progress = progress
+        self._lock = lock
+
+    def __call__(self, amount: int) -> None:
+        with self._lock:
+            self._progress.advance(amount)
+
+    def adjust_total(self, amount: int) -> None:
+        with self._lock:
+            self._progress.adjust_total(amount)
 
 
 class ResourceDownloader(ResourceDownloaderPort):
@@ -80,6 +112,8 @@ class ResourceDownloader(ResourceDownloaderPort):
         self.logger = logger
         self._zip_entry_cache: dict[tuple[str, str], ZipEntry] = {}
         self._zip_entries_by_url: dict[str, list[ZipEntry]] = {}
+        self._bundle_archive_locks: dict[str, Lock] = {}
+        self._bundle_archive_locks_guard = Lock()
         self._force_exit = force_exit or os._exit
         self._progress_factory = progress_factory or NullProgressReporterFactory()
         self._cancellation = cancellation or NeverCancelled()
@@ -96,6 +130,33 @@ class ResourceDownloader(ResourceDownloaderPort):
         )
 
     def verify_and_download(
+        self,
+        resources: AssetCollection,
+        context: ExecutionContext,
+        *,
+        concurrency: int,
+    ) -> None:
+        member_archives = AssetCollection(
+            resource
+            for resource in resources
+            if context.region.casefold() == "jp"
+            and is_bundle_member_selection(resource)
+        )
+        regular = AssetCollection(
+            resource for resource in resources if resource not in member_archives.assets
+        )
+        if regular:
+            self._verify_and_download_standard(
+                regular, context, concurrency=concurrency
+            )
+        if member_archives:
+            self._verify_and_download_bundle_members(
+                member_archives,
+                context,
+                concurrency=concurrency,
+            )
+
+    def _verify_and_download_standard(
         self,
         resources: AssetCollection,
         context: ExecutionContext,
@@ -352,38 +413,52 @@ class ResourceDownloader(ResourceDownloaderPort):
 
     @contextmanager
     def _install_interrupt_handler(self, stop_event: Event) -> Iterator[None]:
-        with install_interrupt_handler(
-            stop_event,
-            self.logger,
-            force_exit=self._force_exit,
-            on_interrupt=self.http_client.close,
-        ):
-            yield
+        interrupt_state = SignalInterruptState()
+        dispatcher_stop = Event()
 
-    def _handle_interrupt(self, stop_event: Event, interrupt_count: int) -> None:
-        stop_event.set()
-        self.http_client.close()
-        if interrupt_count >= 2:
-            self.logger.error("Force exiting immediately.")
-            self._force_exit(130)
+        def dispatch_interrupt() -> None:
+            while not dispatcher_stop.wait(self.POLL_INTERVAL_SECONDS):
+                if interrupt_state.is_set():
+                    stop_event.set()
+                    self.http_client.close()
+                    return
+
+        dispatcher = Thread(
+            target=dispatch_interrupt,
+            name="download-interrupt-dispatcher",
+            daemon=True,
+        )
+        dispatcher.start()
+        try:
+            with install_interrupt_handler(
+                interrupt_state,
+                self.logger,
+                force_exit=self._force_exit,
+            ):
+                yield
+        finally:
+            if interrupt_state.is_set() and not stop_event.is_set():
+                stop_event.set()
+                self.http_client.close()
+            dispatcher_stop.set()
+            dispatcher.join(timeout=self.POLL_INTERVAL_SECONDS * 2)
 
     @staticmethod
     def _resolve_download_progress(resources: list[AssetRecord]) -> tuple[int, bool]:
-        total_bytes = sum(max(resource.size, 0) for resource in resources)
+        total_bytes = sum(
+            max(int(resource.metadata.get("transfer_size", resource.size)), 0)
+            for resource in resources
+        )
         download_mode = total_bytes > 0
         progress_total = total_bytes if download_mode else len(resources)
         return progress_total, download_mode
 
-    @staticmethod
     def _build_progress_callback(
+        self,
         progress: DownloadProgress,
         progress_lock: Lock,
     ) -> Callable[[int], None]:
-        def advance_progress(amount: int) -> None:
-            with progress_lock:
-                progress.advance(amount)
-
-        return advance_progress
+        return _TrackedDownloadProgress(progress, progress_lock)
 
     def _download_resource_for_loop(
         self,
@@ -598,6 +673,17 @@ class ResourceDownloader(ResourceDownloaderPort):
             resource.path,
         )
         asset_path.parent.mkdir(parents=True, exist_ok=True)
+        if resource.metadata.get("source") == BUNDLE_MEMBER_SOURCE:
+            self._download_bundle_member(
+                resource,
+                context,
+                asset_path,
+                progress_callback,
+                should_stop,
+            )
+            self._validate_downloaded_resource(asset_path, resource)
+            self._cancellation.raise_if_cancelled()
+            return resource
         if self._is_apk_entry_resource(resource):
             zip_entry = self._resolve_apk_zip_entry(resource)
             extract_zip_entry(
@@ -625,6 +711,238 @@ class ResourceDownloader(ResourceDownloaderPort):
         self._validate_downloaded_resource(asset_path, resource)
         self._cancellation.raise_if_cancelled()
         return resource
+
+    def _verify_and_download_bundle_members(
+        self,
+        archives: AssetCollection,
+        context: ExecutionContext,
+        *,
+        concurrency: int,
+    ) -> None:
+        entries_by_archive: dict[str, Sequence[ZipEntry]] = {}
+        range_enabled: dict[str, bool] = {}
+        fallback: list[AssetRecord] = []
+        stop_event = Event()
+        archive_list = list(archives)
+        initial = ProgressState(
+            "Assets",
+            "scanning",
+            overall=ProgressMeasure(0, len(archive_list), "archives"),
+        )
+        with (
+            self._install_interrupt_handler(stop_event),
+            self._progress_factory.create(initial) as progress,
+        ):
+            for index, archive in enumerate(archive_list, start=1):
+                self._cancellation.raise_if_cancelled()
+                if stop_event.is_set():
+                    raise OperationCancelledError("Download cancelled by user.")
+                archive_path = context.workspace.raw_resource_path(
+                    archive.asset_type.value,
+                    archive.path,
+                )
+                try:
+                    if self._get_validation_error(archive_path, archive) is None:
+                        entries = read_local_zip_entries(archive_path)
+                        range_enabled[archive.path.casefold()] = False
+                    else:
+                        entries = tuple(
+                            self._read_remote_bundle_entries(
+                                archive,
+                                context,
+                                should_stop=stop_event.is_set,
+                            )
+                        )
+                        range_enabled[archive.path.casefold()] = True
+                    entries_by_archive[archive.path.casefold()] = entries
+                except (
+                    NetworkError,
+                    OSError,
+                    RuntimeError,
+                    UnsupportedZipLayoutError,
+                    ZipCentralDirectoryError,
+                ):
+                    fallback.append(archive)
+                progress.update(
+                    ProgressState(
+                        "Assets",
+                        "scanning",
+                        overall=ProgressMeasure(index, len(archive_list), "archives"),
+                        item=Path(archive.path).name,
+                    )
+                )
+
+        if fallback:
+            fallback_resources = AssetCollection(
+                replace(resource, selected_member_paths=None) for resource in fallback
+            )
+            self._verify_and_download_standard(
+                fallback_resources,
+                context,
+                concurrency=concurrency,
+            )
+            for archive in fallback:
+                archive_path = context.workspace.raw_resource_path(
+                    archive.asset_type.value,
+                    archive.path,
+                )
+                entries_by_archive[archive.path.casefold()] = read_local_zip_entries(
+                    archive_path
+                )
+                range_enabled[archive.path.casefold()] = False
+
+        try:
+            plan = build_member_download_plan(
+                archive_list,
+                entries_by_archive,
+                range_enabled_by_archive=range_enabled,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise DownloadError(
+                f"Unable to prepare direct bundle members: {exc}"
+            ) from exc
+
+        self._verify_and_download_standard(
+            plan.primary,
+            context,
+            concurrency=concurrency,
+        )
+        primary_by_path = {resource.path: resource for resource in plan.primary}
+        for primary_path, aliases in plan.aliases.items():
+            source_resource = primary_by_path[primary_path]
+            source = context.workspace.raw_resource_path(
+                source_resource.asset_type.value,
+                source_resource.path,
+            )
+            for alias in aliases:
+                destination = context.workspace.raw_resource_path(
+                    alias.asset_type.value,
+                    alias.path,
+                )
+                if self._get_validation_error(destination, alias) is None:
+                    continue
+                materialize_member_alias(source, destination)
+                self._validate_downloaded_resource(destination, alias)
+
+        invalid = [
+            member.path
+            for member in plan.all_members
+            if self._get_validation_error(
+                context.workspace.raw_resource_path(
+                    member.asset_type.value,
+                    member.path,
+                ),
+                member,
+            )
+            is not None
+        ]
+        if invalid:
+            examples = ", ".join(invalid[:3])
+            raise DownloadError(
+                f"Direct bundle member cache is incomplete: {examples}."
+            )
+
+    def _read_remote_bundle_entries(
+        self,
+        archive: AssetRecord,
+        context: ExecutionContext,
+        *,
+        should_stop: Callable[[], bool],
+    ) -> Sequence[ZipEntry]:
+        failures = 0
+        while True:
+            self._cancellation.raise_if_cancelled()
+            if should_stop():
+                raise OperationCancelledError("Download cancelled by user.")
+            try:
+                return read_zip_entries(
+                    archive.url,
+                    self.http_client,
+                    timeout=self.DOWNLOAD_TIMEOUT_SECONDS,
+                    file_size=archive.size if archive.size > 0 else None,
+                )
+            except (NetworkError, ZipCentralDirectoryError):
+                failures += 1
+                if failures > context.max_retries:
+                    raise
+
+    def _download_bundle_member(
+        self,
+        resource: AssetRecord,
+        context: ExecutionContext,
+        destination: Path,
+        progress_callback: Callable[[int], None] | None,
+        should_stop: Callable[[], bool] | None,
+    ) -> None:
+        entry = resource.metadata.get("zip_entry")
+        archive = resource.metadata.get("archive_resource")
+        if not isinstance(entry, ZipEntry) or not isinstance(archive, AssetRecord):
+            raise RuntimeError("Bundle member download metadata is invalid.")
+
+        transferred = 0
+
+        def track(amount: int) -> None:
+            nonlocal transferred
+            transferred += amount
+            if progress_callback is not None:
+                progress_callback(amount)
+
+        if resource.metadata.get("range_enabled") is True:
+            if should_stop is not None and should_stop():
+                raise OperationCancelledError("Download cancelled by user.")
+            try:
+                extract_zip_entry(
+                    resource.url,
+                    entry,
+                    destination,
+                    self.http_client,
+                    timeout=self.DOWNLOAD_TIMEOUT_SECONDS,
+                    progress_callback=track,
+                )
+                return
+            except UnsupportedZipLayoutError:
+                pass
+            except ZipCentralDirectoryError:
+                failures = int(resource.metadata.get("range_validation_failures", 0))
+                failures += 1
+                resource.metadata["range_validation_failures"] = failures
+                if failures <= context.max_retries:
+                    raise
+
+        transfer_size = int(resource.metadata.get("transfer_size", resource.size))
+        lock = self._bundle_archive_lock(archive.path)
+        with lock:
+            archive_path = context.workspace.raw_resource_path(
+                archive.asset_type.value,
+                archive.path,
+            )
+            needs_download = (
+                self._get_validation_error(archive_path, archive) is not None
+            )
+            adjust_total = getattr(progress_callback, "adjust_total", None)
+            if callable(adjust_total):
+                replacement = transferred - transfer_size
+                if needs_download:
+                    replacement += archive.size
+                adjust_total(replacement)
+            if needs_download:
+                result = self.http_client.download_to_file(
+                    archive.url,
+                    str(archive_path),
+                    timeout=self.DOWNLOAD_TIMEOUT_SECONDS,
+                    progress_callback=progress_callback,
+                    should_stop=should_stop,
+                )
+                if result.status_code >= 400:
+                    archive_path.unlink(missing_ok=True)
+                    raise RuntimeError(f"unexpected HTTP status {result.status_code}")
+                self._validate_downloaded_resource(archive_path, archive)
+            extract_local_bundle_member(archive_path, entry, destination)
+
+    def _bundle_archive_lock(self, archive_path: str) -> Lock:
+        key = archive_path.replace("\\", "/").casefold()
+        with self._bundle_archive_locks_guard:
+            return self._bundle_archive_locks.setdefault(key, Lock())
 
     def _canonicalize_resource_paths(
         self,

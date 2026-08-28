@@ -1,39 +1,46 @@
 # Development Notes
 
-This document keeps only the project rules needed for day-to-day maintenance.
+This document describes the current development workflow and the stable ownership
+boundaries of the v3 codebase. Implementation details that are already expressed by
+typed constants or tests should remain in code rather than being duplicated here.
 
 ## Environment
 
-- Python 3.11+
-- `uv`
+- Python 3.11, 3.12, or 3.13
+- [uv](https://github.com/astral-sh/uv)
 - .NET 10 SDK
-- Initialized Git submodules
+- Git submodules for offline tool builds
 
 ```bash
+git submodule update --init --recursive
 uv sync --group dev --extra api
 ```
 
-## Checks
-
-Run focused tests while editing, then run the full gate before handing off broad changes.
+AssetRipper, Cpp2IL, and SharpZipLib prefer their checked-out submodules. A missing
+submodule can be downloaded from its pinned upstream commit during normal execution.
+UnityPy is optional and is installed only when its Bundle backend is needed:
 
 ```bash
+uv sync --extra unitypy
+```
+
+## Validation
+
+Use focused suites while editing and the complete gate before a release or broad
+handoff:
+
+```powershell
 ./scripts/run-tests.ps1 -Suite smoke
 ./scripts/run-tests.ps1 -Suite extraction
 ./scripts/run-tests.ps1 -Suite all
-uv run ruff format --check .
-uv run ruff check .
-uv run mypy
-uv run lint-imports
-git diff --check
+./scripts/run-preflight.ps1
 ```
 
-The available focused suites are `application`, `runtime`, `extraction`, `regions`, and
-`api`. They are local development shortcuts only. CI runs the complete core suite on
-Python 3.11, 3.12, and 3.13. Static quality gates and the actual AssetRipper and
-media extractor .NET builds run once on Python 3.13.
+The preflight runs compileall, Ruff formatting and linting, Mypy, Import Linter, and
+the complete pytest suite. CI runs pytest on Python 3.11, 3.12, and 3.13 and runs the
+static checks once on Python 3.13.
 
-The AssetRipper integration build is opt-in locally:
+Real .NET integration builds are opt-in locally:
 
 ```powershell
 $env:BAAD_RUN_DOTNET_BUILD = "1"
@@ -41,100 +48,126 @@ uv run pytest -q tests/test_assetripper_dotnet.py
 uv run pytest -q tests/test_media_extractor_dotnet.py
 ```
 
-Use `scripts/run-preflight.ps1` when a single local gate is more convenient.
-
 ## Architecture
 
-- CLI and HTTP API adapters translate input directly into typed application commands.
-- `ExecutionScope` is the only application executor: it dispatches one typed command to
-  one use case, owns the operation-scoped service graph, and closes its resources after
-  execution.
-- Operation-only values such as concurrency, resource selection, and filters stay on the
-  typed command instead of being copied into `ExecutionContext`.
-- Application use cases own workflows and depend on domain ports.
-- Region gateways own catalog providers, runtime preparation, dump backend selection, table routing, character index sources, and catalog metadata policy.
-- Shared extraction code must stay region-neutral and consume profile-provided strategies.
-- CN metadata recovery stays in `infrastructure.tools.cn_metadata_recovery` as a reusable engine; the CN region backend only orchestrates it.
-- Cpp2IL exporter generation is shared, but region-specific shims must be injected by the requesting region backend.
+- CLI and HTTP API adapters translate external input into typed application commands.
+- `ExecutionScope` dispatches one command, owns its operation-scoped services, and
+  closes those services after execution.
+- Application use cases depend on domain models and ports, not infrastructure or
+  transport adapters.
+- Region gateways own region-specific catalogs, runtime preparation, schemas, table
+  routing, and character-index sources.
+- Shared extraction code remains region-neutral and consumes region-provided inputs.
+- Infrastructure adapters own filesystems, processes, HTTP clients, caches, locks,
+  progress rendering, and external tools.
 
-## Boundaries
+The import rules in `.importlinter` enforce these boundaries. Do not move
+region-specific identifiers or protocol knowledge into shared domain or application
+modules.
 
-- Do not make shared extraction import concrete CN/GL/JP region modules.
-- Do not put region-specific route names, schema names, or command hints in shared engines.
-- Do not add numeric LOC or branching budgets. Keep code readable by ownership, not by mechanical splitting.
-- Internal Python import paths and `.state` manifest schemas may change; CLI commands, HTTP contracts, and published output paths need deliberate migration notes.
+## Internal State and Publication
 
-## Runtime and Schema State
+Current internal manifests, caches, tool protocols, and progress payloads use
+`schema_version` 0. They accept only their current structure; v2 workspaces and older
+v3 development artifacts are not migrated implicitly.
 
-- Runtime snapshots record release, source/tool identity, verified artifact size/hash, and provenance. Missing or incompatible provenance invalidates the snapshot.
-- Schema snapshots use separate `full` and `character-index` purpose namespaces. The character-index purpose generates only the three JP target types and their transitive FlatBuffer dependencies; it does not publish MemoryPack formatters or replace the canonical full schema.
-- Generated Python is validated with in-memory `compile()` and must not publish `.pyc` files.
-- Published artifacts use staging, complete validation, fsync where applicable, and atomic replacement. A failed operation must preserve the previous valid artifact.
-- Streaming SHA-256, atomic JSON writes, and rollback-safe staging-directory publication
-  live in `infrastructure.files`; manifests retain their own schemas and validation rules.
+Content-derived fingerprints identify generated tools, schemas, and exported Bundle
+content. Source paths are normalized before hashing so equivalent Windows and Linux
+checkouts produce the same identity. External dependency commits remain part of the
+identity where their behavior affects a generated tool.
 
-## JP Character Index
+Region-specific runtime and extraction state lives below
+`<workspace>/<region>/<platform>/.state`. Shared tool caches and interprocess locks
+live below `<workspace>/.ba-downloader`. Cache publication uses unique staging
+directories, validation, and atomic replacement. Failed or cancelled publication must
+leave the previous public output intact.
 
-`index build` always reads the required tables and fully recomposes `characters.json`; the existing index is never a build shortcut. Warm operations may reuse lower-level state only after release, source, and tool fingerprints match.
+## Progress
 
-- Package preparation selects the base APK, Unity data asset pack, and ARM64 split instead of unpacking every XAPK entry.
-- The encrypted runtime is discovered by ELF64 little-endian AArch64 structure, internal `libappsign4a.so`, one bounded `libil2cpp.so` directory entry, and a v1 `MFTL` footer exactly 44 bytes before EOF. Damaged near-candidates and multiple valid candidates are errors; there is no plaintext fallback.
-- RSA material scanning, AES-CBC decryption, and raw LZMA decompression stream into a staged ELF. Runtime manifests record `jp_mftl_v1` provenance rather than retaining the encrypted parent container.
-- Index builds probe catalog roots semantically and request only TableCatalog. The table metadata manifest is replaced only after one valid ExcelDB source is identified.
-- The SQLCipher plaintext cache is content-addressed by region, platform, release, resource identity, exporter version, and non-plaintext key ID. The three required tables share one read-only SQLite session and any blob decode failure aborts the build.
+All workflows publish typed `ProgressState` values. The CLI renders one Rich task and
+the API emits the same schema 0 state through the existing job/SSE envelope.
 
-## AssetRipper
+- `overall` is the trustworthy main unit used for the progress bar and ETA.
+- `current` is local stage progress and does not affect the overall ETA.
+- Bundle extraction uses completed dependency groups as its overall unit.
+- Stage transitions do not reset elapsed time.
+- Failed and cancelled terminal states retain the last trustworthy counters.
 
-AssetRipper source is pinned as a submodule. The fallback archive is verified before use. Overlay manifests validate both upstream source SHA-256 and replacement SHA-256; `.gitattributes` forces every overlay C# file to LF because replacement hashes are byte-sensitive on Windows.
+## JP Runtime and Character Index
 
-The patched source and tool builds are shared at
-`<workspace>/.ba-downloader/tools`, keyed by the AssetRipper commit, overlay, and wrapper
-fingerprints. They are not copied once per region or platform. JP runtime metadata
-inspection uses a dedicated Release tool with an eight-project AssetRipper dependency
-closure containing only what is needed to read `GameMainConfig` and `PlayerSettings`.
-The full exporter has a separate cache and is built lazily by dependency scanning or
-bundle extraction; both tools reuse intermediate outputs from the same patched source.
-The wheel source under
-`src/ba_downloader/infrastructure/extraction/assetripper/tool` is the only wrapper
-source; repository builds and tests must reference it directly.
+`index build` fully recomposes `indexes/characters.json`; the existing index is not a
+shortcut. Lower-level runtime, schema, table, and SQLCipher caches may be reused only
+after their current identities validate.
 
-Bundle planning scans Unity entries, deduplicates historical content by SHA-256, groups serialized/resource dependencies into strongly connected components and transitive closures, and targets 500 MiB batches. Shared dependencies may appear in multiple batches; an indivisible oversized closure runs separately with a warning.
+JP package preparation selects the base APK, Unity data asset pack, and ARM64 split.
+The MFTL runtime decoder locates the encrypted container structurally, accepts the
+known equivalent MessagePack and footer variants, and streams RSA/AES/LZMA recovery
+into a staged ELF. The TARA output length is authoritative for RAW LZMA streams that
+omit an end marker. Ambiguous or damaged candidates remain errors.
 
-Missing dependencies or scan failures skip only affected components and their dependents. Independent batches continue after a failure. If at least one batch succeeds, usable output is atomically published; if all batches fail, the old output remains. Manifest schema 7 records source fingerprints, scans, batch outcomes, conflicts, skips, and `complete`. Conflicting contents are retained under `_baad_conflicts/<sha256>/<original-path>`.
+Character-index preparation requests only the required catalog and schemas. The three
+required tables share one read-only SQLite session, and a decode failure aborts the
+index build rather than publishing partial character data.
 
-## JP Media Extraction
+## Bundle Extraction
 
-JP media ZIP files are processed in one .NET 10 Release process using SharpZipLib
-1.4.2 at commit `33f64eb0f28cdd2b084cb822fcc224c7c5aba553`. The checked-out
-submodule is preferred; a missing submodule uses the same archive/source-tree
-SHA-256 verified fallback model as other source-built tools. A local bridge project
-compiles the production C# source directly and the dependency closure contains no
-NuGet package references. Python sends one temporary request for all selected ZIPs;
-the tool preflights every central directory, rejects unsafe or ambiguous targets,
-validates actual size and CRC while writing, and returns structured archive results.
-Successful archive directories are published atomically to
-`extracted/media/<zip-stem>`. A failed archive keeps its previous output.
+`--bundle-handler assetripper` is the default. The AssetRipper workflow:
 
-The tool build is content-addressed under
-`<workspace>/.ba-downloader/tools/media-extractor`. Archive outputs are deliberately
-not cached: every media sync invokes the tool and fully extracts every selected ZIP,
-including two consecutive runs with identical inputs. Requests, passwords, results,
-and unpublished staging files exist only under the operation job directory and are
-removed after success, failure, or cancellation.
+1. scans archive entries and builds the serialized/resource dependency graph;
+2. materializes verified entry-cache payloads;
+3. forms deterministic dependency-topology groups without splitting components;
+4. starts one persistent .NET exporter and processes groups serially;
+5. loads and exports within each group using the requested concurrency;
+6. releases each group's `GameData` before starting the next group; and
+7. validates and transactionally publishes one human-readable `Assets` tree and a
+   schema 0 manifest.
+
+The grouping target is defined in `assetripper/bundles.py` and is not a memory budget.
+The workflow does not reject a run from a physical-memory estimate. On systems below
+the recommended RAM level, the CLI warns that AssetRipper may fail and identifies
+UnityPy as the reduced-output alternative.
+
+The selective AssetRipper profile runs the six required processors in their declared
+order. It exports the supported primary content, readable GLB hierarchy models, and
+embedded transform, morph, and humanoid animation. Stable identity, provenance,
+coverage, deterministic path allocation, content hashing, and collision checks are
+preserved across groups.
+
+AssetRipper source preparation validates the presence of required upstream projects,
+then applies the schema 0 overlay in a locked staging directory. Overlay and tool
+caches use content-derived fingerprints. The overlay does not rely on per-file
+upstream or replacement SHA allowlists.
+
+`--bundle-handler unitypy` is an optional low-memory backend. It processes archives
+sequentially and exports a reduced primary set: Texture2D, Sprite, AudioClip, Font,
+TextAsset, and individual Mesh OBJ files. It does not reproduce AssetRipper scene,
+prefab, GLB, or animation semantics. Both backends use `extracted/bundles`, so a
+successful handler change replaces incompatible output transactionally.
+
+## Media Extraction
+
+Media extraction uses one .NET 10 process and the pinned SharpZipLib source. Source
+and cold-build preparation use cross-process locks and atomic caches; different
+region/platform extraction contexts can otherwise run independently.
+
+Python sends one schema 0 request for the selected archives. The C# tool performs
+central-directory processing, output-path validation, concurrent extraction, size and
+CRC verification, structured progress, and archive-level failure aggregation. Public
+output is published from staging, while requests, results, and incomplete staging
+data are removed after success, failure, or cancellation. Media output intentionally
+has no warm extraction shortcut.
 
 ## Outputs
 
-Schema workflows produce:
+Public paths are owned by `WorkspaceLayout`:
 
-- `<workspace>/<region>/<platform>/extracted/dumps/dump.cs`
-- `<workspace>/<region>/<platform>/extracted/dumps/memorypack_formatters.json`
+- `raw/{tables,media,bundles}` for catalog downloads;
+- `extracted/tables` for table output;
+- `extracted/media` for media output;
+- `extracted/bundles/Assets` and `extracted/bundles/manifest.json` for Bundle output;
+- `extracted/schemas` and `extracted/dumps` for generated schemas and IL2CPP dumps;
+- `indexes/characters.json` for the character index.
 
-Character index workflows produce:
-
-- `<workspace>/<region>/<platform>/indexes/characters.json`
-
-Table extraction writes JSON under `<workspace>/<region>/<platform>/extracted/tables/` according to the active region profile.
-
-## Compatibility Notes
-
-Breaking internal refactors are acceptable when they simplify ownership. Public CLI changes must update `--help`, `README.md`, and `docs/README.en.md`, and the migration risk must be called out in the change summary. AssetRipper overlay changes additionally require an actual .NET exporter build and manifest hash verification.
+Public CLI changes must update `--help`, `README.md`, and `docs/README.en.md`.
+Progress wire changes must update both CLI and API tests. AssetRipper or media tool
+changes require their real .NET Release build before release.

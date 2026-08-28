@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import multiprocessing
+import signal
 from contextlib import suppress
 from time import monotonic, sleep
-from typing import Protocol
+from typing import Any, Protocol
 
 from ba_downloader.infrastructure.runtime.process_supervisor import (
     ProcessSupervisor,
@@ -30,6 +31,21 @@ def _wait_worker(stop_event: _StopEvent) -> None:
 
 def _delayed_worker() -> None:
     sleep(0.2)
+
+
+def _report_signal_handlers(result_queue: Any) -> None:
+    sigbreak = getattr(signal, "SIGBREAK", None)
+    result_queue.put(
+        (
+            signal.getsignal(signal.SIGINT) == signal.SIG_IGN,
+            sigbreak is None or signal.getsignal(sigbreak) == signal.SIG_IGN,
+        )
+    )
+
+
+def _non_cooperative_worker() -> None:
+    while True:
+        sleep(1.0)
 
 
 def _wait_until_stopped(supervisor: ProcessSupervisor) -> None:
@@ -109,3 +125,44 @@ def test_process_supervisor_close_reaps_worker_after_grace_period() -> None:
     assert results[0].name == "waiting"
     assert results[0].status == "failed"
     assert results[0].error == "Worker exceeded its shutdown grace period."
+
+
+def test_process_supervisor_workers_ignore_terminal_interrupts() -> None:
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    supervisor = ProcessSupervisor(
+        [WorkerCommand("signals", _report_signal_handlers, (result_queue,))],
+        context=context,
+    )
+
+    supervisor.start()
+    ignored_handlers = result_queue.get(timeout=5.0)
+    results = supervisor.close()
+    result_queue.close()
+    result_queue.join_thread()
+
+    assert ignored_handlers == (True, True)
+    assert results[0].status == "succeeded"
+
+
+def test_process_supervisor_forcibly_stops_workers_as_one_cohort() -> None:
+    context = multiprocessing.get_context("spawn")
+    supervisor = ProcessSupervisor(
+        [
+            WorkerCommand(f"blocked-{index}", _non_cooperative_worker, ())
+            for index in range(4)
+        ],
+        context=context,
+    )
+    supervisor.start()
+
+    started = monotonic()
+    supervisor.stop(0.0)
+    elapsed = monotonic() - started
+    workers_alive = supervisor.is_alive
+    results = supervisor.close()
+
+    assert elapsed < 3.0
+    assert not workers_alive
+    assert len(results) == 4
+    assert all(result.status == "failed" for result in results)

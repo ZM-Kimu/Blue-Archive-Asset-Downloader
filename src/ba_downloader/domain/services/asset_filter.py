@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 
 from ba_downloader.domain.exceptions import ConfigError
 from ba_downloader.domain.models.asset import AssetCollection, AssetRecord
@@ -52,12 +53,27 @@ class AssetFilterService:
                 cls._match_resource(resource, item) for item in resource_predicates
             ):
                 continue
-            if aliases and not any(
-                alias.casefold() in resource.path.casefold() for alias in aliases
-            ):
+            if not aliases:
+                result.add_item(resource)
                 continue
-            result.add_item(resource)
+            if cls._matches_aliases(resource.path, aliases):
+                result.add_item(replace(resource, selected_member_paths=None))
+                continue
+            selected_members = tuple(
+                member
+                for member in resource.member_paths
+                if cls._matches_aliases(member, aliases)
+            )
+            if selected_members:
+                result.add_item(
+                    replace(resource, selected_member_paths=selected_members)
+                )
         return result
+
+    @staticmethod
+    def _matches_aliases(path: str, aliases: tuple[str, ...]) -> bool:
+        normalized = path.casefold()
+        return any(alias.casefold() in normalized for alias in aliases)
 
     @classmethod
     def _matching_aliases(

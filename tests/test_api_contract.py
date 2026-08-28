@@ -5,6 +5,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from ba_downloader.api.app import create_app
+from ba_downloader.domain.models.asset import AssetCollection, AssetType
+from ba_downloader.domain.models.character import CharacterIndex, CharacterIndexEntry
 from ba_downloader.infrastructure.extraction.media.exporter import (
     media_extraction_lock_path,
 )
@@ -60,6 +62,145 @@ def test_typed_job_submission() -> None:
 
     assert created.status_code == 202
     assert created.json()["operation"] == "extract"
+
+
+def test_bundle_handler_is_validated_by_api(tmp_path: Path) -> None:
+    with TestClient(create_app(port=9230)) as client:
+        context = _create_context(client, workspace=str(tmp_path))
+        accepted = client.post(
+            "/api/v1/jobs",
+            json={
+                "operation": "assets.extract",
+                "context_id": context["id"],
+                "resources": ["bundle"],
+                "bundle_handler": "unitypy",
+            },
+        )
+        rejected = client.post(
+            "/api/v1/jobs",
+            json={
+                "operation": "assets.extract",
+                "context_id": context["id"],
+                "bundle_handler": "unknown",
+            },
+        )
+
+    assert accepted.status_code == 202
+    assert rejected.status_code == 422
+
+
+def test_api_preview_character_filter_matches_jp_bundle_members(
+    tmp_path: Path,
+) -> None:
+    def load_catalog(context: object) -> tuple[object, AssetCollection]:
+        resources = AssetCollection()
+        resources.add(
+            "https://example.invalid/Bundle/FullPatch_044.zip",
+            "Bundle/FullPatch_044.zip",
+            10,
+            "deadbeef",
+            "crc",
+            AssetType.bundle,
+            member_paths=("character-ibuki_original.bundle",),
+        )
+        resources.add(
+            "https://example.invalid/Bundle/FullPatch_000.zip",
+            "Bundle/FullPatch_000.zip",
+            20,
+            "feedface",
+            "crc",
+            AssetType.bundle,
+            member_paths=("shared-dependency.bundle",),
+        )
+        return context, resources
+
+    def load_character_index(_context: object) -> CharacterIndex:
+        return CharacterIndex(
+            "JP1.0.0",
+            [CharacterIndexEntry(77, dev_name="Ibuki", names=["Ibuki"])],
+        )
+
+    with TestClient(
+        create_app(
+            port=9230,
+            catalog_loader=load_catalog,
+            character_index_loader=load_character_index,
+        )
+    ) as client:
+        context = _create_context(client, region="jp", workspace=str(tmp_path))
+        preview = client.post(
+            f"/api/v1/contexts/{context['id']}/operations/preview",
+            json={
+                "operation": "assets.sync",
+                "resources": ["bundle"],
+                "filters": ["name=ibuki"],
+                "bundle_handler": "assetripper",
+            },
+        )
+
+    assert preview.status_code == 200
+    assert preview.json() == {
+        "operation": "assets.sync",
+        "bundle_handler": "assetripper",
+        "estimate": {
+            "total": {"items": 1, "bytes": 10},
+            "direct": {"items": 1, "bytes": 10},
+            "missing_direct": {"items": 0, "bytes": 0},
+            "target_members": 1,
+            "ready": True,
+        },
+    }
+    assert "advanced_search_deferred" not in preview.text
+
+
+def test_api_extract_preview_reports_missing_direct_bundle_member(
+    tmp_path: Path,
+) -> None:
+    def load_catalog(context: object) -> tuple[object, AssetCollection]:
+        resources = AssetCollection()
+        resources.add(
+            "https://example.invalid/Bundle/FullPatch_044.zip",
+            "Bundle/FullPatch_044.zip",
+            10,
+            "deadbeef",
+            "crc",
+            AssetType.bundle,
+            member_paths=("character-ibuki.bundle",),
+        )
+        return context, resources
+
+    def load_character_index(_context: object) -> CharacterIndex:
+        return CharacterIndex(
+            "JP1.0.0",
+            [CharacterIndexEntry(77, dev_name="Ibuki", names=["Ibuki"])],
+        )
+
+    with TestClient(
+        create_app(
+            port=9230,
+            catalog_loader=load_catalog,
+            character_index_loader=load_character_index,
+        )
+    ) as client:
+        context = _create_context(client, region="jp", workspace=str(tmp_path))
+        preview = client.post(
+            f"/api/v1/contexts/{context['id']}/operations/preview",
+            json={
+                "operation": "assets.extract",
+                "resources": ["bundle"],
+                "filters": ["name=ibuki"],
+                "bundle_handler": "assetripper",
+            },
+        )
+
+    assert preview.status_code == 200
+    assert preview.json()["estimate"] == {
+        "total": {"items": 1, "bytes": 10},
+        "direct": {"items": 1, "bytes": 10},
+        "missing_direct": {"items": 1, "bytes": 10},
+        "target_members": 1,
+        "ready": False,
+    }
 
 
 def test_external_media_lock_is_decided_by_extraction_worker(tmp_path: Path) -> None:

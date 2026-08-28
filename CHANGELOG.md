@@ -23,6 +23,8 @@
 
 ### Features
 - add typed resource and character filters with AND/OR composition
+- add UnityPy as an optional low-memory bundle handler and warn before
+  AssetRipper extraction when detected physical RAM is below 8 GiB
 - add versioned character indexes and full per-invocation index rebuilding
 - add the optional local HTTP API with immutable contexts, single-worker FIFO
   jobs, SSE events, catalog and CharacterIndex queries, bounded file access,

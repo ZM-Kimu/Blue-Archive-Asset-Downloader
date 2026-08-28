@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from ba_downloader.application.contracts import AssetOperationOptions
 from ba_downloader.application.contracts.commands import (
     AssetsExtractCommand,
     AssetsSyncCommand,
     BuildCharacterIndexCommand,
 )
 from ba_downloader.cli.main import build_parser, command_from_namespace
+from ba_downloader.domain.exceptions import ConfigError
 from ba_downloader.domain.models.asset_filter import FilterField, FilterOperator
+from ba_downloader.domain.models.bundle import BundleHandler
 
 
 def test_assets_sync_parser_uses_v3_defaults(tmp_path: Path) -> None:
@@ -29,6 +34,7 @@ def test_assets_sync_parser_uses_v3_defaults(tmp_path: Path) -> None:
         "media",
         "bundle",
     }
+    assert command.options.bundle_handler is BundleHandler.assetripper
 
 
 def test_assets_extract_parser_builds_typed_resources_and_filters() -> None:
@@ -44,6 +50,8 @@ def test_assets_extract_parser_builds_typed_resources_and_filters() -> None:
             "name~Ibuki,伊吹",
             "--filter",
             "school=Gehenna",
+            "--bundle-handler",
+            "unitypy",
         ]
     )
 
@@ -59,6 +67,7 @@ def test_assets_extract_parser_builds_typed_resources_and_filters() -> None:
         command.options.asset_filter.predicates[0].operator is FilterOperator.contains
     )
     assert command.options.asset_filter.predicates[0].candidates == ("Ibuki", "伊吹")
+    assert command.options.bundle_handler is BundleHandler.unitypy
 
 
 def test_index_build_parser_builds_typed_command() -> None:
@@ -72,3 +81,8 @@ def test_server_start_parser_uses_fixed_defaults() -> None:
 
     assert args.host == "0.0.0.0"
     assert args.port is None
+
+
+def test_asset_options_reject_unknown_bundle_handler() -> None:
+    with pytest.raises(ConfigError):
+        AssetOperationOptions(bundle_handler="unknown")  # type: ignore[arg-type]

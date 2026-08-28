@@ -20,11 +20,13 @@ $TestSuites = @{
     )
     runtime = @(
         "tests/test_apkpure_protocol.py"
+        "tests/test_build_cache.py"
         "tests/test_cancellable_process.py"
         "tests/test_file_operations.py"
         "tests/test_http_client.py"
         "tests/test_package_manager.py"
         "tests/test_process_supervisor.py"
+        "tests/test_progress.py"
         "tests/test_resource_downloader.py"
         "tests/test_runtime_snapshots.py"
         "tests/test_zip_range_reader.py"
@@ -42,6 +44,8 @@ $TestSuites = @{
         "tests/test_encryption.py"
         "tests/test_flatbuffer_codegen.py"
         "tests/test_media_extractor.py"
+        "tests/test_media_extractor_dotnet.py"
+        "tests/test_media_source.py"
         "tests/test_memorypack_codegen.py"
         "tests/test_process_table_runner.py"
         "tests/test_schema_architecture.py"
@@ -49,6 +53,7 @@ $TestSuites = @{
         "tests/test_sqlcipher_exporter.py"
         "tests/test_table_components.py"
         "tests/test_table_extractor.py"
+        "tests/test_unitypy_bundles.py"
     )
     regions = @(
         "tests/test_cn_metadata_recovery_pipeline.py"
@@ -77,18 +82,16 @@ $TestSuites = @{
 }
 
 if ($Suite -eq "all") {
-    $TestPaths = @(
-        $TestSuites.application
-        $TestSuites.runtime
-        $TestSuites.extraction
-        $TestSuites.regions
-        $TestSuites.api
-    )
+    $TestPaths = @()
 } else {
     $TestPaths = $TestSuites[$Suite]
 }
 
-Write-Host "Running $Suite test suite ($($TestPaths.Count) modules)..." -ForegroundColor Cyan
+if ($Suite -eq "all") {
+    Write-Host "Running full test suite..." -ForegroundColor Cyan
+} else {
+    Write-Host "Running $Suite test suite ($($TestPaths.Count) modules)..." -ForegroundColor Cyan
+}
 & uv run pytest -q @TestPaths
 if ($LASTEXITCODE -ne 0) {
     throw "$Suite test suite failed with exit code $LASTEXITCODE."

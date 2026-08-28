@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+from binascii import crc32
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
 from typing import Any
+from zipfile import ZipFile
 
 import pytest
 
 from ba_downloader.domain.exceptions import ExtractError, OperationCancelledError
 from ba_downloader.domain.models.asset import AssetCollection, AssetType
+from ba_downloader.domain.models.bundle import BundleHandler
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.ports.execution import EventCancellation
 from ba_downloader.infrastructure.extraction.assetripper.bundles import (
     BundleExtractionReport,
 )
+from ba_downloader.infrastructure.extraction.errors import BundleExtractionError
 from ba_downloader.infrastructure.extraction.workflow import AssetExtractionWorkflow
 from support.fixtures import build_execution_context
 
@@ -89,6 +94,44 @@ def test_bundle_extraction_returns_workflow_warnings(tmp_path: Path) -> None:
     ).extract_bundles(context, concurrency=1)
 
     assert report.warnings == (expected_warning,)
+
+
+def test_bundle_extraction_dispatches_selected_handler(tmp_path: Path) -> None:
+    context = _build_context(tmp_path, ("bundle",))
+    bundle_dir = context.workspace.raw_bundles
+    bundle_dir.mkdir(parents=True)
+    (bundle_dir / "a.zip").write_bytes(b"bundle")
+    calls: list[str] = []
+
+    class RecordingWorkflow:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def run(
+            self,
+            _context: ExecutionContext,
+            _inputs: list[object],
+            *,
+            concurrency: int,
+            filtered: bool = False,
+        ) -> BundleExtractionReport:
+            _ = (concurrency, filtered)
+            calls.append(self.name)
+            return BundleExtractionReport()
+
+    workflow = AssetExtractionWorkflow(
+        RecordingLogger(),
+        bundle_workflow=RecordingWorkflow("assetripper"),  # type: ignore[arg-type]
+        unitypy_bundle_workflow=RecordingWorkflow("unitypy"),  # type: ignore[arg-type]
+    )
+
+    workflow.extract_bundles(
+        context,
+        concurrency=30,
+        handler=BundleHandler.unitypy,
+    )
+
+    assert calls == ["unitypy"]
 
 
 def test_media_extraction_observes_operation_cancellation(
@@ -340,7 +383,8 @@ def test_bundle_extraction_uses_filtered_existing_resources(
     context = _build_context(tmp_path, ("bundle",))
     bundle_dir = context.workspace.raw_bundles
     bundle_dir.mkdir(parents=True)
-    (bundle_dir / "target.bundle").write_bytes(b"bundle")
+    with ZipFile(bundle_dir / "target.bundle", "w") as archive:
+        archive.writestr("character-target.bundle", b"bundle")
     (bundle_dir / "other.bundle").write_bytes(b"bundle")
     captured_bundles: list[object] = []
 
@@ -363,17 +407,61 @@ def test_bundle_extraction_uses_filtered_existing_resources(
         bundle_workflow=RecordingBundleWorkflow(),  # type: ignore[arg-type]
     )
 
+    resources = _resources(
+        [
+            ("Bundle/target.bundle", AssetType.bundle),
+            ("Bundle/missing.bundle", AssetType.bundle),
+            ("Media/not-bundle.zip", AssetType.media),
+        ]
+    )
+    resources.assets[0] = replace(
+        resources.assets[0],
+        selected_member_paths=("character-target.bundle",),
+    )
+
     workflow.extract_bundles(
         context,
-        _resources(
-            [
-                ("Bundle/target.bundle", AssetType.bundle),
-                ("Bundle/missing.bundle", AssetType.bundle),
-                ("Media/not-bundle.zip", AssetType.media),
-            ]
-        ),
+        resources,
         concurrency=1,
     )
 
-    assert [item.path for item in captured_bundles] == [bundle_dir / "target.bundle"]
-    assert captured_bundles[0].checksum.value == "deadbeef"
+    assert [item.path for item in captured_bundles] == [
+        bundle_dir / ".members" / "target.bundle" / "character-target.bundle"
+    ]
+    assert captured_bundles[0].checksum.algorithm == "crc"
+    assert captured_bundles[0].checksum.value == str(crc32(b"bundle") & 0xFFFFFFFF)
+
+
+def test_bundle_extraction_rejects_missing_direct_member_before_start(
+    tmp_path: Path,
+) -> None:
+    context = _build_context(tmp_path, ("bundle",))
+    captured_bundles: list[object] = []
+
+    class RecordingBundleWorkflow:
+        def run(
+            self,
+            _context: ExecutionContext,
+            inputs: list[object],
+            *,
+            concurrency: int,
+            filtered: bool = False,
+        ) -> BundleExtractionReport:
+            _ = (concurrency, filtered)
+            captured_bundles.extend(inputs)
+            return BundleExtractionReport()
+
+    workflow = AssetExtractionWorkflow(
+        RecordingLogger(),
+        bundle_workflow=RecordingBundleWorkflow(),  # type: ignore[arg-type]
+    )
+    resources = _resources([("Bundle/missing.zip", AssetType.bundle)])
+    resources.assets[0] = replace(
+        resources.assets[0],
+        selected_member_paths=("character-target.bundle",),
+    )
+
+    with pytest.raises(BundleExtractionError, match="member cache is incomplete"):
+        workflow.extract_bundles(context, resources, concurrency=1, filtered=True)
+
+    assert captured_bundles == []

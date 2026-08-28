@@ -1,22 +1,31 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Protocol
 
-from ba_downloader.domain.models.asset import AssetCollection, AssetType
+from ba_downloader.domain.models.asset import AssetCollection, AssetType, ChecksumSpec
+from ba_downloader.domain.models.bundle import BundleHandler
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.extraction import ExtractionReport
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
 from ba_downloader.domain.ports.extract import AssetExtractionPort
 from ba_downloader.domain.ports.logging import LoggerPort
 from ba_downloader.domain.ports.progress import ProgressReporterFactoryPort
-from ba_downloader.infrastructure.extraction.assetripper.bundles import (
-    AssetRipperBundleWorkflow,
+from ba_downloader.infrastructure.download.bundle_members import (
+    extract_local_bundle_member,
+    find_exact_entry,
+    member_cache_path,
+    read_local_zip_entries,
 )
 from ba_downloader.infrastructure.extraction.assetripper.dependencies import (
     BundleArchiveInput,
 )
+from ba_downloader.infrastructure.extraction.bundles import (
+    BundleExtractionReport,
+)
+from ba_downloader.infrastructure.extraction.errors import BundleExtractionError
 from ba_downloader.infrastructure.extraction.media.exporter import (
     MediaArchiveExtractor,
 )
@@ -27,7 +36,19 @@ from ba_downloader.infrastructure.extraction.process_table_runner import (
 from ba_downloader.infrastructure.extraction.table.profiles import (
     build_default_table_profile_for_context,
 )
+from ba_downloader.infrastructure.files.checksum import calculate_crc
 from ba_downloader.infrastructure.progress import NullProgressReporterFactory
+
+
+class _BundleWorkflow(Protocol):
+    def run(
+        self,
+        context: ExecutionContext,
+        inputs: Sequence[Path | BundleArchiveInput],
+        *,
+        concurrency: int,
+        filtered: bool = False,
+    ) -> BundleExtractionReport: ...
 
 
 class AssetExtractionWorkflow(AssetExtractionPort):
@@ -42,7 +63,8 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         force_exit: Callable[[int], None] | None = None,
         progress_factory: ProgressReporterFactoryPort | None = None,
         cancellation: CancellationPort | None = None,
-        bundle_workflow: AssetRipperBundleWorkflow | None = None,
+        bundle_workflow: _BundleWorkflow | None = None,
+        unitypy_bundle_workflow: _BundleWorkflow | None = None,
         media_extractor: MediaArchiveExtractor | None = None,
     ) -> None:
         self.logger = logger
@@ -51,6 +73,7 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         self._progress_factory = progress_factory or NullProgressReporterFactory()
         self._cancellation = cancellation or NeverCancelled()
         self._bundle_workflow = bundle_workflow
+        self._unitypy_bundle_workflow = unitypy_bundle_workflow
         self._media_extractor = media_extractor
         self._process_table_runner = ProcessTableExtractionRunner(
             logger,
@@ -69,15 +92,23 @@ class AssetExtractionWorkflow(AssetExtractionPort):
         *,
         concurrency: int,
         filtered: bool = False,
+        handler: BundleHandler = BundleHandler.assetripper,
     ) -> ExtractionReport:
         self._cancellation.raise_if_cancelled()
         bundles = self._resolve_bundle_inputs(context, resources)
         if not bundles:
             return ExtractionReport()
 
-        if self._bundle_workflow is None:
-            raise RuntimeError("AssetRipper bundle workflow is not configured.")
-        report = self._bundle_workflow.run(
+        workflow: _BundleWorkflow | None
+        if handler is BundleHandler.assetripper:
+            workflow = self._bundle_workflow
+        elif handler is BundleHandler.unitypy:
+            workflow = self._unitypy_bundle_workflow
+        else:
+            raise ValueError(f"Unsupported bundle handler '{handler}'.")
+        if workflow is None:
+            raise RuntimeError(f"{handler.value} bundle workflow is not configured.")
+        report = workflow.run(
             context,
             bundles,
             concurrency=concurrency,
@@ -171,8 +202,39 @@ class AssetExtractionWorkflow(AssetExtractionPort):
             ]
         result: list[BundleArchiveInput] = []
         seen_paths: set[Path] = set()
+        missing_members: list[str] = []
         for resource in resources:
             if resource.asset_type is not AssetType.bundle:
+                continue
+            if resource.selected_member_paths:
+                archive_path = context.workspace.raw_resource_path(
+                    resource.asset_type.value,
+                    resource.path,
+                )
+                local_entries = None
+                for member in resource.selected_member_paths:
+                    path = member_cache_path(context, resource, member)
+                    entry = None
+                    if not path.is_file() and archive_path.is_file():
+                        if local_entries is None:
+                            local_entries = read_local_zip_entries(archive_path)
+                        entry = find_exact_entry(local_entries, member)
+                        extract_local_bundle_member(archive_path, entry, path)
+                    if not path.is_file():
+                        missing_members.append(f"{resource.path}::{member}")
+                        continue
+                    if path in seen_paths:
+                        continue
+                    normalized_archive = resource.path.replace("\\", "/")
+                    normalized_member = member.replace("\\", "/")
+                    result.append(
+                        BundleArchiveInput.from_path(
+                            path,
+                            archive_id=f"{normalized_archive}#{normalized_member}",
+                            checksum=ChecksumSpec("crc", str(calculate_crc(path))),
+                        )
+                    )
+                    seen_paths.add(path)
                 continue
             path = context.workspace.raw_resource_path(
                 resource.asset_type.value,
@@ -188,6 +250,15 @@ class AssetExtractionWorkflow(AssetExtractionPort):
                 )
             )
             seen_paths.add(path)
+        if missing_members:
+            examples = ", ".join(missing_members[:3])
+            suffix = "" if len(missing_members) <= 3 else ", ..."
+            raise BundleExtractionError(
+                "Direct bundle member cache is incomplete: "
+                f"{len(missing_members)} member(s) are missing "
+                f"({examples}{suffix}). Run assets sync or download with the same "
+                "filter first."
+            )
         return result
 
     def _resolve_media_files(

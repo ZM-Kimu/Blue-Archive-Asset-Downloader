@@ -21,6 +21,19 @@ class StopEventPort(Protocol):
 
 
 @dataclass(slots=True)
+class SignalInterruptState:
+    """Parent-process interrupt state safe for use from a signal handler."""
+
+    interrupted: bool = False
+
+    def is_set(self) -> bool:
+        return self.interrupted
+
+    def set(self) -> None:
+        self.interrupted = True
+
+
+@dataclass(slots=True)
 class CancellationFeedbackState:
     cancellation_logged: bool = False
     force_hint_logged: bool = False
@@ -51,11 +64,11 @@ def build_future_wait_policy(
 
 @contextmanager
 def install_interrupt_handler(
-    stop_event: StopEventPort,
+    interrupt_state: SignalInterruptState,
     logger: LoggerPort,
     *,
     force_exit: Callable[[int], None],
-    on_interrupt: Callable[[], None] | None = None,
+    force_on_repeated_interrupt: bool = True,
 ) -> Iterator[None]:
     if current_thread() is not main_thread():
         yield
@@ -68,14 +81,13 @@ def install_interrupt_handler(
         nonlocal interrupt_count
         _ = (signum, frame)
         interrupt_count += 1
-        stop_event.set()
-        if on_interrupt is not None:
-            on_interrupt()
-        if interrupt_count >= 2:
-            logger.error("Force exiting immediately.")
+        if force_on_repeated_interrupt and interrupt_count >= 2:
             force_exit(130)
+            return
+        interrupt_state.set()
 
     try:
+        _ = logger
         signal.signal(signal.SIGINT, handle_interrupt)
         yield
     finally:

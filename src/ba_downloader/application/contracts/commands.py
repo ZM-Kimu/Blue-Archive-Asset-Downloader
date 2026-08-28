@@ -6,6 +6,7 @@ from typing import TypeAlias
 from ba_downloader.domain.exceptions import ConfigError
 from ba_downloader.domain.models.asset_filter import AssetFilter
 from ba_downloader.domain.models.asset_type_selection import ResourceTypeSelection
+from ba_downloader.domain.models.bundle import BundleHandler
 from ba_downloader.domain.models.storage import StorageCleanupTarget
 
 
@@ -16,9 +17,12 @@ class AssetOperationOptions:
         default_factory=lambda: ResourceTypeSelection.from_values(())
     )
     asset_filter: AssetFilter = field(default_factory=AssetFilter)
+    bundle_handler: BundleHandler = BundleHandler.assetripper
 
     def __post_init__(self) -> None:
         _validate_concurrency(self.concurrency)
+        if not isinstance(self.bundle_handler, BundleHandler):
+            raise ConfigError("Bundle handler must be 'assetripper' or 'unitypy'.")
 
 
 @dataclass(frozen=True, slots=True)

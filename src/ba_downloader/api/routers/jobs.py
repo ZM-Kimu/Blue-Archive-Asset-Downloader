@@ -30,6 +30,7 @@ from ba_downloader.application.contracts import (
 from ba_downloader.domain.exceptions import ConfigError
 from ba_downloader.domain.models.asset_filter import AssetFilter
 from ba_downloader.domain.models.asset_type_selection import ResourceTypeSelection
+from ba_downloader.domain.models.bundle import BundleHandler
 
 COMMAND_TYPES = {
     "assets.sync": AssetsSyncCommand,
@@ -70,6 +71,9 @@ def create_router(services: ApiServices) -> APIRouter:
                 concurrency=body.concurrency,
                 resources=ResourceTypeSelection.from_values(body.resources),
                 asset_filter=asset_filter,
+                bundle_handler=BundleHandler(
+                    getattr(body, "bundle_handler", "assetripper")
+                ),
             )
             if body.operation == "index.build":
                 command = BuildCharacterIndexCommand(body.concurrency)

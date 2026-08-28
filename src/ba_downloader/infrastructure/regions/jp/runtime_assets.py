@@ -5,7 +5,7 @@ import shutil
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from Crypto.Cipher import AES
@@ -21,7 +21,6 @@ MFTL_FOOTER_SIZE = 0x2C
 MFTL_MAGIC = b"MFTL"
 MFTL_VERSION = 1
 MFTL_TARGET_NAME = "libil2cpp.so"
-MFTL_CONTAINER_SONAME = b"libappsign4a.so"
 TARA_MAGIC = 0x41524154
 TARA_V3 = 3
 PADDED_65537 = b"\x00" * 125 + b"\x01\x00\x01"
@@ -96,21 +95,42 @@ class MsgpackLite:
         marker = self.read_u8()
         if 0x90 <= marker <= 0x9F:
             return marker & 0x0F
+        if marker == 0xDC:
+            return int.from_bytes(self.read(2), "big")
+        if marker == 0xDD:
+            return int.from_bytes(self.read(4), "big")
         raise JpRuntimeDecryptError(f"Unsupported MFTL array marker 0x{marker:02x}.")
 
     def read_str(self) -> str:
         marker = self.read_u8()
-        if not 0xA0 <= marker <= 0xBF:
+        if 0xA0 <= marker <= 0xBF:
+            size = marker & 0x1F
+        elif marker == 0xD9:
+            size = self.read_u8()
+        elif marker == 0xDA:
+            size = int.from_bytes(self.read(2), "big")
+        elif marker == 0xDB:
+            size = int.from_bytes(self.read(4), "big")
+        else:
             raise JpRuntimeDecryptError(
                 f"Unsupported MFTL string marker 0x{marker:02x}."
             )
-        return self.read(marker & 0x1F).decode("utf-8")
+        try:
+            return self.read(size).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise JpRuntimeDecryptError("MFTL directory string is not UTF-8.") from exc
 
     def read_bin(self) -> bytes:
         marker = self.read_u8()
-        if marker != 0xC4:
+        if marker == 0xC4:
+            size = self.read_u8()
+        elif marker == 0xC5:
+            size = int.from_bytes(self.read(2), "big")
+        elif marker == 0xC6:
+            size = int.from_bytes(self.read(4), "big")
+        else:
             raise JpRuntimeDecryptError(f"Unsupported MFTL bin marker 0x{marker:02x}.")
-        return self.read(self.read_u8())
+        return self.read(size)
 
     def read_uint(self) -> int:
         marker = self.read_u8()
@@ -124,7 +144,78 @@ class MsgpackLite:
             return int.from_bytes(self.read(4), "big")
         if marker == 0xCF:
             return int.from_bytes(self.read(8), "big")
+        signed_sizes = {0xD0: 1, 0xD1: 2, 0xD2: 4, 0xD3: 8}
+        if size := signed_sizes.get(marker):
+            value = int.from_bytes(self.read(size), "big", signed=True)
+            if value >= 0:
+                return value
+            raise JpRuntimeDecryptError("MFTL unsigned field is negative.")
         raise JpRuntimeDecryptError(f"Unsupported MFTL uint marker 0x{marker:02x}.")
+
+    def skip_value(self) -> None:
+        marker = self.read_u8()
+        if marker <= 0x7F or marker >= 0xE0 or marker in {0xC0, 0xC2, 0xC3}:
+            return
+        if 0xA0 <= marker <= 0xBF:
+            self.read(marker & 0x1F)
+            return
+        if 0x90 <= marker <= 0x9F:
+            self.skip_values(marker & 0x0F)
+            return
+        if 0x80 <= marker <= 0x8F:
+            self.skip_values((marker & 0x0F) * 2)
+            return
+
+        fixed_sizes = {
+            0xCA: 4,
+            0xCB: 8,
+            0xCC: 1,
+            0xCD: 2,
+            0xCE: 4,
+            0xCF: 8,
+            0xD0: 1,
+            0xD1: 2,
+            0xD2: 4,
+            0xD3: 8,
+            0xD4: 2,
+            0xD5: 3,
+            0xD6: 5,
+            0xD7: 9,
+            0xD8: 17,
+        }
+        if size := fixed_sizes.get(marker):
+            self.read(size)
+            return
+
+        length_sizes = {
+            0xC4: (1, 0),
+            0xC5: (2, 0),
+            0xC6: (4, 0),
+            0xC7: (1, 1),
+            0xC8: (2, 1),
+            0xC9: (4, 1),
+            0xD9: (1, 0),
+            0xDA: (2, 0),
+            0xDB: (4, 0),
+        }
+        if length := length_sizes.get(marker):
+            size_bytes, extra_bytes = length
+            size = int.from_bytes(self.read(size_bytes), "big")
+            self.read(size + extra_bytes)
+            return
+        if marker in {0xDC, 0xDD}:
+            size_bytes = 2 if marker == 0xDC else 4
+            self.skip_values(int.from_bytes(self.read(size_bytes), "big"))
+            return
+        if marker in {0xDE, 0xDF}:
+            size_bytes = 2 if marker == 0xDE else 4
+            self.skip_values(int.from_bytes(self.read(size_bytes), "big") * 2)
+            return
+        raise JpRuntimeDecryptError(f"Unsupported MFTL value marker 0x{marker:02x}.")
+
+    def skip_values(self, count: int) -> None:
+        for _ in range(count):
+            self.skip_value()
 
 
 def _parse_mftl_footer(footer: bytes, file_size: int) -> MftlFooter:
@@ -134,9 +225,6 @@ def _parse_mftl_footer(footer: bytes, file_size: int) -> MftlFooter:
     version = struct.unpack_from("<I", footer, 4)[0]
     if version != MFTL_VERSION:
         raise JpRuntimeDecryptError(f"Unsupported MFTL version {version}.")
-    if footer[0x28:] != b"\x00" * 4:
-        raise JpRuntimeDecryptError("MFTL footer reserved field is not zero.")
-
     payload_offset, payload_size, directory_offset, directory_size = struct.unpack_from(
         "<QQQQ", footer, 8
     )
@@ -162,36 +250,51 @@ def _parse_mftl_footer(footer: bytes, file_size: int) -> MftlFooter:
 def _parse_mftl_directory(data: bytes, footer: MftlFooter) -> MftlEntry:
     reader = MsgpackLite(data)
     outer_len = reader.read_array_len()
-    if outer_len != 1:
-        raise JpRuntimeDecryptError(f"Expected one MFTL entry, got {outer_len}.")
-    entry_len = reader.read_array_len()
-    if entry_len != 7:
-        raise JpRuntimeDecryptError(f"Expected 7-field MFTL entry, got {entry_len}.")
-
-    entry = MftlEntry(
-        name=reader.read_str(),
-        payload_offset=reader.read_uint(),
-        payload_size=reader.read_uint(),
-        iv=reader.read_bin(),
-        key=reader.read_bin(),
-        recorded_size=reader.read_uint(),
-        checksum=reader.read_str(),
-    )
+    matches: list[MftlEntry] = []
+    for _ in range(outer_len):
+        entry_len = reader.read_array_len()
+        if entry_len == 0:
+            raise JpRuntimeDecryptError("MFTL directory entry is empty.")
+        name = reader.read_str()
+        if name != MFTL_TARGET_NAME:
+            reader.skip_values(entry_len - 1)
+            continue
+        if entry_len < 7:
+            raise JpRuntimeDecryptError(
+                f"Expected at least 7 fields for {MFTL_TARGET_NAME}, got {entry_len}."
+            )
+        matches.append(
+            MftlEntry(
+                name=name,
+                payload_offset=reader.read_uint(),
+                payload_size=reader.read_uint(),
+                iv=reader.read_bin(),
+                key=reader.read_bin(),
+                recorded_size=reader.read_uint(),
+                checksum=reader.read_str(),
+            )
+        )
+        reader.skip_values(entry_len - 7)
     if reader.pos != len(data):
         raise JpRuntimeDecryptError("MFTL directory contains trailing data.")
-    if entry.name != MFTL_TARGET_NAME:
+    if len(matches) != 1:
         raise JpRuntimeDecryptError(
-            f"MFTL entry targets {entry.name!r}, expected {MFTL_TARGET_NAME!r}."
+            f"Expected one {MFTL_TARGET_NAME} MFTL entry, got {len(matches)}."
         )
+    entry = matches[0]
+    payload_end = entry.payload_offset + entry.payload_size
+    footer_payload_end = footer.payload_offset + footer.payload_size
     if (
-        entry.payload_offset != footer.payload_offset
-        or entry.payload_size != footer.payload_size
+        entry.payload_offset < footer.payload_offset
+        or payload_end > footer_payload_end
+        or entry.payload_size == 0
+        or entry.payload_size % AES.block_size
     ):
-        raise JpRuntimeDecryptError("MFTL footer and directory disagree.")
+        raise JpRuntimeDecryptError(
+            "MFTL entry is outside the encrypted payload range."
+        )
     if len(entry.key) != 32 or len(entry.iv) != 16:
         raise JpRuntimeDecryptError("Unexpected MFTL AES key/IV lengths.")
-    if entry.recorded_size != entry.payload_size:
-        raise JpRuntimeDecryptError("MFTL recorded size and payload size disagree.")
     return entry
 
 
@@ -212,14 +315,6 @@ def _read_mftl_entry(path: Path) -> MftlContainerInfo:
             raise JpRuntimeDecryptError(
                 "MFTL runtime container is not an AArch64 ELF file."
             )
-        if not _stream_contains(
-            source,
-            MFTL_CONTAINER_SONAME,
-            limit=footer.payload_offset,
-        ):
-            raise JpRuntimeDecryptError(
-                "MFTL runtime container SONAME marker was not found."
-            )
         source.seek(footer.directory_offset)
         directory = source.read(footer.directory_size)
     if len(directory) != footer.directory_size:
@@ -228,21 +323,6 @@ def _read_mftl_entry(path: Path) -> MftlContainerInfo:
         footer=footer,
         entry=_parse_mftl_directory(directory, footer),
     )
-
-
-def _stream_contains(source: BinaryIO, marker: bytes, *, limit: int) -> bool:
-    source.seek(0)
-    remaining = limit
-    overlap = b""
-    while remaining > 0:
-        chunk = source.read(min(64 * 1024, remaining))
-        if not chunk:
-            return False
-        if marker in overlap + chunk:
-            return True
-        overlap = chunk[-(len(marker) - 1) :]
-        remaining -= len(chunk)
-    return False
 
 
 def _has_mftl_footer(path: Path) -> bool:
@@ -352,18 +432,22 @@ class JpEncryptedRuntimeExtractor:
                 nonlocal output_remaining
                 assert decompressor is not None
                 assert output_remaining is not None
+                if output_remaining == 0:
+                    if compressed:
+                        raise JpRuntimeDecryptError(
+                            "LZMA reached the declared size before compressed input ended."
+                        )
+                    return
                 pending = compressed
-                while pending or not decompressor.needs_input:
+                while (pending or not decompressor.needs_input) and output_remaining:
                     self.cancellation.raise_if_cancelled()
+                    # Production TARA streams omit EOS; the declared size is the
+                    # authoritative RAW LZMA output boundary.
                     unpacked = decompressor.decompress(
                         pending,
-                        max_length=min(STREAM_CHUNK_SIZE, output_remaining + 1),
+                        max_length=min(STREAM_CHUNK_SIZE, output_remaining),
                     )
                     pending = b""
-                    if len(unpacked) > output_remaining:
-                        raise JpRuntimeDecryptError(
-                            "LZMA output exceeds the declared unpacked size."
-                        )
                     output.write(unpacked)
                     output_remaining -= len(unpacked)
                     if decompressor.eof or decompressor.needs_input:

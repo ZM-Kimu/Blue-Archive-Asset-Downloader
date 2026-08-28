@@ -12,7 +12,11 @@ from ba_downloader.application.contracts import (
     OperationOutcome,
 )
 from ba_downloader.cli.main import main
-from ba_downloader.domain.exceptions import DownloadError, NetworkError
+from ba_downloader.domain.exceptions import (
+    DownloadError,
+    NetworkError,
+    OperationCancelledError,
+)
 from ba_downloader.domain.models.execution import ExecutionContext
 
 
@@ -63,6 +67,7 @@ def _install_executor(
             DownloadError("Failed to download 2 files after retries."),
             2,
         ),
+        (OperationCancelledError("Table extraction cancelled by user."), 130),
     ],
 )
 def test_main_maps_operational_error_types_to_exit_codes(

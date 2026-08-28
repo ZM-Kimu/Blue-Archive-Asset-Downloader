@@ -23,6 +23,7 @@ from ba_downloader.infrastructure.packages.android_package import (
     PackageArchiveError,
     _resolve_filename,
 )
+from ba_downloader.infrastructure.regions.jp.asset_normalizer import JPAssetNormalizer
 from ba_downloader.infrastructure.regions.jp.catalog_decoder import JPCatalogDecoder
 from ba_downloader.infrastructure.regions.jp.catalog_source import (
     CatalogSelection,
@@ -868,6 +869,41 @@ def test_jp_asset_normalizer_uses_platform_specific_bundle_urls(
 
     assert assets[0].url == expected_url
     assert assets[0].path == "Bundle/bundle/full.pack"
+
+
+def test_jp_asset_normalizer_canonicalizes_bundle_member_paths() -> None:
+    session = BootstrapSession(
+        release=ResolvedRelease(region="jp", version="1.2.3"),
+        server_url="https://example.invalid/server-info.json",
+        catalog_root="https://cdn.example.invalid/catalog-root",
+    )
+    payload = DecodedJPCatalog(
+        tables=[],
+        media=[],
+        bundles=[
+            {
+                "name": "FullPatch_044.zip",
+                "size": 99,
+                "crc": 1234,
+                "bundle_files": [
+                    "character\\ibuki.bundle",
+                    {"Name": "assets//characters/ch0347.bundle"},
+                    {"name": "character/ibuki.bundle"},
+                    {"name": ""},
+                    "  ",
+                    {"unknown": "ignored.bundle"},
+                ],
+            }
+        ],
+    )
+
+    asset = JPAssetNormalizer.normalize(payload, session)[0]
+
+    assert asset.member_paths == (
+        "character/ibuki.bundle",
+        "assets/characters/ch0347.bundle",
+    )
+    assert asset.metadata["bundle_files"] == list(asset.member_paths)
 
 
 def _write_jp_mftl_runtime_marker(path: Path) -> None:

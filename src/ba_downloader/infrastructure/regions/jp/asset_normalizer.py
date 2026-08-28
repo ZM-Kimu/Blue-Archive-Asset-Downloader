@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from urllib.parse import urljoin
 
 from ba_downloader.domain.models.asset import (
@@ -15,6 +16,28 @@ from ba_downloader.infrastructure.regions.common import (
 
 
 class JPAssetNormalizer:
+    @staticmethod
+    def _normalize_bundle_files(value: object) -> tuple[str, ...]:
+        if not isinstance(value, list):
+            return ()
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            raw_name: object = item
+            if isinstance(item, Mapping):
+                raw_name = item.get("name", item.get("Name", ""))
+            if not isinstance(raw_name, str):
+                continue
+            member_path = "/".join(
+                part for part in raw_name.strip().replace("\\", "/").split("/") if part
+            )
+            if not member_path or member_path in seen:
+                continue
+            seen.add(member_path)
+            normalized.append(member_path)
+        return tuple(normalized)
+
     @staticmethod
     def normalize(
         payload: DecodedJPCatalog, session: BootstrapSession
@@ -49,7 +72,9 @@ class JPAssetNormalizer:
             )
 
         for bundle in payload.bundles:
-            bundle_files = coerce_string_list(bundle.get("bundle_files", []))
+            bundle_files = JPAssetNormalizer._normalize_bundle_files(
+                bundle.get("bundle_files", [])
+            )
             assets.add(
                 urljoin(base_url, f"{bundle_patch_dir}/{bundle['name']}"),
                 urljoin("Bundle/", str(bundle["name"])),
@@ -57,7 +82,8 @@ class JPAssetNormalizer:
                 str(bundle["crc"]),
                 "crc",
                 AssetType.bundle,
-                {"bundle_files": bundle_files},
+                {"bundle_files": list(bundle_files)},
+                member_paths=bundle_files,
             )
 
         return assets

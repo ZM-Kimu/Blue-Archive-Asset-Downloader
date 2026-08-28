@@ -72,6 +72,10 @@ from ba_downloader.infrastructure.extraction.assetripper.exporter import (
 from ba_downloader.infrastructure.extraction.assetripper.source import (
     AssetRipperSourceError,
 )
+from ba_downloader.infrastructure.extraction.bundles import (
+    BundleExtractionReport,
+    bundle_extraction_lock_path,
+)
 from ba_downloader.infrastructure.extraction.errors import BundleExtractionError
 from ba_downloader.infrastructure.files.atomic import (
     publish_staged_directory,
@@ -89,25 +93,6 @@ _BUNDLE_LAYOUT = "assetripper-readable"
 _PROCESSING_PROFILE = "readable-playable"
 _STREAM_GROUP_TARGET_ENTRY_LIMIT = 512
 _STREAM_GROUPING_PROFILE = "dependency-topology"
-
-
-def bundle_extraction_lock_path(context: ExecutionContext) -> Path:
-    return (
-        context.workspace.locks
-        / context.region
-        / context.platform
-        / "bundle-extraction.lock"
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class BundleExtractionReport:
-    warnings: tuple[str, ...] = ()
-    total_batches: int = 0
-    succeeded_batches: int = 0
-    failed_batches: int = 0
-    skipped_archives: int = 0
-    skipped_components: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,13 +125,26 @@ class _DependencyScanner(Protocol):
 
 
 class _AssetRipperLogAggregator:
-    def __init__(self, logger: LoggerPort) -> None:
+    def __init__(self, logger: LoggerPort, *, filtered: bool = False) -> None:
         self._logger = logger
+        self._filtered = filtered
+        self._missing_dependencies: set[str] = set()
+        self._missing_dependency_reports = 0
         self._serialize_reference_count = 0
 
     def handle(self, event: AssetRipperLogEvent) -> None:
         if event.message == SERIALIZE_REFERENCE_UNSUPPORTED_MESSAGE:
             self._serialize_reference_count += 1
+            return
+        if (
+            self._filtered
+            and event.level == "warning"
+            and event.category == "Import"
+            and event.message.startswith("Dependency '")
+            and event.message.endswith("' wasn't found")
+        ):
+            self._missing_dependencies.add(event.message)
+            self._missing_dependency_reports += 1
             return
         message = f"AssetRipper {event.category}: {event.message}"
         if event.level == "warning":
@@ -160,6 +158,14 @@ class _AssetRipperLogAggregator:
                 "AssetRipper Import: SerializeReference is not supported for "
                 f"{self._serialize_reference_count} MonoBehaviour assets; "
                 "structured fields were not parsed."
+            )
+        if self._missing_dependency_reports:
+            self._logger.warn(
+                "AssetRipper Import: "
+                f"{len(self._missing_dependencies)} unique external dependencies "
+                f"were not found ({self._missing_dependency_reports} reports "
+                "suppressed); this is expected in filtered bundle extraction "
+                "because only directly selected bundle members are loaded."
             )
 
 
@@ -405,14 +411,24 @@ class AssetRipperBundleWorkflow:
                 plan = BundleDependencyPlanner(
                     self._cancellation.raise_if_cancelled
                 ).build(archives, scans)
-                prepared = self._prepare_plan(plan)
-                warnings.extend(self._plan_warnings(prepared))
-                if not prepared.executable.components:
+                if filtered:
+                    prepared = _PreparedDependencyPlan(plan, ())
+                    warnings.extend(self._best_effort_plan_warnings(plan))
+                else:
+                    prepared = self._prepare_plan(plan)
+                    warnings.extend(self._plan_warnings(prepared))
+                target_components = prepared.executable.components
+                if not target_components:
                     raise BundleExtractionError(
-                        "Bundle dependency scan found no complete exportable inputs."
+                        "Bundle dependency scan found no executable direct targets."
                     )
 
-                entries = self._unique_entries(prepared.executable.entries)
+                requested = self._batch_for_targets(
+                    prepared.executable,
+                    target_components,
+                    batch_id="stream",
+                )
+                entries = self._unique_entries(requested.entries)
                 progress.update(
                     ProgressState(
                         "Bundles",
@@ -449,6 +465,7 @@ class AssetRipperBundleWorkflow:
                         job_root,
                         progress,
                         concurrency=concurrency,
+                        filtered=filtered,
                     )
                     tracker.finish_stage("validating")
                     result = self._validate_result(aggregate, result, job_root)
@@ -469,7 +486,7 @@ class AssetRipperBundleWorkflow:
                         target_id for target_id in result.exported_target_ids
                     }
                     requested_target_ids = {
-                        entry.node_id for entry in prepared.executable.entries
+                        entry.node_id for entry in requested.target_entries
                     }
                     missing_coverage = requested_target_ids - exported_target_ids
                     failed_coverage = {
@@ -481,6 +498,7 @@ class AssetRipperBundleWorkflow:
                         raise AssetRipperToolError(
                             "AssetRipper result did not account for every target input."
                         )
+                    plan_failures = self._plan_failure_records(plan)
                     new_manifest, publish_assets = self._build_manifest(
                         context,
                         manifest,
@@ -489,7 +507,12 @@ class AssetRipperBundleWorkflow:
                         prepared.executable,
                         run_fingerprint,
                         filtered=filtered,
-                        status=("partial" if collection_failures else "complete"),
+                        status=(
+                            "partial"
+                            if collection_failures or plan_failures
+                            else "complete"
+                        ),
+                        additional_failures=plan_failures,
                     )
                     publish_root = self._prepare_publish_tree(
                         output_root,
@@ -550,6 +573,7 @@ class AssetRipperBundleWorkflow:
         progress: ProgressReporterPort,
         *,
         concurrency: int,
+        filtered: bool,
     ) -> tuple[
         AssetRipperExportResult,
         tuple[BundleExportBatch, ...],
@@ -573,8 +597,12 @@ class AssetRipperBundleWorkflow:
                     ),
                 )
             )
-        aggregate = self._batch_for_targets(plan, plan.components, batch_id="stream")
-        log_aggregator = _AssetRipperLogAggregator(self._logger)
+        aggregate = self._batch_for_targets(
+            plan,
+            plan.components,
+            batch_id="stream",
+        )
+        log_aggregator = _AssetRipperLogAggregator(self._logger, filtered=filtered)
         tracker = _BundleProgressTracker(
             progress,
             log_aggregator,
@@ -705,6 +733,7 @@ class AssetRipperBundleWorkflow:
         *,
         filtered: bool,
         status: str,
+        additional_failures: Sequence[dict[str, object]] = (),
     ) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
         entries = {entry.node_id: entry for entry in plan.entries}
         old_assets = self._manifest_assets(old_manifest)
@@ -766,7 +795,8 @@ class AssetRipperBundleWorkflow:
                     ),
                 }
                 for failure in failures
-            ],
+            ]
+            + list(additional_failures),
         }
         return manifest, publish_assets
 
@@ -866,6 +896,14 @@ class AssetRipperBundleWorkflow:
             isinstance(payload, dict)
             and isinstance(payload.get("schema_version"), int)
             and payload.get("schema_version") != _BUNDLE_MANIFEST_SCHEMA_VERSION
+        ):
+            manifest = self._empty_manifest(context)
+            manifest["_replace_incompatible_output"] = True
+            return manifest
+        if (
+            isinstance(payload, dict)
+            and payload.get("schema_version") == _BUNDLE_MANIFEST_SCHEMA_VERSION
+            and payload.get("layout") != _BUNDLE_LAYOUT
         ):
             manifest = self._empty_manifest(context)
             manifest["_replace_incompatible_output"] = True
@@ -1115,6 +1153,55 @@ class AssetRipperBundleWorkflow:
                 f"AssetRipper skipped {len(prepared.skipped)} incomplete component(s)."
             )
         return warnings
+
+    @staticmethod
+    def _best_effort_plan_warnings(plan: BundleDependencyPlan) -> list[str]:
+        warnings: list[str] = []
+        if plan.ambiguous_dependencies:
+            warnings.append(
+                "AssetRipper dependency scan found "
+                f"{len(plan.ambiguous_dependencies)} ambiguous reference(s); "
+                "all matching owners will be loaded."
+            )
+        if plan.unresolved_dependencies:
+            warnings.append(
+                "AssetRipper dependency scan left "
+                f"{len(plan.unresolved_dependencies)} reference(s) unresolved; "
+                "known dependencies will still be loaded."
+            )
+        if plan.scan_failures:
+            warnings.append(
+                "AssetRipper dependency scan reported "
+                f"{len(plan.scan_failures)} candidate or entry failure(s); "
+                "available direct targets will still be attempted."
+            )
+        return warnings
+
+    @staticmethod
+    def _plan_failure_records(
+        plan: BundleDependencyPlan,
+    ) -> list[dict[str, object]]:
+        failures: list[dict[str, object]] = [
+            {
+                "scope": "scan",
+                "archive_id": failure.archive_id,
+                "entry_path": failure.entry_path,
+                "error": failure.error,
+            }
+            for failure in plan.scan_failures
+        ]
+        failures.extend(
+            {
+                "scope": "dependency",
+                "archive_id": issue.source_archive_id,
+                "entry_path": issue.source_entry_path,
+                "kind": issue.kind,
+                "logical_name": issue.logical_name,
+                "error": "The referenced dependency could not be resolved.",
+            }
+            for issue in plan.unresolved_dependencies
+        )
+        return failures
 
     @staticmethod
     def _batch_for_targets(

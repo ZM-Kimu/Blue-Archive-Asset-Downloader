@@ -47,7 +47,11 @@ class AssetCommandRequest(StrictModel):
     filters: list[str] = Field(default_factory=list)
 
 
-class AssetsSyncRequest(AssetCommandRequest):
+class BundleAssetCommandRequest(AssetCommandRequest):
+    bundle_handler: Literal["assetripper", "unitypy"] = "assetripper"
+
+
+class AssetsSyncRequest(BundleAssetCommandRequest):
     operation: Literal["assets.sync"]
 
 
@@ -55,7 +59,7 @@ class AssetsDownloadRequest(AssetCommandRequest):
     operation: Literal["assets.download"]
 
 
-class AssetsExtractRequest(AssetCommandRequest):
+class AssetsExtractRequest(BundleAssetCommandRequest):
     operation: Literal["assets.extract"]
 
 
@@ -98,10 +102,32 @@ class CharacterIndexSearchRequest(StrictModel):
     terms: list[str] = Field(min_length=1)
 
 
-class OperationPreviewRequest(StrictModel):
+class OperationPreviewAssetRequest(StrictModel):
     concurrency: int = Field(default=30, ge=1, le=512)
     resources: list[Literal["table", "media", "bundle"]] = Field(default_factory=list)
     filters: list[str] = Field(default_factory=list)
+
+
+class SyncOperationPreviewRequest(OperationPreviewAssetRequest):
+    operation: Literal["assets.sync"]
+    bundle_handler: Literal["assetripper", "unitypy"] = "assetripper"
+
+
+class DownloadOperationPreviewRequest(OperationPreviewAssetRequest):
+    operation: Literal["assets.download"]
+
+
+class ExtractOperationPreviewRequest(OperationPreviewAssetRequest):
+    operation: Literal["assets.extract"]
+    bundle_handler: Literal["assetripper", "unitypy"] = "assetripper"
+
+
+OperationPreviewRequest = Annotated[
+    SyncOperationPreviewRequest
+    | DownloadOperationPreviewRequest
+    | ExtractOperationPreviewRequest,
+    Field(discriminator="operation"),
+]
 
 
 class ProblemValidationIssue(StrictModel):
@@ -208,10 +234,23 @@ class AssetListResponse(StrictModel):
     next_cursor: str | None
 
 
-class OperationPreviewResponse(StrictModel):
+class OperationPreviewMeasureResponse(StrictModel):
     items: int
     bytes: int
-    advanced_search_deferred: bool
+
+
+class OperationPreviewEstimateResponse(StrictModel):
+    total: OperationPreviewMeasureResponse
+    direct: OperationPreviewMeasureResponse
+    missing_direct: OperationPreviewMeasureResponse
+    target_members: int
+    ready: bool
+
+
+class OperationPreviewResponse(StrictModel):
+    operation: Literal["assets.sync", "assets.download", "assets.extract"]
+    bundle_handler: Literal["assetripper", "unitypy"]
+    estimate: OperationPreviewEstimateResponse
 
 
 class CharacterIndexEntryResponse(StrictModel):

@@ -27,12 +27,8 @@ api = [
     "fastapi>=0.141.1",
     "uvicorn>=0.30.0",
 ]
-dev = [
-    "import-linter>=2.3.0",
-    "mypy>=1.11.0",
-    "pre-commit>=4.0.0",
-    "pytest>=8.2.0",
-    "ruff>=0.11.0",
+unitypy = [
+    "UnityPy==1.25.0",
 ]
 
 [dependency-groups]
@@ -51,17 +47,13 @@ ba-downloader = "ba_downloader.cli.main:main"
 packages = ["src/ba_downloader"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"THIRD_PARTY_NOTICES.md" = "THIRD_PARTY_NOTICES.md"
 "licenses/AssetRipper-GPL-3.0.txt" = "licenses/AssetRipper-GPL-3.0.txt"
-"licenses/Cpp2IL-MIT.txt" = "licenses/Cpp2IL-MIT.txt"
-"licenses/SharpZipLib-MIT.txt" = "licenses/SharpZipLib-MIT.txt"
 
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
     "/README.md",
     "/LICENSE*",
-    "/THIRD_PARTY_NOTICES.md",
     "/licenses",
     "/pyproject.toml",
     "/uv.lock",
@@ -102,5 +94,5 @@ pretty = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["pykakasi", "xxhash", "curl_cffi", "curl_cffi.*", "Crypto.*", "elftools", "elftools.*", "flatbuffers", "flatbuffers.*"]
+module = ["UnityPy", "pykakasi", "xxhash", "curl_cffi", "curl_cffi.*", "Crypto.*", "elftools", "elftools.*", "flatbuffers", "flatbuffers.*"]
 ignore_missing_imports = true

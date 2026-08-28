@@ -45,13 +45,24 @@ Make sure Python is installed, then install the required libraries:
 
 ```shell
 uv sync
-```
-
-Or:
-
-```shell
+# Or:
 pip install -e .
 ```
+
+Optional UnityPy is recommended only for low-memory systems:
+
+```shell
+uv sync --extra unitypy
+# Or
+pip install -e ".[unitypy]"
+```
+
+Character filters have different semantics for each Bundle backend:
+
+- Both backends download only members directly matched in the JP catalog. The downloader prefers member-level HTTP Range requests based on the ZIP central directory. If the server or ZIP layout does not support this, it falls back only to the directly matched ZIP and never adds other ZIPs.
+- `assetripper` (default) resolves dependencies only between the downloaded target members and preserves any hierarchy, animation, and related assets it can process. References outside that target set can produce a partial result.
+- `unitypy` loads each directly matched member independently without dependency scanning. It uses less memory, but output can omit dependencies, complete hierarchy, and embedded animations.
+- With a `path` filter alone, both backends still select complete ZIPs by outer catalog path. Only character filters enable member-level downloads.
 
 ## Usage
 
@@ -99,11 +110,9 @@ See the [HTTP API documentation](http-api.md) for the detailed protocol.
 
 ## **Basic Parameters**
 
-**`*`**: **required option**
-
 | Parameter         | Commands                  | Description                                    | Default                                         | Example                         |
 | ----------------- | ------------------------- | ---------------------------------------------- | ----------------------------------------------- | ------------------------------- |
-| **`--region`**`*` | `assets *`, `index build` | **Server region**: `cn`, `gl`, or `jp`         | None                                            | `--region jp`                   |
+| **`--region`**    | `assets *`, `index build` | **Server region**: `cn`, `gl`, or `jp`         | None                                            | `--region jp`                   |
 | `--workspace`     | `assets *`, `index build` | Workspace root                                 | Current directory                               | `--workspace D:\BAAD`           |
 | `--platform`      | `assets *`, `index build` | `windows`, `android`, or `ios` (JP only)       | `android`                                       | `--platform windows`            |
 | `--proxy`         | `assets *`, `index build` | HTTP proxy URL                                 | None                                            | `--proxy http://127.0.0.1:8080` |
@@ -111,6 +120,7 @@ See the [HTTP API documentation](http-api.md) for the detailed protocol.
 | `--sqlcipher-key` | `assets *`, `index build` | SQLCipher raw ![key](kei_icon.png)             | (mysterious)                                    | `--sqlcipher-key <64hex>`       |
 | `--concurrency`   | `assets *`, `index build` | Concurrent worker count                        | `30`                                            | `--concurrency 50`              |
 | `--resources`     | `assets *`                | Comma-separated `table`, `media`, and `bundle` | All                                             | `--resources table,media`       |
+| `--bundle-handler` | `assets sync/extract`     | Bundle backend: `assetripper` or `unitypy`     | `assetripper`                                   | `--bundle-handler unitypy`      |
 | `--filter`        | `assets *`                | Resource or character filter; repeatable       | None                                            | `--filter "name~伊吹"`          |
 | `--host`          | `server start`            | HTTP API bind address                          | `0.0.0.0`                                       | `--host 127.0.0.1`              |
 | `--port`          | `server start`            | HTTP API port                                  | First available port from `9230` through `9239` | `--port 9230`                   |
@@ -189,6 +199,7 @@ ba-downloader assets download --region jp --platform windows
 - Some regions may require a proxy server to download game resources from specific servers.
 - Extraction methods change often, so interfaces may change frequently. Directly calling internal methods is not recommended.
 - Reserve at least `50GB` of free storage for a full `asset sync` in any region.
+- When extracting Bundles with AssetRipper, the host should have at least 8GB of RAM and 12GB of pagefile/swap. AssetRipper provides complete asset structures and models with embedded animations.
 
 ## TODO
 

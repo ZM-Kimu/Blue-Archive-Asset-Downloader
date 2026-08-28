@@ -23,10 +23,4 @@ Invoke-CheckedCommand -Label "ruff" -Command { uv run ruff check . }
 Invoke-CheckedCommand -Label "mypy" -Command { uv run mypy }
 Invoke-CheckedCommand -Label "architecture boundaries" -Command { uv run lint-imports }
 
-Write-Host "Running pylint advisory checks..." -ForegroundColor Cyan
-uv run pylint --rcfile .pylintrc src/ba_downloader scripts
-if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Pylint reported advisory issues."
-}
-
 Invoke-CheckedCommand -Label "pytest" -Command { & "$PSScriptRoot/run-tests.ps1" -Suite all }

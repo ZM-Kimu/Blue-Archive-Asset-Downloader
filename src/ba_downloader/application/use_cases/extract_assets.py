@@ -4,7 +4,7 @@ from ba_downloader.application.use_cases.character_index_search import (
     CharacterIndexBuilderFactory,
     CharacterIndexSearchService,
 )
-from ba_downloader.domain.models.asset import AssetCollection
+from ba_downloader.domain.models.asset import AssetCollection, AssetType
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.extraction import ExtractionReport
 from ba_downloader.domain.ports.execution import CancellationPort, NeverCancelled
@@ -76,13 +76,25 @@ class ExtractAssetsUseCase:
         resources = self._filter_search_resources(
             catalog.resources, active_context, options
         )
-        resources = ResourceQueryService.filter_type(
+        direct = ResourceQueryService.filter_type(
             resources,
             options.resources,
         )
-        return active_context, ResourceQueryService.filter_existing(
-            resources, active_context
+        existing_direct = AssetCollection(
+            resource
+            for resource in direct
+            if (
+                resource.asset_type is AssetType.bundle
+                and bool(resource.selected_member_paths)
+            )
+            or active_context.workspace.raw_resource_path(
+                resource.asset_type.value,
+                resource.path,
+            ).is_file()
         )
+        if not existing_direct:
+            return active_context, AssetCollection()
+        return active_context, existing_direct
 
     def _filter_search_resources(
         self,
@@ -185,6 +197,7 @@ class ExtractAssetsUseCase:
                         bundle_resources,
                         concurrency=options.concurrency,
                         filtered=bool(options.asset_filter.predicates),
+                        handler=options.bundle_handler,
                     )
                 )
                 self.cancellation.raise_if_cancelled()

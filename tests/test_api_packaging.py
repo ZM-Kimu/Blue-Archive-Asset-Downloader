@@ -5,6 +5,18 @@ import tomllib
 from pathlib import Path
 
 
+def test_unitypy_dependency_is_optional() -> None:
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+
+    assert not any(
+        dependency.split("==", 1)[0].casefold() == "unitypy"
+        for dependency in project["dependencies"]
+    )
+    assert project["optional-dependencies"]["unitypy"] == ["UnityPy==1.25.0"]
+
+
 def test_api_dependencies_remain_optional_to_normal_cli() -> None:
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))[
         "project"

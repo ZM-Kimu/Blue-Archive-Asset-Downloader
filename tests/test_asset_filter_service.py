@@ -61,3 +61,91 @@ def test_character_predicates_must_match_the_same_index_entry() -> None:
 def test_character_filter_requires_index_entries() -> None:
     with pytest.raises(ConfigError):
         AssetFilterService.apply(_assets(), AssetFilter.parse(["cv~Ogura"]))
+
+
+def test_character_filter_matches_jp_bundle_archive_members() -> None:
+    assets = AssetCollection()
+    assets.add(
+        "url",
+        "Bundle/FullPatch_044.zip",
+        1,
+        "x",
+        "crc",
+        AssetType.bundle,
+        member_paths=(
+            "character-ibuki_original-_mxload-prefabs.bundle",
+            "assets-_mx-characters-ch0347.bundle",
+        ),
+    )
+    entries = [
+        CharacterIndexEntry(
+            77,
+            dev_name="Ibuki",
+            names=["Ibuki"],
+            file_aliases={"CH0347"},
+        )
+    ]
+
+    by_name = AssetFilterService.apply(
+        assets,
+        AssetFilter.parse(["name=IBUKI"]),
+        character_entries=entries,
+    )
+    by_alias = AssetFilterService.apply(
+        assets,
+        AssetFilter.parse(["alias=ch0347"]),
+        character_entries=entries,
+    )
+
+    assert [asset.path for asset in by_name] == ["Bundle/FullPatch_044.zip"]
+    assert [asset.path for asset in by_alias] == ["Bundle/FullPatch_044.zip"]
+    assert by_name[0].selected_member_paths == (
+        "character-ibuki_original-_mxload-prefabs.bundle",
+        "assets-_mx-characters-ch0347.bundle",
+    )
+    assert by_alias[0].selected_member_paths == by_name[0].selected_member_paths
+
+
+def test_path_filter_does_not_search_archive_members() -> None:
+    assets = AssetCollection()
+    assets.add(
+        "url",
+        "Bundle/FullPatch_044.zip",
+        1,
+        "x",
+        "crc",
+        AssetType.bundle,
+        member_paths=("character-ibuki_original.bundle",),
+    )
+
+    result = AssetFilterService.apply(assets, AssetFilter.parse(["path~ibuki"]))
+
+    assert not result
+
+
+def test_character_filter_keeps_media_path_matching_behavior() -> None:
+    entries = [
+        CharacterIndexEntry(
+            77,
+            dev_name="Ibuki",
+            names=["Ibuki"],
+            file_aliases={"CH0347"},
+        )
+    ]
+    assets = AssetCollection()
+    assets.add(
+        "url",
+        "Media/Audio/CH0347_Battle.zip",
+        1,
+        "x",
+        "crc",
+        AssetType.media,
+    )
+
+    result = AssetFilterService.apply(
+        assets,
+        AssetFilter.parse(["name=ibuki"]),
+        character_entries=entries,
+    )
+
+    assert [asset.path for asset in result] == ["Media/Audio/CH0347_Battle.zip"]

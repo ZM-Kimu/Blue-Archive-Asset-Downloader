@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import struct
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -128,7 +129,6 @@ def test_zip_range_reader_reads_entries_and_extracts_metadata(tmp_path: Path) ->
         "GET",
         "GET",
         "GET",
-        "GET",
     ]
 
 
@@ -169,6 +169,62 @@ def test_zip_range_reader_raises_when_eocd_is_missing() -> None:
 
     with pytest.raises(ZipCentralDirectoryError):
         read_zip_entries("https://example.invalid/cn.apk", client)
+
+
+def test_zip_range_reader_uses_known_size_without_head_request() -> None:
+    archive_bytes = _build_zip_bytes({"target.bundle": b"bundle"})
+    client = RangeHttpClient(archive_bytes)
+
+    entries = read_zip_entries(
+        "https://example.invalid/patch.zip",
+        client,
+        file_size=len(archive_bytes),
+    )
+
+    assert [entry.path for entry in entries] == ["target.bundle"]
+    assert [call["method"] for call in client.calls] == ["GET"]
+
+
+def test_zip_range_reader_rejects_ignored_range_response() -> None:
+    archive_bytes = _build_zip_bytes({"target.bundle": b"bundle"})
+
+    class IgnoredRangeClient(RangeHttpClient):
+        def request(self, method: str, url: str, **kwargs: object) -> HttpResponse:
+            response = super().request(method, url, **kwargs)  # type: ignore[arg-type]
+            if method == "GET":
+                return HttpResponse(200, {}, self.archive_bytes, url)
+            return response
+
+    with pytest.raises(UnsupportedZipLayoutError):
+        read_zip_entries(
+            "https://example.invalid/patch.zip",
+            IgnoredRangeClient(archive_bytes),
+            file_size=len(archive_bytes),
+        )
+
+
+def test_zip_range_reader_crc_failure_preserves_existing_destination(
+    tmp_path: Path,
+) -> None:
+    archive_bytes = _build_zip_bytes({"target.bundle": b"new bundle"})
+    client = RangeHttpClient(archive_bytes)
+    entry = read_zip_entries(
+        "https://example.invalid/patch.zip",
+        client,
+        file_size=len(archive_bytes),
+    )[0]
+    destination = tmp_path / "target.bundle"
+    destination.write_bytes(b"old bundle")
+
+    with pytest.raises(ZipCentralDirectoryError, match="CRC"):
+        extract_zip_entry(
+            "https://example.invalid/patch.zip",
+            replace(entry, crc32=entry.crc32 ^ 1),
+            destination,
+            client,
+        )
+
+    assert destination.read_bytes() == b"old bundle"
 
 
 def test_zip_range_reader_raises_when_zip64_eocd_is_detected() -> None:

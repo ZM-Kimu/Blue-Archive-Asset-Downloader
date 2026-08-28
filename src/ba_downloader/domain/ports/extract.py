@@ -1,6 +1,7 @@
 from typing import Protocol
 
 from ba_downloader.domain.models.asset import AssetCollection
+from ba_downloader.domain.models.bundle import BundleHandler
 from ba_downloader.domain.models.execution import ExecutionContext
 from ba_downloader.domain.models.extraction import ExtractionReport
 from ba_downloader.domain.models.runtime_assets import PreparedRuntimeAssets
@@ -24,6 +25,7 @@ class AssetExtractionPort(Protocol):
         *,
         concurrency: int,
         filtered: bool = False,
+        handler: BundleHandler = BundleHandler.assetripper,
     ) -> ExtractionReport: ...
 
     def extract_media(

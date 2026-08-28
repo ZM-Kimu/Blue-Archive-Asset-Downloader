@@ -1,8 +1,0 @@
-rich
-httpx
-curl-cffi
-tenacity
-xxhash
-pycryptodome
-flatbuffers
-pykakasi
